@@ -20,4 +20,5 @@ semantic = ModelBuilderSemantics(base_type = ast.Node, types = ast.node_classes)
 
 def parse(input: str, trace = False, **kwargs):
     parser.trace = trace # Somehow this can't be taken as an argument BUG https://github.com/neogeny/TatSu/pull/72
+    kwargs["trace"] = None
     return parser.parse(input, semantics = semantic, rule_name = "program", **kwargs)

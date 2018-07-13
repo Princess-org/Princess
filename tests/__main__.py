@@ -1,5 +1,13 @@
-import os, tatsu, subprocess, sys, unittest
+import os, tatsu, subprocess, sys, unittest, argparse
 from datetime import datetime
+from . import opt
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--no-trace", action = "store_true", help="Don't print the Parser Trace on Error")
+parser.add_argument("--no-compile", action = "store_true", help="Don't compile the parser")
+args = parser.parse_args()
+
+opt.TRACEBACK = not args.no_trace
 
 # Recompile the parser if the grammar has changed
 def recompile_parser():
@@ -23,15 +31,18 @@ def recompile_parser():
         if subprocess.call([sys.executable, "-m", "tatsu", grammar_file, "--color", "--outfile", parser_file]):
             raise Exception("Failed to parse grammar")
 
-try:
-    recompile_parser()
-except Exception as e:
-    print("Couldn't generate parser, aborting!")
-    sys.exit(-1)
+if not args.no_compile:
+    try:
+        recompile_parser()
+    except Exception as e:
+        print("Couldn't generate parser!")
+        sys.exit(-1)
+
     
+class TestResult(unittest.TextTestResult): pass
 
 print("Done. Running tests...")
 loader = unittest.TestLoader()
 tests = loader.discover(".")
-testRunner = unittest.runner.TextTestRunner()
+testRunner = unittest.runner.TextTestRunner(resultclass = TestResult)
 testRunner.run(tests)
