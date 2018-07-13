@@ -1,4 +1,4 @@
-from testsuite import *
+from tests import *
 
 class TestAST(unittest.TestCase):
     def test_lookup(self):

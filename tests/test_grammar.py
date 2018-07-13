@@ -1,4 +1,4 @@
-from testsuite import *
+from tests import *
 
 # Test the parser
 class TestGeneric(unittest.TestCase):
