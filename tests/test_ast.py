@@ -1,6 +1,6 @@
 from tests import *
 
-class TestAST(TestCase):
+class AST(TestCase):
     def test_lookup(self):
         """ Lookup of python classes"""
         self.assertIsInstance(node.Expression(), grammar.Expression)

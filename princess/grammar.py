@@ -1,6 +1,6 @@
 from functools import reduce
 from tatsu.ast import AST
-from .ast import Operator, Node
+from .ast import Operator, Node, REMOVE
 
 class Expression(Node):
     def eval(self): pass
@@ -24,12 +24,26 @@ def char_to_str(ast):
     else: return ast
 
 class String(Literal):
-    def __postinit__(self, ast):
-        super().__postinit__(AST({"VALUE" : reduce(lambda l, r: char_to_str(l) + char_to_str(r), ast.VALUE, "")}))
+    def _semantic(self, ast):
+        return ast.copy_with(VALUE = reduce(lambda l, r: char_to_str(l) + char_to_str(r), ast.VALUE, ""))
 
 class Char(Literal):
-    def __postinit__(self, ast):
-        super().__postinit__(AST({"VALUE" : char_to_str(ast.VALUE)}))
+    def _semantic(self, ast):
+        return ast.copy_with(VALUE = char_to_str(ast.VALUE))
+
+class Integer(Literal):
+    def _semantic(self, ast):
+        return AST(VALUE = int("".join(ast.num), ast.base))
+
+class Float(Literal):
+    def _semantic(self, ast):
+        n = float("".join(ast.num) + "." + "".join(ast.frac))
+        if ast.exp:
+            exp = int("".join(ast.exp.num))
+            if ast.exp.sign == "-":
+                exp = -exp
+            n *= 10 ** exp
+        return AST(VALUE = n)
 
 BinaryOp_table = {}
 UnaryPreOp_table = {}

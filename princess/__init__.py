@@ -1,4 +1,4 @@
-import tatsu, os
+import tatsu, os, importlib
 from tatsu.grammars import Grammar
 from tatsu.model import ModelBuilderSemantics
 
@@ -7,9 +7,24 @@ from .util import *
 # This is import is important to make sure 
 # that ast.node_classes is properly loaded
 from . import grammar
-from . import parser as _parser
 
-parser = _parser.PrincessParser()
+parser = None
+_parser = None
+
+def _import_parser():
+    global _parser
+    if parser is None:
+        _parser = importlib.import_module(".parser", package = __package__)
+    else:
+        importlib.invalidate_caches()
+        _parser = importlib.reload(_parser)
+    
+    return _parser.PrincessParser()
+
+try:
+    parser = _import_parser()
+except ImportError:
+    parser = None # Parser broke, pls fix
 
 # Old way
 #with open(os.path.dirname(__file__) + "/../princess.ebnf") as file:

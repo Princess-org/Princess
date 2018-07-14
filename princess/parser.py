@@ -145,16 +145,6 @@ class PrincessParser(Parser):
                 self._k_else_()
             self._error('no available options')
 
-    @tatsumasu('Integer')
-    def _t_number_(self):  # noqa
-        with self._group():
-            self._pattern(r'\d+')
-        self.name_last_node('VALUE')
-        self.ast._define(
-            ['VALUE'],
-            []
-        )
-
     @tatsumasu()
     def _t_term_(self):  # noqa
         with self._choice():
@@ -177,6 +167,196 @@ class PrincessParser(Parser):
     @tatsumasu()
     def _oct_digit_(self):  # noqa
         self._pattern(r'[0-8]')
+
+    @tatsumasu()
+    def _bin_digit_(self):  # noqa
+        self._pattern(r'[01]')
+
+    @tatsumasu()
+    def _sign_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._pattern(r'[+-]')
+            with self._option():
+                self._constant('+')
+            self._error('no available options')
+
+    @tatsumasu()
+    def _exp_(self):  # noqa
+        self._pattern(r'[Ee]')
+        self._sign_()
+        self.name_last_node('sign')
+        self._cut()
+
+        def block2():
+            self._digit_()
+        self._positive_closure(block2)
+        self.name_last_node('num')
+        self.ast._define(
+            ['num', 'sign'],
+            []
+        )
+
+    @tatsumasu()
+    def _float_frac_(self):  # noqa
+        with self._group():
+            with self._choice():
+                with self._option():
+
+                    def block1():
+                        self._digit_()
+                    self._positive_closure(block1)
+                with self._option():
+                    self._constant('0')
+                self._error('no available options')
+        self.name_last_node('frac')
+        with self._optional():
+            self._exp_()
+        self.name_last_node('exp')
+        self.ast._define(
+            ['exp', 'frac'],
+            []
+        )
+
+    @tatsumasu('Float')
+    def _t_float_literal_(self):  # noqa
+        with self._choice():
+            with self._option():
+                with self._group():
+
+                    def block1():
+                        self._digit_()
+                    self._positive_closure(block1)
+                    self.name_last_node('num')
+                    with self._group():
+                        with self._choice():
+                            with self._option():
+                                with self._group():
+                                    self._token('.')
+                                    self._cut()
+                                    with self._group():
+                                        with self._choice():
+                                            with self._option():
+
+                                                def block3():
+                                                    self._digit_()
+                                                self._positive_closure(block3)
+                                            with self._option():
+                                                self._constant('0')
+                                            self._error('no available options')
+                                    self.name_last_node('frac')
+                                    with self._optional():
+                                        self._exp_()
+                                    self.name_last_node('exp')
+                            with self._option():
+                                self._constant('0')
+                                self.name_last_node('frac')
+                                self._exp_()
+                                self.name_last_node('exp')
+                            self._error('no available options')
+            with self._option():
+                with self._group():
+                    self._constant('0')
+                    self.name_last_node('num')
+                    self._token('.')
+                    self._cut()
+                    with self._group():
+                        with self._choice():
+                            with self._option():
+
+                                def block11():
+                                    self._digit_()
+                                self._positive_closure(block11)
+                            with self._option():
+                                self._constant('0')
+                            self._error('no available options')
+                    self.name_last_node('frac')
+                    with self._optional():
+                        self._exp_()
+                    self.name_last_node('exp')
+            self._error('no available options')
+        self.ast._define(
+            ['exp', 'frac', 'num'],
+            []
+        )
+
+    @tatsumasu('Integer')
+    def _t_dec_literal_(self):  # noqa
+        self._constant(10)
+        self.name_last_node('base')
+
+        def block2():
+            self._digit_()
+        self._positive_closure(block2)
+        self.name_last_node('num')
+        self.ast._define(
+            ['base', 'num'],
+            []
+        )
+
+    @tatsumasu('Integer')
+    def _t_hex_literal_(self):  # noqa
+        self._token('0x')
+        self._cut()
+        self._constant(16)
+        self.name_last_node('base')
+
+        def block2():
+            self._hex_digit_()
+        self._positive_closure(block2)
+        self.name_last_node('num')
+        self.ast._define(
+            ['base', 'num'],
+            []
+        )
+
+    @tatsumasu('Integer')
+    def _t_oct_literal_(self):  # noqa
+        self._token('0o')
+        self._cut()
+        self._constant(8)
+        self.name_last_node('base')
+
+        def block2():
+            self._oct_digit_()
+        self._positive_closure(block2)
+        self.name_last_node('num')
+        self.ast._define(
+            ['base', 'num'],
+            []
+        )
+
+    @tatsumasu('Integer')
+    def _t_bin_literal_(self):  # noqa
+        self._token('0b')
+        self._cut()
+        self._constant(2)
+        self.name_last_node('base')
+
+        def block2():
+            self._bin_digit_()
+        self._positive_closure(block2)
+        self.name_last_node('num')
+        self.ast._define(
+            ['base', 'num'],
+            []
+        )
+
+    @tatsumasu()
+    def _t_num_lit_(self):  # noqa
+        with self._group():
+            with self._choice():
+                with self._option():
+                    self._t_hex_literal_()
+                with self._option():
+                    self._t_bin_literal_()
+                with self._option():
+                    self._t_oct_literal_()
+                with self._option():
+                    self._t_float_literal_()
+                with self._option():
+                    self._t_dec_literal_()
+                self._error('no available options')
 
     @tatsumasu()
     def _esc_seq_(self):  # noqa
@@ -267,14 +447,21 @@ class PrincessParser(Parser):
         with self._group():
             with self._choice():
                 with self._option():
-                    self._t_number_()
-                with self._option():
-                    self._t_ident_()
+                    self._t_num_lit_()
                 with self._option():
                     self._t_char_lit_()
                 with self._option():
                     self._t_string_lit_()
                 self._error('no available options')
+
+    @tatsumasu()
+    def _value_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._t_ident_()
+            with self._option():
+                self._literal_()
+            self._error('no available options')
 
     @tatsumasu()
     def _t_comment_start_(self):  # noqa
@@ -401,7 +588,7 @@ class PrincessParser(Parser):
                 self.__n_()
                 self._token(')')
             with self._option():
-                self._literal_()
+                self._value_()
             self._error('no available options')
 
     @tatsumasu()
@@ -483,9 +670,6 @@ class PrincessSemantics(object):
     def t_keyword(self, ast):  # noqa
         return ast
 
-    def t_number(self, ast):  # noqa
-        return ast
-
     def t_term(self, ast):  # noqa
         return ast
 
@@ -496,6 +680,36 @@ class PrincessSemantics(object):
         return ast
 
     def oct_digit(self, ast):  # noqa
+        return ast
+
+    def bin_digit(self, ast):  # noqa
+        return ast
+
+    def sign(self, ast):  # noqa
+        return ast
+
+    def exp(self, ast):  # noqa
+        return ast
+
+    def float_frac(self, ast):  # noqa
+        return ast
+
+    def t_float_literal(self, ast):  # noqa
+        return ast
+
+    def t_dec_literal(self, ast):  # noqa
+        return ast
+
+    def t_hex_literal(self, ast):  # noqa
+        return ast
+
+    def t_oct_literal(self, ast):  # noqa
+        return ast
+
+    def t_bin_literal(self, ast):  # noqa
+        return ast
+
+    def t_num_lit(self, ast):  # noqa
         return ast
 
     def esc_seq(self, ast):  # noqa
@@ -514,6 +728,9 @@ class PrincessSemantics(object):
         return ast
 
     def literal(self, ast):  # noqa
+        return ast
+
+    def value(self, ast):  # noqa
         return ast
 
     def t_comment_start(self, ast):  # noqa

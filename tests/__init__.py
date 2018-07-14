@@ -1,12 +1,14 @@
-import unittest, tatsu, princess, io, contextlib, logging, os
+import unittest, tatsu, princess, io, contextlib, logging, os, functools, inspect
 
 from princess import ast_repr, grammar
 from princess.ast import node
+from unittest import skip, skipIf, skipUnless, expectedFailure
 
 def expr(n): return node.Program([node.Expression(n)])
 
 class opt:
     TRACEBACK = True
+    COLORIZE = False
 
 class FailedParse(Exception):
     def __init__(self, text, exception, trace = False, **kwargs):
@@ -45,6 +47,9 @@ class _ParseContext(object):
 
 
 def parse(text, **kwargs):
+    if opt.COLORIZE and not "colorize" in kwargs:
+        kwargs["colorize"] = True
+        
     raised = None
     try: 
         parsed = princess.parse(text, **kwargs)
@@ -55,17 +60,18 @@ def parse(text, **kwargs):
 
     if raised: raise FailedParse(text, raised, **kwargs)
 
-def _generate_traceback(arg):
+def __generate_traceback(arg):
     if not isinstance(arg, princess.ast.Node): return None
     if not hasattr(arg, "_src"): return None 
     return FailedParse(arg._src, exception = None).trace
 
-sep = "\n" + unittest.TextTestResult.separator2 + "\n"
-def _append_traceback(e, first, second):
+def __append_traceback(e, first, second, result): # Result passed for overloading separator
     if not opt.TRACEBACK: raise e
 
-    first = _generate_traceback(first)
-    second = _generate_traceback(second)
+    first = __generate_traceback(first)
+    second = __generate_traceback(second)
+
+    sep = "\n" + result.separator2 + "\n"
 
     if first == None and second == None: raise e
     ret = "\n\n"
@@ -83,16 +89,21 @@ def _append_traceback(e, first, second):
 
     raise AssertionError(str(e) + ret)
 
+def _traceback(fun):
+    def _assert(self, first, second, msg = None ):
+        try: return fun(self, first, second, msg)
+        except AssertionError as e: 
+            raise __append_traceback(e, first, second, self._outcome.result)
+    return _assert
+
 class TestCase(unittest.TestCase):
-
+    @_traceback
     def assertEqual(self, first, second, msg = None):
-        raised = None
-        try: return super().assertEqual(first, second, msg)
-        except AssertionError as e: raised = e
-        if raised: _append_traceback(raised, first, second)
+        return super().assertEqual(first, second, msg)
 
+    @_traceback
     def assertNotEqual(self, first, second, msg = None):
-        raised = None
-        try: return super().assertNotEqual(first, second, msg)
-        except AssertionError as e: raised = e
-        if raised: _append_traceback(raised, first, second)
+        return super().assertNotEqual(first, second, msg)
+
+    assertEquals = assertEqual
+    assertNotEquals = assertNotEqual
