@@ -10,7 +10,6 @@ class Literal(Expression): pass
 def decode_escape_seq(ast):
     def hex(a, b): 
         return chr(int("".join(ast[a:b+1]), 16))
-
     e = ast[0]
     if e == 'x': return hex(1, 2)
     elif e == 'u': return hex(1, 4)
@@ -20,7 +19,7 @@ def decode_escape_seq(ast):
         'r': '\r', 't': '\t', 'v': '\v', '0': '\0'}.get(e, e)
 
 def char_to_str(ast):
-    if isinstance(ast, list): return decode_escape_seq(ast[1:])
+    if isinstance(ast, list): return decode_escape_seq(ast)
     else: return ast
 
 class String(Literal):

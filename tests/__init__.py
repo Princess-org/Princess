@@ -59,23 +59,27 @@ def parse(text, **kwargs):
         raised = e # Destroy trace back, its not important here
 
     if raised: raise FailedParse(text, raised, **kwargs)
+        
 
-def __generate_traceback(arg):
+def _generate_traceback(arg):
     if not isinstance(arg, princess.ast.Node): return None
     if not hasattr(arg, "_src"): return None 
     return FailedParse(arg._src, exception = None).trace
 
-def __append_traceback(e, first, second, result): # Result passed for overloading separator
-    if not opt.TRACEBACK: raise e
+def _append_traceback(e, first, second, result, print_value = False): # Result passed for overloading separator
+    ret = "\n\n"
+    if print_value:
+        ret += "Result: " + ast_repr(first)
 
-    first = __generate_traceback(first)
-    second = __generate_traceback(second)
+    if not opt.TRACEBACK: raise AssertionError(str(e) + ret)
+    ret += "\n\n"
+
+    first = _generate_traceback(first)
+    second = _generate_traceback(second)
 
     sep = "\n" + result.separator2 + "\n"
 
-    if first == None and second == None: raise e
-    ret = "\n\n"
-        
+    if first == None and second == None: raise AssertionError(str(e) + ret)
     if first == None: 
         first = second
         second = None
@@ -89,21 +93,31 @@ def __append_traceback(e, first, second, result): # Result passed for overloadin
 
     raise AssertionError(str(e) + ret)
 
-def _traceback(fun):
-    def _assert(self, first, second, msg = None ):
-        try: return fun(self, first, second, msg)
-        except AssertionError as e: 
-            raise __append_traceback(e, first, second, self._outcome.result)
-    return _assert
-
 class TestCase(unittest.TestCase):
-    @_traceback
     def assertEqual(self, first, second, msg = None):
-        return super().assertEqual(first, second, msg)
+        e = None
+        try: return super().assertEqual(first, second, msg)
+        except AssertionError as ex: e = ex
+        if e: _append_traceback(e, first, second, self._outcome.result)
 
-    @_traceback
     def assertNotEqual(self, first, second, msg = None):
-        return super().assertNotEqual(first, second, msg)
+        e = None
+        try: return super().assertNotEqual(first, second, msg)
+        except AssertionError as ex: e = ex
+        if e: _append_traceback(e, first, second, self._outcome.result)
+
+    def assertFailedParse(self, code, regex = None): 
+        e = None
+        parsed = None
+        try: 
+            if regex:
+                with self.assertRaisesRegex(tatsu.exceptions.FailedParse, regex): parsed = princess.parse(code)
+            else: 
+                with self.assertRaises(tatsu.exceptions.FailedParse): parsed = princess.parse(code)
+        except AssertionError as ex: e = ex
+        if e:
+            parsed._src = code
+            _append_traceback(e, parsed, None, self._outcome.result, print_value = True)
 
     assertEquals = assertEqual
     assertNotEquals = assertNotEqual

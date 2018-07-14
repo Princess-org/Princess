@@ -25,8 +25,12 @@ class StringLiteral(TestCase):
 
     def test_invalid_escapes(self):
         """ Invalid escape sequences, these should fail"""
-        with self.assertRaises(FailedParse): parse("\" \\q \\ \"")
-        with self.assertRaises(FailedParse): parse("\" \\XFF \"")
+        self.assertFailedParse("\" \\q \\ \"", "Expecting <esc_char>")
+        self.assertFailedParse("\" \\XFF \"", "Expecting <esc_char>")
+
+    def test_multiline_string(self):
+        """ String that spans multiple lines """
+        self.assertEqual(parse("\"Hello\nWorld\""), expr(String("Hello\nWorld")))
 
 class IntegerLiteral(TestCase):
     def test_int_simple(self):
@@ -57,6 +61,18 @@ class IntegerLiteral(TestCase):
         self.assertEqual(parse(".42e10"), expr(Float(.42E10)))
         self.assertEqual(parse("20."), expr(Float(20.)))
         self.assertEqual(parse("2.E-2"), expr(Float(2.E-2)))
+
+    def test_invalid(self):
+        self.assertFailedParse("0x", "Expecting <hex_digit>")
+        self.assertFailedParse(".E1", "Expecting <digit>")
+        self.assertFailedParse("42.2e", "Expecting <digit>")
+        self.assertFailedParse("1.1.1", "Expecting <>")
+
+    @skip("Not implemented")
+    def test_num_with_underscore(self):
+        """ Underscores in numeric literals """
+        self.assertEqual(parse("1_000_000"), expr(Integer(1_000_000)))
+        self.assertEqual(parse("1_000_0.423_0E-10"), expr(Float(1_000_0.423_0E-10)))
 
 class Operators(TestCase):
     def test_simple(self):

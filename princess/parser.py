@@ -197,27 +197,6 @@ class PrincessParser(Parser):
             []
         )
 
-    @tatsumasu()
-    def _float_frac_(self):  # noqa
-        with self._group():
-            with self._choice():
-                with self._option():
-
-                    def block1():
-                        self._digit_()
-                    self._positive_closure(block1)
-                with self._option():
-                    self._constant('0')
-                self._error('no available options')
-        self.name_last_node('frac')
-        with self._optional():
-            self._exp_()
-        self.name_last_node('exp')
-        self.ast._define(
-            ['exp', 'frac'],
-            []
-        )
-
     @tatsumasu('Float')
     def _t_float_literal_(self):  # noqa
         with self._choice():
@@ -260,16 +239,10 @@ class PrincessParser(Parser):
                     self.name_last_node('num')
                     self._token('.')
                     self._cut()
-                    with self._group():
-                        with self._choice():
-                            with self._option():
 
-                                def block11():
-                                    self._digit_()
-                                self._positive_closure(block11)
-                            with self._option():
-                                self._constant('0')
-                            self._error('no available options')
+                    def block11():
+                        self._digit_()
+                    self._positive_closure(block11)
                     self.name_last_node('frac')
                     with self._optional():
                         self._exp_()
@@ -359,47 +332,54 @@ class PrincessParser(Parser):
                 self._error('no available options')
 
     @tatsumasu()
+    def _esc_char_(self):  # noqa
+        self._pattern(r'[abfnrtv\\\'"0]')
+        self.add_last_node_to_name('@')
+
+    @tatsumasu()
     def _esc_seq_(self):  # noqa
-        self._token('\\')
-        self._cut()
-        with self._group():
-            with self._choice():
-                with self._option():
-                    self._pattern(r'[abfnrtv\\\'"0]')
-                with self._option():
-                    with self._group():
-                        self._pattern(r'x')
-                        self._cut()
-                        self._hex_digit_()
-                        self._hex_digit_()
-                with self._option():
-                    with self._group():
-                        self._pattern(r'u')
-                        self._cut()
-                        self._hex_digit_()
-                        self._hex_digit_()
-                        self._hex_digit_()
-                        self._hex_digit_()
-                with self._option():
-                    with self._group():
-                        self._pattern(r'U')
-                        self._cut()
-                        self._hex_digit_()
-                        self._hex_digit_()
-                        self._hex_digit_()
-                        self._hex_digit_()
-                        self._hex_digit_()
-                        self._hex_digit_()
-                        self._hex_digit_()
-                        self._hex_digit_()
-                self._error('no available options')
+        with self._choice():
+            with self._option():
+                with self._group():
+                    self._pattern(r'x')
+                    self._cut()
+                    self._hex_digit_()
+                    self._hex_digit_()
+            with self._option():
+                with self._group():
+                    self._pattern(r'u')
+                    self._cut()
+                    self._hex_digit_()
+                    self._hex_digit_()
+                    self._hex_digit_()
+                    self._hex_digit_()
+            with self._option():
+                with self._group():
+                    self._pattern(r'U')
+                    self._cut()
+                    self._hex_digit_()
+                    self._hex_digit_()
+                    self._hex_digit_()
+                    self._hex_digit_()
+                    self._hex_digit_()
+                    self._hex_digit_()
+                    self._hex_digit_()
+                    self._hex_digit_()
+            with self._option():
+                self._cut()
+                self._esc_char_()
+            self._error('no available options')
 
     @tatsumasu()
     def _t_char_(self):  # noqa
         with self._group():
             with self._choice():
                 with self._option():
-                    self._esc_seq_()
+                    with self._group():
+                        self._token('\\')
+                        self._cut()
+                        self._esc_seq_()
+                        self.name_last_node('@')
                 with self._option():
                     self._pattern(r'[^\0\x7f\x80"\\]+')
                 self._error('no available options')
@@ -596,27 +576,73 @@ class PrincessParser(Parser):
         with self._choice():
             with self._option():
                 self._expr_pre_()
+                self.name_last_node('left')
             with self._option():
                 self._expr_3_()
+                self.name_last_node('left')
             self._error('no available options')
+        self.ast._define(
+            ['left'],
+            []
+        )
 
-    @tatsumasu()
+    @tatsumasu('BinaryOp')
     def _expr_1_(self):  # noqa
         with self._choice():
             with self._option():
-                self._expr_mul_()
+                self._expr_1_()
+                self.name_last_node('left')
+                self.___()
+                with self._group():
+                    with self._choice():
+                        with self._option():
+                            self._token('*')
+                        with self._option():
+                            self._token('/')
+                        with self._option():
+                            self._token('%')
+                        self._error('no available options')
+                self.name_last_node('op')
+                self.__n_()
+                self._cut()
+                self._expr_2_()
+                self.name_last_node('right')
             with self._option():
                 self._expr_2_()
+                self.name_last_node('@')
             self._error('no available options')
+        self.ast._define(
+            ['left', 'op', 'right'],
+            []
+        )
 
-    @tatsumasu()
+    @tatsumasu('BinaryOp')
     def _expr_0_(self):  # noqa
         with self._choice():
             with self._option():
-                self._expr_add_()
+                self._expr_0_()
+                self.name_last_node('left')
+                self.___()
+                with self._group():
+                    with self._choice():
+                        with self._option():
+                            self._token('+')
+                        with self._option():
+                            self._token('-')
+                        self._error('no available options')
+                self.name_last_node('op')
+                self.__n_()
+                self._cut()
+                self._expr_1_()
+                self.name_last_node('right')
             with self._option():
                 self._expr_1_()
+                self.name_last_node('@')
             self._error('no available options')
+        self.ast._define(
+            ['left', 'op', 'right'],
+            []
+        )
 
     @tatsumasu('Expression')
     def _expression_(self):  # noqa
@@ -641,6 +667,7 @@ class PrincessParser(Parser):
                 self._expression_()
                 self.name_last_node('@')
                 self.___()
+                self._cut()
                 self._t_term_()
             self._error('no available options')
 
@@ -691,9 +718,6 @@ class PrincessSemantics(object):
     def exp(self, ast):  # noqa
         return ast
 
-    def float_frac(self, ast):  # noqa
-        return ast
-
     def t_float_literal(self, ast):  # noqa
         return ast
 
@@ -710,6 +734,9 @@ class PrincessSemantics(object):
         return ast
 
     def t_num_lit(self, ast):  # noqa
+        return ast
+
+    def esc_char(self, ast):  # noqa
         return ast
 
     def esc_seq(self, ast):  # noqa
