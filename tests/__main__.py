@@ -1,4 +1,4 @@
-import os, tatsu, subprocess, sys, unittest, argparse, shutil
+import os, tatsu, subprocess, sys, unittest, argparse, shutil, importlib
 import princess
 
 from datetime import datetime
@@ -37,8 +37,7 @@ def recompile_parser():
         if subprocess.call([sys.executable, "-m", "tatsu", grammar_file, "--color", "--outfile", parser_file]):
             raise Exception("Failed to parse grammar")
         else:
-            # Reimport
-            princess.parser = princess._import_parser()
+            princess._import_parser()
 
 
 class TestResult(unittest.TextTestResult):

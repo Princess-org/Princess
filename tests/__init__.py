@@ -12,6 +12,9 @@ class opt:
 
 class FailedParse(Exception):
     def __init__(self, text, exception, trace = False, **kwargs):
+        if opt.COLORIZE and not "colorize" in kwargs:
+            kwargs["colorize"] = True
+
         self.trace = None
         self.exception = exception
         if opt.TRACEBACK and not trace:
@@ -116,6 +119,7 @@ class TestCase(unittest.TestCase):
                 with self.assertRaises(tatsu.exceptions.FailedParse): parsed = princess.parse(code)
         except AssertionError as ex: e = ex
         if e:
+            parsed = princess.ast.Node()
             parsed._src = code
             _append_traceback(e, parsed, None, self._outcome.result, print_value = True)
 
