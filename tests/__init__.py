@@ -119,7 +119,7 @@ class TestCase(unittest.TestCase):
                 with self.assertRaises(tatsu.exceptions.FailedParse): parsed = princess.parse(code)
         except AssertionError as ex: e = ex
         if e:
-            parsed = princess.ast.Node()
+            if parsed is None: parsed = princess.ast.Node()
             parsed._src = code
             _append_traceback(e, parsed, None, self._outcome.result, print_value = True)
 

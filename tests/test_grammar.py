@@ -66,7 +66,7 @@ class IntegerLiteral(TestCase):
         self.assertFailedParse("0x", "Expecting <hex_digit>")
         self.assertFailedParse(".E1", "Expecting <digit>")
         self.assertFailedParse("42.2e", "Expecting <digit>")
-        #self.assertFailedParse("1.1.1", "Expecting <>")
+        self.assertFailedParse("1.1.1")
 
     @skip("Not implemented")
     def test_num_with_underscore(self):

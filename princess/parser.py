@@ -573,6 +573,8 @@ class PrincessParser(Parser):
                 self._token(')')
             with self._option():
                 self._value_()
+                with self._ifnot():
+                    self._value_()
             self._error('no available options')
 
     @tatsumasu()
@@ -629,7 +631,6 @@ class PrincessParser(Parser):
                 self._expression_()
                 self.name_last_node('@')
                 self.___()
-                self._cut()
                 self._t_term_()
             self._error('no available options')
 
