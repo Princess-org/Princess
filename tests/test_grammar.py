@@ -1,10 +1,12 @@
 from tests import *
+from princess.grammar import CompareOp
 
 # Test the parser
 
 Integer = node.Integer
 Float = node.Float
 String = node.String
+Identifier = node.Identifier
 
 class StringLiteral(TestCase):
     def test_empty(self):
@@ -67,6 +69,7 @@ class IntegerLiteral(TestCase):
         self.assertFailedParse(".E1", "Expecting <digit>")
         self.assertFailedParse("42.2e", "Expecting <digit>")
         self.assertFailedParse("1.1.1")
+        self.assertFailedParse("1EFA0")
 
     @skip("Not implemented")
     def test_num_with_underscore(self):
@@ -86,7 +89,47 @@ class Expressions(TestCase):
         ))
 
         self.assertEqual(parse("0 - 1E10"), expr(node.Sub(left = Integer(0), right = Float(1E10))))
-    
+
+    def test_precidence(self):
+        """ Operator Precidence """
+        self.assertEqual(parse("1 * 1 + 1"), expr(
+            node.Add(
+                left = node.Mul(left = Integer(1), right = Integer(1)),
+                right = Integer(1)
+            )
+        ))
+        self.assertEqual(parse("1 + 1 * 1"), expr(
+            node.Add(
+                left = Integer(1),
+                right = node.Mul(left = Integer(1), right = Integer(1))
+            )
+        ))
+        self.assertEqual(parse("1 >> 3 + 2 << 5"), expr(
+            node.Add(
+                left = node.Shr(
+                    left = Integer(1),
+                    right = Integer(3),
+                ),
+                right = node.Shl(
+                    left = Integer(2),
+                    right = Integer(5)
+                )
+            )
+        ))
+
+    def test_comparison(self):
+        self.assertEqual(parse("foo == bar > 1 + 2 < baz"), expr(
+            node.Compare(
+                Identifier("foo"),
+                CompareOp.EQ,
+                Identifier("bar"),
+                CompareOp.GT,
+                node.Add(left = Integer(1), right = Integer(2)),
+                CompareOp.LT,
+                Identifier("baz")
+            )
+        ))
+
     def test_no_wrapping(self):
         self.assertFailedParse("""\
                 1

@@ -61,19 +61,6 @@ def Operator(mapping):
         return op_cls
     return decorator
 
-# Version with multiple inhertiance, horrible
-#class _Operator(object):
-#    mapping: dict
-#    def __new__(cls, ast = None, ctx = None):
-#        if cls.mapping and ast and "op" in ast:
-#            subcls = cls.mapping[ast.op]
-#            if subcls != cls:
-#                return subcls.__new__(subcls, ast, ctx)
-#        return object.__new__(cls)
-#
-#    def __postinit__(self, ast):
-#        return type(self).__bases__[0].__bases__[0].__postinit__(self, ast.copy_with(op = REMOVE))
-
 # Generator function, this makes sure that it always pulls out every subclass no matter where it's defined
 def __get_subclasses(cls):
     for subclass in cls.__subclasses__():
@@ -112,7 +99,7 @@ def get_node(name: str, *args, **kwargs):
             ast = AST(kwargs, LIST = a0)
         else: ast = AST(kwargs, VALUE = args[0])
     elif (len(args) > 1):
-        ast = AST(kwargs, LIST = a0)
+        ast = AST(kwargs, LIST = list(args))
     else: ast = AST(kwargs)
     
     if issubclass(ctor, Node):

@@ -10,44 +10,32 @@ class opt:
     TRACEBACK = True
     COLORIZE = False
 
+def _traceback(src, **kwargs):
+    if opt.COLORIZE and not "colorize" in kwargs:
+        kwargs["colorize"] = True
+    if opt.TRACEBACK and not ("trace" in kwargs and kwargs["trace"]):
+        with io.StringIO() as buf:
+            handlers = tatsu.util.logger.handlers
+            tatsu.util.logger.handlers = [logging.StreamHandler(buf)]
+            try:
+                princess.parse(src, trace = True, **kwargs)
+            except tatsu.exceptions.FailedParse: pass
+            finally:
+                tatsu.util.logger.handlers = handlers
+
+            return buf.getvalue()
+    return None
+
 class FailedParse(Exception):
-    def __init__(self, text, exception, trace = False, **kwargs):
-        if opt.COLORIZE and not "colorize" in kwargs:
-            kwargs["colorize"] = True
-
-        self.trace = None
+    def __init__(self, src, exception, trace = False, **kwargs):
+        self.trace = _traceback(src, **kwargs)
         self.exception = exception
-        if opt.TRACEBACK and not trace:
-            with io.StringIO() as buf:
-                handlers = tatsu.util.logger.handlers
-                tatsu.util.logger.handlers = [logging.StreamHandler(buf)]
-                try:
-                    princess.parse(text, trace = True, **kwargs)
-                except tatsu.exceptions.FailedParse: pass
-                finally:
-                    tatsu.util.logger.handlers = handlers
-
-                self.trace = buf.getvalue()
 
     def __str__(self):
         res = str(self.exception) if self.exception else ""
         if self.trace: 
             res += "\n\nParser Trace: \n" + self.trace
         return res
-
-class _ParseContext(object):
-    def __init__(self, test_case, input, kwargs):
-        self.test_case = test_case
-        self.input = input
-        self.kwargs = kwargs
-        self.exception = None
-
-    def __enter__(self):
-        return princess.parse(self.input, **self.kwargs)
-
-    def __exit__(self, exc_type, exc_value, tb):
-        raise exc_value
-
 
 def parse(text, **kwargs):
     if opt.COLORIZE and not "colorize" in kwargs:
@@ -67,22 +55,17 @@ def parse(text, **kwargs):
 def _generate_traceback(arg):
     if not isinstance(arg, princess.ast.Node): return None
     if not hasattr(arg, "_src"): return None 
-    return FailedParse(arg._src, exception = None).trace
+    return _traceback(arg._src)
 
-def _append_traceback(e, first, second, result, print_value = False): # Result passed for overloading separator
-    ret = "\n\n"
-    if print_value:
-        ret += "Result: " + ast_repr(first)
-
-    if not opt.TRACEBACK: raise AssertionError(str(e) + ret)
-    ret += "\n\n"
+def _append_traceback(e, first, second, result, prepend = None): # Result passed for overloading separator
+    if not opt.TRACEBACK: raise e
+    if first == None and second == None: raise e
 
     first = _generate_traceback(first)
     second = _generate_traceback(second)
 
     sep = "\n" + result.separator2 + "\n"
-
-    if first == None and second == None: raise AssertionError(str(e) + ret)
+    ret = prepend if prepend is not None else "\n\n"
     if first == None: 
         first = second
         second = None
@@ -120,8 +103,9 @@ class TestCase(unittest.TestCase):
         except AssertionError as ex: e = ex
         if e:
             if parsed is None: parsed = princess.ast.Node()
+            else: prepend = "\n\nResult: " + ast_repr(parsed) + "\n\n"
             parsed._src = code
-            _append_traceback(e, parsed, None, self._outcome.result, print_value = True)
+            _append_traceback(e, parsed, None, self._outcome.result, prepend = prepend)
 
     assertEquals = assertEqual
     assertNotEquals = assertNotEqual

@@ -1,4 +1,5 @@
 from functools import reduce
+from enum import Enum
 from tatsu.ast import AST
 from .ast import Operator, Node, REMOVE
 
@@ -24,11 +25,11 @@ def char_to_str(ast):
 
 class String(Literal):
     def _semantic(self, ast):
-        return ast.copy_with(VALUE = reduce(lambda l, r: char_to_str(l) + char_to_str(r), ast.VALUE, ""))
+        return AST(VALUE = reduce(lambda l, r: char_to_str(l) + char_to_str(r), ast.VALUE, ""))
 
 class Char(Literal):
     def _semantic(self, ast):
-        return ast.copy_with(VALUE = char_to_str(ast.VALUE))
+        return AST(VALUE = char_to_str(ast.VALUE))
 
 class Integer(Literal):
     def _semantic(self, ast):
@@ -46,12 +47,21 @@ class Float(Literal):
 
 BinaryOp_table = {}
 UnaryPreOp_table = {}
+CompareOp_table = {}
 
 @Operator(BinaryOp_table)
 class BinaryOp(Expression): pass
     
 @Operator(UnaryPreOp_table)
 class UnaryPreOp(Expression): pass
+
+class PreInc(UnaryPreOp): pass
+class UPlus(UnaryPreOp): pass
+class PreDec(UnaryPreOp): pass
+class UMinus(UnaryPreOp): pass
+class Ptr(UnaryPreOp): pass
+class Deref(UnaryPreOp): pass
+class Invert(UnaryPreOp): pass
 
 class Mul(BinaryOp): pass
 class Mod(BinaryOp): pass
@@ -60,20 +70,39 @@ class Div(BinaryOp): pass
 class Add(BinaryOp): pass
 class Sub(BinaryOp): pass
 
-class PreInc(UnaryPreOp): pass
-class UPlus(UnaryPreOp): pass
-class PreDec(UnaryPreOp): pass
-class UMinus(UnaryPreOp): pass
-class Ptr(UnaryPreOp): pass
-class Deref(UnaryPreOp): pass
+class Shl(BinaryOp): pass
+class Shr(BinaryOp): pass
+class BAnd(BinaryOp): pass
+class BOr(BinaryOp): pass
+class Xor(BinaryOp): pass
+
+class CompareOp(str, Enum):
+    LT = '<'; GT = '>'
+    LEQ = '<='; GEQ = '>='
+    EQ = '=='
+
+class Compare(Expression):
+    def _semantic(self, ast):
+        value = [ast.left]
+        for e in ast.right:
+            value += [CompareOp(e.op), e.right]
+        return AST(LIST = value)
+
+class And(BinaryOp): pass
+
+class Or(BinaryOp): pass 
 
 BinaryOp_table.update({
     "+": Add, "-": Sub,
-    "*": Mul, "%": Mod, "/": Div
+    "*": Mul, "%": Mod, "/": Div,
+    "<<": Shl, ">>": Shr, 
+    "&": BAnd, "|": BOr, "^": Xor,
+    "and": And, "or": Or
 })
 
 UnaryPreOp_table.update({
     "++": PreInc, "--": PreDec,
     "+": UPlus, "-": UMinus,
-    "*": Ptr, "@": Deref
+    "*": Ptr, "@": Deref,
+    "~": Invert
 })
