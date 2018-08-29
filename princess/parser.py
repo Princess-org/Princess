@@ -693,30 +693,34 @@ class PrincessParser(Parser):
         )
 
 
-    @tatsumasu('UnaryPostOp')
-    def _expr_post_(self):  # noqa
-        self._expr_10_()
-        self.name_last_node('left')
-        with self._group():
-            with self._choice():
-                with self._option():
-                    self._token('++')
-                with self._option():
-                    self._token('--')
-                self._error('no available options')
-        self.name_last_node('op')
-        self.ast._define(
-            ['left', 'op'],
-            []
-        )
-
-
     @tatsumasu()
     def _expr_type_(self):  # noqa
         self._token('type')
         self._n__()
         self._type_()
         self.name_last_node('@')
+
+
+    @tatsumasu('PostInc')
+    def _expr_postinc_(self):  # noqa
+        self._expr_10_()
+        self.name_last_node('left')
+        self._token('--')
+        self.ast._define(
+            ['left'],
+            []
+        )
+
+
+    @tatsumasu('PostDec')
+    def _expr_postdec_(self):  # noqa
+        self._expr_10_()
+        self.name_last_node('left')
+        self._token('++')
+        self.ast._define(
+            ['left'],
+            []
+        )
 
 
     @tatsumasu('Cast')
@@ -741,111 +745,253 @@ class PrincessParser(Parser):
         )
 
 
-    @tatsumasu('UnaryPreOp')
-    def _expr_pre_(self):  # noqa
-        with self._group():
-            with self._choice():
-                with self._option():
-                    self._token('++')
-                with self._option():
-                    self._token('+')
-                with self._option():
-                    self._token('--')
-                with self._option():
-                    self._token('-')
-                with self._option():
-                    self._token('@')
-                with self._option():
-                    self._token('*')
-                with self._option():
-                    self._token('~')
-                with self._option():
-                    self._token('not')
-                self._error('no available options')
-        self.name_last_node('op')
+    @tatsumasu('PreInc')
+    def _expr_preinc_(self):  # noqa
+        self._token('++')
         self._n__()
         self._cut()
         self._expr_9_()
         self.name_last_node('right')
         self.ast._define(
-            ['op', 'right'],
+            ['right'],
             []
         )
 
 
-    @tatsumasu('BinaryOp')
-    def _expr_shift_(self):  # noqa
+    @tatsumasu('PreDec')
+    def _expr_predec_(self):  # noqa
+        self._token('--')
+        self._n__()
+        self._cut()
+        self._expr_9_()
+        self.name_last_node('right')
+        self.ast._define(
+            ['right'],
+            []
+        )
+
+
+    @tatsumasu('UMinus')
+    def _expr_uminus_(self):  # noqa
+        self._token('-')
+        self._n__()
+        self._cut()
+        self._expr_9_()
+        self.name_last_node('right')
+        self.ast._define(
+            ['right'],
+            []
+        )
+
+
+    @tatsumasu('Deref')
+    def _expr_deref_(self):  # noqa
+        self._token('@')
+        self._n__()
+        self._cut()
+        self._expr_9_()
+        self.name_last_node('right')
+        self.ast._define(
+            ['right'],
+            []
+        )
+
+
+    @tatsumasu('Ptr')
+    def _expr_ptr_(self):  # noqa
+        self._token('*')
+        self._n__()
+        self._cut()
+        self._expr_9_()
+        self.name_last_node('right')
+        self.ast._define(
+            ['right'],
+            []
+        )
+
+
+    @tatsumasu('Invert')
+    def _expr_invert_(self):  # noqa
+        self._token('~')
+        self._n__()
+        self._cut()
+        self._expr_9_()
+        self.name_last_node('right')
+        self.ast._define(
+            ['right'],
+            []
+        )
+
+
+    @tatsumasu('Not')
+    def _expr_not_(self):  # noqa
+        self._token('not')
+        self._n__()
+        self._cut()
+        self._expr_9_()
+        self.name_last_node('right')
+        self.ast._define(
+            ['right'],
+            []
+        )
+
+
+    @tatsumasu('Shr')
+    def _expr_shr_(self):  # noqa
         self._expr_7_()
         self.name_last_node('left')
         self._s__()
-        with self._group():
-            with self._choice():
-                with self._option():
-                    self._token('>>')
-                with self._option():
-                    self._token('<<')
-                with self._option():
-                    self._token('&')
-                with self._option():
-                    self._token('|')
-                with self._option():
-                    self._token('^')
-                self._error('no available options')
-        self.name_last_node('op')
+        self._token('>>')
         self._n__()
         self._cut()
         self._expr_8_()
         self.name_last_node('right')
         self.ast._define(
-            ['left', 'op', 'right'],
+            ['left', 'right'],
             []
         )
 
 
-    @tatsumasu('BinaryOp')
+    @tatsumasu('Shl')
+    def _expr_shl_(self):  # noqa
+        self._expr_7_()
+        self.name_last_node('left')
+        self._s__()
+        self._token('<<')
+        self._n__()
+        self._cut()
+        self._expr_8_()
+        self.name_last_node('right')
+        self.ast._define(
+            ['left', 'right'],
+            []
+        )
+
+
+    @tatsumasu('BAnd')
+    def _expr_band_(self):  # noqa
+        self._expr_7_()
+        self.name_last_node('left')
+        self._s__()
+        self._token('&')
+        self._n__()
+        self._cut()
+        self._expr_8_()
+        self.name_last_node('right')
+        self.ast._define(
+            ['left', 'right'],
+            []
+        )
+
+
+    @tatsumasu('BOr')
+    def _expr_bor_(self):  # noqa
+        self._expr_7_()
+        self.name_last_node('left')
+        self._s__()
+        self._token('|')
+        self._n__()
+        self._cut()
+        self._expr_8_()
+        self.name_last_node('right')
+        self.ast._define(
+            ['left', 'right'],
+            []
+        )
+
+
+    @tatsumasu('Xor')
+    def _expr_xor_(self):  # noqa
+        self._expr_7_()
+        self.name_last_node('left')
+        self._s__()
+        self._token('^')
+        self._n__()
+        self._cut()
+        self._expr_8_()
+        self.name_last_node('right')
+        self.ast._define(
+            ['left', 'right'],
+            []
+        )
+
+
+    @tatsumasu('Mul')
     def _expr_mul_(self):  # noqa
         self._expr_6_()
         self.name_last_node('left')
         self._s__()
-        with self._group():
-            with self._choice():
-                with self._option():
-                    self._token('*')
-                with self._option():
-                    self._token('/')
-                with self._option():
-                    self._token('%')
-                self._error('no available options')
-        self.name_last_node('op')
+        self._token('*')
         self._n__()
         self._cut()
         self._expr_7_()
         self.name_last_node('right')
         self.ast._define(
-            ['left', 'op', 'right'],
+            ['left', 'right'],
             []
         )
 
 
-    @tatsumasu('BinaryOp')
+    @tatsumasu('Div')
+    def _expr_div_(self):  # noqa
+        self._expr_6_()
+        self.name_last_node('left')
+        self._s__()
+        self._token('/')
+        self._n__()
+        self._cut()
+        self._expr_7_()
+        self.name_last_node('right')
+        self.ast._define(
+            ['left', 'right'],
+            []
+        )
+
+
+    @tatsumasu('Mod')
+    def _expr_mod_(self):  # noqa
+        self._expr_6_()
+        self.name_last_node('left')
+        self._s__()
+        self._token('%')
+        self._n__()
+        self._cut()
+        self._expr_7_()
+        self.name_last_node('right')
+        self.ast._define(
+            ['left', 'right'],
+            []
+        )
+
+
+    @tatsumasu('Add')
     def _expr_add_(self):  # noqa
         self._expr_5_()
         self.name_last_node('left')
         self._s__()
-        with self._group():
-            with self._choice():
-                with self._option():
-                    self._token('+')
-                with self._option():
-                    self._token('-')
-                self._error('no available options')
-        self.name_last_node('op')
+        self._token('+')
         self._n__()
         self._cut()
         self._expr_6_()
         self.name_last_node('right')
         self.ast._define(
-            ['left', 'op', 'right'],
+            ['left', 'right'],
+            []
+        )
+
+
+    @tatsumasu('Sub')
+    def _expr_sub_(self):  # noqa
+        self._expr_5_()
+        self.name_last_node('left')
+        self._s__()
+        self._token('-')
+        self._n__()
+        self._cut()
+        self._expr_6_()
+        self.name_last_node('right')
+        self.ast._define(
+            ['left', 'right'],
             []
         )
 
@@ -899,36 +1045,34 @@ class PrincessParser(Parser):
         )
 
 
-    @tatsumasu('BinaryOp')
+    @tatsumasu('And')
     def _expr_and_(self):  # noqa
         self._expr_3_()
         self.name_last_node('left')
         self._s__()
         self._token('and')
-        self.name_last_node('op')
         self._n__()
         self._cut()
         self._expr_4_()
         self.name_last_node('right')
         self.ast._define(
-            ['left', 'op', 'right'],
+            ['left', 'right'],
             []
         )
 
 
-    @tatsumasu('BinaryOp')
+    @tatsumasu('Or')
     def _expr_or_(self):  # noqa
         self._expr_2_()
         self.name_last_node('left')
         self._s__()
         self._token('or')
-        self.name_last_node('op')
         self._n__()
         self._cut()
         self._expr_3_()
         self.name_last_node('right')
         self.ast._define(
-            ['left', 'op', 'right'],
+            ['left', 'right'],
             []
         )
 
@@ -1031,7 +1175,9 @@ class PrincessParser(Parser):
             with self._option():
                 self._expr_member_access_()
             with self._option():
-                self._expr_post_()
+                self._expr_postinc_()
+            with self._option():
+                self._expr_postdec_()
             with self._option():
                 self._expr_11_()
             self._error('no available options')
@@ -1041,7 +1187,19 @@ class PrincessParser(Parser):
     def _expr_9_(self):  # noqa
         with self._choice():
             with self._option():
-                self._expr_pre_()
+                self._expr_preinc_()
+            with self._option():
+                self._expr_predec_()
+            with self._option():
+                self._expr_uminus_()
+            with self._option():
+                self._expr_deref_()
+            with self._option():
+                self._expr_ptr_()
+            with self._option():
+                self._expr_invert_()
+            with self._option():
+                self._expr_not_()
             with self._option():
                 self._expr_10_()
             self._error('no available options')
@@ -1062,7 +1220,15 @@ class PrincessParser(Parser):
     def _expr_7_(self):  # noqa
         with self._choice():
             with self._option():
-                self._expr_shift_()
+                self._expr_shr_()
+            with self._option():
+                self._expr_shl_()
+            with self._option():
+                self._expr_band_()
+            with self._option():
+                self._expr_bor_()
+            with self._option():
+                self._expr_xor_()
             with self._option():
                 self._expr_8_()
             self._error('no available options')
@@ -1075,6 +1241,10 @@ class PrincessParser(Parser):
             with self._option():
                 self._expr_mul_()
             with self._option():
+                self._expr_div_()
+            with self._option():
+                self._expr_mod_()
+            with self._option():
                 self._expr_7_()
             self._error('no available options')
 
@@ -1085,6 +1255,8 @@ class PrincessParser(Parser):
         with self._choice():
             with self._option():
                 self._expr_add_()
+            with self._option():
+                self._expr_sub_()
             with self._option():
                 self._expr_6_()
             self._error('no available options')
@@ -1433,25 +1605,67 @@ class PrincessSemantics(object):
     def expr_member_access(self, ast):  # noqa
         return ast
 
-    def expr_post(self, ast):  # noqa
+    def expr_type(self, ast):  # noqa
         return ast
 
-    def expr_type(self, ast):  # noqa
+    def expr_postinc(self, ast):  # noqa
+        return ast
+
+    def expr_postdec(self, ast):  # noqa
         return ast
 
     def expr_cast(self, ast):  # noqa
         return ast
 
-    def expr_pre(self, ast):  # noqa
+    def expr_preinc(self, ast):  # noqa
         return ast
 
-    def expr_shift(self, ast):  # noqa
+    def expr_predec(self, ast):  # noqa
+        return ast
+
+    def expr_uminus(self, ast):  # noqa
+        return ast
+
+    def expr_deref(self, ast):  # noqa
+        return ast
+
+    def expr_ptr(self, ast):  # noqa
+        return ast
+
+    def expr_invert(self, ast):  # noqa
+        return ast
+
+    def expr_not(self, ast):  # noqa
+        return ast
+
+    def expr_shr(self, ast):  # noqa
+        return ast
+
+    def expr_shl(self, ast):  # noqa
+        return ast
+
+    def expr_band(self, ast):  # noqa
+        return ast
+
+    def expr_bor(self, ast):  # noqa
+        return ast
+
+    def expr_xor(self, ast):  # noqa
         return ast
 
     def expr_mul(self, ast):  # noqa
         return ast
 
+    def expr_div(self, ast):  # noqa
+        return ast
+
+    def expr_mod(self, ast):  # noqa
+        return ast
+
     def expr_add(self, ast):  # noqa
+        return ast
+
+    def expr_sub(self, ast):  # noqa
         return ast
 
     def cmp_op(self, ast):  # noqa
