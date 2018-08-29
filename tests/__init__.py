@@ -59,10 +59,10 @@ def _generate_traceback(arg):
 
 def _append_traceback(e, first, second, prepend = None):
     if not opt.TRACEBACK: raise e
-    if first == None and second == None: raise e
 
     first = _generate_traceback(first)
     second = _generate_traceback(second)
+    if first == None and second == None: raise e
 
     sep = "\n"
     
@@ -74,6 +74,9 @@ def _append_traceback(e, first, second, prepend = None):
         ret += "Parser Trace:" + sep
     else:
         ret += "Parser Trace 1:" + sep
+    print("ret: ", ret)
+    print("first: ", first)
+    print("second: ", second)
     ret += first
     if second != None:
         ret += sep + "Parser Trace 2:" + sep + second
