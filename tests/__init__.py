@@ -85,13 +85,13 @@ class TestCase(unittest.TestCase):
         e = None
         try: return super().assertEqual(first, second, msg)
         except AssertionError as ex: e = ex
-        if e: _append_traceback(e, first, second, self._outcome.result)
+        if e: _append_traceback(e, first, second)
 
     def assertNotEqual(self, first, second, msg = None):
         e = None
         try: return super().assertNotEqual(first, second, msg)
         except AssertionError as ex: e = ex
-        if e: _append_traceback(e, first, second, self._outcome.result)
+        if e: _append_traceback(e, first, second)
 
     def assertFailedParse(self, code, regex = None): 
         e = None
@@ -107,7 +107,7 @@ class TestCase(unittest.TestCase):
             if parsed is None: parsed = princess.ast.Node()
             else: prepend = "\n\nResult: " + ast_repr(parsed) + "\n\n"
             parsed._src = code
-            _append_traceback(e, parsed, None, self._outcome.result, prepend = prepend)
+            _append_traceback(e, parsed, None, prepend = prepend)
 
     assertEquals = assertEqual
     assertNotEquals = assertNotEqual
