@@ -57,14 +57,15 @@ def _generate_traceback(arg):
     if not hasattr(arg, "_src"): return None 
     return _traceback(arg._src)
 
-def _append_traceback(e, first, second, result, prepend = None): # Result passed for overloading separator
+def _append_traceback(e, first, second, prepend = None):
     if not opt.TRACEBACK: raise e
     if first == None and second == None: raise e
 
     first = _generate_traceback(first)
     second = _generate_traceback(second)
 
-    sep = "\n" + result.separator2 + "\n"
+    sep = "\n"
+    
     ret = prepend if prepend is not None else "\n\n"
     if first == None: 
         first = second
