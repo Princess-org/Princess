@@ -4,7 +4,7 @@ from princess import ast_repr, grammar
 from princess.ast import node
 from unittest import skip, skipIf, skipUnless, expectedFailure
 
-def expr(n): return node.Program([node.Expression(n)])
+def prog(n): return node.Program([n])
 
 class opt:
     TRACEBACK = True
@@ -102,6 +102,7 @@ class TestCase(unittest.TestCase):
                 with self.assertRaises(tatsu.exceptions.FailedParse): parsed = princess.parse(code)
         except AssertionError as ex: e = ex
         if e:
+            prepend = None
             if parsed is None: parsed = princess.ast.Node()
             else: prepend = "\n\nResult: " + ast_repr(parsed) + "\n\n"
             parsed._src = code

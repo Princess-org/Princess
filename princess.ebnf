@@ -1,8 +1,11 @@
 @@grammar :: Princess
 @@whitespace :: /(?!)/ # TODO https://github.com/neogeny/TatSu/issues/73
 @@parseinfo :: False
+@@namechars :: '_'
+@@keyword :: if else not and or false true var let type
 
-program::Program = LIST:{statement};
+code_body::Body = '{' n_ LIST:{statement} n_ ~ '}';
+program::Program = LIST:{statement} $;
 
 # Whitespace
 t_newline = /[\n]+/ | t_eol_comment;
@@ -12,15 +15,9 @@ _ = {t_ws | t_comment}; # Whitespace
 n_ = {t_newline | _}; # "Continue statement", this wraps around lines
 s_ = _; # Expands into _ or n_ depending on context, handled in WrappedParser to simplify the grammar
 
-k_if = "if";
-k_else = "else";
-k_not = "not";
-k_and = "and";
-k_or = "or";
+t_term = ';' | t_newline | &$ | &'}';
 
-t_keyword = k_if | k_else | k_not | k_and | k_or; 
-
-t_term = ';' | $ | t_newline;
+# Numeric literal
 
 digit  = /[0-9]/;
 hex_digit = /[a-fA-F0-9]/;
@@ -65,10 +62,17 @@ t_char = (('\\' ~ @:esc_seq) | /[^\0\x7f\x80"\\]+/);
 t_char_lit::Char = "'" VALUE:t_char ~ "'";
 t_string_lit::String = '"' VALUE:{t_char} ~ '"';
 
-t_ident::Identifier = !t_keyword VALUE:/(?!\d)\w+/;
+@name
+t_ident = /(?!\d)\w+/;
 
-literal = (t_num_lit | t_char_lit | t_string_lit);
-value = t_ident | literal;
+identifier::Identifier = LIST:'::'.{t_ident}+; # TODO Allow spaces around ::?
+
+# Boolean literal
+t_bool::bool = "true" @:`1` | "false" @:`0`; # FIXME Bug: https://github.com/neogeny/TatSu/issues/76
+t_bool_lit::Boolean = VALUE:t_bool;
+
+literal = (t_num_lit | t_bool_lit | t_char_lit | t_string_lit);
+value = literal | identifier;
 
 t_comment_start = "/*";
 t_comment_end = "*/";
@@ -76,35 +80,75 @@ t_comment = t_comment_start {(!t_comment_end !t_comment_start /.|\n/) | t_commen
 
 t_eol_comment = "//" /[^\n]+/ ('\n' | $);
 
-# FIXME Bug: https://github.com/neogeny/TatSu/issues/69
+# Struct literal
+struct_lit::StructInit = '{' n_ ~ '}'; # TODO
 
-expr_pre::UnaryPreOp = op:('++' | '+'| '--' | '-' | '@' | '*' | '~' | k_not) n_ ~ right:expr_7;
-expr_shift::BinaryOp = left:expr_6 s_ op:('>>' | '<<' | '&' | '|' | '^') n_ ~ right:expr_7;
-expr_mul::BinaryOp = left:expr_5 s_ op:('*' | '/' | '%') n_ ~ right:expr_6;
-expr_add::BinaryOp = left:expr_4 s_ op:('+' | '-') n_ ~ right:expr_5;
+# type { ... }
+type_structural::TypeStructural = '{' n_ ~ '}'; # TODO
 
-cmp_char = ('<=' | '>=' | '<' | '>' | '==' | '!=');
-expr_cmp = s_ op: cmp_char n_ ~ right: expr_4;
-expr_cmp_start::Compare = left:expr_4 right:{expr_cmp}+;
+# Type expression
+type::Type = VALUE:(type_structural | expression);
 
-expr_and::BinaryOp = left:expr_2 s_ op: k_and n_ ~ right: expr_3;
-expr_or::BinaryOp = left:expr_1 s_ op: k_or n_ ~ right: expr_2;
+# TODO disallow positional parameter after named parameter
+call_arg_named::CallArg = n_ name: identifier n_ '=' n_ value: n_expression n_;     # Named argument
+call_arg::CallArg = n_ value: n_expression n_;                                      # Positional argument
+expr_call::Call = left: expr_10 s_ '(' n_ args:','.{call_arg_named | call_arg} ~ ')';
 
-expr_8 =
+expr_array_index::ArrayIndex = left: expr_10 s_ '[' n_ right: n_expression n_ ']';
+expr_member_access::MemberAccess = left: expr_10 s_ '.' n_ right: expr_11;
+expr_post::UnaryPostOp = left: expr_10 op:('++' | '--');
+expr_type = "type" n_ @:type;
+
+expr_cast::Cast = left: (struct_lit | expr_9) s_ '!' n_ ~ right: type;
+
+expr_pre::UnaryPreOp = op:('++' | '+'| '--' | '-' | '@' | '*' | '~' | "not") n_ ~ right:expr_9;
+expr_shift::BinaryOp = left:expr_7 s_ op:('>>' | '<<' | '&' | '|' | '^') n_ ~ right:expr_8;
+expr_mul::BinaryOp = left:expr_6 s_ op:('*' | '/' | '%') n_ ~ right:expr_7;
+expr_add::BinaryOp = left:expr_5 s_ op:('+' | '-') n_ ~ right:expr_6;
+
+cmp_op = ('<=' | '>=' | '<' | '>' | '==' | '!=');
+expr_cmp = s_ op: cmp_op n_ ~ right: expr_5;
+expr_cmp_start::Compare = left:expr_5 right:{expr_cmp}+;
+
+expr_and::BinaryOp = left:expr_3 s_ op: "and" n_ ~ right: expr_4;
+expr_or::BinaryOp = left:expr_2 s_ op: "or" n_ ~ right: expr_3;
+
+assign_op = ('+=' | '-=' | '*=' | '/=' | '%=' | '|=' | '&=' | '^=' | '>>=' | '<<=' | '=');
+expr_assign::Assign = left: expr_2 s_ op:assign_op n_ ~ right: expr_1;
+
+# Chaining on the condition might be confusing
+expr_if::IfExpr = if_true: expr_2 (s_ "if" n_) ~ cond: expr_1 (n_ "else" n_) if_false: expr_1;
+
+# Precedence ladder
+expr_11 =
     | '(' ~ n_ @:n_expression n_ ')'
     | value;
 
-expr_7 = expr_pre | expr_8;
-expr_6 = expr_shift | expr_7;
-expr_5 = expr_mul | expr_6;
-expr_4 = expr_add | expr_5;
-expr_3 = expr_cmp_start | expr_4;
-expr_2 = expr_and | expr_3;
-expr_1 = expr_or | expr_2;
+expr_10 = expr_type | expr_call | expr_array_index | expr_member_access | expr_post | expr_11;
+expr_9 = expr_pre | expr_10;
+expr_8 = expr_cast | expr_9;
+expr_7 = expr_shift | expr_8;
+expr_6 = expr_mul | expr_7;
+expr_5 = expr_add | expr_6;
+expr_4 = expr_cmp_start | expr_5;
+expr_3 = expr_and | expr_4;
+expr_2 = expr_or | expr_3;
+expr_1 = expr_assign | expr_if | expr_2;
 
-expression::Expression = VALUE:expr_1;
-n_expression = expr_1;
+n_expression = expr_1; # Expression inside brackets
+expression = expr_1; # Expression outside brackets
+
+stmt_vardecl::VarDecl = keyword: ("var" | "let") n_ name: identifier [n_ ':' n_ type:type] [ n_ '=' n_ value: expression];
+stmt_typedecl::TypeDecl = "type" n_ name: identifier n_ '=' n_ value: type;
+
+# if statement
+stmt_else::Else = n_ "else" ~ n_ body: code_body;
+stmt_else_if::If = n_ "else" n_ "if" ~ n_ cond:expression n_ body:code_body;
+stmt_if::If = 
+    "if" ~ n_ cond:expression n_ body:code_body
+    else_if:{stmt_else_if}
+    [else: stmt_else];
 
 statement =
     | _ @:() t_term
-    | ~ _ @:expression _ t_term;
+    | _ @:(stmt_vardecl | stmt_typedecl | stmt_if | expression) _ t_term;

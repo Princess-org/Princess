@@ -12,5 +12,5 @@ class AST(TestCase):
 
     def test_ast_rec(self):
         """ Equality, recursive """
-        self.assertEqual(expr(node.String(" Node ")), expr(node.String(" Node ")))
-        self.assertNotEqual(expr(node.String(" Node ")), expr(node.String(" Yo ")))
+        self.assertEqual(prog(node.String(" Node ")), prog(node.String(" Node ")))
+        self.assertNotEqual(prog(node.String(" Node ")), prog(node.String(" Yo ")))

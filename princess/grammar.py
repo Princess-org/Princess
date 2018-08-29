@@ -3,9 +3,11 @@ from enum import Enum
 from tatsu.ast import AST
 from .ast import Operator, Node, REMOVE
 
-class Expression(Node):
+class Statement(Node):
     def eval(self): pass
 
+class Expression(Statement): pass
+    
 class Literal(Expression): pass
 
 def decode_escape_seq(ast):
@@ -47,13 +49,23 @@ class Float(Literal):
 
 BinaryOp_table = {}
 UnaryPreOp_table = {}
-CompareOp_table = {}
+UnaryPostOp_table = {}
 
 @Operator(BinaryOp_table)
 class BinaryOp(Expression): pass
     
 @Operator(UnaryPreOp_table)
 class UnaryPreOp(Expression): pass
+
+@Operator(UnaryPostOp_table)
+class UnaryPostOp(Expression): pass
+
+class ArrayIndex(Expression): pass
+class MemberAccess(Expression): pass
+class Call(Expression): pass
+
+class PostInc(UnaryPostOp): pass
+class PostDec(UnaryPostOp): pass
 
 class PreInc(UnaryPreOp): pass
 class UPlus(UnaryPreOp): pass
@@ -63,18 +75,20 @@ class Ptr(UnaryPreOp): pass
 class Deref(UnaryPreOp): pass
 class Invert(UnaryPreOp): pass
 
-class Mul(BinaryOp): pass
-class Mod(BinaryOp): pass
-class Div(BinaryOp): pass
-
-class Add(BinaryOp): pass
-class Sub(BinaryOp): pass
+class Cast(Expression): pass
 
 class Shl(BinaryOp): pass
 class Shr(BinaryOp): pass
 class BAnd(BinaryOp): pass
 class BOr(BinaryOp): pass
 class Xor(BinaryOp): pass
+
+class Mul(BinaryOp): pass
+class Mod(BinaryOp): pass
+class Div(BinaryOp): pass
+
+class Add(BinaryOp): pass
+class Sub(BinaryOp): pass
 
 class CompareOp(str, Enum):
     LT = '<'; GT = '>'
@@ -92,17 +106,42 @@ class And(BinaryOp): pass
 
 class Or(BinaryOp): pass 
 
-BinaryOp_table.update({
-    "+": Add, "-": Sub,
-    "*": Mul, "%": Mod, "/": Div,
-    "<<": Shl, ">>": Shr, 
-    "&": BAnd, "|": BOr, "^": Xor,
-    "and": And, "or": Or
+class AssignOp(str, Enum):
+    Add = '+='; Sub = '-='
+    Mul = '*='; Mod = '%='; Div = '/='
+    BAnd = '&='; BOr = '|='; Xor = '^='
+
+class Assign(Expression):
+    def _semantic(self, ast):
+        return ast.copy_with(
+            op = REMOVE if ast.op == "=" else AssignOp(ast.op)
+        )
+
+class IfExpr(Expression): pass
+
+UnaryPostOp_table.update({
+    '++': PostInc, '--': PostDec
 })
 
 UnaryPreOp_table.update({
-    "++": PreInc, "--": PreDec,
-    "+": UPlus, "-": UMinus,
-    "*": Ptr, "@": Deref,
-    "~": Invert
+    '++': PreInc, '--': PreDec,
+    '+': UPlus, '-': UMinus,
+    '*': Ptr, '@': Deref,
+    '~': Invert
 })
+
+BinaryOp_table.update({
+    '+': Add, '-': Sub,
+    '*': Mul, '%': Mod, '/': Div,
+    '<<': Shl, '>>': Shr, 
+    '&': BAnd, '|': BOr, '^': Xor,
+    'and': And, 'or': Or
+})
+
+# Types
+class Type(Expression): pass
+
+# Statements
+class VarDecl(Statement): pass
+class If(Statement): pass
+class Else(Statement): pass

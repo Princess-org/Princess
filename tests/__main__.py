@@ -64,7 +64,7 @@ def main():
     print("Done. Running tests...")
     loader = unittest.TestLoader()
     tests = loader.discover("tests")
-    testRunner = unittest.runner.TextTestRunner(resultclass = TestResult, failfast = True)
+    testRunner = unittest.runner.TextTestRunner(resultclass = TestResult, verbosity = 1, failfast = True)
     testRunner.run(tests)
 
 if __name__ == "__main__":

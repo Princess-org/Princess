@@ -37,7 +37,9 @@ class Node(tatsu.model.Node):
         for k, v in vars(self).items():
             if k.startswith("_"): continue
             if hasattr(other, k) and getattr(other, k) == v: continue
-            else: return False
+            if v is None: continue                      # ignore None
+            if isinstance(v, list) and not v: continue  # ignore empty list
+            return False
         return True
 
     # TODO: make this correspond to do the node.XYZ(...) syntax
@@ -89,8 +91,8 @@ def copy(ast, **kwargs):
     return AST(d)
 AST.copy_with = copy
 
-def get_node(name: str, *args, **kwargs):
-    ctor = princess.semantic._get_constructor(name, princess.semantic.base_type)
+def get_node(_name: str, *args, **kwargs):
+    ctor = princess.semantic._get_constructor(_name, princess.semantic.base_type)
 
     # Special cases for single value, single list
     if len(args) == 1:
