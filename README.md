@@ -557,6 +557,7 @@ Blocks are expressions and evaluate to the last value
 
 ### Regions:
 
+#### TODO: This should be changed
 Blocks should not be confused with regions that don't create a new scope
 ```
 { // Doesn't create a new scope, can be useful for applying pragmas
