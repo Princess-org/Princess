@@ -145,3 +145,5 @@ class Type(Expression): pass
 class VarDecl(Statement): pass
 class If(Statement): pass
 class Else(Statement): pass
+class StaticIf(Statement): pass
+class Static(Statement): pass

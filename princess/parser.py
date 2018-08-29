@@ -1249,6 +1249,31 @@ class PrincessParser(Parser):
         )
 
 
+    @tatsumasu('StaticIf')
+    def _stmt_static_if_(self):  # noqa
+        self._token('#')
+        self._token('if')
+        self._cut()
+        self._n__()
+        self._expression_()
+        self.name_last_node('cond')
+        self._n__()
+        self._code_body_()
+        self.name_last_node('body')
+
+        def block3():
+            self._stmt_else_if_()
+        self._closure(block3)
+        self.name_last_node('else_if')
+        with self._optional():
+            self._stmt_else_()
+            self.name_last_node('else_')
+        self.ast._define(
+            ['body', 'cond', 'else_', 'else_if'],
+            []
+        )
+
+
     @tatsumasu()
     def _statement_(self):  # noqa
         with self._choice():
@@ -1267,6 +1292,8 @@ class PrincessParser(Parser):
                             self._stmt_typedecl_()
                         with self._option():
                             self._stmt_if_()
+                        with self._option():
+                            self._stmt_static_if_()
                         with self._option():
                             self._expression_()
                         self._error('no available options')
@@ -1503,6 +1530,9 @@ class PrincessSemantics(object):
         return ast
 
     def stmt_if(self, ast):  # noqa
+        return ast
+
+    def stmt_static_if(self, ast):  # noqa
         return ast
 
     def statement(self, ast):  # noqa

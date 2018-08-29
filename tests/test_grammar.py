@@ -241,7 +241,7 @@ class Expressions(TestCase):
     def test_cast(self):
         self.assertEqual(parse("1!float"), prog(node.Cast(left = Integer(1), right = node.Type(Identifier("float")))))
 
-class AProgram(TestCase):
+class Program(TestCase):
     def test_empty_program(self):
         """ Empty program """
         self.assertEqual(parse(""), node.Program([None]))
@@ -273,7 +273,7 @@ class AProgram(TestCase):
         ))
         
         self.assertEqual(parse("""\
-            if true 
+            if (true) 
             { 
                 body // For the verbose
             }
