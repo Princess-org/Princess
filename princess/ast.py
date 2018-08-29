@@ -45,24 +45,6 @@ class Node(tatsu.model.Node):
     # TODO: make this correspond to do the node.XYZ(...) syntax
     def __repr__(self): return princess.util.ast_repr(self)
 
-# This should really be handled inside the grammar but for now there's no other way
-# HACK Bug: https://github.com/neogeny/TatSu/issues/69
-def Operator(mapping):
-    def decorator(op_cls):
-        def __new__(cls, ast = None, ctx = None, **kwargs):
-            if (cls == op_cls):
-                cls = mapping[ast.op] # Find concrete class
-                return cls.__new__(cls, ast, ctx, **kwargs)
-            else: return object.__new__(cls)
-        def __postinit__(self, ast):
-            # Filter out "op"
-            return super(op_cls, self).__postinit__(ast.copy_with(op = REMOVE))
-
-        op_cls.__new__ = __new__
-        op_cls.__postinit__ = __postinit__
-        return op_cls
-    return decorator
-
 # Generator function, this makes sure that it always pulls out every subclass no matter where it's defined
 def __get_subclasses(cls):
     for subclass in cls.__subclasses__():

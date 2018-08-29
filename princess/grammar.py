@@ -1,14 +1,19 @@
 from functools import reduce
 from enum import Enum
 from tatsu.ast import AST
-from .ast import Operator, Node, REMOVE
+from .ast import Node, REMOVE
 
 class Statement(Node):
     def eval(self): pass
 
 class Expression(Statement): pass
-    
 class Literal(Expression): pass
+
+# Operators
+class Operator(Expression): pass
+class UnaryPreOp(Operator): pass
+class UnaryPostOp(Operator): pass
+class BinaryOp(Operator): pass
 
 def decode_escape_seq(ast):
     def hex(a, b): 
@@ -47,49 +52,6 @@ class Float(Literal):
             n *= 10 ** exp
         return AST(VALUE = n)
 
-BinaryOp_table = {}
-UnaryPreOp_table = {}
-UnaryPostOp_table = {}
-
-@Operator(BinaryOp_table)
-class BinaryOp(Expression): pass
-    
-@Operator(UnaryPreOp_table)
-class UnaryPreOp(Expression): pass
-
-@Operator(UnaryPostOp_table)
-class UnaryPostOp(Expression): pass
-
-class ArrayIndex(Expression): pass
-class MemberAccess(Expression): pass
-class Call(Expression): pass
-
-class PostInc(UnaryPostOp): pass
-class PostDec(UnaryPostOp): pass
-
-class PreInc(UnaryPreOp): pass
-class UPlus(UnaryPreOp): pass
-class PreDec(UnaryPreOp): pass
-class UMinus(UnaryPreOp): pass
-class Ptr(UnaryPreOp): pass
-class Deref(UnaryPreOp): pass
-class Invert(UnaryPreOp): pass
-
-class Cast(Expression): pass
-
-class Shl(BinaryOp): pass
-class Shr(BinaryOp): pass
-class BAnd(BinaryOp): pass
-class BOr(BinaryOp): pass
-class Xor(BinaryOp): pass
-
-class Mul(BinaryOp): pass
-class Mod(BinaryOp): pass
-class Div(BinaryOp): pass
-
-class Add(BinaryOp): pass
-class Sub(BinaryOp): pass
-
 class CompareOp(str, Enum):
     LT = '<'; GT = '>'
     LEQ = '<='; GEQ = '>='
@@ -102,10 +64,6 @@ class Compare(Expression):
             value += [CompareOp(e.op), e.right]
         return AST(LIST = value)
 
-class And(BinaryOp): pass
-
-class Or(BinaryOp): pass 
-
 class AssignOp(str, Enum):
     Add = '+='; Sub = '-='
     Mul = '*='; Mod = '%='; Div = '/='
@@ -116,32 +74,3 @@ class Assign(Expression):
         return ast.copy_with(
             op = REMOVE if ast.op == "=" else AssignOp(ast.op)
         )
-
-class IfExpr(Expression): pass
-
-UnaryPostOp_table.update({
-    '++': PostInc, '--': PostDec
-})
-
-UnaryPreOp_table.update({
-    '++': PreInc, '--': PreDec,
-    '+': UPlus, '-': UMinus,
-    '*': Ptr, '@': Deref,
-    '~': Invert
-})
-
-BinaryOp_table.update({
-    '+': Add, '-': Sub,
-    '*': Mul, '%': Mod, '/': Div,
-    '<<': Shl, '>>': Shr, 
-    '&': BAnd, '|': BOr, '^': Xor,
-    'and': And, 'or': Or
-})
-
-# Types
-class Type(Expression): pass
-
-# Statements
-class VarDecl(Statement): pass
-class If(Statement): pass
-class Else(Statement): pass
