@@ -9,6 +9,7 @@ from . import __file__ as init_file
 
 @pytest.fixture(scope="session", autouse=True)
 def recompile_parser():
+    print()  # Needed to not pollute the pytest output too much
     print("Checking grammar...")
     basedir = os.path.dirname(__file__) + "/../"
     grammar_file = basedir + "princess.ebnf"
