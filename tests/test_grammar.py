@@ -81,8 +81,8 @@ class IntegerLiteral(TestCase):
     @skip("Not implemented")
     def test_num_with_underscore(self):
         """ Underscores in numeric literals """
-        self.assertEqual(parse("1_000_000"), prog(Integer(1_000_000)))
-        self.assertEqual(parse("1_000_0.423_0E-10"), prog(Float(1_000_0.423_0E-10)))
+        self.assertEqual(parse("1_000_000"), prog(Integer(1000000)))
+        self.assertEqual(parse("1_000_0.423_0E-10"), prog(Float(10000.4230E-10)))
 
 class BooleanLiteral(TestCase):
     def test_bool(self):
