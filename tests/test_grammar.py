@@ -90,7 +90,7 @@ class BooleanLiteral(TestCase):
         self.assertEqual(parse("true"), prog(Boolean(True)))
         self.assertEqual(parse("false"), prog(Boolean(False)))
 
-class TestIdentifier(TestCase):
+class ATestIdentifier(TestCase):
     def test_simple(self):
         self.assertEqual(parse("foo"), prog(Identifier("foo")))
 
@@ -102,6 +102,9 @@ class TestIdentifier(TestCase):
                 right = Identifier("bar", "baz")
             )
         ))
+    
+    def test_root_namespace(self):
+        self.assertEqual(parse("::foo::bar::baz"), prog(Identifier("::", "foo", "bar", "baz")))
 
 
 class Expressions(TestCase):
