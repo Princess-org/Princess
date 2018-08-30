@@ -2,7 +2,7 @@ import pytest
 from tests import *
 from princess.grammar import CompareOp, AssignOp
 
-class TestIdentifier():
+class TestIdentifier:
     def test_simple(self):
         assert parse("foo") == prog(Identifier("foo"))
 
@@ -18,7 +18,7 @@ class TestIdentifier():
     def test_root_namespace(self):
         assert parse("::foo::bar::baz") == prog(Identifier("::", "foo", "bar", "baz"))
 
-class TestOperators():
+class TestOperators:
     def test_simple(self):
         """ Simple addition """
         assert parse("1 + 2") == prog(node.Add(left = Integer(1), right = Integer(2)))

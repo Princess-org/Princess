@@ -2,7 +2,7 @@ import pytest
 
 from tests import *
 
-class TestStringLiteral():
+class TestStringLiteral:
     def test_empty(self):
         """ Empty string literal """
         assert parse("\"\"") == prog(String(""))
@@ -28,7 +28,7 @@ class TestStringLiteral():
         """ String that spans multiple lines """
         assert parse("\"Hello\nWorld\"") == prog(String("Hello\nWorld"))
 
-class TestIntegerLiteral():
+class TestIntegerLiteral:
     def test_int_simple(self):
         """ Simple integer """
         assert parse( "0") == prog(Integer( 0))
@@ -71,7 +71,7 @@ class TestIntegerLiteral():
         assert parse("1_000_000") == prog(Integer(1000000))
         assert parse("1_000_0.423_0E-10") == prog(Float(10000.4230E-10))
 
-class TestBooleanLiteral():
+class TestBooleanLiteral:
     def test_bool(self):
         """ Boolean literals """
         assert parse("true" ) == prog(Boolean(True ))

@@ -5,14 +5,24 @@ import princess
 
 
 from datetime import datetime
-from . import opt
 from . import __file__ as init_file
 
 from princess.ast import Node
 
 import tests
 
-@pytest.fixture(scope="session", autouse=True)
+# Arguments
+def pytest_addoption(parser):
+    parser.addoption("--no-compile", action = "store_true", help = "Don't compile the parser")
+    parser.addoption("-C", "--colorize", action = "store_true", help = "Colorize Parser Trace") # TODO pytest has an option for this, use that?
+    parser.addoption("-T", "--tatsu-trace", action = "store_true", help = "Print the Parser Trace on Error")
+
+def pytest_configure(config):
+    import tests
+    tests.config = config
+
+    recompile_parser()
+
 def recompile_parser():
     print()  # Needed to not pollute the pytest output too much
     print("Checking grammar...")
@@ -45,13 +55,8 @@ def recompile_parser():
 def pytest_assertrepr_compare(config, op, left, right):
     ret = []
 
-    first  = tests._generate_traceback(left )
-    second = tests._generate_traceback(right)
-
-    if first:
-        ret.append(first)
-    if second:
-        ret.append(second)
+    tests._dump_traceback(left)
+    tests._dump_traceback(right)
 
     if isinstance(left, Node) or isinstance(right, Node):
         ret += str(left).split('\n')
@@ -62,5 +67,3 @@ def pytest_assertrepr_compare(config, op, left, right):
         ret.insert(0, '')
 
     return ret or None
-
-
