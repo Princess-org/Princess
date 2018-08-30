@@ -43,7 +43,7 @@ class Node(tatsu.model.Node):
         return True
 
     # TODO: make this correspond to do the node.XYZ(...) syntax
-    def __repr__(self): return princess.util.ast_repr(self)
+    def __str__(self): return princess.util.ast_repr(self)
 
 # Generator function, this makes sure that it always pulls out every subclass no matter where it's defined
 def __get_subclasses(cls):

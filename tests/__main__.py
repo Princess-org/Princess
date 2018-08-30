@@ -52,21 +52,20 @@ class TestResult(unittest.TextTestResult):
     #    elif name == "separator2": return tsize.columns * "-"
     #    return super().__getattribute__(name)
 
-def main():
-    print("Checking grammar...")
-    if not args.no_compile:
-        try:
-            recompile_parser()
-        except Exception:
-            print("Couldn't generate parser!")
-            sys.exit(-1)
-
-    print("Done. Running tests...")
-    loader = unittest.TestLoader()
-    tests = loader.discover("tests")
-    testRunner = unittest.runner.TextTestRunner(resultclass = TestResult, verbosity = 1, failfast = True)
-    testRunner.run(tests)
+#def main():
+#    print("Checking grammar...")
+#    if not args.no_compile:
+#        try:
+#            recompile_parser()
+#        except Exception:
+#            print("Couldn't generate parser!")
+#            sys.exit(-1)
+#
+#    print("Done. Running tests...")
+#    loader = unittest.TestLoader()
+#    tests = loader.discover("tests")
+#    testRunner = unittest.runner.TextTestRunner(verbosity = 1, failfast = True)
+#    testRunner.run(tests)
 
 if __name__ == "__main__":
-    main()
-    
+    print("Use pytest instead!")
