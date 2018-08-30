@@ -15,6 +15,10 @@ class UnaryPreOp(Operator): pass
 class UnaryPostOp(Operator): pass
 class BinaryOp(Operator): pass
 
+class Identifier(Expression):
+    def _semantic(self, ast):
+        return AST(LIST = ([ast.root] if ast.root else []) + ast.ident)
+
 def decode_escape_seq(ast):
     def hex(a, b): 
         return chr(int("".join(ast[a:b+1]), 16))

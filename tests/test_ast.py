@@ -4,6 +4,7 @@ class AST(TestCase):
     def test_lookup(self):
         """ Lookup of python classes"""
         self.assertIsInstance(node.Expression(), grammar.Expression)
+        #self.assertIsInstance(node.Add(), grammar.Operator)
 
     def test_ast(self):
         """ Equality """
