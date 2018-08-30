@@ -33,3 +33,5 @@ def recompile_parser():
             raise Exception("Failed to parse grammar")
         else:
             princess._import_parser()
+
+# TODO: figure out use https://docs.pytest.org/en/latest/example/simple.html#post-process-test-reports-failures instead of using the messy unit test hack

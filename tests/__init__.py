@@ -74,27 +74,28 @@ def _append_traceback(e, first, second, prepend = None):
         ret += "Parser Trace:" + sep
     else:
         ret += "Parser Trace 1:" + sep
-    print("ret: ", ret)
-    print("first: ", first)
-    print("second: ", second)
+    #print("ret: ", ret)
+    #print("first: ", first)
+    #print("second: ", second)
     ret += first
     if second != None:
         ret += sep + "Parser Trace 2:" + sep + second
 
-    raise AssertionError(str(e) + ret)
+    return AssertionError(str(e) + ret)
 
 class TestCase(unittest.TestCase):
     def assertEqual(self, first, second, msg = None):
         e = None
         try: return super().assertEqual(first, second, msg)
         except AssertionError as ex: e = ex
-        if e: _append_traceback(e, first, second)
+        if e: e = _append_traceback(e, first, second)
+        if e: raise 
 
     def assertNotEqual(self, first, second, msg = None):
         e = None
         try: return super().assertNotEqual(first, second, msg)
         except AssertionError as ex: e = ex
-        if e: _append_traceback(e, first, second)
+        if e: raise _append_traceback(e, first, second)
 
     def assertFailedParse(self, code, regex = None): 
         e = None
@@ -110,7 +111,7 @@ class TestCase(unittest.TestCase):
             if parsed is None: parsed = princess.ast.Node()
             else: prepend = "\n\nResult: " + ast_repr(parsed) + "\n\n"
             parsed._src = code
-            _append_traceback(e, parsed, None, prepend = prepend)
+            raise _append_traceback(e, parsed, None, prepend = prepend)
 
     assertEquals = assertEqual
     assertNotEquals = assertNotEqual
