@@ -83,13 +83,12 @@ def _append_traceback(e, first, second, prepend = None):
 
     return AssertionError(str(e) + ret)
 
-class TestCase(unittest.TestCase):
+class OldTestCase(unittest.TestCase):
     def assertEqual(self, first, second, msg = None):
         e = None
         try: return super().assertEqual(first, second, msg)
         except AssertionError as ex: e = ex
-        if e: e = _append_traceback(e, first, second)
-        if e: raise 
+        if e: raise _append_traceback(e, first, second)
 
     def assertNotEqual(self, first, second, msg = None):
         e = None
