@@ -57,60 +57,89 @@ def _generate_traceback(arg):
     if not hasattr(arg, "_src"): return None 
     return _traceback(arg._src)
 
-def _append_traceback(e, first, second, prepend = None):
-    if not opt.TRACEBACK: raise e
+#def _append_traceback(e, first, second, prepend = None):
+#    if not opt.TRACEBACK: raise e
+#
+#    first = _generate_traceback(first)
+#    second = _generate_traceback(second)
+#    if first == None and second == None: raise e
+#
+#    sep = "\n"
+#    
+#    ret = prepend if prepend is not None else "\n\n"
+#    if first == None: 
+#        first = second
+#        second = None
+#    if second == None:
+#        ret += "Parser Trace:" + sep
+#    else:
+#        ret += "Parser Trace 1:" + sep
+#    #print("ret: ", ret)
+#    #print("first: ", first)
+#    #print("second: ", second)
+#    ret += first
+#    if second != None:
+#        ret += sep + "Parser Trace 2:" + sep + second
+#
+#    return AssertionError(str(e) + ret)
 
-    first = _generate_traceback(first)
-    second = _generate_traceback(second)
-    if first == None and second == None: raise e
+#class OldTestCase(unittest.TestCase):
+#    def assertEqual(self, first, second, msg = None):
+#        e = None
+#        try: return super().assertEqual(first, second, msg)
+#        except AssertionError as ex: e = ex
+#        if e: raise _append_traceback(e, first, second)
+#
+#    def assertNotEqual(self, first, second, msg = None):
+#        e = None
+#        try: return super().assertNotEqual(first, second, msg)
+#        except AssertionError as ex: e = ex
+#        if e: raise _append_traceback(e, first, second)
 
-    sep = "\n"
-    
-    ret = prepend if prepend is not None else "\n\n"
-    if first == None: 
-        first = second
-        second = None
-    if second == None:
-        ret += "Parser Trace:" + sep
-    else:
-        ret += "Parser Trace 1:" + sep
-    #print("ret: ", ret)
-    #print("first: ", first)
-    #print("second: ", second)
-    ret += first
-    if second != None:
-        ret += sep + "Parser Trace 2:" + sep + second
+#    def assertFailedParse(self, code, regex = None): 
+#        e = None
+#        parsed = None
+#        try: 
+#            if regex:
+#                with self.assertRaisesRegex(tatsu.exceptions.FailedParse, regex): parsed = princess.parse(code)
+#            else: 
+#                with self.assertRaises(tatsu.exceptions.FailedParse): parsed = princess.parse(code)
+#        except AssertionError as ex: e = ex
+#        if e:
+#            prepend = None
+#            if parsed is None: parsed = princess.ast.Node()
+#            else: prepend = "\n\nResult: " + ast_repr(parsed) + "\n\n"
+#            parsed._src = code
+#            raise _append_traceback(e, parsed, None, prepend = prepend)
 
-    return AssertionError(str(e) + ret)
+#    assertEquals = assertEqual
+#    assertNotEquals = assertNotEqual
 
-class OldTestCase(unittest.TestCase):
-    def assertEqual(self, first, second, msg = None):
-        e = None
-        try: return super().assertEqual(first, second, msg)
-        except AssertionError as ex: e = ex
-        if e: raise _append_traceback(e, first, second)
+Integer = node.Integer
+Float = node.Float
+String = node.String
+Boolean = node.Boolean
 
-    def assertNotEqual(self, first, second, msg = None):
-        e = None
-        try: return super().assertNotEqual(first, second, msg)
-        except AssertionError as ex: e = ex
-        if e: raise _append_traceback(e, first, second)
+def Identifier(*args):
+    return node.Identifier(list(args))
+def Var(*args, **kwargs):
+    return node.VarDecl(keyword = 'var', *args, **kwargs)
+def Let(*args, **kwargs):
+    return node.VarDecl(keyword = 'let', *args, **kwargs)
 
-    def assertFailedParse(self, code, regex = None): 
-        e = None
-        parsed = None
-        try: 
-            if regex:
-                with self.assertRaisesRegex(tatsu.exceptions.FailedParse, regex): parsed = princess.parse(code)
-            else: 
-                with self.assertRaises(tatsu.exceptions.FailedParse): parsed = princess.parse(code)
-        except AssertionError as ex: e = ex
-        if e:
-            prepend = None
-            if parsed is None: parsed = princess.ast.Node()
-            else: prepend = "\n\nResult: " + ast_repr(parsed) + "\n\n"
-            parsed._src = code
-            raise _append_traceback(e, parsed, None, prepend = prepend)
-
-    assertEquals = assertEqual
-    assertNotEquals = assertNotEqual
+def assertFailedParse(code, regex = None): 
+#    e = None
+#    parsed = None
+#    try: 
+#        if regex:
+#            with self.assertRaisesRegex(tatsu.exceptions.FailedParse, regex): parsed = princess.parse(code)
+#        else: 
+#            with self.assertRaises(tatsu.exceptions.FailedParse): parsed = princess.parse(code)
+#    except AssertionError as ex: e = ex
+#    if e:
+#        prepend = None
+#        if parsed is None: parsed = princess.ast.Node()
+#        else: prepend = "\n\nResult: " + ast_repr(parsed) + "\n\n"
+#        parsed._src = code
+#        raise _append_traceback(e, parsed, None, prepend = prepend)
+    pass
