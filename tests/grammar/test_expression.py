@@ -139,7 +139,6 @@ class TestOperators():
             )
         )
 
-    @pytest.mark.skip(reason="the assertFailedParse test is not implemented")
     def test_no_wrapping(self):
         assertFailedParse("""\
                 1

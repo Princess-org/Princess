@@ -1,8 +1,10 @@
-import unittest, tatsu, princess, io, contextlib, logging, os, functools, inspect
+import tatsu, princess, io, contextlib, logging, os, functools, inspect, sys, re
 
 from princess import ast_repr, grammar
 from princess.ast import node
 from unittest import skip, skipIf, skipUnless, expectedFailure
+
+import pytest
 
 def prog(n): return node.Program([n])
 
@@ -26,31 +28,24 @@ def _traceback(src, **kwargs):
             return buf.getvalue()
     return None
 
-class FailedParse(Exception):
-    def __init__(self, src, exception, trace = False, **kwargs):
-        self.trace = _traceback(src, **kwargs)
-        self.exception = exception
-
-    def __str__(self):
-        res = str(self.exception) if self.exception else ""
-        if self.trace: 
-            res += "\n\nParser Trace: \n" + self.trace
-        return res
+#class FailedParse(Exception):
+#    def __init__(self, src, exception, trace = False, **kwargs):
+#        self.trace = _traceback(src, **kwargs)
+#        self.exception = exception
+#
+#    def __str__(self):
+#        res = str(self.exception) if self.exception else ""
+#        if self.trace: 
+#            res += "\n\nParser Trace: \n" + self.trace
+#        return res
 
 def parse(text, **kwargs):
     if opt.COLORIZE and not "colorize" in kwargs:
         kwargs["colorize"] = True
         
-    raised = None
-    try: 
-        parsed = princess.parse(text, **kwargs)
-        parsed._src = text
-        return parsed
-    except tatsu.exceptions.FailedParse as e:
-        raised = e # Destroy trace back, its not important here
-
-    if raised: raise FailedParse(text, raised, **kwargs)
-        
+    parsed = princess.parse(text, **kwargs)
+    parsed._src = text
+    return parsed
 
 def _generate_traceback(arg):
     if not isinstance(arg, princess.ast.Node): return None
@@ -96,21 +91,6 @@ def _generate_traceback(arg):
 #        except AssertionError as ex: e = ex
 #        if e: raise _append_traceback(e, first, second)
 
-#    def assertFailedParse(self, code, regex = None): 
-#        e = None
-#        parsed = None
-#        try: 
-#            if regex:
-#                with self.assertRaisesRegex(tatsu.exceptions.FailedParse, regex): parsed = princess.parse(code)
-#            else: 
-#                with self.assertRaises(tatsu.exceptions.FailedParse): parsed = princess.parse(code)
-#        except AssertionError as ex: e = ex
-#        if e:
-#            prepend = None
-#            if parsed is None: parsed = princess.ast.Node()
-#            else: prepend = "\n\nResult: " + ast_repr(parsed) + "\n\n"
-#            parsed._src = code
-#            raise _append_traceback(e, parsed, None, prepend = prepend)
 
 #    assertEquals = assertEqual
 #    assertNotEquals = assertNotEqual
@@ -129,7 +109,7 @@ def Let(*args, **kwargs):
 
 def assertFailedParse(code, regex = None): 
 #    e = None
-#    parsed = None
+    parsed = None
 #    try: 
 #        if regex:
 #            with self.assertRaisesRegex(tatsu.exceptions.FailedParse, regex): parsed = princess.parse(code)
@@ -142,4 +122,10 @@ def assertFailedParse(code, regex = None):
 #        else: prepend = "\n\nResult: " + ast_repr(parsed) + "\n\n"
 #        parsed._src = code
 #        raise _append_traceback(e, parsed, None, prepend = prepend)
-    pass
+    try:
+        parsed = princess.parse(code)
+        print(_generate_traceback, file=sys.stderr)
+        raise AssertionError("No ParseException raised. Result = " + str(parsed))
+    except tatsu.exceptions.FailedParse as ex:
+        if regex and not re.search(regex, str(ex)):
+            raise AssertionError("Exception message was `" + str(ex) + "` expected one matching the regex " + repr(regex))

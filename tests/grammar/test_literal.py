@@ -18,9 +18,7 @@ class TestStringLiteral():
         assert parse("\" \\x0A\\x00 \"") == prog(String(" \x0A\x00 "))
         assert parse("\" \\u1111 \"") == prog(String(" \u1111 "))
         assert parse("\" \\U0010FFFF \"") == prog(String(" \U0010FFFF "))
-
-    # TODO: Implement assertFailedParse
-    @pytest.mark.skip(reason="assertFailedParse needs to be reimplemented")    
+ 
     def test_invalid_escapes(self):
         """ Invalid escape sequences, these should fail"""
         assertFailedParse("\" \\q \\ \"", "Expecting <esc_char>")
@@ -60,7 +58,6 @@ class TestIntegerLiteral():
         assert parse("20.") == prog(Float(20.))
         assert parse("2.E-2") == prog(Float(2.E-2))
 
-    @pytest.mark.skip(reason="assertFailedParse needs to be reimplemented")
     def test_invalid(self):
         assertFailedParse("0x", "Expecting <hex_digit>")
         assertFailedParse(".E1", "Expecting <digit>")
