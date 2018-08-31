@@ -3,10 +3,7 @@ import tatsu, princess, io, contextlib, logging, os, functools, inspect, sys, re
 from princess import ast_repr, grammar
 from princess.ast import node
 from unittest import skip, skipIf, skipUnless, expectedFailure
-
-import pytest
-
-def prog(n): return node.Program([n])
+from tatsu.exceptions import FailedParse
 
 # command line options
 config = None
@@ -42,8 +39,12 @@ def parse(text, **kwargs):
     if config.getoption("colorize") and not "colorize" in kwargs:
         kwargs["colorize"] = True
         
-    parsed = princess.parse(text, **kwargs)
-    parsed._src = text
+    try:
+        parsed = princess.parse(text, **kwargs)
+        parsed._src = text
+    except FailedParse as e:
+        raise e from None   # Make sure to delete the traceback, we only care about the exception
+
     return parsed
 
 def _dump_traceback(arg):
@@ -55,6 +56,8 @@ def _dump_traceback(arg):
     # TODO Since pytest captures tatsu's log...
     # print("Traceback:\n", file=sys.stderr)
     # print(traceback, file=sys.stderr)
+
+def prog(n): return node.Program([n])
 
 Integer = node.Integer
 Float = node.Float
@@ -71,11 +74,14 @@ def Let(*args, **kwargs):
     return node.VarDecl(keyword = 'let', *args, **kwargs)
 
 def assertFailedParse(code, regex = None): 
+    __tracebackhide__ = True # pylint: disable=W0612
+
     parsed = None
     try:
         parsed = parse(code)
-        _dump_traceback(code)
-        raise AssertionError("No ParseException raised. Result = " + str(parsed))
-    except tatsu.exceptions.FailedParse as ex:
+        _dump_traceback(parsed)
+        raise AssertionError("No ParseException raised.\nResult = " + str(parsed))
+    except FailedParse as ex:
         if regex and not re.search(regex, str(ex)):
-            raise AssertionError("Exception message didn't match " + repr(regex) + " was \n\"" + str(ex) + "\"")
+            _traceback(code)
+            raise AssertionError("Exception message didn't match " + repr(regex) + ".\nWas:\n\n" + str(ex)) from None
