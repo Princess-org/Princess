@@ -61,6 +61,8 @@ Float = node.Float
 String = node.String
 Boolean = node.Boolean
 
+EmptyBody = node.Body([None])
+
 def Identifier(*args):
     return node.Identifier(list(args))
 def Var(*args, **kwargs):
