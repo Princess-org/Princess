@@ -41,7 +41,7 @@ def recompile_parser():
     
     print("Last modified:", last_modified)
     
-    if force_compile or last_compiled <= last_modified:
+    if force_compile or last_compiled < last_modified:
         print("Grammar changed, generating parser:")
         # TODO There's a method for this, tatsu.to_python_sourcecode
         if subprocess.call([sys.executable, "-m", "tatsu", grammar_file, "--color", "--outfile", parser_file]):
