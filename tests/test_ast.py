@@ -14,6 +14,3 @@ def test_ast_rec():
     """ Equality, recursive """
     assert prog(node.String(" Node ")) == prog(node.String(" Node "))
     assert prog(node.String(" Node ")) != prog(node.String(" Yo "))
-
-def test_failing():
-    assert parse("yo") == prog(Identifier("yo"))
