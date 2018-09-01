@@ -72,29 +72,57 @@ class TestOperators:
         )
     
     def test_assignment(self):
-        assert parse("foo = 2")  == prog(node.Assign(left = Identifier("foo"), right = Integer(2)))
-        assert parse("foo += 2") == prog(node.Assign(left = Identifier("foo"), op = AssignOp("+="), right = Integer(2)))
+        assert parse("foo = 2")  == prog(node.Assign(left = [Identifier("foo")], right = [Integer(2)]))
+        assert parse("foo += 2") == prog(node.AssignAndOp(left = Identifier("foo"), op = AssignOp("+="), right = Integer(2)))
+
+        assert parse("a = b = c") == prog(
+            node.Assign(
+                left = [Identifier("a")],
+                right = [node.Assign(
+                    left = [Identifier("b")],
+                    right = [Identifier("c")]
+                )]
+            )
+        )
 
         assert parse("foo = bar *= 2") == prog(
             node.Assign(
-                left = Identifier("foo"), 
-                right = node.Assign(
+                left = [Identifier("foo")], 
+                right = [node.AssignAndOp(
                     left = Identifier("bar"),
                     op = AssignOp("*="),
                     right = Integer(2)
-                )
+                )]
+            )
+        )
+
+    def test_assignment_multiple(self):
+        assert parse("a, b = b, a") == prog(
+            node.Assign(
+                left = [Identifier("a"), Identifier("b")],
+                right = [Identifier("b"), Identifier("a")]
+            )
+        )
+
+        assert parse("a, b = c, d = e, f") == prog(
+            node.Assign(
+                left = [Identifier("a"), Identifier("b")],
+                right = [node.Assign(
+                    left = [Identifier("c"), Identifier("d")],
+                    right = [Identifier("e"), Identifier("f")]
+                )]
             )
         )
 
     def test_if_expression(self):
         assert parse("foo = 10 if true else 20") == prog(
             node.Assign(
-                left = Identifier("foo"),
-                right = node.IfExpr(
+                left = [Identifier("foo")],
+                right = [node.IfExpr(
                     cond = Boolean(True),
                     if_true = Integer(10),
                     if_false = Integer(20)
-                )
+                )]
             )
         )
 

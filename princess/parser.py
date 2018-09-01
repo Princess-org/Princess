@@ -560,7 +560,7 @@ class PrincessParser(Parser):
                 with self._option():
                     self._type_structural_()
                 with self._option():
-                    self._expression_()
+                    self._expr_2_()
                 self._error('no available options')
         self.name_last_node('VALUE')
         self.ast._define(
@@ -1034,12 +1034,10 @@ class PrincessParser(Parser):
                     self._token('>>=')
                 with self._option():
                     self._token('<<=')
-                with self._option():
-                    self._token('=')
                 self._error('no available options')
 
-    @tatsumasu('Assign')
-    def _expr_assign_(self):  # noqa
+    @tatsumasu('AssignAndOp')
+    def _expr_assign_op_(self):  # noqa
         self._expr_2_()
         self.name_last_node('left')
         self._s__()
@@ -1051,6 +1049,47 @@ class PrincessParser(Parser):
         self.name_last_node('right')
         self.ast._define(
             ['left', 'op', 'right'],
+            []
+        )
+
+    @tatsumasu()
+    def _expr_assign_lhs_(self):  # noqa
+        self._n__()
+        self._expr_2_()
+        self.name_last_node('@')
+        self._s__()
+
+    @tatsumasu()
+    def _expr_assign_rhs_(self):  # noqa
+        self._n__()
+        self._expr_1_()
+        self.name_last_node('@')
+        self._s__()
+
+    @tatsumasu('Assign')
+    def _expr_assign_(self):  # noqa
+
+        def sep1():
+            self._token(',')
+
+        def block1():
+            self._expr_assign_lhs_()
+        self._positive_gather(block1, sep1)
+        self.name_last_node('left')
+        self._s__()
+        self._token('=')
+        self._n__()
+        self._cut()
+
+        def sep3():
+            self._token(',')
+
+        def block3():
+            self._expr_assign_rhs_()
+        self._positive_gather(block3, sep3)
+        self.name_last_node('right')
+        self.ast._define(
+            ['left', 'right'],
             []
         )
 
@@ -1218,6 +1257,8 @@ class PrincessParser(Parser):
     def _expr_1_(self):  # noqa
         with self._choice():
             with self._option():
+                self._expr_assign_op_()
+            with self._option():
                 self._expr_assign_()
             with self._option():
                 self._expr_if_()
@@ -1233,6 +1274,30 @@ class PrincessParser(Parser):
     def _expression_(self):  # noqa
         self._expr_1_()
 
+    @tatsumasu('IdDecl')
+    def _stmt_iddecl_(self):  # noqa
+        self._n__()
+        self._identifier_()
+        self.name_last_node('name')
+        with self._optional():
+            self._s__()
+            self._token(':')
+            self._n__()
+            self._type_()
+            self.name_last_node('type')
+        self._s__()
+        self.ast._define(
+            ['name', 'type'],
+            []
+        )
+
+    @tatsumasu()
+    def _stmt_vardecl_rhs_(self):  # noqa
+        self._n__()
+        self._expression_()
+        self.name_last_node('@')
+        self._s__()
+
     @tatsumasu('VarDecl')
     def _stmt_vardecl_(self):  # noqa
         with self._group():
@@ -1244,35 +1309,67 @@ class PrincessParser(Parser):
                 self._error('no available options')
         self.name_last_node('keyword')
         self._n__()
-        self._identifier_()
-        self.name_last_node('name')
-        with self._optional():
-            self._n__()
-            self._token(':')
-            self._n__()
-            self._type_()
-            self.name_last_node('type')
+
+        def sep3():
+            self._token(',')
+
+        def block3():
+            self._stmt_iddecl_()
+        self._positive_gather(block3, sep3)
+        self.name_last_node('left')
         with self._optional():
             self._n__()
             self._token('=')
             self._n__()
-            self._expression_()
-            self.name_last_node('value')
+
+            def sep5():
+                self._token(',')
+
+            def block5():
+                self._stmt_vardecl_rhs_()
+            self._positive_gather(block5, sep5)
+            self.name_last_node('right')
         self.ast._define(
-            ['keyword', 'name', 'type', 'value'],
+            ['keyword', 'left', 'right'],
             []
         )
+
+    @tatsumasu()
+    def _stmt_typedecl_lhs_(self):  # noqa
+        self._n__()
+        self._identifier_()
+        self.name_last_node('@')
+        self._s__()
+
+    @tatsumasu()
+    def _stmt_typedecl_rhs_(self):  # noqa
+        self._n__()
+        self._type_()
+        self.name_last_node('@')
+        self._s__()
 
     @tatsumasu('TypeDecl')
     def _stmt_typedecl_(self):  # noqa
         self._token('type')
         self._n__()
-        self._identifier_()
+
+        def sep1():
+            self._token(',')
+
+        def block1():
+            self._stmt_typedecl_lhs_()
+        self._positive_gather(block1, sep1)
         self.name_last_node('name')
         self._n__()
         self._token('=')
         self._n__()
-        self._type_()
+
+        def sep3():
+            self._token(',')
+
+        def block3():
+            self._stmt_typedecl_rhs_()
+        self._positive_gather(block3, sep3)
         self.name_last_node('value')
         self.ast._define(
             ['name', 'value'],
@@ -1597,6 +1694,15 @@ class PrincessSemantics(object):
     def assign_op(self, ast):  # noqa
         return ast
 
+    def expr_assign_op(self, ast):  # noqa
+        return ast
+
+    def expr_assign_lhs(self, ast):  # noqa
+        return ast
+
+    def expr_assign_rhs(self, ast):  # noqa
+        return ast
+
     def expr_assign(self, ast):  # noqa
         return ast
 
@@ -1642,7 +1748,19 @@ class PrincessSemantics(object):
     def expression(self, ast):  # noqa
         return ast
 
+    def stmt_iddecl(self, ast):  # noqa
+        return ast
+
+    def stmt_vardecl_rhs(self, ast):  # noqa
+        return ast
+
     def stmt_vardecl(self, ast):  # noqa
+        return ast
+
+    def stmt_typedecl_lhs(self, ast):  # noqa
+        return ast
+
+    def stmt_typedecl_rhs(self, ast):  # noqa
         return ast
 
     def stmt_typedecl(self, ast):  # noqa

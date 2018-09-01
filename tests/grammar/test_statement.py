@@ -7,17 +7,36 @@ def test_empty_program():
 
 def test_variable_declarataion():
     assert parse("let a = 10") == prog(
-        Let(name = Identifier("a"), value = Integer(10))
+        Let(left = [node.IdDecl(name = Identifier("a"))], right = [Integer(10)])
     )
     assert parse("var myvar: int"), prog(
-        Var(name = Identifier("myvar"), type = node.Type(Identifier("int")))
+        Var(left = [node.IdDecl(name = Identifier("myvar"), type = node.Type(Identifier("int")))])
+    )
+
+def test_variable_declaration_multiple():
+    assert parse("let a, b:int = 10, 20") == prog(
+        Let(
+            left = [
+                node.IdDecl(name = Identifier("a")), 
+                node.IdDecl(name = Identifier("b"), type = node.Type(Identifier("int")))
+            ], 
+            right = [Integer(10), Integer(20)]
+        )
     )
 
 def test_type_declaration():
     assert parse("type i8 = int8") == prog(
         node.TypeDecl(
-            name = Identifier("i8"),
-            value = node.Type(Identifier("int8"))
+            name = [Identifier("i8")],
+            value = [node.Type(Identifier("int8"))]
+        )
+    )
+
+def test_type_declaration_multiple():
+    assert parse("type i8, i16 = int8, int16") == prog(
+        node.TypeDecl(
+            name = [Identifier("i8"), Identifier("i16")],
+            value = [node.Type(Identifier("int8")), node.Type(Identifier("int16"))]
         )
     )
 

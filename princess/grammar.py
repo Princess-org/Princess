@@ -73,8 +73,6 @@ class AssignOp(str, Enum):
     Mul = '*='; Mod = '%='; Div = '/='
     BAnd = '&='; BOr = '|='; Xor = '^='
 
-class Assign(Expression):
+class AssignAndOp(Expression):
     def _semantic(self, ast):
-        return ast.copy_with(
-            op = REMOVE if ast.op == "=" else AssignOp(ast.op)
-        )
+        return ast.copy_with(op = AssignOp(ast.op))
