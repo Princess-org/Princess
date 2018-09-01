@@ -482,9 +482,33 @@ class PrincessParser(Parser):
         )
 
     @tatsumasu()
+    def _array_element_(self):  # noqa
+        self._n__()
+        self._n_expression_()
+        self.name_last_node('@')
+        self._n__()
+
+    @tatsumasu('Array')
+    def _array_lit_(self):  # noqa
+        self._token('[')
+        self._cut()
+
+        def sep1():
+            self._token(',')
+
+        def block1():
+            self._array_element_()
+        self._gather(block1, sep1)
+        self.name_last_node('@')
+        self._n__()
+        self._token(']')
+
+    @tatsumasu()
     def _literal_(self):  # noqa
         with self._group():
             with self._choice():
+                with self._option():
+                    self._array_lit_()
                 with self._option():
                     self._t_num_lit_()
                 with self._option():
@@ -1644,6 +1668,12 @@ class PrincessSemantics(object):
         return ast
 
     def t_bool_lit(self, ast):  # noqa
+        return ast
+
+    def array_element(self, ast):  # noqa
+        return ast
+
+    def array_lit(self, ast):  # noqa
         return ast
 
     def literal(self, ast):  # noqa

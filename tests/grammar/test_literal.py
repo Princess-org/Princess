@@ -76,3 +76,11 @@ class TestBooleanLiteral:
         """ Boolean literals """
         assert parse("true" ) == prog(Boolean(True ))
         assert parse("false") == prog(Boolean(False))
+
+class TestArrayLiteral:
+    def test_array_simple(self):
+        assert parse("[]") == prog(node.Array())
+        assert parse("[\n\n]") == prog(node.Array())
+        assert parse("[1, 2, 3]") == prog(node.Array(
+            Integer(1), Integer(2), Integer(3)
+        ))
