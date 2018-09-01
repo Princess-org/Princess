@@ -23,15 +23,20 @@ from tatsu.util import re, generic_main  # noqa
 
 KEYWORDS = {
     'and',
+    'break',
+    'continue',
     'else',
     'false',
     'if',
+    'in',
     'let',
+    'loop',
     'not',
     'or',
     'true',
     'type',
     'var',
+    'while',
 }  # type: ignore
 
 
@@ -1115,6 +1120,26 @@ class PrincessParser(Parser):
             []
         )
 
+    @tatsumasu('Range')
+    def _expr_range_(self):  # noqa
+        self._expr_1_()
+        self.name_last_node('from_')
+        self._s__()
+        self._token(':')
+        self._n__()
+        self._expr_1_()
+        self.name_last_node('to')
+        with self._optional():
+            self._s__()
+            self._token(':')
+            self._n__()
+            self._expr_1_()
+            self.name_last_node('step')
+        self.ast._define(
+            ['from_', 'step', 'to'],
+            []
+        )
+
     @tatsumasu()
     def _expr_11_(self):  # noqa
         with self._choice():
@@ -1267,12 +1292,21 @@ class PrincessParser(Parser):
             self._error('no available options')
 
     @tatsumasu()
+    def _expr_0_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._expr_range_()
+            with self._option():
+                self._expr_1_()
+            self._error('no available options')
+
+    @tatsumasu()
     def _n_expression_(self):  # noqa
-        self._expr_1_()
+        self._expr_0_()
 
     @tatsumasu()
     def _expression_(self):  # noqa
-        self._expr_1_()
+        self._expr_0_()
 
     @tatsumasu('IdDecl')
     def _stmt_iddecl_(self):  # noqa
@@ -1454,6 +1488,39 @@ class PrincessParser(Parser):
             []
         )
 
+    @tatsumasu('While')
+    def _stmt_while_loop_(self):  # noqa
+        self._token('while')
+        self._n__()
+        self._expression_()
+        self.name_last_node('cond')
+        self._n__()
+        self._code_body_()
+        self.name_last_node('body')
+        self.ast._define(
+            ['body', 'cond'],
+            []
+        )
+
+    @tatsumasu('While')
+    def _stmt_loop_(self):  # noqa
+        self._token('loop')
+        self._n__()
+        self._code_body_()
+        self.name_last_node('body')
+        self.ast._define(
+            ['body'],
+            []
+        )
+
+    @tatsumasu('Continue')
+    def _stmt_continue_(self):  # noqa
+        self._token('continue')
+
+    @tatsumasu('Break')
+    def _stmt_break_(self):  # noqa
+        self._token('break')
+
     @tatsumasu()
     def _statement_(self):  # noqa
         with self._choice():
@@ -1474,6 +1541,14 @@ class PrincessParser(Parser):
                             self._stmt_if_()
                         with self._option():
                             self._stmt_static_if_()
+                        with self._option():
+                            self._stmt_while_loop_()
+                        with self._option():
+                            self._stmt_loop_()
+                        with self._option():
+                            self._stmt_continue_()
+                        with self._option():
+                            self._stmt_break_()
                         with self._option():
                             self._expression_()
                         self._error('no available options')
@@ -1709,6 +1784,9 @@ class PrincessSemantics(object):
     def expr_if(self, ast):  # noqa
         return ast
 
+    def expr_range(self, ast):  # noqa
+        return ast
+
     def expr_11(self, ast):  # noqa
         return ast
 
@@ -1740,6 +1818,9 @@ class PrincessSemantics(object):
         return ast
 
     def expr_1(self, ast):  # noqa
+        return ast
+
+    def expr_0(self, ast):  # noqa
         return ast
 
     def n_expression(self, ast):  # noqa
@@ -1776,6 +1857,18 @@ class PrincessSemantics(object):
         return ast
 
     def stmt_static_if(self, ast):  # noqa
+        return ast
+
+    def stmt_while_loop(self, ast):  # noqa
+        return ast
+
+    def stmt_loop(self, ast):  # noqa
+        return ast
+
+    def stmt_continue(self, ast):  # noqa
+        return ast
+
+    def stmt_break(self, ast):  # noqa
         return ast
 
     def statement(self, ast):  # noqa

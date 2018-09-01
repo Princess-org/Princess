@@ -1,6 +1,5 @@
 import pytest
 from tests import *
-from princess.grammar import CompareOp, AssignOp
 
 class TestIdentifier:
     def test_simple(self):
@@ -114,20 +113,6 @@ class TestOperators:
             )
         )
 
-    def test_if_expression(self):
-        assert parse("foo = 10 if true else 20") == prog(
-            node.Assign(
-                left = [Identifier("foo")],
-                right = [node.IfExpr(
-                    cond = Boolean(True),
-                    if_true = Integer(10),
-                    if_false = Integer(20)
-                )]
-            )
-        )
-
-        assertFailedParse("foo = 10 if true") # TODO Bad error message
-
     def test_call(self):
         assert parse("foo(a = 20, 50)") == prog(
             node.Call(
@@ -167,18 +152,35 @@ class TestOperators:
             )
         )
 
-    def test_no_wrapping(self):
-        assertFailedParse("""\
-                1
-                / 2
-            """)
+def test_no_wrapping():
+    assertFailedParse("""\
+            1
+            / 2
+        """)
 
-    def test_wrapping(self):
-        """ Newline wrapping inside () """
-        assert parse("""\
-            (1
-            + 2)
-        """) == prog(node.Add(left = Integer(1), right = Integer(2)))
+def test_wrapping():
+    """ Newline wrapping inside () """
+    assert parse("""\
+        (1
+        + 2)
+    """) == prog(node.Add(left = Integer(1), right = Integer(2)))
 
-    def test_cast(self):
-        assert parse("1!float") == prog(node.Cast(left = Integer(1), right = node.Type(Identifier("float"))))
+def test_cast():
+    assert parse("1!float") == prog(node.Cast(left = Integer(1), right = node.Type(Identifier("float"))))
+
+def test_if_expression():
+    assert parse("foo = 10 if true else 20") == prog(
+        node.Assign(
+            left = [Identifier("foo")],
+            right = [node.IfExpr(
+                cond = Boolean(True),
+                if_true = Integer(10),
+                if_false = Integer(20)
+            )]
+        )
+    )
+
+    assertFailedParse("foo = 10 if true") # TODO Bad error message
+
+def test_range_expression():
+    assert parse("1:2") == prog(node.Range(from_ = Integer(1), to = Integer(2)))

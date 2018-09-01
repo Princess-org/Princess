@@ -112,3 +112,35 @@ def test_static_if():
             else_ = node.Else(body = EmptyBody)
         )
     )
+
+def test_loop():
+    assert parse("""\
+        loop { continue; forever }
+    """) == prog(
+        node.While(
+            body = node.Body(
+                Continue,
+                Identifier("forever")
+            )
+        )
+    )
+
+def test_while():
+    assert parse("""\
+        while 1 == 2 {
+            continue
+            break
+        }
+    """) == prog(
+        node.While(
+            cond = node.Compare(
+                Integer(1),
+                CompareOp("=="),
+                Integer(2)
+            ),
+            body = node.Body(
+                Continue,
+                Break
+            )
+        )
+    )

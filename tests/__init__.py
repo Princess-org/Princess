@@ -4,6 +4,7 @@ from princess import ast_repr, grammar
 from princess.ast import node
 from unittest import skip, skipIf, skipUnless, expectedFailure
 from tatsu.exceptions import FailedParse
+from princess.grammar import CompareOp, AssignOp
 
 # command line options
 config = None
@@ -65,6 +66,8 @@ String = node.String
 Boolean = node.Boolean
 
 EmptyBody = node.Body([None])
+Continue = node.Continue()
+Break = node.Break()
 
 def Identifier(*args):
     return node.Identifier(list(args))
