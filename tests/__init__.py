@@ -58,7 +58,11 @@ def _dump_traceback(arg):
     # print("Traceback:\n", file=sys.stderr)
     # print(traceback, file=sys.stderr)
 
-def prog(n): return node.Program([n])
+def prog(n): 
+    return node.Program([n])
+
+def ast(src): 
+    return parse(src).children_list()[0]
 
 Integer = node.Integer
 Float = node.Float

@@ -133,14 +133,46 @@ def test_while():
         }
     """) == prog(
         node.While(
-            cond = node.Compare(
-                Integer(1),
-                CompareOp("=="),
-                Integer(2)
-            ),
+            cond = ast("1 == 2"),
             body = node.Body(
                 Continue,
                 Break
             )
+        )
+    )
+
+
+def test_for_simple():
+    assert parse ("""\
+        var i = 0
+        for i in 1:20 { 
+            print("Hello World")
+        }
+        print(i)
+    """) == node.Program(
+        ast("var i = 0"),
+        node.For(
+            iterator = node.In(
+                left = [node.IdDecl(name = Identifier("i"))], 
+                right = [node.Range(from_ = Integer(1), to = Integer(20))]
+            ),
+            body = node.Body([
+                ast("print(\"Hello World\")")
+            ])
+        ),
+        ast("print(i)")
+    )
+
+def test_for_multiple():
+    assert parse("""\
+        for var e in array1, array2 { }
+    """) == prog(
+        node.For(
+            iterator = node.In(
+                keyword = "var",
+                left = [node.IdDecl(name = Identifier("e"))],
+                right = [Identifier("array1"), Identifier("array2")]
+            ),
+            body = EmptyBody
         )
     )
