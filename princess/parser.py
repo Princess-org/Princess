@@ -24,6 +24,7 @@ from tatsu.util import re, generic_main  # noqa
 KEYWORDS = {
     'and',
     'break',
+    'const',
     'continue',
     'else',
     'false',
@@ -501,9 +502,13 @@ class PrincessParser(Parser):
         def block1():
             self._array_element_()
         self._gather(block1, sep1)
-        self.name_last_node('@')
+        self.name_last_node('LIST')
         self._n__()
         self._token(']')
+        self.ast._define(
+            ['LIST'],
+            []
+        )
 
     @tatsumasu()
     def _literal_(self):  # noqa
@@ -577,14 +582,14 @@ class PrincessParser(Parser):
         self._n__()
         self._token('}')
 
-    @tatsumasu('TypeStructural')
+    @tatsumasu('StructuralT')
     def _type_structural_(self):  # noqa
         self._token('{')
         self._cut()
         self._n__()
         self._token('}')
 
-    @tatsumasu('Pointer')
+    @tatsumasu('PtrT')
     def _type_ptr_(self):  # noqa
         self._token('*')
         self._s__()
@@ -600,14 +605,14 @@ class PrincessParser(Parser):
         self.name_last_node('keyword')
         self._s__()
         with self._optional():
-            self._type_()
+            self._type_1_()
             self.name_last_node('type')
         self.ast._define(
             ['keyword', 'type'],
             []
         )
 
-    @tatsumasu('Pointer')
+    @tatsumasu('PtrT')
     def _type_ref_(self):  # noqa
         self._token('&')
         self._s__()
@@ -615,31 +620,175 @@ class PrincessParser(Parser):
         self.name_last_node('keyword')
         self._s__()
         with self._optional():
-            self._type_()
+            self._type_1_()
             self.name_last_node('type')
         self.ast._define(
             ['keyword', 'type'],
             []
         )
 
-    @tatsumasu('Type')
-    def _type_(self):  # noqa
+    @tatsumasu('ArrayT')
+    def _type_array_dyn_(self):  # noqa
+        self._token('[')
+        self._n__()
         with self._group():
             with self._choice():
                 with self._option():
-                    self._type_structural_()
+                    self._token('var')
                 with self._option():
-                    self._type_ptr_()
+                    self._token('let')
                 with self._option():
-                    self._type_ref_()
-                with self._option():
-                    self._identifier_()
+                    self._constant('var')
                 self._error('no available options')
-        self.name_last_node('VALUE')
+        self.name_last_node('keyword')
+        self._n__()
+        with self._optional():
+            self._type_()
+            self.name_last_node('type')
+        self._token(']')
         self.ast._define(
-            ['VALUE'],
+            ['keyword', 'type'],
             []
         )
+
+    @tatsumasu('ArrayT')
+    def _type_array_static_(self):  # noqa
+        self._token('[')
+        self._cut()
+        self._n__()
+        with self._group():
+            with self._choice():
+                with self._option():
+                    self._token('?')
+                with self._option():
+                    self._expression_()
+                self._error('no available options')
+        self.name_last_node('n')
+        self._n__()
+        with self._group():
+            with self._choice():
+                with self._option():
+                    self._token('var')
+                with self._option():
+                    self._token('let')
+                with self._option():
+                    self._constant('var')
+                self._error('no available options')
+        self.name_last_node('keyword')
+        self._n__()
+        with self._optional():
+            self._type_()
+            self.name_last_node('type')
+        self._token(']')
+        self.ast._define(
+            ['keyword', 'n', 'type'],
+            []
+        )
+
+    @tatsumasu()
+    def _type_array_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._type_array_dyn_()
+            with self._option():
+                self._type_array_static_()
+            self._error('no available options')
+
+    @tatsumasu()
+    @nomemo
+    def _type_list_elem_(self):  # noqa
+        self._n__()
+        self._type_()
+        self.name_last_node('@')
+        self._n__()
+
+    @tatsumasu()
+    @nomemo
+    def _type_list_(self):  # noqa
+        with self._choice():
+            with self._option():
+                with self._group():
+                    self._token('(')
+                    self._cut()
+                    self._n__()
+
+                    def sep1():
+                        self._token(',')
+
+                    def block1():
+                        self._type_list_elem_()
+                    self._gather(block1, sep1)
+                    self.name_last_node('@')
+                    self._n__()
+                    self._token(')')
+            with self._option():
+                self._type_()
+                self.add_last_node_to_name('@')
+            self._error('no available options')
+
+    @tatsumasu('FunctionT')
+    @nomemo
+    def _type_function_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._token('->')
+                self._s__()
+                with self._optional():
+                    self._type_list_()
+                    self.name_last_node('right')
+            with self._option():
+                self._type_list_()
+                self.name_last_node('left')
+                self._s__()
+                self._token('->')
+                self._s__()
+                with self._optional():
+                    self._type_list_()
+                    self.name_last_node('right')
+            self._error('no available options')
+        self.ast._define(
+            ['left', 'right'],
+            []
+        )
+
+    @tatsumasu()
+    def _type_2_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._token('(')
+                self._n__()
+                self._type_()
+                self.name_last_node('@')
+                self._n__()
+                self._token(')')
+            with self._option():
+                self._expr_10_()
+            self._error('no available options')
+
+    @tatsumasu()
+    def _type_1_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._type_structural_()
+            with self._option():
+                self._type_ptr_()
+            with self._option():
+                self._type_ref_()
+            with self._option():
+                self._type_array_()
+            with self._option():
+                self._type_2_()
+            self._error('no available options')
+
+    @tatsumasu()
+    @leftrec
+    def _type_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._type_function_()
+            with self._option():
+                self._type_1_()
+            self._error('no available options')
 
     @tatsumasu('CallArg')
     def _call_arg_named_(self):  # noqa
@@ -740,12 +889,16 @@ class PrincessParser(Parser):
             []
         )
 
-    @tatsumasu()
+    @tatsumasu('Type')
     def _expr_type_(self):  # noqa
         self._token('type')
         self._n__()
         self._type_()
-        self.name_last_node('@')
+        self.name_last_node('VALUE')
+        self.ast._define(
+            ['VALUE'],
+            []
+        )
 
     @tatsumasu('PostInc')
     @nomemo
@@ -1459,6 +1612,8 @@ class PrincessParser(Parser):
                     self._token('var')
                 with self._option():
                     self._token('let')
+                with self._option():
+                    self._token('const')
                 self._error('no available options')
         self.name_last_node('keyword')
         self._n__()
@@ -1843,6 +1998,30 @@ class PrincessSemantics(object):
         return ast
 
     def type_ref(self, ast):  # noqa
+        return ast
+
+    def type_array_dyn(self, ast):  # noqa
+        return ast
+
+    def type_array_static(self, ast):  # noqa
+        return ast
+
+    def type_array(self, ast):  # noqa
+        return ast
+
+    def type_list_elem(self, ast):  # noqa
+        return ast
+
+    def type_list(self, ast):  # noqa
+        return ast
+
+    def type_function(self, ast):  # noqa
+        return ast
+
+    def type_2(self, ast):  # noqa
+        return ast
+
+    def type_1(self, ast):  # noqa
         return ast
 
     def type(self, ast):  # noqa

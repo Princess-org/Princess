@@ -166,7 +166,7 @@ def test_wrapping():
     """) == prog(node.Add(left = Integer(1), right = Integer(2)))
 
 def test_cast():
-    assert parse("1!float") == prog(node.Cast(left = Integer(1), right = node.Type(Identifier("float"))))
+    assert parse("1!float") == prog(node.Cast(left = Integer(1), right = Identifier("float")))
 
 def test_if_expression():
     assert parse("foo = 10 if true else 20") == prog(

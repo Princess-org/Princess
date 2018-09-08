@@ -5,15 +5,20 @@ def test_empty_program():
     """ Empty program """
     assert parse("") == node.Program([None])
 
+def test_const_declaration():
+    assert parse("const a = 50") == prog(
+        Const(left = [node.IdDecl(name = Identifier("a"))], right = [Integer(50)])
+    )
+
 def test_variable_declarataion():
     assert parse("let a = 10") == prog(
         Let(left = [node.IdDecl(name = Identifier("a"))], right = [Integer(10)])
     )
     assert parse("var myvar: int"), prog(
-        Var(left = [node.IdDecl(name = Identifier("myvar"), type = node.Type(Identifier("int")))])
+        Var(left = [node.IdDecl(name = Identifier("myvar"), type = Identifier("int"))])
     )
     assert parse("var ptr:*"), prog(
-        Var(left = [node.IdDecl(name = Identifier("ptr"), type = node.Type(Pointer()))])
+        Var(left = [node.IdDecl(name = Identifier("ptr"), type = Pointer())])
     )
 
 def test_variable_declaration_multiple():
@@ -21,7 +26,7 @@ def test_variable_declaration_multiple():
         Let(
             left = [
                 node.IdDecl(name = Identifier("a")), 
-                node.IdDecl(name = Identifier("b"), type = node.Type(Identifier("int")))
+                node.IdDecl(name = Identifier("b"), type = Identifier("int"))
             ], 
             right = [Integer(10), Integer(20)]
         )
@@ -31,7 +36,7 @@ def test_type_declaration():
     assert parse("type i8 = int8") == prog(
         node.TypeDecl(
             name = [Identifier("i8")],
-            value = [node.Type(Identifier("int8"))]
+            value = [Identifier("int8")]
         )
     )
 
@@ -39,7 +44,7 @@ def test_type_declaration_multiple():
     assert parse("type i8, i16 = int8, int16") == prog(
         node.TypeDecl(
             name = [Identifier("i8"), Identifier("i16")],
-            value = [node.Type(Identifier("int8")), node.Type(Identifier("int16"))]
+            value = [Identifier("int8"), Identifier("int16")]
         )
     )
 

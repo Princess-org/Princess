@@ -34,13 +34,17 @@ class Node(tatsu.model.Node):
 
     def __eq__(self, other):
         if type(self) != type(other): return False
-        for k, v in vars(self).items():
-            if k.startswith("_"): continue
-            if hasattr(other, k) and getattr(other, k) == v: continue
-            if v is None: continue                      # ignore None
-            if isinstance(v, list) and not v: continue  # ignore empty list
-            return False
-        return True
+
+        def _eq(a, b):
+            for k, v in vars(a).items():
+                if k.startswith("_"): continue
+                if hasattr(b, k) and getattr(b, k) == v: continue
+                if v is None: continue                      # ignore None
+                if isinstance(v, list) and not v: continue  # ignore empty list
+                return False
+            return True
+
+        return _eq(self, other) and _eq(other, self)
 
     # TODO: make this correspond to do the node.XYZ(...) syntax
     def __str__(self): return princess.util.ast_repr(self)

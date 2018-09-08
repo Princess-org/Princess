@@ -44,6 +44,7 @@ def parse(text, **kwargs):
         parsed = princess.parse(text, **kwargs)
         parsed._src = text
     except FailedParse as e:
+        _traceback(text)
         raise e from None   # Make sure to delete the traceback, we only care about the exception
 
     return parsed
@@ -58,34 +59,6 @@ def _dump_traceback(arg):
     # print("Traceback:\n", file=sys.stderr)
     # print(traceback, file=sys.stderr)
 
-def prog(n): 
-    return node.Program([n])
-
-def ast(src): 
-    return parse(src).children_list()[0]
-
-# Convenience functions for testing
-
-Integer = node.Integer
-Float = node.Float
-String = node.String
-Boolean = node.Boolean
-
-EmptyBody = node.Body([None])
-Continue = node.Continue()
-Break = node.Break()
-
-def Identifier(*args):
-    return node.Identifier(list(args))
-def Var(*args, **kwargs):
-    return node.VarDecl(keyword = 'var', *args, **kwargs)
-def Let(*args, **kwargs):
-    return node.VarDecl(keyword = 'let', *args, **kwargs)
-def Pointer(tpe = None):
-    return node.Pointer(keyword = 'var', type = node.Type(tpe) if tpe else None)
-def Reference(tpe = None):
-    return node.Pointer(keyword = 'let', type = node.Type(tpe) if tpe else None)
-
 def assertFailedParse(code, regex = None): 
     __tracebackhide__ = True # pylint: disable=W0612
 
@@ -98,3 +71,38 @@ def assertFailedParse(code, regex = None):
         if regex and not re.search(regex, str(ex)):
             _traceback(code)
             raise AssertionError("Exception message didn't match " + repr(regex) + ".\nWas:\n\n" + str(ex)) from None
+
+# Convenience functions for testing
+
+def prog(n): 
+    return node.Program([n])
+
+def ast(src): 
+    return parse(src).children_list()[0]
+
+Integer = node.Integer
+Float = node.Float
+String = node.String
+Boolean = node.Boolean
+
+EmptyBody = node.Body([None])
+Continue = node.Continue()
+Break = node.Break()
+
+def Identifier(*args):
+    return node.Identifier(list(args))
+
+def Var(*args, **kwargs):
+    return node.VarDecl(keyword = 'var', *args, **kwargs)
+def Let(*args, **kwargs):
+    return node.VarDecl(keyword = 'let', *args, **kwargs)
+def Const(*args, **kwargs):
+    return node.VarDecl(keyword = 'const', *args, **kwargs)
+
+def Pointer(type = None):
+    return node.PtrT(keyword = 'var', type = type)
+def Reference(type = None):
+    return node.PtrT(keyword = 'let', type = type)
+
+def ArrayT(type = None, n = None, keyword = 'var'):
+    return node.ArrayT(n = n, keyword = keyword, type = type)
