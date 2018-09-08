@@ -584,6 +584,44 @@ class PrincessParser(Parser):
         self._n__()
         self._token('}')
 
+    @tatsumasu('Pointer')
+    def _type_ptr_(self):  # noqa
+        self._token('*')
+        self._s__()
+        with self._group():
+            with self._choice():
+                with self._option():
+                    self._token('var')
+                with self._option():
+                    self._token('let')
+                with self._option():
+                    self._constant('var')
+                self._error('no available options')
+        self.name_last_node('keyword')
+        self._s__()
+        with self._optional():
+            self._type_()
+            self.name_last_node('type')
+        self.ast._define(
+            ['keyword', 'type'],
+            []
+        )
+
+    @tatsumasu('Pointer')
+    def _type_ref_(self):  # noqa
+        self._token('&')
+        self._s__()
+        self._constant('let')
+        self.name_last_node('keyword')
+        self._s__()
+        with self._optional():
+            self._type_()
+            self.name_last_node('type')
+        self.ast._define(
+            ['keyword', 'type'],
+            []
+        )
+
     @tatsumasu('Type')
     def _type_(self):  # noqa
         with self._group():
@@ -591,7 +629,11 @@ class PrincessParser(Parser):
                 with self._option():
                     self._type_structural_()
                 with self._option():
-                    self._expr_2_()
+                    self._type_ptr_()
+                with self._option():
+                    self._type_ref_()
+                with self._option():
+                    self._identifier_()
                 self._error('no available options')
         self.name_last_node('VALUE')
         self.ast._define(
@@ -607,7 +649,13 @@ class PrincessParser(Parser):
         self._n__()
         self._token('=')
         self._n__()
-        self._n_expression_()
+        with self._group():
+            with self._choice():
+                with self._option():
+                    self._struct_lit_()
+                with self._option():
+                    self._n_expression_()
+                self._error('no available options')
         self.name_last_node('value')
         self._n__()
         self.ast._define(
@@ -618,7 +666,13 @@ class PrincessParser(Parser):
     @tatsumasu('CallArg')
     def _call_arg_(self):  # noqa
         self._n__()
-        self._n_expression_()
+        with self._group():
+            with self._choice():
+                with self._option():
+                    self._struct_lit_()
+                with self._option():
+                    self._n_expression_()
+                self._error('no available options')
         self.name_last_node('value')
         self._n__()
         self.ast._define(
@@ -1113,7 +1167,13 @@ class PrincessParser(Parser):
     @tatsumasu()
     def _expr_assign_rhs_(self):  # noqa
         self._n__()
-        self._expr_1_()
+        with self._group():
+            with self._choice():
+                with self._option():
+                    self._struct_lit_()
+                with self._option():
+                    self._expr_1_()
+                self._error('no available options')
         self.name_last_node('@')
         self._s__()
 
@@ -1381,7 +1441,13 @@ class PrincessParser(Parser):
     @tatsumasu()
     def _stmt_vardecl_rhs_(self):  # noqa
         self._n__()
-        self._expression_()
+        with self._group():
+            with self._choice():
+                with self._option():
+                    self._struct_lit_()
+                with self._option():
+                    self._expression_()
+                self._error('no available options')
         self.name_last_node('@')
         self._s__()
 
@@ -1771,6 +1837,12 @@ class PrincessSemantics(object):
         return ast
 
     def type_structural(self, ast):  # noqa
+        return ast
+
+    def type_ptr(self, ast):  # noqa
+        return ast
+
+    def type_ref(self, ast):  # noqa
         return ast
 
     def type(self, ast):  # noqa

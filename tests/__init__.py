@@ -64,6 +64,8 @@ def prog(n):
 def ast(src): 
     return parse(src).children_list()[0]
 
+# Convenience functions for testing
+
 Integer = node.Integer
 Float = node.Float
 String = node.String
@@ -79,6 +81,10 @@ def Var(*args, **kwargs):
     return node.VarDecl(keyword = 'var', *args, **kwargs)
 def Let(*args, **kwargs):
     return node.VarDecl(keyword = 'let', *args, **kwargs)
+def Pointer(tpe = None):
+    return node.Pointer(keyword = 'var', type = node.Type(tpe) if tpe else None)
+def Reference(tpe = None):
+    return node.Pointer(keyword = 'let', type = node.Type(tpe) if tpe else None)
 
 def assertFailedParse(code, regex = None): 
     __tracebackhide__ = True # pylint: disable=W0612

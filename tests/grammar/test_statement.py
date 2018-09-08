@@ -12,6 +12,9 @@ def test_variable_declarataion():
     assert parse("var myvar: int"), prog(
         Var(left = [node.IdDecl(name = Identifier("myvar"), type = node.Type(Identifier("int")))])
     )
+    assert parse("var ptr:*"), prog(
+        Var(left = [node.IdDecl(name = Identifier("ptr"), type = node.Type(Pointer()))])
+    )
 
 def test_variable_declaration_multiple():
     assert parse("let a, b:int = 10, 20") == prog(

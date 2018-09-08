@@ -6,7 +6,7 @@ class WrappedParser(PrincessParser):
         super()._reset(*args, **kwargs)
         self.in_n_expression = 0
 
-    # TODO Handle this inside the grammar instead? Would mean a lot of duplications tho
+    # FIXME This doesn't work correctly (do expression) -> strip all whitespace beforehand using a special pass
 
     def _s__(self): 
         if self.in_n_expression > 0:
