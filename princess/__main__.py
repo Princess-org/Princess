@@ -51,9 +51,12 @@ def main(args):
     print("type exit to leave the prompt")
     
     while True:
-        line = read_input()
-        if line == "exit": break
-        else: eval(line)
+        try:
+            line = read_input()
+            if line == "exit": break
+            else: eval(line)
+        except KeyboardInterrupt:
+            break
 
 if __name__ == "__main__":
     main(sys.argv)
