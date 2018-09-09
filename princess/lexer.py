@@ -68,7 +68,7 @@ class Lexer(PrincessBuffer):
                         text = " "
                     elif match.group("newline"):
                         if bracket_stack[-1] != BRACE:
-                            text = ""       # Strip newline inside parens
+                            text = " "      # Strip newline inside parens
                         else: text = "\n"   # Collapse to single newline
                     elif match.group("oparen"):
                         bracket_stack += [PAREN]
