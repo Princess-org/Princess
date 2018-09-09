@@ -70,9 +70,9 @@ def test_if_statement():
     """) == prog(
         node.If(
             cond = Boolean(True),
-            body = node.Body([Identifier("body")]),
+            body = Body(Identifier("body")),
             else_ = node.Else(
-                body = node.Body([Identifier("body")])
+                body = Body(Identifier("body"))
             )
         )
     )
@@ -90,19 +90,19 @@ def test_if_statement():
     """) == prog(
         node.If(
             cond = Boolean(True),
-            body = node.Body([Identifier("if_body")]),
+            body = Body(Identifier("if_body")),
             else_if = [
                 node.If(
                     cond = Boolean(False),
-                    body = node.Body([Identifier("else_if_body")])
+                    body = Body(Identifier("else_if_body"))
                 ),
                 node.If(
                     cond = Boolean(True),
-                    body = node.Body([Identifier("else_if_body")])
+                    body = Body(Identifier("else_if_body"))
                 )
             ],
             else_ = node.Else(
-                body = node.Body([Identifier("else_body")])
+                body = Body(Identifier("else_body"))
             )
         )
     )
@@ -142,7 +142,7 @@ def test_while():
     """) == prog(
         node.While(
             cond = ast("1 == 2"),
-            body = node.Body(
+            body = Body(
                 Continue,
                 Break
             )
@@ -154,7 +154,8 @@ def test_for_simple():
     assert parse ("""\
         var i = 0
         for i in 1:20 { 
-            print("Hello World")
+            /* in line /* comment */*/
+            print("Hello World") // EOL
         }
         print(i)
     """) == node.Program(
@@ -164,9 +165,9 @@ def test_for_simple():
                 left = [node.IdDecl(name = Identifier("i"))], 
                 right = [node.Range(from_ = Integer(1), to = Integer(20))]
             ),
-            body = node.Body([
+            body = Body(
                 ast("print(\"Hello World\")")
-            ])
+            )
         ),
         ast("print(i)")
     )

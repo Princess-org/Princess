@@ -21,8 +21,8 @@ class TestStringLiteral:
  
     def test_invalid_escapes(self):
         """ Invalid escape sequences, these should fail"""
-        assertFailedParse("\" \\q \\ \"", "Expecting <esc_char>")
-        assertFailedParse("\" \\XFF \"", "Expecting <esc_char>")
+        assertFailedParse("\" \\q \\ \"", "Expecting <ESC_CHAR>")
+        assertFailedParse("\" \\XFF \"", "Expecting <ESC_CHAR>")
 
     def test_multiline_string(self):
         """ String that spans multiple lines """
