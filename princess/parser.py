@@ -326,7 +326,7 @@ class PrincessParser(Parser):
 
     @tatsumasu()
     def _ESC_CHAR_(self):  # noqa
-        self._pattern('[abfnrtv\\\\\'"0]')
+        self._pattern('[abfnrtv\\\\\'\\\\"0]')
         self.add_last_node_to_name('@')
 
     @tatsumasu()
@@ -377,10 +377,24 @@ class PrincessParser(Parser):
                     self._pattern('[^\\0\\x7f\\x80"\\\\]+')
                 self._error('no available options')
 
+    @tatsumasu()
+    def _T_CHAR_S_(self):  # noqa
+        with self._group():
+            with self._choice():
+                with self._option():
+                    with self._group():
+                        self._pattern('\\\\')
+                        self._cut()
+                        self._ESC_SEQ_()
+                        self.name_last_node('@')
+                with self._option():
+                    self._pattern("[^\\0\\x7f\\x80'\\\\]")
+                self._error('no available options')
+
     @tatsumasu('Char')
     def _T_CHAR_LIT_(self):  # noqa
         self._token("'")
-        self._T_CHAR_()
+        self._T_CHAR_S_()
         self.name_last_node('VALUE')
         self._cut()
         self._token("'")
@@ -1783,6 +1797,9 @@ class PrincessSemantics(object):
         return ast
 
     def T_CHAR(self, ast):  # noqa
+        return ast
+
+    def T_CHAR_S(self, ast):  # noqa
         return ast
 
     def T_CHAR_LIT(self, ast):  # noqa

@@ -84,6 +84,7 @@ Integer = node.Integer
 Float = node.Float
 String = node.String
 Boolean = node.Boolean
+Char = node.Char
 
 EmptyBody = node.Body([None])
 Continue = node.Continue()

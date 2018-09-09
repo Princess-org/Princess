@@ -28,6 +28,19 @@ class TestStringLiteral:
         """ String that spans multiple lines """
         assert parse("\"Hello\nWorld\"") == prog(String("Hello\nWorld"))
 
+class TestCharLiteral:
+    def test_generic(self):
+        assert parse("' '") == prog(Char(' '))
+        assert parse("'N'") == prog(Char('N'))
+    
+    def test_escapes(self):
+        assert parse("'\\x20'") == prog(Char('\x20'))
+        assert parse("'\\u1111'") == prog(Char('\u1111'))
+    
+    def test_invalid(self):
+        assertFailedParse("''")
+        assertFailedParse("'AB'", "expecting \"'\"")
+
 class TestIntegerLiteral:
     def test_int_simple(self):
         """ Simple integer """
