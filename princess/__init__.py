@@ -3,6 +3,7 @@ from tatsu.grammars import Grammar
 from tatsu.model import ModelBuilderSemantics
 
 from .util import *
+from princess import lexer
 
 # Loaded dynamically
 parser = None
@@ -13,19 +14,20 @@ instance = None
 from . import grammar
 
 def _import_parser():
-    global instance, parser
+    global instance, parser, lexer
     if parser is not None:
         print("Reloading parser")
         importlib.invalidate_caches()
         from . import parser
-        importlib.reload(parser)
         parser = importlib.reload(parser)
+        importlib.reload(lexer)
+
     else:
         try:
             parser = importlib.import_module(".parser", package = __package__)
         except ImportError: pass
     if parser is not None:
-        instance = parser.PrincessParser()
+        instance = parser.PrincessParser(buffer_class = lexer.Lexer)
         
 _import_parser()
 

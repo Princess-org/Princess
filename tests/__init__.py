@@ -89,6 +89,9 @@ EmptyBody = node.Body([None])
 Continue = node.Continue()
 Break = node.Break()
 
+def Body(*args):
+    return node.Body([None] + list(args))
+
 def Identifier(*args):
     return node.Identifier(list(args))
 
