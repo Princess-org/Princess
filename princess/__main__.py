@@ -3,6 +3,7 @@ import colorama
 
 from colorama import ansi
 from princess import parse
+from tatsu.exceptions import FailedParse
 
 UNBALANCED_PAREN_RE = re.compile(r"""
       (?P<string> \"(\\\"|[^\"])*\" | \'(\\\'|[^\'])*\')
@@ -38,8 +39,11 @@ def read_input():
     return line.strip()
 
 def eval(src):
-    ast = parse(src)
-    print(ast)
+    try:
+        ast = parse(src)
+        print(ast)
+    except FailedParse as e:
+        print(e, file = sys.stderr)
 
 def main(args):
     colorama.init()
