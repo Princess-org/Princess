@@ -84,6 +84,7 @@ class Lexer(PrincessBuffer):
                         bracket_stack.pop()
                     elif match.group("cbrace"):
                         assert len(bracket_stack) > 1 and bracket_stack[-1] == BRACE
+                        bracket_stack.pop()
                     
             if not in_str:
                 if match.group("comment_start"):
