@@ -302,8 +302,32 @@ Do note that this makes a function polymorphic, and thus it cant be exported to 
 A function that accepts a known type as vararg can be exported, however, this is treated like a
 dynamic array or a static array, depending on the context
 
-### Operators: 
-like C, but no comma operator
+## Operators
+
+### Pointer arithmetic:
+
+Pointer arithmetic is performed using the separate operators `++` and `--`.
+Both exist in the forms `ptr++`, `++ptr` and `ptr ++ n`. You can also subtract pointers using `ptr1 -- ptr2`, here both need to be of the same concrete type.
+These operators can not be overloaded, and are thus guaranteed to only do pointer arithmetic. Consequently, `++` and `--` can not be used on numeric values. Use `+= 1` or `-= 1` instead.
+
+When comparing pointers you have to cast one of them to `*` (void pointer) to compare the pointer values (as opposed to the values that are pointed to).
+
+```
+let va, vb = 2, 3
+var a, b = *va, *vb
+
+var b: *int = a++
+var c: *int = ++a
+var d: *int = a ++ 4
+var e: *int = a -- 4
+let f: size = a -- b // (distance, scalar)
+
+let g = a + b // this is 5
+let h = a - b // this is -1
+let i = a += 1 // this would be (*a)++ in C
+```
+
+### Size and Alignment:
 
 ```
 // size_of:

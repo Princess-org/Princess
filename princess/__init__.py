@@ -24,7 +24,7 @@ def _import_parser():
     else:
         try:
             parser = importlib.import_module(".parser", package = __package__)
-            lexer = importlib.import_module("princess.lexer", package = __package__)
+            lexer = importlib.import_module(".lexer", package = __package__)
         except ImportError: pass
     if parser is not None:
         instance = parser.PrincessParser(buffer_class = lexer.Lexer)
