@@ -87,7 +87,7 @@ class Lexer(PrincessBuffer):
                     
             if not in_str:
                 if match.group("comment_start"):
-                    text = ""
+                    text = " "
                     comment_stack += 1
                 elif match.group("comment_end"):
                     text = ""

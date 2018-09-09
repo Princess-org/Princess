@@ -757,6 +757,7 @@ class PrincessParser(Parser):
         self._expr_10_()
         self.name_last_node('left')
         self._token('[')
+        self._cut()
         self._expression_()
         self.name_last_node('right')
         self._token(']')

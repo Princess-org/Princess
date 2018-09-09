@@ -56,6 +56,7 @@ def main(args):
             if line == "exit": break
             else: eval(line)
         except KeyboardInterrupt:
+            print()
             break
 
 if __name__ == "__main__":
