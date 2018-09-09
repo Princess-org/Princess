@@ -109,7 +109,7 @@ type Matrix3d = [3 [3 double]]
 - In an ambigious case you can end a statement with `;`.
 - A new statement can only start on a new line, or after `;`.
 - `,` is used as delimiter inside statements.
-- Both `,` and `;` are optional if there's a line break to clearly separate statements/expressions.
+- `;` is optional if there's a line break to clearly separate statements/expressions.
 - `()` is used to group expressions, `{}` is used to group statements.
 - Every expression is also a statement.
 
@@ -120,13 +120,9 @@ enum {
 }
 call // Equivalent to below
 call()
-call(
-    para = 1 // No comma needed
-    parb = 2
-)
 
 def fun(
-    par1: int // No comma needed
+    par1: int,
     par2: int
 ) {
     foo +
@@ -212,7 +208,6 @@ The `_` means "discard value"
 ```
 def add_i(par: int, par2: int) -> int = par + par2;
 ```
-TODO: Could conflict with potential `def rename = foo` syntax, but same as `const rename = *foo`
 
 Functions can be nested but they don't increase the lifetime
 of the parent function.
@@ -220,7 +215,6 @@ of the parent function.
 ### Functions that return types:
 
 A function that returns a type is implicitly `#static` (Unless `#runtime_types` is specified)
-It can only return one value. (Subject to change)
 Be aware of name collisions, as such functions can be used in place of a type.
 Expressions take precidence over types, disambiguate with `type(T)`
 
@@ -555,12 +549,11 @@ a = do {
 ```
 Blocks are expressions and evaluate to the last value
 
-### Regions:
+### Pragma regions:
 
-#### TODO: This should be changed
-Blocks should not be confused with regions that don't create a new scope
+Creates a new scope for a pragma
 ```
-{ // Doesn't create a new scope, can be useful for applying pragmas
+#pragma { // Doesn't create a new scope, can be useful for applying pragmas
        #no_bounds_check
        // ... bounds check <off> here
 }
@@ -578,16 +571,7 @@ label <label>: statement
 go_to <label>
 ```
 
-### For Loop:
-```
-for <variable>, <to>, [step] {...}
-
-for var a = 5, 10 {
-    ...
-}
-```
-
-### For in loop:
+### For loop:
 
 ```
 for var a: &int in array { // Can capture by reference, pointer or by value
@@ -597,13 +581,13 @@ for var a: &int in array { // Can capture by reference, pointer or by value
 
 It's simplified from the C++ version, for everything else use
 
-### While loop
+### While loop:
 
 ```
 while <condition> {...}
 loop {} // Same as while true
 ```
-### if statement:
+### If statement:
 ```
 if <condition> {...} else if <condition> {...} else {...}
 // You can leave out the brackets for a single expression
@@ -671,7 +655,7 @@ No implicit fallthrough
 Example:
 
 ```
-switch number {
+switch number [#fallthrough] {
 if 1, 2:
     printf("This is either 1 or 2")
 if 3:
@@ -684,7 +668,7 @@ else:
 }
 ```
 
-TODO: case statement
+TODO: case statement (extended switch statement)
 
 ### Type inference:
 
