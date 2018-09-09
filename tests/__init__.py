@@ -92,7 +92,7 @@ Break = node.Break()
 Null = node.Null()
 
 def Body(*args):
-    return node.Body([None] + list(args))
+    return node.Body(list(args))
 
 def Identifier(*args):
     return node.Identifier(list(args))

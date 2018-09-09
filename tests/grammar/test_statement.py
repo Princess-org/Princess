@@ -109,7 +109,7 @@ def test_if_statement():
 
 def test_static_if():
     assert parse("""\
-        #if true { } else if false { } else {}
+        #if true {} else if false {} else {}
     """) == prog(
         node.StaticIf(
             cond = Boolean(True),

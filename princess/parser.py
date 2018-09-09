@@ -36,6 +36,7 @@ KEYWORDS = {
     'not',
     'null',
     'or',
+    'struct',
     'true',
     'type',
     'var',
@@ -101,6 +102,7 @@ class PrincessParser(Parser):
     @tatsumasu('Body')
     def _code_body_(self):  # noqa
         self._token('{')
+        self._n__()
 
         def block1():
             self._statement_()
@@ -523,14 +525,122 @@ class PrincessParser(Parser):
     @tatsumasu('StructInit')
     def _struct_lit_(self):  # noqa
         self._token('{')
+        self._n__()
+        with self._ifnot():
+            self._void()
         self._cut()
         self._token('}')
 
     @tatsumasu('StructuralT')
     def _type_structural_(self):  # noqa
         self._token('{')
+        self._n__()
+        with self._ifnot():
+            self._void()
         self._cut()
         self._token('}')
+
+    @tatsumasu('Else')
+    def _stmt_struct_else_(self):  # noqa
+        self._token('else')
+        self._n__()
+        self._cut()
+        self._struct_body_()
+        self.name_last_node('body')
+        self.ast._define(
+            ['body'],
+            []
+        )
+
+    @tatsumasu('If')
+    def _stmt_struct_else_if_(self):  # noqa
+        self._token('else')
+        self._n__()
+        self._token('if')
+        self._n__()
+        self._cut()
+        self._expression_()
+        self.name_last_node('cond')
+        self._n__()
+        self._struct_body_()
+        self.name_last_node('body')
+        self.ast._define(
+            ['body', 'cond'],
+            []
+        )
+
+    @tatsumasu('If')
+    def _stmt_struct_if_(self):  # noqa
+        self._token('#if')
+        self._n__()
+        self._cut()
+        self._expression_()
+        self.name_last_node('cond')
+        self._n__()
+        self._struct_body_()
+        self.name_last_node('body')
+
+        def block3():
+            self._stmt_struct_else_if_()
+        self._closure(block3)
+        self.name_last_node('else_if')
+        with self._optional():
+            self._n__()
+            self._stmt_struct_else_()
+            self.name_last_node('else_')
+        self.ast._define(
+            ['body', 'cond', 'else_', 'else_if'],
+            []
+        )
+
+    @tatsumasu()
+    def _struct_def_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._n__()
+                self._void()
+                self.name_last_node('@')
+                self._t_term_()
+            with self._option():
+                self._n__()
+                with self._group():
+                    with self._choice():
+                        with self._option():
+                            self._type_struct_()
+                        with self._option():
+                            self._stmt_struct_if_()
+                        with self._option():
+                            self._stmt_iddecl_()
+                        self._error('no available options')
+                self.name_last_node('@')
+                self._t_term_()
+            self._error('no available options')
+
+    @tatsumasu('StructBody')
+    def _struct_body_(self):  # noqa
+        self._token('{')
+
+        def block1():
+            self._struct_def_()
+        self._closure(block1)
+        self.name_last_node('LIST')
+        self._n__()
+        self._token('}')
+        self.ast._define(
+            ['LIST'],
+            []
+        )
+
+    @tatsumasu('Struct')
+    def _type_struct_(self):  # noqa
+        self._token('struct')
+        self._n__()
+        self._struct_body_()
+        self.name_last_node('body')
+        self.ast._define(
+            ['body'],
+            []
+        )
 
     @tatsumasu('PtrT')
     def _type_ptr_(self):  # noqa
@@ -693,6 +803,8 @@ class PrincessParser(Parser):
     @tatsumasu()
     def _type_1_(self):  # noqa
         with self._choice():
+            with self._option():
+                self._type_struct_()
             with self._option():
                 self._type_structural_()
             with self._option():
@@ -1625,6 +1737,8 @@ class PrincessParser(Parser):
     @tatsumasu('StaticIf')
     def _stmt_static_if_(self):  # noqa
         self._token('#')
+        with self._ifnot():
+            self._token(' ')
         self._token('if')
         self._n__()
         self._cut()
@@ -1862,6 +1976,24 @@ class PrincessSemantics(object):
         return ast
 
     def type_structural(self, ast):  # noqa
+        return ast
+
+    def stmt_struct_else(self, ast):  # noqa
+        return ast
+
+    def stmt_struct_else_if(self, ast):  # noqa
+        return ast
+
+    def stmt_struct_if(self, ast):  # noqa
+        return ast
+
+    def struct_def(self, ast):  # noqa
+        return ast
+
+    def struct_body(self, ast):  # noqa
+        return ast
+
+    def type_struct(self, ast):  # noqa
         return ast
 
     def type_ptr(self, ast):  # noqa
