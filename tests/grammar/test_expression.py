@@ -57,6 +57,23 @@ class TestOperators:
             )
         )
 
+    def test_pointer_arithmetic(self):
+        assert parse("ptr ++ 2") == prog(
+            node.PAdd(left = Identifier("ptr"), right = Integer(2))
+        )
+        assert parse("ptr++") == prog(
+            node.PostInc(left = Identifier("ptr"))
+        )
+        assert parse("++ptr") == prog(
+            node.PreInc(right = Identifier("ptr"))
+        )
+        assert parse("++ptr++++1") == parse("(++(ptr++)) ++ 1") == prog(
+            node.PAdd(
+                left = node.PreInc(right = node.PostInc(left = Identifier("ptr"))),
+                right = Integer(1)
+            )
+        )
+
     def test_comparison(self):
         assert parse("foo == bar > 1 + 2 < baz") == prog(
             node.Compare(

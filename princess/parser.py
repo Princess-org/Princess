@@ -924,12 +924,18 @@ class PrincessParser(Parser):
             []
         )
 
+    @tatsumasu()
+    def _post_lh_(self):  # noqa
+        self._pattern('[\\d\\w\\(]')
+
     @tatsumasu('PostInc')
     @nomemo
     def _expr_postinc_(self):  # noqa
         self._expr_10_()
         self.name_last_node('left')
-        self._token('--')
+        self._token('++')
+        with self._ifnot():
+            self._post_lh_()
         self.ast._define(
             ['left'],
             []
@@ -940,7 +946,9 @@ class PrincessParser(Parser):
     def _expr_postdec_(self):  # noqa
         self._expr_10_()
         self.name_last_node('left')
-        self._token('++')
+        self._token('--')
+        with self._ifnot():
+            self._post_lh_()
         self.ast._define(
             ['left'],
             []
@@ -1157,6 +1165,36 @@ class PrincessParser(Parser):
         self._n__()
         self._cut()
         self._expr_7_()
+        self.name_last_node('right')
+        self.ast._define(
+            ['left', 'right'],
+            []
+        )
+
+    @tatsumasu('PAdd')
+    @nomemo
+    def _expr_padd_(self):  # noqa
+        self._expr_5_()
+        self.name_last_node('left')
+        self._token('++')
+        self._n__()
+        self._cut()
+        self._expr_6_()
+        self.name_last_node('right')
+        self.ast._define(
+            ['left', 'right'],
+            []
+        )
+
+    @tatsumasu('PSub')
+    @nomemo
+    def _expr_psub_(self):  # noqa
+        self._expr_5_()
+        self.name_last_node('left')
+        self._token('--')
+        self._n__()
+        self._cut()
+        self._expr_6_()
         self.name_last_node('right')
         self.ast._define(
             ['left', 'right'],
@@ -1506,6 +1544,10 @@ class PrincessParser(Parser):
     @leftrec
     def _expr_5_(self):  # noqa
         with self._choice():
+            with self._option():
+                self._expr_padd_()
+            with self._option():
+                self._expr_psub_()
             with self._option():
                 self._expr_add_()
             with self._option():
@@ -2047,6 +2089,9 @@ class PrincessSemantics(object):
     def expr_type(self, ast):  # noqa
         return ast
 
+    def post_lh(self, ast):  # noqa
+        return ast
+
     def expr_postinc(self, ast):  # noqa
         return ast
 
@@ -2099,6 +2144,12 @@ class PrincessSemantics(object):
         return ast
 
     def expr_mod(self, ast):  # noqa
+        return ast
+
+    def expr_padd(self, ast):  # noqa
+        return ast
+
+    def expr_psub(self, ast):  # noqa
         return ast
 
     def expr_add(self, ast):  # noqa
