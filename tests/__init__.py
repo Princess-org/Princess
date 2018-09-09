@@ -89,6 +89,7 @@ Char = node.Char
 EmptyBody = node.Body([None])
 Continue = node.Continue()
 Break = node.Break()
+Null = node.Null()
 
 def Body(*args):
     return node.Body([None] + list(args))

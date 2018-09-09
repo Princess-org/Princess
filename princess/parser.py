@@ -34,6 +34,7 @@ KEYWORDS = {
     'let',
     'loop',
     'not',
+    'null',
     'or',
     'true',
     'type',
@@ -463,6 +464,12 @@ class PrincessParser(Parser):
             []
         )
 
+    @tatsumasu('Null')
+    def _t_null_(self):  # noqa
+        self._token('null')
+        self._void()
+        self.name_last_node('@')
+
     @tatsumasu()
     def _array_element_(self):  # noqa
         self._expression_()
@@ -496,6 +503,8 @@ class PrincessParser(Parser):
                     self._t_num_lit_()
                 with self._option():
                     self._t_bool_lit_()
+                with self._option():
+                    self._t_null_()
                 with self._option():
                     self._T_CHAR_LIT_()
                 with self._option():
@@ -1832,6 +1841,9 @@ class PrincessSemantics(object):
         return ast
 
     def t_bool_lit(self, ast):  # noqa
+        return ast
+
+    def t_null(self, ast):  # noqa
         return ast
 
     def array_element(self, ast):  # noqa

@@ -97,3 +97,6 @@ class TestArrayLiteral:
         assert parse("[1, 2, 3]") == prog(node.Array(
             Integer(1), Integer(2), Integer(3)
         ))
+
+def test_null():
+    assert parse("null") == prog(Null)
