@@ -3,11 +3,11 @@ from tatsu.grammars import Grammar
 from tatsu.model import ModelBuilderSemantics
 
 from .util import *
-from princess import lexer
 
 # Loaded dynamically
 parser = None
 instance = None
+lexer = None
 
 # This is import is important to make sure 
 # that ast.node_classes is properly loaded
@@ -18,13 +18,13 @@ def _import_parser():
     if parser is not None:
         print("Reloading parser")
         importlib.invalidate_caches()
-        from . import parser
         parser = importlib.reload(parser)
-        importlib.reload(lexer)
+        lexer = importlib.reload(lexer)
 
     else:
         try:
             parser = importlib.import_module(".parser", package = __package__)
+            lexer = importlib.import_module("princess.lexer", package = __package__)
         except ImportError: pass
     if parser is not None:
         instance = parser.PrincessParser(buffer_class = lexer.Lexer)

@@ -204,3 +204,21 @@ def test_if_expression():
 
 def test_range_expression():
     assert parse("1:2") == prog(node.Range(from_ = Integer(1), to = Integer(2)))
+
+def test_do_expression():
+    assert parse("""\
+        let a = do {
+            some_call()
+            20
+        }
+    """) == prog(
+        Let(
+            left = [node.IdDecl(name = Identifier("a"))],
+            right = [
+                Do(
+                    node.Call(left = Identifier("some_call"), args = []),
+                    Integer(20)
+                )
+            ]
+        )
+    )

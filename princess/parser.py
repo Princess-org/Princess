@@ -1251,6 +1251,18 @@ class PrincessParser(Parser):
             []
         )
 
+    @tatsumasu('Do')
+    def _expr_do_(self):  # noqa
+        self._token('do')
+        self._n__()
+        self._cut()
+        self._code_body_()
+        self.name_last_node('VALUE')
+        self.ast._define(
+            ['VALUE'],
+            []
+        )
+
     @tatsumasu('Range')
     @nomemo
     def _expr_range_(self):  # noqa
@@ -1415,6 +1427,8 @@ class PrincessParser(Parser):
     @nomemo
     def _expr_1_(self):  # noqa
         with self._choice():
+            with self._option():
+                self._expr_do_()
             with self._option():
                 self._expr_assign_op_()
             with self._option():
@@ -1980,6 +1994,9 @@ class PrincessSemantics(object):
         return ast
 
     def expr_if(self, ast):  # noqa
+        return ast
+
+    def expr_do(self, ast):  # noqa
         return ast
 
     def expr_range(self, ast):  # noqa

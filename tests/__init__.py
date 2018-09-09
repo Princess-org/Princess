@@ -96,6 +96,9 @@ def Body(*args):
 def Identifier(*args):
     return node.Identifier(list(args))
 
+def Do(*args):
+    return node.Do(Body(*args))
+
 def Var(*args, **kwargs):
     return node.VarDecl(keyword = 'var', *args, **kwargs)
 def Let(*args, **kwargs):
