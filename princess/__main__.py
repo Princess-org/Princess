@@ -43,7 +43,7 @@ def eval(src):
         ast = parse(src)
         print(ast)
     except FailedParse as e:
-        print(e, file = sys.stderr)
+        print(ansi.Fore.RED, e, ansi.Fore.RESET, file = sys.stderr)
 
 def main(args):
     colorama.init()
