@@ -1239,17 +1239,19 @@ class PrincessParser(Parser):
     @tatsumasu('Range')
     @nomemo
     def _expr_range_(self):  # noqa
-        self._expr_1_()
-        self.name_last_node('from_')
-        self._token(':')
-        self._n__()
-        self._expr_1_()
-        self.name_last_node('to')
         with self._optional():
-            self._token(':')
+            self._expr_1_()
+            self.name_last_node('from_')
+        self._token(':')
+        with self._optional():
             self._n__()
             self._expr_1_()
-            self.name_last_node('step')
+            self.name_last_node('to')
+            with self._optional():
+                self._token(':')
+                self._n__()
+                self._expr_1_()
+                self.name_last_node('step')
         self.ast._define(
             ['from_', 'step', 'to'],
             []

@@ -152,6 +152,26 @@ class TestOperators:
             )
         )
 
+    def test_array_slice(self):
+        assert parse("array[:]") == prog(
+            node.ArrayIndex(
+                left = Identifier("array"),
+                right = node.Range()
+            )
+        )
+        assert parse("array[1:]") == prog(
+            node.ArrayIndex(
+                left = Identifier("array"),
+                right = node.Range(from_ = Integer(1))
+            )
+        )
+        assert parse("array[:-2]") == prog(
+            node.ArrayIndex(
+                left = Identifier("array"),
+                right = node.Range(to = node.UMinus(right = Integer(2)))
+            )
+        )
+
 def test_no_wrapping():
     assertFailedParse("""\
             1
