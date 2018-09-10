@@ -1,5 +1,8 @@
-import tatsu, inspect, princess
-from tatsu.model import AST
+import tatsu, inspect, princess, enum
+
+from itertools import chain
+from tatsu.ast import AST
+from enum import Enum
 
 class Node(tatsu.model.Node):
     def __init__(self, _run_semantic = True, **kwargs):
@@ -56,7 +59,7 @@ def __get_subclasses(cls):
         yield subclass
 
 # List of all nodes, magical object
-node_classes = __get_subclasses(Node)
+node_classes = chain(__get_subclasses(Node), __get_subclasses(Enum))
 
 class NodeDict(object):
     def __getattr__(self, name):

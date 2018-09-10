@@ -1,6 +1,6 @@
 from functools import reduce
-from enum import Enum
 from tatsu.ast import AST
+from enum import Enum
 from .ast import Node, REMOVE
 
 class Statement(Node):
@@ -72,6 +72,11 @@ class AssignOp(str, Enum):
     Add = '+='; Sub = '-='
     Mul = '*='; Mod = '%='; Div = '/='
     BAnd = '&='; BOr = '|='; Xor = '^='
+
+class Share(int, Enum):
+    No = 0
+    Import = 1
+    Export = 2
 
 class AssignAndOp(Expression):
     def _semantic(self, ast):

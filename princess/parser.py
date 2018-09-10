@@ -26,11 +26,14 @@ KEYWORDS = {
     'break',
     'const',
     'continue',
+    'def',
     'else',
+    'export',
     'false',
     'for',
     'go_to',
     'if',
+    'import',
     'in',
     'label',
     'let',
@@ -38,6 +41,7 @@ KEYWORDS = {
     'not',
     'null',
     'or',
+    'return',
     'struct',
     'true',
     'type',
@@ -613,7 +617,6 @@ class PrincessParser(Parser):
         with self._choice():
             with self._option():
                 self._token('(')
-                self._n__()
                 with self._group():
                     with self._choice():
                         with self._option():
@@ -625,7 +628,6 @@ class PrincessParser(Parser):
                             self._struct_def_noterm_()
                             self.name_last_node('@')
                         self._error('no available options')
-                self._n__()
                 self._token(')')
             with self._option():
                 with self._group():
@@ -888,35 +890,17 @@ class PrincessParser(Parser):
                     self._call_arg_()
                 self._error('no available options')
         self._gather(block1, sep1)
-        self.name_last_node('args')
+        self.name_last_node('@')
         self._cut()
         self._token(')')
-        self.ast._define(
-            ['args'],
-            []
-        )
 
     @tatsumasu('Call')
     @nomemo
     def _expr_call_(self):  # noqa
         self._expr_10_()
         self.name_last_node('left')
-        self._token('(')
-
-        def sep2():
-            self._token(',')
-
-        def block2():
-            with self._choice():
-                with self._option():
-                    self._call_arg_named_()
-                with self._option():
-                    self._call_arg_()
-                self._error('no available options')
-        self._gather(block2, sep2)
+        self._call_args_()
         self.name_last_node('args')
-        self._cut()
-        self._token(')')
         self.ast._define(
             ['args', 'left'],
             []
@@ -1927,6 +1911,28 @@ class PrincessParser(Parser):
     def _stmt_break_(self):  # noqa
         self._token('break')
 
+    @tatsumasu()
+    def _ret_arg_(self):  # noqa
+        self._n__()
+        self._expression_()
+        self.name_last_node('@')
+
+    @tatsumasu('Return')
+    def _stmt_return_(self):  # noqa
+        self._token('return')
+
+        def sep1():
+            self._token(',')
+
+        def block1():
+            self._ret_arg_()
+        self._gather(block1, sep1)
+        self.name_last_node('LIST')
+        self.ast._define(
+            ['LIST'],
+            []
+        )
+
     @tatsumasu('In')
     def _expr_in_(self):  # noqa
         with self._optional():
@@ -1978,22 +1984,8 @@ class PrincessParser(Parser):
         self._pragma_ident_()
         self.name_last_node('name')
         with self._optional():
-            self._token('(')
-
-            def sep2():
-                self._token(',')
-
-            def block2():
-                with self._choice():
-                    with self._option():
-                        self._call_arg_named_()
-                    with self._option():
-                        self._call_arg_()
-                    self._error('no available options')
-            self._gather(block2, sep2)
+            self._call_args_()
             self.name_last_node('args')
-            self._cut()
-            self._token(')')
         self.ast._define(
             ['args', 'name'],
             []
@@ -2035,6 +2027,111 @@ class PrincessParser(Parser):
         )
 
     @tatsumasu()
+    def _return_type_(self):  # noqa
+        self._n__()
+        self._type_()
+        self.name_last_node('@')
+
+    @tatsumasu('IdDecl')
+    def _def_arg_(self):  # noqa
+        with self._group():
+            with self._choice():
+                with self._option():
+                    self._token('let')
+                with self._option():
+                    self._token('var')
+                with self._option():
+                    self._constant('let')
+                self._error('no available options')
+        self.name_last_node('keyword')
+        self._identifier_()
+        self.name_last_node('name')
+        with self._optional():
+            self._token(':')
+            self._type_()
+            self.name_last_node('type')
+        with self._optional():
+            self._token('=')
+            self._expression_call_()
+            self.name_last_node('value')
+        self.ast._define(
+            ['keyword', 'name', 'type', 'value'],
+            []
+        )
+
+    @tatsumasu()
+    def _def_body_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._code_body_()
+                self.name_last_node('@')
+            with self._option():
+                self._token('=')
+                self._n__()
+                self._expression_()
+                self.name_last_node('@')
+            self._error('no available options')
+
+    @tatsumasu('Share')
+    def _share_marker_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._token('export')
+                self._n__()
+                self._token('import')
+                self._constant(3)
+                self.name_last_node('@')
+            with self._option():
+                self._token('export')
+                self._constant(2)
+                self.name_last_node('@')
+            with self._option():
+                self._token('import')
+                self._constant(1)
+                self.name_last_node('@')
+            self._error('no available options')
+
+    @tatsumasu('Def')
+    def _stmt_def_(self):  # noqa
+        with self._optional():
+            self._share_marker_()
+            self.name_last_node('share')
+            self._n__()
+        self._token('def')
+        self._n__()
+        self._cut()
+        self._identifier_()
+        self.name_last_node('name')
+        with self._optional():
+            self._token('(')
+            self._cut()
+
+            def sep2():
+                self._token(',')
+
+            def block2():
+                self._def_arg_()
+            self._gather(block2, sep2)
+            self._token(')')
+        with self._optional():
+            self._token('->')
+
+            def sep4():
+                self._token(',')
+
+            def block4():
+                self._return_type_()
+            self._gather(block4, sep4)
+            self.name_last_node('returns')
+        with self._optional():
+            self._def_body_()
+            self.name_last_node('body')
+        self.ast._define(
+            ['body', 'name', 'returns', 'share'],
+            []
+        )
+
+    @tatsumasu()
     def _stmt_(self):  # noqa
         with self._choice():
             with self._option():
@@ -2043,6 +2140,8 @@ class PrincessParser(Parser):
                 self._stmt_typedecl_()
             with self._option():
                 self._stmt_if_()
+            with self._option():
+                self._stmt_def_()
             with self._option():
                 self._stmt_static_if_()
             with self._option():
@@ -2053,6 +2152,8 @@ class PrincessParser(Parser):
                 self._stmt_while_loop_()
             with self._option():
                 self._stmt_loop_()
+            with self._option():
+                self._stmt_return_()
             with self._option():
                 self._stmt_continue_()
             with self._option():
@@ -2088,7 +2189,6 @@ class PrincessParser(Parser):
         with self._choice():
             with self._option():
                 self._token('(')
-                self._n__()
                 with self._group():
                     with self._choice():
                         with self._option():
@@ -2100,7 +2200,6 @@ class PrincessParser(Parser):
                             self._statement_noterm_()
                             self.name_last_node('@')
                         self._error('no available options')
-                self._n__()
                 self._token(')')
             with self._option():
                 self._stmt_()
@@ -2487,6 +2586,12 @@ class PrincessSemantics(object):
     def stmt_break(self, ast):  # noqa
         return ast
 
+    def ret_arg(self, ast):  # noqa
+        return ast
+
+    def stmt_return(self, ast):  # noqa
+        return ast
+
     def expr_in(self, ast):  # noqa
         return ast
 
@@ -2503,6 +2608,21 @@ class PrincessSemantics(object):
         return ast
 
     def stmt_goto(self, ast):  # noqa
+        return ast
+
+    def return_type(self, ast):  # noqa
+        return ast
+
+    def def_arg(self, ast):  # noqa
+        return ast
+
+    def def_body(self, ast):  # noqa
+        return ast
+
+    def share_marker(self, ast):  # noqa
+        return ast
+
+    def stmt_def(self, ast):  # noqa
         return ast
 
     def stmt(self, ast):  # noqa
