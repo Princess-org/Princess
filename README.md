@@ -667,32 +667,32 @@ floatN -> floatM // Where M >= N
 
 ```
 switch [#fallthrough] <type> {
-if <var>[,<var>...]:
+case <var>[,<var>...]:
     ...
     [break | continue]
 }
 ```
 
-Just like C, the switch statement works like a labeled goto.
+Like C, the switch statement works like a labeled goto.
 No implicit fallthrough
 
 Example:
 
 ```
 switch number [#fallthrough] {
-if 1, 2:
+case 1, 2:
     printf("This is either 1 or 2")
-if 3:
+case 3:
     printf("This is a 3")
     continue
-if 4:
+case 4:
     printf("This is a 3 or a 4")
-else:
+case:
     printf("This is some other number")
 }
 ```
 
-TODO: case statement (extended switch statement)
+TODO: match statement (extended switch statement)
 
 ### Type inference:
 
