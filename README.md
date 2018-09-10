@@ -513,14 +513,14 @@ type MyStruct = struct {
 
 ### Enums:
 ```
-enum [type] [#flags] { }
+enum [: <type>] [#flags] { }
 ```
 
 type is optional, defaults to int
 
 #### Example:
 ```
-enum int {
+enum: int {
     FOO; BAR; BAZ = 10 // FOO == 1, BAR == 2, BAZ == 10
 }
 ```
