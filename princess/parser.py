@@ -29,8 +29,10 @@ KEYWORDS = {
     'else',
     'false',
     'for',
+    'go_to',
     'if',
     'in',
+    'label',
     'let',
     'loop',
     'not',
@@ -855,13 +857,7 @@ class PrincessParser(Parser):
         self._identifier_()
         self.name_last_node('name')
         self._token('=')
-        with self._group():
-            with self._choice():
-                with self._option():
-                    self._struct_lit_()
-                with self._option():
-                    self._expression_()
-                self._error('no available options')
+        self._expression_call_()
         self.name_last_node('value')
         self.ast._define(
             ['name', 'value'],
@@ -870,13 +866,7 @@ class PrincessParser(Parser):
 
     @tatsumasu('CallArg')
     def _call_arg_(self):  # noqa
-        with self._group():
-            with self._choice():
-                with self._option():
-                    self._struct_lit_()
-                with self._option():
-                    self._expression_()
-                self._error('no available options')
+        self._expression_call_()
         self.name_last_node('value')
         self.ast._define(
             ['value'],
@@ -1493,6 +1483,26 @@ class PrincessParser(Parser):
             []
         )
 
+    @tatsumasu('Range')
+    def _expr_rangec_(self):  # noqa
+        with self._optional():
+            self._expr_1c_()
+            self.name_last_node('from_')
+        self._token(':')
+        with self._optional():
+            self._n__()
+            self._expr_1c_()
+            self.name_last_node('to')
+            with self._optional():
+                self._token(':')
+                self._n__()
+                self._expr_1c_()
+                self.name_last_node('step')
+        self.ast._define(
+            ['from_', 'step', 'to'],
+            []
+        )
+
     @tatsumasu()
     def _expr_11_(self):  # noqa
         with self._choice():
@@ -1666,6 +1676,35 @@ class PrincessParser(Parser):
     @nomemo
     def _expression_(self):  # noqa
         self._expr_0_()
+
+    @tatsumasu()
+    def _expr_1c_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._expr_do_()
+            with self._option():
+                self._expr_if_()
+            with self._option():
+                self._expr_2_()
+            self._error('no available options')
+
+    @tatsumasu()
+    def _expr_0c_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._expr_rangec_()
+            with self._option():
+                self._expr_1c_()
+            self._error('no available options')
+
+    @tatsumasu()
+    def _expression_call_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._struct_lit_()
+            with self._option():
+                self._expr_0c_()
+            self._error('no available options')
 
     @tatsumasu('IdDecl')
     def _stmt_iddecl_(self):  # noqa
@@ -1960,6 +1999,41 @@ class PrincessParser(Parser):
             []
         )
 
+    @tatsumasu('Label')
+    def _stmt_label_(self):  # noqa
+        self._token('label')
+        self._n__()
+        self._cut()
+        self._identifier_()
+        self.name_last_node('name')
+        self._n__()
+        self._token(':')
+        self._n__()
+        with self._group():
+            with self._choice():
+                with self._option():
+                    self._statement_noterm_()
+                with self._option():
+                    self._expression_()
+                self._error('no available options')
+        self.name_last_node('statement')
+        self.ast._define(
+            ['name', 'statement'],
+            []
+        )
+
+    @tatsumasu('Goto')
+    def _stmt_goto_(self):  # noqa
+        self._token('go_to')
+        self._n__()
+        self._cut()
+        self._identifier_()
+        self.name_last_node('VALUE')
+        self.ast._define(
+            ['VALUE'],
+            []
+        )
+
     @tatsumasu()
     def _stmt_(self):  # noqa
         with self._choice():
@@ -1983,6 +2057,8 @@ class PrincessParser(Parser):
                 self._stmt_continue_()
             with self._option():
                 self._stmt_break_()
+            with self._option():
+                self._stmt_goto_()
             self._error('no available options')
 
     @tatsumasu()
@@ -1991,6 +2067,10 @@ class PrincessParser(Parser):
         with self._choice():
             with self._option():
                 self._void()
+                self.name_last_node('@')
+                self._t_term_()
+            with self._option():
+                self._stmt_label_()
                 self.name_last_node('@')
                 self._t_term_()
             with self._option():
@@ -2314,6 +2394,9 @@ class PrincessSemantics(object):
     def expr_range(self, ast):  # noqa
         return ast
 
+    def expr_rangec(self, ast):  # noqa
+        return ast
+
     def expr_11(self, ast):  # noqa
         return ast
 
@@ -2351,6 +2434,15 @@ class PrincessSemantics(object):
         return ast
 
     def expression(self, ast):  # noqa
+        return ast
+
+    def expr_1c(self, ast):  # noqa
+        return ast
+
+    def expr_0c(self, ast):  # noqa
+        return ast
+
+    def expression_call(self, ast):  # noqa
         return ast
 
     def stmt_iddecl(self, ast):  # noqa
@@ -2405,6 +2497,12 @@ class PrincessSemantics(object):
         return ast
 
     def stmt_pragma(self, ast):  # noqa
+        return ast
+
+    def stmt_label(self, ast):  # noqa
+        return ast
+
+    def stmt_goto(self, ast):  # noqa
         return ast
 
     def stmt(self, ast):  # noqa

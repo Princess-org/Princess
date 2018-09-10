@@ -131,15 +131,15 @@ class TestOperators:
         )
 
     def test_call(self):
-        assert parse("foo(a = 20, 50)") == prog(
+        assert parse("foo(a, b = 50)") == prog(
             node.Call(
                 left = Identifier("foo"),
                 args = [
                     node.CallArg(
-                        name = Identifier("a"), 
-                        value = Integer(20)
+                        value = Identifier("a")
                     ),
                     node.CallArg(
+                        name = Identifier("b"),
                         value = Integer(50)
                     )
                 ]

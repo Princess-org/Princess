@@ -3,7 +3,7 @@ from tests import *
 
 def test_empty_program():
     """ Empty program """
-    assert parse("") == node.Program([None])
+    assert parse("") == parse("()") == node.Program([None])
 
 def test_const_declaration():
     assert parse("const a = 50") == prog(
@@ -183,5 +183,46 @@ def test_for_multiple():
                 right = [Identifier("array1"), Identifier("array2")]
             ),
             body = EmptyBody
+        )
+    )
+
+def test_pragma():
+    assert parse("#pragma") == prog(node.Pragma(name = "#pragma"))
+    assert parse("##pragma") == prog(node.Pragma(name = "##pragma"))
+
+    assertFailedParse("###pragma")
+    
+def test_pragma_args():
+    assert parse("#pragma(arg1, name = arg2)") == prog(
+        node.Pragma(
+            name = "#pragma",
+            args = [
+                node.CallArg(value = Identifier("arg1")),
+                node.CallArg(name = Identifier("name"), value = Identifier("arg2"))
+            ]
+        )
+    )
+
+def test_label():
+    assert parse("""\
+        label a:
+            some_code
+            let a: int
+        label b:
+            other_code
+    """) == node.Program(
+        node.Label(name = Identifier("a"), statement = Identifier("some_code")),
+        ast("let a: int"),
+        node.Label(name = Identifier("b"), statement = Identifier("other_code"))
+    )
+
+def test_goto():
+    assert parse("""\
+        label inf_loop: 
+            go_to inf_loop
+    """) == prog(
+        node.Label(
+            name = Identifier("inf_loop"),
+            statement = node.Goto(Identifier("inf_loop"))
         )
     )

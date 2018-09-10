@@ -83,6 +83,19 @@ def test_function_multiple():
         ))
     )
 
+def test_function_chain():
+    assert parse("type A -> B -> C") == prog(
+        node.Type(node.FunctionT(
+            left = [Identifier("A")],
+            right = [
+                node.FunctionT(
+                    left = [Identifier("B")],
+                    right = [Identifier("C")]
+                )
+            ]
+        ))
+    )
+
 def test_function_var():
     assert parse("let a: -> = *some_fun") == prog(
         Let(
