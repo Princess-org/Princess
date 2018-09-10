@@ -597,12 +597,35 @@ class PrincessParser(Parser):
     def _struct_def_(self):  # noqa
         with self._choice():
             with self._option():
-                self._n__()
                 self._void()
                 self.name_last_node('@')
                 self._t_term_()
             with self._option():
+                self._struct_def_noterm_()
+                self.name_last_node('@')
+                self._t_term_()
+            self._error('no available options')
+
+    @tatsumasu()
+    def _struct_def_noterm_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._token('(')
                 self._n__()
+                with self._group():
+                    with self._choice():
+                        with self._option():
+                            self._void()
+                            self.name_last_node('@')
+                            with self._if():
+                                self._token(')')
+                        with self._option():
+                            self._struct_def_noterm_()
+                            self.name_last_node('@')
+                        self._error('no available options')
+                self._n__()
+                self._token(')')
+            with self._option():
                 with self._group():
                     with self._choice():
                         with self._option():
@@ -613,12 +636,12 @@ class PrincessParser(Parser):
                             self._stmt_iddecl_()
                         self._error('no available options')
                 self.name_last_node('@')
-                self._t_term_()
             self._error('no available options')
 
     @tatsumasu('StructBody')
     def _struct_body_(self):  # noqa
         self._token('{')
+        self._n__()
 
         def block1():
             self._struct_def_()
@@ -857,6 +880,29 @@ class PrincessParser(Parser):
         self.name_last_node('value')
         self.ast._define(
             ['value'],
+            []
+        )
+
+    @tatsumasu()
+    def _call_args_(self):  # noqa
+        self._token('(')
+
+        def sep1():
+            self._token(',')
+
+        def block1():
+            with self._choice():
+                with self._option():
+                    self._call_arg_named_()
+                with self._option():
+                    self._call_arg_()
+                self._error('no available options')
+        self._gather(block1, sep1)
+        self.name_last_node('args')
+        self._cut()
+        self._token(')')
+        self.ast._define(
+            ['args'],
             []
         )
 
@@ -1309,6 +1355,10 @@ class PrincessParser(Parser):
     def _assign_op_(self):  # noqa
         with self._group():
             with self._choice():
+                with self._option():
+                    self._token('++=')
+                with self._option():
+                    self._token('--=')
                 with self._option():
                     self._token('+=')
                 with self._option():
@@ -1881,6 +1931,61 @@ class PrincessParser(Parser):
         )
 
     @tatsumasu()
+    def _pragma_ident_(self):  # noqa
+        self._pattern('[#]{1,2}(?!\\d)\\w+')
+
+    @tatsumasu('Pragma')
+    def _stmt_pragma_(self):  # noqa
+        self._pragma_ident_()
+        self.name_last_node('name')
+        with self._optional():
+            self._token('(')
+
+            def sep2():
+                self._token(',')
+
+            def block2():
+                with self._choice():
+                    with self._option():
+                        self._call_arg_named_()
+                    with self._option():
+                        self._call_arg_()
+                    self._error('no available options')
+            self._gather(block2, sep2)
+            self.name_last_node('args')
+            self._cut()
+            self._token(')')
+        self.ast._define(
+            ['args', 'name'],
+            []
+        )
+
+    @tatsumasu()
+    def _stmt_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._stmt_vardecl_()
+            with self._option():
+                self._stmt_typedecl_()
+            with self._option():
+                self._stmt_if_()
+            with self._option():
+                self._stmt_static_if_()
+            with self._option():
+                self._stmt_pragma_()
+            with self._option():
+                self._stmt_for_loop_()
+            with self._option():
+                self._stmt_while_loop_()
+            with self._option():
+                self._stmt_loop_()
+            with self._option():
+                self._stmt_continue_()
+            with self._option():
+                self._stmt_break_()
+            self._error('no available options')
+
+    @tatsumasu()
     @nomemo
     def _statement_(self):  # noqa
         with self._choice():
@@ -1889,31 +1994,37 @@ class PrincessParser(Parser):
                 self.name_last_node('@')
                 self._t_term_()
             with self._option():
+                self._statement_noterm_()
+                self.name_last_node('@')
+                self._t_term_()
+            with self._option():
+                self._expression_()
+                self.name_last_node('@')
+                self._t_term_()
+            self._error('no available options')
+
+    @tatsumasu()
+    def _statement_noterm_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._token('(')
+                self._n__()
                 with self._group():
                     with self._choice():
                         with self._option():
-                            self._stmt_vardecl_()
+                            self._void()
+                            self.name_last_node('@')
+                            with self._if():
+                                self._token(')')
                         with self._option():
-                            self._stmt_typedecl_()
-                        with self._option():
-                            self._stmt_if_()
-                        with self._option():
-                            self._stmt_static_if_()
-                        with self._option():
-                            self._stmt_for_loop_()
-                        with self._option():
-                            self._stmt_while_loop_()
-                        with self._option():
-                            self._stmt_loop_()
-                        with self._option():
-                            self._stmt_continue_()
-                        with self._option():
-                            self._stmt_break_()
-                        with self._option():
-                            self._expression_()
+                            self._statement_noterm_()
+                            self.name_last_node('@')
                         self._error('no available options')
+                self._n__()
+                self._token(')')
+            with self._option():
+                self._stmt_()
                 self.name_last_node('@')
-                self._t_term_()
             self._error('no available options')
 
 
@@ -2032,6 +2143,9 @@ class PrincessSemantics(object):
     def struct_def(self, ast):  # noqa
         return ast
 
+    def struct_def_noterm(self, ast):  # noqa
+        return ast
+
     def struct_body(self, ast):  # noqa
         return ast
 
@@ -2075,6 +2189,9 @@ class PrincessSemantics(object):
         return ast
 
     def call_arg(self, ast):  # noqa
+        return ast
+
+    def call_args(self, ast):  # noqa
         return ast
 
     def expr_call(self, ast):  # noqa
@@ -2284,7 +2401,19 @@ class PrincessSemantics(object):
     def stmt_for_loop(self, ast):  # noqa
         return ast
 
+    def pragma_ident(self, ast):  # noqa
+        return ast
+
+    def stmt_pragma(self, ast):  # noqa
+        return ast
+
+    def stmt(self, ast):  # noqa
+        return ast
+
     def statement(self, ast):  # noqa
+        return ast
+
+    def statement_noterm(self, ast):  # noqa
         return ast
 
 
