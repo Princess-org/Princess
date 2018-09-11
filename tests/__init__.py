@@ -107,10 +107,10 @@ def Let(*args, **kwargs):
 def Const(*args, **kwargs):
     return node.VarDecl(keyword = 'const', *args, **kwargs)
 
-def Pointer(type = None):
-    return node.PtrT(keyword = 'var', type = type)
-def Reference(type = None):
-    return node.PtrT(keyword = 'let', type = type)
+def Pointer(type = None, keyword = 'var'):
+    return node.PtrT(keyword = keyword, type = type)
+def Reference(type = None, keyword = 'var'):
+    return node.RefT(keyword = keyword, type = type)
 
 def ArrayT(type = None, n = None, keyword = 'var'):
     return node.ArrayT(n = n, keyword = keyword, type = type)

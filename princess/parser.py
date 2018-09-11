@@ -690,10 +690,18 @@ class PrincessParser(Parser):
             []
         )
 
-    @tatsumasu('PtrT')
+    @tatsumasu('RefT')
     def _type_ref_(self):  # noqa
         self._token('&')
-        self._constant('let')
+        with self._group():
+            with self._choice():
+                with self._option():
+                    self._token('var')
+                with self._option():
+                    self._token('let')
+                with self._option():
+                    self._constant('var')
+                self._error('no available options')
         self.name_last_node('keyword')
         with self._optional():
             self._type_1_()

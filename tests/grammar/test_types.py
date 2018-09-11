@@ -4,15 +4,22 @@ def test_pointer_simple():
     assert parse("type *") == parse("type *var") == prog(
         node.Type(Pointer())
     )
-    assert parse("type &") == parse("type *let") == prog(
+    assert parse("type &") == parse("type &var") == prog(
         node.Type(Reference())
     )
 
     assert parse("type *int") == parse("type *var int") == prog(
         node.Type(Pointer(Identifier("int")))
     )
-    assert parse("type &int") == parse("type *let int") == prog(
+    assert parse("type &int") == parse("type &var int") == prog(
         node.Type(Reference(Identifier("int")))
+    )
+
+    assert parse("type *let int") == prog(
+        node.Type(Pointer(Identifier("int"), "let"))
+    )
+    assert parse("type &let int") == prog(
+        node.Type(Reference(Identifier("int"), "let"))
     )
 
     assert parse("type **int") == prog(
