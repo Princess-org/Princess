@@ -182,10 +182,16 @@ A -> B             // Takes A, returns B
 []        == [var]     == struct {value: *, size: size}        // mutable dynamic array of unknown type (void*)
 
 // Pointer types:
-*  == * var     // raw pointer to a mutable value, same as void* in C
-&  == * let     // raw pointer to an immutable value, s ame as const void* in C
-*T == * var T   // pointer to a mutable value of type T
-&T == * let T   // pointer to an immutable value of type T
+*  == *var     // raw pointer to a mutable value, same as void* in C
+*let           // pointer to an immutable value, same as const void* in C
+*T == *var T   // pointer to a mutable value, same as T* in C
+*let T         // pointer to an immutable value, same as const T* in C
+
+// Reference types:
+& == &var      // mutable reference of unknown type (Compareable to Object in java)
+&let           // immutable reference of unknown type
+&T == &var T   // mutable reference of type T
+&let T         // immutable reference of type T
 ```
 
 ## Functions
@@ -277,7 +283,7 @@ type polymorph(type A = int) = struct {
 ```
 type S = type {
     value: int
-    def a_fun(this)
+    def a_fun(this)            // `this` refers to this type
     def b_fun(this, string)
 }
 type B = type {
@@ -301,6 +307,56 @@ all have different types. Use `type_of(arg[i])` to figure out what a type is.
 Do note that this makes a function polymorphic, and thus it cant be exported to a binary file.
 A function that accepts a known type as vararg can be exported, however, this is treated like a
 dynamic array or a static array, depending on the context
+
+### References:
+
+To illustrate the difference between references, pointers and distinct types:
+```
+// Imagine we didn't leak any memory
+
+type I = { def some_function(this, int) }
+type S1 = struct {a: int} // size_of(S1) == size_of(int)
+type S2 = struct {}       // size_of(S2) == 0
+
+// implementation
+def some_function(this: S1, i: int) {...}
+def some_function(this: S2, i: int) {...}
+
+// I accept a strutural type
+def function1(a: I) {
+       a = {}!S2 // This doesn't compile, I is a distinct type!
+       // Imagine what would happen down here
+       a = {1}!S1 // Oops, a now has two different sizes?!
+}
+def function2(a: *I) {
+       a = allocate(S1) // This is legal
+       a = allocate(S2) // This too     
+       // a = allocate(int) // Type error!
+
+       // So far so good, but what about this?
+       a.some_function(2) // What function do we call now??
+       // This call will blow up if we don't call function2 with a pointer to S2!
+}
+function2({1}!S1)    // some_function::(S1)
+function2({}!S2)     // some_function::(S2)
+
+def function3(a: &I) {
+       // This is all fine
+       a.some_function()
+       print(type_of(a))  // This will print something depending on a
+       
+       a = allocate(&S1)
+       a.a = 20 // set instance variable
+       a.some_function(1) // We always call some_function::(S1)
+       a = allocate(&S2)
+       a.some_function(1) // We always call some_function::(S2)
+       
+       #static print(type_of(a)) // This will print "&I" !
+}
+function3({1}!S1)   // prints the type of S1
+function3({}!S2)    // prints the type of S2
+
+```
 
 ## Operators
 
@@ -428,7 +484,6 @@ let a4 = array([20 [5 int]]) // Also multi dimensional array
 like C but with a different syntax
 ```
 *T
-&T // This is a pointer to a let (same as const * in C)
 
 var a = 42
 let b = 8
