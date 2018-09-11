@@ -337,8 +337,8 @@ def function2(a: *I) {
        a.some_function(2) // What function do we call now??
        // This call will blow up if we don't call function2 with a pointer to S2!
 }
-function2({1}!S1)    // some_function::(S1)
-function2({}!S2)     // some_function::(S2)
+function2({1}!S1)    // some_function::(S1, int)
+function2({}!S2)     // some_function::(S2, int)
 
 def function3(a: &I) {
        // This is all fine
@@ -347,9 +347,9 @@ def function3(a: &I) {
        
        a = allocate(&S1)
        a.a = 20 // set instance variable
-       a.some_function(1) // We always call some_function::(S1)
+       a.some_function(1) // We always call some_function::(S1, int)
        a = allocate(&S2)
-       a.some_function(1) // We always call some_function::(S2)
+       a.some_function(1) // We always call some_function::(S2, int)
        
        #static print(type_of(a)) // This will print "&I" !
 }
