@@ -3,8 +3,8 @@ from tests import *
 def test_empty():
     assert parse("""\
         type struct {}
-    """) == prog(node.Type(
-        node.Struct(body = node.StructBody([None]))
+    """) == Program(Type(
+        Struct(body = StructBody(None))
     ))
 
 def test_simple():
@@ -13,12 +13,12 @@ def test_simple():
             a: int; b: ->int
             c: *
         }
-    """) == prog(node.Type(
-        node.Struct(
-            body = node.StructBody(
-                node.IdDecl(name = Identifier("a"), type = Identifier("int")),
-                node.IdDecl(name = Identifier("b"), type = node.FunctionT(right = [Identifier("int")])),
-                node.IdDecl(name = Identifier("c"), type = Pointer())
+    """) == Program(Type(
+        Struct(
+            body = StructBody(
+                IdDecl(name = Identifier("a"), type = Identifier("int")),
+                IdDecl(name = Identifier("b"), type = FunctionT(right = [Identifier("int")])),
+                IdDecl(name = Identifier("c"), type = Pointer())
             )
         )
     ))
@@ -30,21 +30,21 @@ def test_nested():
                 sea: struct {}
             }
         }
-    """) == prog(node.Type(
-        node.Struct(
-            body = node.StructBody([
-                node.IdDecl(
+    """) == Program(Type(
+        Struct(
+            body = StructBody(
+                IdDecl(
                     name = Identifier("deep"),
-                    type = node.Struct(
-                        body = node.StructBody([
-                            node.IdDecl(
+                    type = Struct(
+                        body = StructBody(
+                            IdDecl(
                                 name = Identifier("sea"),
-                                type = node.Struct(body = node.StructBody([None]))
+                                type = Struct(body = StructBody(None))
                             )
-                        ])
+                        )
                     )
                 )
-            ])
+            )
         )
     ))
 
@@ -55,19 +55,19 @@ def test_nested():
             }
             b: int
         }
-    """) == prog(node.Type(
-        node.Struct(
-            body = node.StructBody([
-                node.Struct(
-                    body = node.StructBody([
-                        node.IdDecl(name = Identifier("a"), type = Identifier("int"))
-                    ])
+    """) == Program(Type(
+        Struct(
+            body = StructBody(
+                Struct(
+                    body = StructBody(
+                        IdDecl(name = Identifier("a"), type = Identifier("int"))
+                    )
                 ),
-                node.IdDecl(
+                IdDecl(
                     name = Identifier("b"),
                     type = Identifier("int")
                 )
-            ])
+            )
         )
     ))
 
@@ -84,30 +84,30 @@ def test_struct_if():
                 a: float
             }
         }
-    """) == prog(node.Type(
-        node.Struct(
-            body = node.StructBody([
-                node.If(
+    """) == Program(Type(
+        Struct(
+            body = StructBody(
+                If(
                     cond = Boolean(False),
-                    body = node.StructBody([node.IdDecl(name = Identifier("a"), type = Identifier("int"))]),
-                    else_if = [node.If(
+                    body = StructBody(IdDecl(name = Identifier("a"), type = Identifier("int"))),
+                    else_if = [If(
                         cond = Boolean(False),
-                        body = node.StructBody([node.IdDecl(name = Identifier("a"), type = Identifier("double"))])
+                        body = StructBody(IdDecl(name = Identifier("a"), type = Identifier("double")))
                     )],
-                    else_ = node.Else(
-                        body = node.StructBody([node.IdDecl(name = Identifier("a"), type = Identifier("float"))])
+                    else_ = Else(
+                        body = StructBody(IdDecl(name = Identifier("a"), type = Identifier("float")))
                     )
                 )
-            ])
+            )
         )
     ))
 
 def test_typedef():
     assert parse("""\
         type empty = struct {}
-    """) == prog(
-        node.TypeDecl(
+    """) == Program(
+        TypeDecl(
             name = [Identifier("empty")],
-            value = [node.Struct(body = node.StructBody([None]))]
+            value = [Struct(body = StructBody(None))]
         )
     )

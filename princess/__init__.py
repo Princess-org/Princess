@@ -1,44 +1,36 @@
-import tatsu, os, importlib
-from tatsu.grammars import Grammar
-from tatsu.model import ModelBuilderSemantics
+import importlib
 
-from .util import *
+_parser = None
+_model = None
+_lexer = None
+_semantics = None
 
-# Loaded dynamically
-parser = None
-instance = None
-lexer = None
-
-# This is import is important to make sure 
-# that ast.node_classes is properly loaded
-from . import grammar
+class instance:
+    parser = None 
+    model = None
 
 def _import_parser():
-    global instance, parser, lexer
-    if parser is not None:
+    global _parser, _model, _lexer, _semantics
+    if _parser is not None:
         print("Reloading parser")
         importlib.invalidate_caches()
-        parser = importlib.reload(parser)
-        lexer = importlib.reload(lexer)
+        _parser = importlib.reload(_parser)
+        _model = importlib.reload(_model)
+        _lexer = importlib.reload(_lexer)
+        _semantics = importlib.reload(_semantics)
 
     else:
         try:
-            parser = importlib.import_module(".parser", package = __package__)
-            lexer = importlib.import_module(".lexer", package = __package__)
+            _parser = importlib.import_module(".parser", package = __package__)
+            _model = importlib.import_module(".model", package = __package__)
+            _lexer = importlib.import_module(".lexer", package = __package__)
+            _semantics = importlib.import_module(".semantics", package = __package__)
         except ImportError: pass
-    if parser is not None:
-        instance = parser.PrincessParser(buffer_class = lexer.Lexer)
-        
+    if _parser is not None and _model is not None:
+        instance.parser = _parser.PrincessParser(buffer_class = _lexer.Lexer)
+        instance.model = _semantics.Semantics()
+
 _import_parser()
 
-# Old way
-#with open(os.path.dirname(__file__) + "/../princess.ebnf") as file:
-    #parser = tatsu.compile(file.read(), semantics = semantic)
-
-#parser: Grammar
-semantic = ModelBuilderSemantics(base_type = ast.Node, types = ast.node_classes)
-
 def parse(input: str, trace = False, **kwargs):
-    instance.trace = trace # Somehow this can't be taken as an argument BUG https://github.com/neogeny/TatSu/pull/72
-    kwargs["trace"] = None
-    return instance.parse(input, semantics = semantic, rule_name = "program", **kwargs)
+    return instance.parser.parse(input, semantics = instance.model, rule_name = "program", **kwargs)

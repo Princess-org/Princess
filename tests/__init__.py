@@ -1,10 +1,12 @@
-import tatsu, princess, io, contextlib, logging, os, functools, inspect, sys, re
+import tatsu, princess, io, logging, re, pytest
 
-from princess import ast_repr, grammar
-from princess.ast import node
-from unittest import skip, skipIf, skipUnless, expectedFailure
+skip = pytest.mark.skip
+skipif = pytest.mark.skipif
+
 from tatsu.exceptions import FailedParse
-from princess.grammar import CompareOp, AssignOp
+
+from princess import model
+from princess.ast import *
 
 # command line options
 config = None
@@ -18,23 +20,12 @@ def _traceback(src, **kwargs):
             tatsu.util.logger.handlers = [logging.StreamHandler(buf)]
             try:
                 princess.parse(src, trace = True, **kwargs)
-            except tatsu.exceptions.FailedParse: pass
+            except FailedParse: pass
             finally:
                 tatsu.util.logger.handlers = handlers
 
             return buf.getvalue()
     return None
-
-#class FailedParse(Exception):
-#    def __init__(self, src, exception, trace = False, **kwargs):
-#        self.trace = _traceback(src, **kwargs)
-#        self.exception = exception
-#
-#    def __str__(self):
-#        res = str(self.exception) if self.exception else ""
-#        if self.trace: 
-#            res += "\n\nParser Trace: \n" + self.trace
-#        return res
 
 def parse(text, **kwargs):
     if config.getoption("colorize") and not "colorize" in kwargs:
@@ -74,43 +65,5 @@ def assertFailedParse(code, regex = None):
 
 # Convenience functions for testing
 
-def prog(n): 
-    return node.Program([n])
-
-def ast(src): 
+def ast(src):
     return parse(src).children_list()[0]
-
-Integer = node.Integer
-Float = node.Float
-String = node.String
-Boolean = node.Boolean
-Char = node.Char
-
-EmptyBody = node.Body([None])
-Continue = node.Continue()
-Break = node.Break()
-Null = node.Null()
-
-def Body(*args):
-    return node.Body(list(args))
-
-def Identifier(*args):
-    return node.Identifier(list(args))
-
-def Do(*args):
-    return node.Do(Body(*args))
-
-def Var(*args, **kwargs):
-    return node.VarDecl(keyword = 'var', *args, **kwargs)
-def Let(*args, **kwargs):
-    return node.VarDecl(keyword = 'let', *args, **kwargs)
-def Const(*args, **kwargs):
-    return node.VarDecl(keyword = 'const', *args, **kwargs)
-
-def Pointer(type = None, keyword = 'var'):
-    return node.PtrT(keyword = keyword, type = type)
-def Reference(type = None, keyword = 'var'):
-    return node.RefT(keyword = keyword, type = type)
-
-def ArrayT(type = None, n = None, keyword = 'var'):
-    return node.ArrayT(n = n, keyword = keyword, type = type)

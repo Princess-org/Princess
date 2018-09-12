@@ -1,15 +1,11 @@
 import pytest
-
 import os, tatsu, subprocess, sys, shutil, importlib
-import princess
-
 
 from datetime import datetime
 from . import __file__ as init_file
 
-from princess.ast import Node
-
-import tests
+import princess, tests
+from princess.node import Node
 
 # Arguments
 def pytest_addoption(parser):
@@ -19,10 +15,9 @@ def pytest_addoption(parser):
     parser.addoption("--performance", action="store_true")
 
 def pytest_configure(config):
-    import tests
-    tests.config = config
-
     recompile_parser()
+
+    tests.config = config
 
 def recompile_parser():
     print()  # Needed to not pollute the pytest output too much
@@ -30,6 +25,7 @@ def recompile_parser():
     basedir = os.path.dirname(__file__) + "/../"
     grammar_file = basedir + "princess.ebnf"
     parser_file = basedir + "princess/parser.py"
+    model_file = basedir + "princess/model.py"
     
     force_compile = False
     if os.path.exists(parser_file):
@@ -44,8 +40,11 @@ def recompile_parser():
     
     if force_compile or last_compiled < last_modified:
         print("Grammar changed, generating parser:")
-        # TODO There's a method for this, tatsu.to_python_sourcecode
-        if subprocess.call([sys.executable, "-m", "tatsu", grammar_file, "--color", "--outfile", parser_file]):
+
+        # TODO Add an easy way to call main to Tatsu
+        if subprocess.call([sys.executable, "-m", "tatsu", grammar_file, "--color", 
+            "--outfile", parser_file, "--object-model-outfile", model_file, "--base-type", "princess.node.Node"]):
+
             raise Exception("Failed to parse grammar")
         else:
             princess._import_parser()

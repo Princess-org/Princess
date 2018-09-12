@@ -113,13 +113,9 @@ class PrincessParser(Parser):
         def block1():
             self._statement_()
         self._closure(block1)
-        self.name_last_node('LIST')
+        self.name_last_node('@')
         self._cut()
         self._token('}')
-        self.ast._define(
-            ['LIST'],
-            []
-        )
 
     @tatsumasu('Program')
     @nomemo
@@ -128,12 +124,8 @@ class PrincessParser(Parser):
         def block1():
             self._statement_()
         self._closure(block1)
-        self.name_last_node('LIST')
+        self.name_last_node('@')
         self._check_eof()
-        self.ast._define(
-            ['LIST'],
-            []
-        )
 
     @tatsumasu()
     def _t_newline_(self):  # noqa
@@ -404,13 +396,9 @@ class PrincessParser(Parser):
     def _T_CHAR_LIT_(self):  # noqa
         self._token("'")
         self._T_CHAR_S_()
-        self.name_last_node('VALUE')
+        self.name_last_node('@')
         self._cut()
         self._token("'")
-        self.ast._define(
-            ['VALUE'],
-            []
-        )
 
     @tatsumasu('String')
     def _T_STRING_LIT_(self):  # noqa
@@ -419,13 +407,9 @@ class PrincessParser(Parser):
         def block1():
             self._T_CHAR_()
         self._closure(block1)
-        self.name_last_node('VALUE')
+        self.name_last_node('@')
         self._cut()
         self._token('"')
-        self.ast._define(
-            ['VALUE'],
-            []
-        )
 
     @tatsumasu()
     def _t_ident_(self):  # noqa
@@ -466,11 +450,7 @@ class PrincessParser(Parser):
     @tatsumasu('Boolean')
     def _t_bool_lit_(self):  # noqa
         self._t_bool_()
-        self.name_last_node('VALUE')
-        self.ast._define(
-            ['VALUE'],
-            []
-        )
+        self.name_last_node('@')
 
     @tatsumasu('Null')
     def _t_null_(self):  # noqa
@@ -494,12 +474,8 @@ class PrincessParser(Parser):
         def block1():
             self._array_element_()
         self._gather(block1, sep1)
-        self.name_last_node('LIST')
+        self.name_last_node('@')
         self._token(']')
-        self.ast._define(
-            ['LIST'],
-            []
-        )
 
     @tatsumasu()
     def _literal_(self):  # noqa
@@ -650,13 +626,9 @@ class PrincessParser(Parser):
         def block1():
             self._struct_def_()
         self._closure(block1)
-        self.name_last_node('LIST')
+        self.name_last_node('@')
         self._n__()
         self._token('}')
-        self.ast._define(
-            ['LIST'],
-            []
-        )
 
     @tatsumasu('Struct')
     def _type_struct_(self):  # noqa
@@ -946,11 +918,7 @@ class PrincessParser(Parser):
     def _expr_type_(self):  # noqa
         self._token('type')
         self._type_()
-        self.name_last_node('VALUE')
-        self.ast._define(
-            ['VALUE'],
-            []
-        )
+        self.name_last_node('@')
 
     @tatsumasu()
     def _post_lh_(self):  # noqa
@@ -1448,11 +1416,7 @@ class PrincessParser(Parser):
         self._n__()
         self._cut()
         self._code_body_()
-        self.name_last_node('VALUE')
-        self.ast._define(
-            ['VALUE'],
-            []
-        )
+        self.name_last_node('@')
 
     @tatsumasu('Range')
     @nomemo
@@ -1914,10 +1878,14 @@ class PrincessParser(Parser):
     @tatsumasu('Continue')
     def _stmt_continue_(self):  # noqa
         self._token('continue')
+        self._void()
+        self.name_last_node('@')
 
     @tatsumasu('Break')
     def _stmt_break_(self):  # noqa
         self._token('break')
+        self._void()
+        self.name_last_node('@')
 
     @tatsumasu()
     def _ret_arg_(self):  # noqa
@@ -1935,11 +1903,7 @@ class PrincessParser(Parser):
         def block1():
             self._ret_arg_()
         self._gather(block1, sep1)
-        self.name_last_node('LIST')
-        self.ast._define(
-            ['LIST'],
-            []
-        )
+        self.name_last_node('@')
 
     @tatsumasu('In')
     def _expr_in_(self):  # noqa
@@ -2028,11 +1992,7 @@ class PrincessParser(Parser):
         self._n__()
         self._cut()
         self._identifier_()
-        self.name_last_node('VALUE')
-        self.ast._define(
-            ['VALUE'],
-            []
-        )
+        self.name_last_node('@')
 
     @tatsumasu()
     def _return_type_(self):  # noqa
