@@ -1227,7 +1227,7 @@ class PrincessParser(Parser):
             []
         )
 
-    @tatsumasu()
+    @tatsumasu('CompareOp')
     def _cmp_op_(self):  # noqa
         with self._group():
             with self._choice():
@@ -1301,7 +1301,7 @@ class PrincessParser(Parser):
             []
         )
 
-    @tatsumasu()
+    @tatsumasu('AssignOp')
     def _assign_op_(self):  # noqa
         with self._group():
             with self._choice():

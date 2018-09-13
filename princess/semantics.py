@@ -56,9 +56,6 @@ class Semantics(PrincessModelBuilderSemantics):
     def Identifier(self, ast):
         return ([ast.root] if ast.root else []) + ast.ident
 
-    def AssignAndOp(self, ast):
-        return AST({**ast, 'op': AssignOp(ast.op)})
-
     def String(self, ast):
         return reduce(lambda l, r: char_to_str(l) + char_to_str(r), ast, "")
 
@@ -80,6 +77,6 @@ class Semantics(PrincessModelBuilderSemantics):
     def Compare(self, ast):
         value = [ast.left]
         for e in ast.right:
-            value += [CompareOp(e.op), e.right]
+            value += [e.op, e.right]
         return value
 

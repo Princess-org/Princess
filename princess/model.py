@@ -25,11 +25,11 @@ class PrincessModelBuilderSemantics(ModelBuilderSemantics):
         ] + (types or [])
         super(PrincessModelBuilderSemantics, self).__init__(context=context, types=types)
 
-class Expression(ModelBase):
+class Literal(ModelBase):
     pass
 
 
-class Literal(ModelBase):
+class Expression(ModelBase):
     pass
 
 
@@ -61,26 +61,26 @@ class Program(ModelBase):
     pass
 
 
-class Float(ModelBase):
+class Float(Literal):
     exp = None
     frac = None
     num = None
 
 
-class Integer(ModelBase):
+class Integer(Literal):
     base = None
     num = None
 
 
-class Char(ModelBase):
+class Char(Literal):
     pass
 
 
-class String(ModelBase):
+class String(Literal):
     pass
 
 
-class Identifier(ModelBase):
+class Identifier(Expression):
     ident = None
     root = None
 
@@ -267,6 +267,10 @@ class Sub(BinaryOp):
     right = None
 
 
+class CompareOp(ModelBase):
+    pass
+
+
 class Compare(ModelBase):
     left = None
     right = None
@@ -282,13 +286,17 @@ class Or(BinaryOp):
     right = None
 
 
-class AssignAndOp(ModelBase):
+class AssignOp(ModelBase):
+    pass
+
+
+class AssignAndOp(Expression):
     left = None
     op = None
     right = None
 
 
-class Assign(ModelBase):
+class Assign(Expression):
     left = None
     right = None
 
