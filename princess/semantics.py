@@ -35,6 +35,13 @@ class Share(int, Enum):
     Export = 2
 
 class Semantics(PrincessModelBuilderSemantics):
+    def __init__(self):
+        types = list(filter(lambda t: 
+            isinstance(t, type) and issubclass(t, Enum), 
+            globals().values()))
+            
+        super().__init__(types = types)
+
     def _default(self, ast, *args, **kwargs):
         if len(args) < 1: 
             return ast

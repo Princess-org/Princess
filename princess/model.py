@@ -374,11 +374,19 @@ class Goto(Statement):
     pass
 
 
+class DefArg(ModelBase):
+    keyword = None
+    name = None
+    type = None
+    value = None
+
+
 class Share(ModelBase):
     pass
 
 
 class Def(Statement):
+    args = None
     body = None
     name = None
     returns = None

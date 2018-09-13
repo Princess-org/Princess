@@ -1,4 +1,5 @@
-from tests import *
+from tests import parse, assertFailedParse
+from princess.ast import *
 
 def test_empty():
     assert parse("""\

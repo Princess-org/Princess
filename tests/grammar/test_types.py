@@ -1,4 +1,5 @@
-from tests import *
+from tests import parse, ast
+from princess.ast import *
 
 def test_pointer_simple():
     assert parse("type *") == parse("type *var") == Program(

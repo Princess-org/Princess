@@ -1,4 +1,4 @@
-from tests import *
+from princess.ast import *
 
 def test_ast():
     """ Equality """

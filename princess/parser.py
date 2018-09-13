@@ -434,16 +434,16 @@ class PrincessParser(Parser):
             []
         )
 
-    @tatsumasu('bool')
+    @tatsumasu()
     def _t_bool_(self):  # noqa
         with self._choice():
             with self._option():
                 self._token('true')
-                self._constant(1)
+                self._constant(True)
                 self.name_last_node('@')
             with self._option():
                 self._token('false')
-                self._constant({})
+                self._constant(False)
                 self.name_last_node('@')
             self._error('no available options')
 
@@ -2000,7 +2000,7 @@ class PrincessParser(Parser):
         self._type_()
         self.name_last_node('@')
 
-    @tatsumasu('IdDecl')
+    @tatsumasu('DefArg')
     def _def_arg_(self):  # noqa
         with self._group():
             with self._choice():
@@ -2009,7 +2009,9 @@ class PrincessParser(Parser):
                 with self._option():
                     self._token('var')
                 with self._option():
-                    self._constant('let')
+                    self._token('type')
+                with self._option():
+                    self._constant('var')
                 self._error('no available options')
         self.name_last_node('keyword')
         self._identifier_()
@@ -2057,6 +2059,9 @@ class PrincessParser(Parser):
                 self._token('import')
                 self._constant(1)
                 self.name_last_node('@')
+            with self._option():
+                self._constant(0)
+                self.name_last_node('@')
             self._error('no available options')
 
     @tatsumasu('Def')
@@ -2074,28 +2079,29 @@ class PrincessParser(Parser):
             self._token('(')
             self._cut()
 
-            def sep2():
+            def sep3():
                 self._token(',')
 
-            def block2():
+            def block3():
                 self._def_arg_()
-            self._gather(block2, sep2)
+            self._gather(block3, sep3)
+            self.name_last_node('args')
             self._token(')')
         with self._optional():
             self._token('->')
 
-            def sep4():
+            def sep5():
                 self._token(',')
 
-            def block4():
+            def block5():
                 self._return_type_()
-            self._gather(block4, sep4)
+            self._gather(block5, sep5)
             self.name_last_node('returns')
         with self._optional():
             self._def_body_()
             self.name_last_node('body')
         self.ast._define(
-            ['body', 'name', 'returns', 'share'],
+            ['args', 'body', 'name', 'returns', 'share'],
             []
         )
 

@@ -4,30 +4,29 @@ from princess import model
 from princess.model import *
 from princess.semantics import AssignOp, CompareOp, Share
 
+def __value_type(cst):
+    return lambda value: cst(ast = value)
+
+def __value_types(*args):
+    for arg in args:
+        name = arg.__name__
+        globals()[name] = __value_type(arg)
+
+def __list_type(cst):
+    return lambda *args: cst(ast = list(args))
+
+def __list_types(*args):
+    for arg in args:
+        name = arg.__name__
+        globals()[name] = __list_type(arg)
+
 EmptyBody = Body(ast = [None])
 Continue = Continue()
 Break = Break()
 Null = Null()
 
-def value_type(cst):
-    return lambda value: cst(ast = value)
-
-def value_types(*args):
-    for arg in args:
-        name = arg.__name__
-        globals()[name] = value_type(arg)
-
-value_types(String, Char, Integer, Float, Boolean, Goto, Type)
-
-def list_type(cst):
-    return lambda *args: cst(ast = list(args))
-
-def list_types(*args):
-    for arg in args:
-        name = arg.__name__
-        globals()[name] = list_type(arg)
-
-list_types(Array, Body, Identifier, Compare, Program, StructBody)
+__value_types(String, Char, Integer, Float, Boolean, Goto, Type)
+__list_types(Array, Body, Identifier, Compare, Program, StructBody, Return)
 
 Do = (lambda *args: model.Do(ast = Body(*args)))
 
@@ -45,3 +44,8 @@ Reference = (lambda type = None, keyword = 'var':
 
 ArrayT = (lambda type = None, n = None, keyword = 'var': 
     model.ArrayT(n = n, keyword = keyword, type = type))
+
+Def = (lambda share = Share.No, *args, **kwargs:
+    model.Def(share = share, *args, **kwargs))
+DefArg = (lambda keyword = 'var', *args, **kwargs:
+    model.DefArg(keyword = keyword, *args, **kwargs))

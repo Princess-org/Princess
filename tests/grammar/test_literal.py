@@ -1,6 +1,7 @@
 import pytest
 
-from tests import *
+from tests import parse, assertFailedParse
+from princess.ast import *
 
 class TestStringLiteral:
     def test_empty(self):

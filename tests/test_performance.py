@@ -1,4 +1,4 @@
-from tests import *
+from tests import parse, skipif, config
 
 @skipif(not config.getoption("--performance"), reason="performance option not specified")
 def test_performance():

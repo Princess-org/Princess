@@ -5,9 +5,6 @@ skipif = pytest.mark.skipif
 
 from tatsu.exceptions import FailedParse
 
-from princess import model
-from princess.ast import *
-
 # command line options
 config = None
 

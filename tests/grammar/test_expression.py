@@ -1,5 +1,6 @@
 import pytest
-from tests import *
+from tests import parse, ast, assertFailedParse
+from princess.ast import *
 
 class TestIdentifier:
     def test_simple(self):

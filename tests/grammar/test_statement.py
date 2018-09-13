@@ -1,5 +1,6 @@
 import pytest
-from tests import *
+from tests import parse, ast, assertFailedParse
+from princess.ast import *
 
 def test_empty_program():
     """ Empty program """

@@ -2,10 +2,6 @@ import pytest
 import os, tatsu, subprocess, sys, shutil, importlib
 
 from datetime import datetime
-from . import __file__ as init_file
-
-import princess, tests
-from princess.node import Node
 
 # Arguments
 def pytest_addoption(parser):
@@ -17,12 +13,13 @@ def pytest_addoption(parser):
 def pytest_configure(config):
     recompile_parser()
 
+    import tests
     tests.config = config
 
 def recompile_parser():
     print()  # Needed to not pollute the pytest output too much
     print("Checking grammar...")
-    basedir = os.path.dirname(__file__) + "/../"
+    basedir = os.path.dirname(__file__) + "/"
     grammar_file = basedir + "princess.ebnf"
     parser_file = basedir + "princess/parser.py"
     model_file = basedir + "princess/model.py"
@@ -46,13 +43,14 @@ def recompile_parser():
             "--outfile", parser_file, "--object-model-outfile", model_file, "--base-type", "princess.node.Node"]):
 
             raise Exception("Failed to parse grammar")
-        else:
-            princess._import_parser()
 
 # TODO: figure out use https://docs.pytest.org/en/latest/example/simple.html#post-process-test-reports-failures instead of using the messy unit test hack
 
 # https://docs.pytest.org/en/latest/assert.html#defining-your-own-assertion-comparison
 def pytest_assertrepr_compare(config, op, left, right):
+    import tests
+    from princess.node import Node
+
     ret = []
 
     tests._dump_traceback(left)
