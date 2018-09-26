@@ -1,4 +1,4 @@
-from tests import parse, ast
+from tests import parse, ast, assertFailedParse
 from princess.ast import *
 
 def test_pointer_simple():
@@ -111,3 +111,14 @@ def test_function_var():
             right = [ast("*some_fun")]
         )
     )
+
+def test_unsigned():
+    assert parse("type unsigned int") == Program(
+        Type(Unsigned(Identifier("int")))
+    )
+
+def test_word():
+    assert parse("type word(16)") == Program(
+        Type(Word(Integer(16)))
+    )
+    assertFailedParse("type word(12.4)")

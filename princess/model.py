@@ -138,6 +138,14 @@ class FunctionT(ModelBase):
     right = None
 
 
+class Unsigned(ModelBase):
+    pass
+
+
+class Word(ModelBase):
+    pass
+
+
 class CallArg(ModelBase):
     name = None
     value = None

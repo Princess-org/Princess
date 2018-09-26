@@ -1,6 +1,6 @@
 from functools import reduce
 from tatsu.ast import AST
-from enum import Enum, Flag
+from enum import Enum
 
 from princess.model import PrincessModelBuilderSemantics
 
@@ -29,7 +29,7 @@ class AssignOp(str, Enum):
     Mul = '*='; Mod = '%='; Div = '/='
     BAnd = '&='; BOr = '|='; Xor = '^='
 
-class Share(Flag):
+class Share(int, Enum):
     No = 0
     Import = 1
     Export = 2

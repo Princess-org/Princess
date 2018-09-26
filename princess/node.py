@@ -12,7 +12,7 @@ def ast_repr(value, indents = " ", indent = 0):
         ret = class_name + " {\n"
 
         for k, v in sorted(vars(value).items()):
-            if not k.startswith("_"): 
+            if v is not None and not k.startswith("_"): 
                 ast_r = ast_repr(v, indents, indent + 1)
                 ret += indents + istr + str(k) + " = " + ast_r + "\n"
 
@@ -26,9 +26,7 @@ def ast_repr(value, indents = " ", indent = 0):
         ret += istr + "]"
         return ret
     else:
-        if value is not None:
-            return repr(value)
-        else: return ""
+        return repr(value)
 
 class Node(tatsu.model.Node):
 

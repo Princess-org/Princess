@@ -47,8 +47,10 @@ KEYWORDS = {
     'struct',
     'true',
     'type',
+    'unsigned',
     'var',
     'while',
+    'word',
 }  # type: ignore
 
 
@@ -312,7 +314,7 @@ class PrincessParser(Parser):
         )
 
     @tatsumasu()
-    def _t_num_lit_(self):  # noqa
+    def _t_int_literal_(self):  # noqa
         with self._group():
             with self._choice():
                 with self._option():
@@ -322,9 +324,17 @@ class PrincessParser(Parser):
                 with self._option():
                     self._t_oct_literal_()
                 with self._option():
+                    self._t_dec_literal_()
+                self._error('no available options')
+
+    @tatsumasu()
+    def _t_num_lit_(self):  # noqa
+        with self._group():
+            with self._choice():
+                with self._option():
                     self._t_float_literal_()
                 with self._option():
-                    self._t_dec_literal_()
+                    self._t_int_literal_()
                 self._error('no available options')
 
     @tatsumasu()
@@ -797,6 +807,20 @@ class PrincessParser(Parser):
             []
         )
 
+    @tatsumasu('Unsigned')
+    def _type_unsigned_(self):  # noqa
+        self._token('unsigned')
+        self._type_2_()
+        self.name_last_node('@')
+
+    @tatsumasu('Word')
+    def _type_word_(self):  # noqa
+        self._token('word')
+        self._token('(')
+        self._t_int_literal_()
+        self.name_last_node('@')
+        self._token(')')
+
     @tatsumasu()
     def _type_2_(self):  # noqa
         with self._choice():
@@ -806,6 +830,8 @@ class PrincessParser(Parser):
                 self.name_last_node('@')
                 self._token(')')
             with self._option():
+                self._type_word_()
+            with self._option():
                 self._expr_10_()
             self._error('no available options')
 
@@ -814,6 +840,8 @@ class PrincessParser(Parser):
         with self._choice():
             with self._option():
                 self._type_struct_()
+            with self._option():
+                self._type_unsigned_()
             with self._option():
                 self._type_structural_()
             with self._option():
@@ -2284,6 +2312,9 @@ class PrincessSemantics(object):
     def t_bin_literal(self, ast):  # noqa
         return ast
 
+    def t_int_literal(self, ast):  # noqa
+        return ast
+
     def t_num_lit(self, ast):  # noqa
         return ast
 
@@ -2381,6 +2412,12 @@ class PrincessSemantics(object):
         return ast
 
     def type_function(self, ast):  # noqa
+        return ast
+
+    def type_unsigned(self, ast):  # noqa
+        return ast
+
+    def type_word(self, ast):  # noqa
         return ast
 
     def type_2(self, ast):  # noqa
