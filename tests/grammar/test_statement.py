@@ -227,3 +227,36 @@ def test_goto():
             statement = Goto(Identifier("inf_loop"))
         )
     )
+
+def test_import():
+    assert parse("""\
+        import memory as mem,
+            daki as makura,
+            the_last_unicorn
+    """) == Program(Import(
+        share = Share.No,
+        modules = [
+            ImportModule(
+                name = Identifier("memory"),
+                alias = Identifier("mem")
+            ),
+            ImportModule(
+                name = Identifier("daki"),
+                alias = Identifier("makura")
+            ),
+            ImportModule(
+                name = Identifier("the_last_unicorn")
+            )
+        ]
+    ))
+
+def test_import_export():
+    assert parse("""\
+        export import memory as mem
+    """) == Program(Import(
+        share = Share.Export,
+        modules = [ImportModule(
+            name = Identifier("memory"),
+            alias = Identifier("mem")
+        )]
+    ))

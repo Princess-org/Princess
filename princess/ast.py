@@ -31,11 +31,11 @@ __list_types(Array, Body, Identifier, Compare, Program, StructBody, Return)
 Do = (lambda *args: model.Do(ast = Body(*args)))
 
 Var = (lambda *args, **kwargs: 
-    model.VarDecl(keyword = 'var', *args, **kwargs))
+    model.VarDecl(keyword = 'var', share = Share.No, *args, **kwargs))
 Let = (lambda *args, **kwargs: 
-    model.VarDecl(keyword = 'let', *args, **kwargs))
+    model.VarDecl(keyword = 'let', share = Share.No, *args, **kwargs))
 Const = (lambda *args, **kwargs: 
-    model.VarDecl(keyword = 'const', *args, **kwargs))
+    model.VarDecl(keyword = 'const', share = Share.No, *args, **kwargs))
 
 Pointer = (lambda type = None, keyword = 'var': 
     model.PtrT(keyword = keyword, type = type))

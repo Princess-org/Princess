@@ -23,6 +23,7 @@ from tatsu.util import re, generic_main  # noqa
 
 KEYWORDS = {
     'and',
+    'as',
     'break',
     'const',
     'continue',
@@ -31,6 +32,7 @@ KEYWORDS = {
     'export',
     'false',
     'for',
+    'from',
     'go_to',
     'if',
     'import',
@@ -1662,6 +1664,52 @@ class PrincessParser(Parser):
                 self._expr_0c_()
             self._error('no available options')
 
+    @tatsumasu('Share')
+    def _import_marker_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._token('export')
+                self._constant(2)
+                self.name_last_node('@')
+            with self._option():
+                self._constant(0)
+            self._error('no available options')
+
+    @tatsumasu('ImportModule')
+    def _stmt_import_module_(self):  # noqa
+        self._n__()
+        self._identifier_()
+        self.name_last_node('name')
+        with self._optional():
+            self._token('as')
+            self._n__()
+            self._identifier_()
+            self.name_last_node('alias')
+        self.ast._define(
+            ['alias', 'name'],
+            []
+        )
+
+    @tatsumasu('Import')
+    def _stmt_import_(self):  # noqa
+        with self._optional():
+            self._import_marker_()
+            self.name_last_node('share')
+            self._n__()
+        self._token('import')
+
+        def sep2():
+            self._token(',')
+
+        def block2():
+            self._stmt_import_module_()
+        self._positive_gather(block2, sep2)
+        self.name_last_node('modules')
+        self.ast._define(
+            ['modules', 'share'],
+            []
+        )
+
     @tatsumasu('IdDecl')
     def _stmt_iddecl_(self):  # noqa
         self._n__()
@@ -1691,6 +1739,10 @@ class PrincessParser(Parser):
 
     @tatsumasu('VarDecl')
     def _stmt_vardecl_(self):  # noqa
+        with self._optional():
+            self._share_marker_()
+            self.name_last_node('share')
+            self._n__()
         with self._group():
             with self._choice():
                 with self._option():
@@ -1704,26 +1756,26 @@ class PrincessParser(Parser):
         self._n__()
         self._cut()
 
-        def sep3():
+        def sep4():
             self._token(',')
 
-        def block3():
+        def block4():
             self._stmt_iddecl_()
-        self._positive_gather(block3, sep3)
+        self._positive_gather(block4, sep4)
         self.name_last_node('left')
         with self._optional():
             self._token('=')
             self._n__()
 
-            def sep5():
+            def sep6():
                 self._token(',')
 
-            def block5():
+            def block6():
                 self._stmt_vardecl_rhs_()
-            self._positive_gather(block5, sep5)
+            self._positive_gather(block6, sep6)
             self.name_last_node('right')
         self.ast._define(
-            ['keyword', 'left', 'right'],
+            ['keyword', 'left', 'right', 'share'],
             []
         )
 
@@ -2116,6 +2168,8 @@ class PrincessParser(Parser):
                 self._stmt_if_()
             with self._option():
                 self._stmt_def_()
+            with self._option():
+                self._stmt_import_()
             with self._option():
                 self._stmt_static_if_()
             with self._option():
@@ -2516,6 +2570,15 @@ class PrincessSemantics(object):
         return ast
 
     def expression_call(self, ast):  # noqa
+        return ast
+
+    def import_marker(self, ast):  # noqa
+        return ast
+
+    def stmt_import_module(self, ast):  # noqa
+        return ast
+
+    def stmt_import(self, ast):  # noqa
         return ast
 
     def stmt_iddecl(self, ast):  # noqa

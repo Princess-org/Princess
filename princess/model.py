@@ -49,10 +49,6 @@ class BinaryOp(ModelBase):
     pass
 
 
-class BinaryOP(ModelBase):
-    pass
-
-
 class Body(ModelBase):
     pass
 
@@ -247,12 +243,12 @@ class Mod(BinaryOp):
     right = None
 
 
-class PAdd(BinaryOP):
+class PAdd(BinaryOp):
     left = None
     right = None
 
 
-class PSub(BinaryOP):
+class PSub(BinaryOp):
     left = None
     right = None
 
@@ -317,6 +313,20 @@ class Range(Expression):
     to = None
 
 
+class Share(ModelBase):
+    pass
+
+
+class ImportModule(ModelBase):
+    alias = None
+    name = None
+
+
+class Import(ModelBase):
+    modules = None
+    share = None
+
+
 class IdDecl(ModelBase):
     name = None
     type = None
@@ -326,6 +336,7 @@ class VarDecl(Statement):
     keyword = None
     left = None
     right = None
+    share = None
 
 
 class TypeDecl(Statement):
@@ -387,10 +398,6 @@ class DefArg(ModelBase):
     name = None
     type = None
     value = None
-
-
-class Share(ModelBase):
-    pass
 
 
 class Def(Statement):
