@@ -37,6 +37,10 @@ class Statement(ModelBase):
     pass
 
 
+class Type(ModelBase):
+    pass
+
+
 class UnaryPostOp(ModelBase):
     pass
 
@@ -114,35 +118,35 @@ class StructBody(ModelBase):
     pass
 
 
-class Struct(ModelBase):
+class Struct(Type):
     body = None
 
 
-class PtrT(ModelBase):
+class PtrT(Type):
     keyword = None
     type = None
 
 
-class RefT(ModelBase):
+class RefT(Type):
     keyword = None
     type = None
 
 
-class ArrayT(ModelBase):
+class ArrayT(Type):
     keyword = None
     type = None
 
 
-class FunctionT(ModelBase):
+class FunctionT(Type):
     left = None
     right = None
 
 
-class Unsigned(ModelBase):
+class Unsigned(Type):
     pass
 
 
-class Word(ModelBase):
+class Word(Type):
     pass
 
 
@@ -164,10 +168,6 @@ class ArrayIndex(Expression):
 class MemberAccess(Expression):
     left = None
     right = None
-
-
-class Type(Expression):
-    pass
 
 
 class PostInc(UnaryPostOp):
