@@ -9,8 +9,12 @@ if os.name == "nt":
 else:
     libc = cdll.LoadLibrary("libc.so.6")
 
+libc.calloc.argtypes = [c_size_t, c_size_t]
 libc.calloc.restype = c_void_p
+libc.malloc.argtypes = [c_size_t]
 libc.malloc.restype = c_void_p
+libc.free.argtypes = [c_void_p]
+libc.free.restype = None
 
 class StackOverflow(Exception): pass
 class StackUnderflow(Exception): pass
@@ -48,12 +52,12 @@ class Stack:
         return slot
 
     def pop(self, tpe):
-        value = self.peek(tpe, sizeof(tpe)).contents
+        value = self.peek(tpe).contents
         self.ptr -= sizeof(tpe)
         return value
         
-    def peek(self, tpe, offset = 0): # Returns a pointer
-        offset = self.ptr - offset
+    def peek(self, tpe, offset = None): # Returns a pointer
+        offset = self.ptr - (sizeof(tpe) if offset is None else offset)
         if offset < 0:
             raise StackUnderflow()
 
@@ -84,22 +88,22 @@ class Environment:
     def set_local(self, i, value):
         Frame = self.frame
         field = Frame.field(i)
-        self.stack.peek(type(value), sizeof(Frame) - field.offset).contents = value
+        self.stack.peek(type(value), sizeof(Frame) - field.offset)[0] = value
 
     def get_env(self, i):
         Frame = self.frame
-        Frame.env[i].contents
+        return Frame.env[i].contents
     
     def set_env(self, i, value):
         Frame = self.frame
-        Frame.env[i].contents = value
+        Frame.env[i][0] = value
 
-    def push_frame(self, *args, env = []):  # args is a list of types, env is a list of pointers
+    def push_frame(self, *args, _env = []):  # args is a list of types, env is a list of pointers
 
         class Frame(Structure):
             _fields_ = [(str(i), v) for (i, v) in enumerate(args)]
             types = args
-            env = env
+            env = _env
 
             @classmethod
             def field(cls, i):
