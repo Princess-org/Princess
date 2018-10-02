@@ -178,7 +178,7 @@ def op_not(v):
     return type(v)(operator.__not__(v.value))
 
 def _convert(f):
-    return lambda s: (s, f(getattr(operator, f)))
+    return lambda s: (s, f(getattr(operator, s)))
 
 arithmetic = map(_convert(op_arithmetic), ["__add__", "__sub__", "__mul__", "__mod__", "__truediv__"])
 shift      = map(_convert(op_shift), ["__lshift__", "__rshift__"])
@@ -186,6 +186,6 @@ bitwise    = map(_convert(op_bitwise), ["__and__", "__or__", "__xor__"])
 compare    = map(_convert(op_compare), ["__gt__", "__lt__", "__eq__"])
 
 for t in [c_int8, c_uint8, c_int16, c_uint16, c_int32, c_uint32, c_int64, c_uint64, c_float, c_double]:
-    for (op, f) in itertools.chain(arithmetic, shift, bitwise):
+    for (op, f) in itertools.chain(arithmetic, shift, bitwise, compare):
         setattr(t, op, f)
     setattr(t, "__not__", op_not)
