@@ -124,22 +124,22 @@ def is_float(t):
     return t in [c_float, c_double]
 def signed(t):
     if is_unsigned(t):
-        return {c_uint8: c_int8, c_uint16: c_int16, c_uint32: c_int32, c_uint64: c_uint64}[t]
+        return {c_uint8: c_int8, c_uint16: c_int16, c_uint32: c_int32, c_uint64: c_int64}[t]
     return t
 
 class TypeError(Exception): pass
 
-def common_type(a, b):
+def common_type(a, b, sign_convert = False):
     """ Finds the common type of a and b, implicit up conversion """
     if a == b: return a
     elif is_int(a) and is_int(b):
         # integer <-> integer conversion
-        result = a if sizeof(a) > sizeof(b) else b
+        result = b if sizeof(a) < sizeof(b) else a
         # check sign, unsigned -> signed if signs differ
-        if is_unsigned(a) != is_unsigned(b):
+        if sign_convert and is_unsigned(a) != is_unsigned(b):
             result = signed(result)
     elif is_float(a) and is_float(b):
-        result = a if sizeof(a) > sizeof(b) else b
+        result = b if sizeof(a) < sizeof(b) else a
     elif is_float(a) and is_int(b):
         result = a
     elif is_int(a) and is_float(b):
@@ -151,34 +151,40 @@ def common_type(a, b):
 
 def op_arithmetic(operator):
     def _operator(l, r):
-        restype = common_type(type(l), type(r))
-        return restype(operator(l.value, r.value))
+        restype = common_type(type(l), type(r), sign_convert = True)
+        v = operator(l.value, r.value)
+        if is_int(restype):
+            v = int(v)
+        return restype(v)
     return _operator
 
 def op_shift(operator): # Shift always keeps the type of the first argument, they both need to be ints
     def _operator(l, r):
-        if not is_int(type(r)):
-            raise TypeError("Shift operation only works on integer types")
+        if not is_int(type(l)) or not is_int(type(r)):
+            raise TypeError("Shift operation expects integer types, given: %s and %s", type(l), type(r))
         return type(l)(operator(l.value, r.value))
     return _operator
 
 def op_bitwise(operator): # Bitwise operators only work on ints
     def _operator(l, r):
         if not is_int(type(l)) or not is_int(type(r)):
-            raise TypeError("Bitwise operation only works on integer types")
-        restype = common_type(type(l), type(r))
+            raise TypeError("Bitwise operation expects integer types, given: %s and %s", type(l), type(r))
+        restype = common_type(type(l), type(r), sign_convert = False)
         return restype(operator(l.value, r.value))
     return _operator
 
 def op_compare(operator):
     def _operator(l, r):
         return c_bool(operator(l.value, r.value))
-
-def op_not(v):
-    return type(v)(operator.__not__(v.value))
+    return _operator
+    
+def op_negate(v):
+    if not is_int(type(v)):
+        raise TypeError("Negate operation expects integer type, given: %s", type(v))
+    return type(v)(operator.__invert__(v.value))
 
 def op_bool(v):
-    return c_bool(bool(v.value))
+    return bool(v.value)
 
 def _convert(f):
     return lambda s: (s, f(getattr(operator, s)))
@@ -187,9 +193,13 @@ arithmetic = map(_convert(op_arithmetic), ["__add__", "__sub__", "__mul__", "__m
 shift      = map(_convert(op_shift), ["__lshift__", "__rshift__"])
 bitwise    = map(_convert(op_bitwise), ["__and__", "__or__", "__xor__"])
 compare    = map(_convert(op_compare), ["__gt__", "__lt__", "__eq__"])
+all_ops    = list(itertools.chain(arithmetic, shift, bitwise, compare))
 
 for t in [c_int8, c_uint8, c_int16, c_uint16, c_int32, c_uint32, c_int64, c_uint64, c_float, c_double]:
-    for (op, f) in itertools.chain(arithmetic, shift, bitwise, compare):
+    for (op, f) in all_ops:
         setattr(t, op, f)
-    setattr(t, "__not__", op_not)
-    setattr(t, "__bool__", op_bool)
+
+    t.__invert__ = op_negate
+    t.__bool__ = op_bool
+
+c_bool.__bool__ = op_bool
