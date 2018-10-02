@@ -177,6 +177,9 @@ def op_compare(operator):
 def op_not(v):
     return type(v)(operator.__not__(v.value))
 
+def op_bool(v):
+    return c_bool(bool(v.value))
+
 def _convert(f):
     return lambda s: (s, f(getattr(operator, s)))
 
@@ -189,3 +192,4 @@ for t in [c_int8, c_uint8, c_int16, c_uint16, c_int32, c_uint32, c_int64, c_uint
     for (op, f) in itertools.chain(arithmetic, shift, bitwise, compare):
         setattr(t, op, f)
     setattr(t, "__not__", op_not)
+    setattr(t, "__bool__", op_bool)
