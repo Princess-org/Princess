@@ -1,14 +1,12 @@
-import operator, os
+import os, operator, itertools
 from ctypes import *
-from tatsu.model import NodeWalker
-from enum import Enum
-from . import ast
 
 if os.name == "nt":
     libc = cdll.LoadLibrary("msvcrt.dll")
 else:
     libc = cdll.LoadLibrary("libc.so.6")
 
+# type information
 libc.calloc.argtypes = [c_size_t, c_size_t]
 libc.calloc.restype = c_void_p
 libc.malloc.argtypes = [c_size_t]
@@ -116,19 +114,78 @@ class Environment:
         Frame = self.stack_frames.pop()
         self.stack.free(sizeof(Frame))
 
-def binop(left, right, operator):
-    return operator(left.value, right.value)
+# Add operators to c types
 
-class Eval(NodeWalker):
+def is_int(t):
+    return t in [c_int8, c_int16, c_int32, c_int64] or is_unsigned(t)
+def is_unsigned(t):
+    return t in [c_uint8, c_uint16, c_uint32, c_uint64]
+def is_float(t):
+    return t in [c_float, c_double]
+def signed(t):
+    if is_unsigned(t):
+        return {c_uint8: c_int8, c_uint16: c_int16, c_uint32: c_int32, c_uint64: c_uint64}[t]
+    return t
 
-    def __init__(self):
-        self.env = Environment(Stack(128 * 1000)) # 128kb of stack size
-    
-    def walk_Add(self, node: ast.Add):
-        return binop(self.walk(node.left), self.walk(node.right), operator.add)
-    
-    def walk_Mul(self, node: ast.Mul):
-        return binop(self.walk(node.left), self.walk(node.right), operator.mul)
+class TypeError(Exception): pass
 
-    def walk_Div(self, node: ast.Div):
-        return binop(self.walk(node.left), self.walk(node.right), operator.truediv)
+def common_type(a, b):
+    """ Finds the common type of a and b, implicit up conversion """
+    if a == b: return a
+    elif is_int(a) and is_int(b):
+        # integer <-> integer conversion
+        result = a if sizeof(a) > sizeof(b) else b
+        # check sign, unsigned -> signed if signs differ
+        if is_unsigned(a) != is_unsigned(b):
+            result = signed(result)
+    elif is_float(a) and is_float(b):
+        result = a if sizeof(a) > sizeof(b) else b
+    elif is_float(a) and is_int(b):
+        result = a
+    elif is_int(a) and is_float(b):
+        result = b
+    else: # Sanity check
+        raise TypeError("Incompatible types: %s and %s" % a, b)
+
+    return result
+
+def op_arithmetic(operator):
+    def _operator(l, r):
+        restype = common_type(type(l), type(r))
+        return restype(operator(l.value, r.value))
+    return _operator
+
+def op_shift(operator): # Shift always keeps the type of the first argument, they both need to be ints
+    def _operator(l, r):
+        if not is_int(type(r)):
+            raise TypeError("Shift operation only works on integer types")
+        return type(l)(operator(l.value, r.value))
+    return _operator
+
+def op_bitwise(operator): # Bitwise operators only work on ints
+    def _operator(l, r):
+        if not is_int(type(l)) or not is_int(type(r)):
+            raise TypeError("Bitwise operation only works on integer types")
+        restype = common_type(type(l), type(r))
+        return restype(operator(l.value, r.value))
+    return _operator
+
+def op_compare(operator):
+    def _operator(l, r):
+        return c_bool(operator(l.value, r.value))
+
+def op_not(v):
+    return type(v)(operator.__not__(v.value))
+
+def _convert(f):
+    return lambda s: (s, f(getattr(operator, f)))
+
+arithmetic = map(_convert(op_arithmetic), ["__add__", "__sub__", "__mul__", "__mod__", "__truediv__"])
+shift      = map(_convert(op_shift), ["__lshift__", "__rshift__"])
+bitwise    = map(_convert(op_bitwise), ["__and__", "__or__", "__xor__"])
+compare    = map(_convert(op_compare), ["__gt__", "__lt__", "__eq__"])
+
+for t in [c_int8, c_uint8, c_int16, c_uint16, c_int32, c_uint32, c_int64, c_uint64, c_float, c_double]:
+    for (op, f) in itertools.chain(arithmetic, shift, bitwise):
+        setattr(t, op, f)
+    setattr(t, "__not__", op_not)

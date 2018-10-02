@@ -340,6 +340,10 @@ class IdDecl(ModelBase):
     type = None
 
 
+class IdAssign(ModelBase):
+    pass
+
+
 class VarDecl(Statement):
     keyword = None
     left = None

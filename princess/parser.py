@@ -1753,6 +1753,16 @@ class PrincessParser(Parser):
             []
         )
 
+    @tatsumasu('IdAssign')
+    def _stmt_idassign_(self):  # noqa
+        self._n__()
+        self._token('(')
+        self._n__()
+        self._expression_()
+        self.name_last_node('@')
+        self._n__()
+        self._token(')')
+
     @tatsumasu()
     def _stmt_vardecl_rhs_(self):  # noqa
         self._n__()
@@ -1788,19 +1798,24 @@ class PrincessParser(Parser):
             self._token(',')
 
         def block4():
-            self._stmt_iddecl_()
+            with self._choice():
+                with self._option():
+                    self._stmt_idassign_()
+                with self._option():
+                    self._stmt_iddecl_()
+                self._error('no available options')
         self._positive_gather(block4, sep4)
         self.name_last_node('left')
         with self._optional():
             self._token('=')
             self._n__()
 
-            def sep6():
+            def sep7():
                 self._token(',')
 
-            def block6():
+            def block7():
                 self._stmt_vardecl_rhs_()
-            self._positive_gather(block6, sep6)
+            self._positive_gather(block7, sep7)
             self.name_last_node('right')
         self.ast._define(
             ['keyword', 'left', 'right', 'share'],
@@ -2619,6 +2634,9 @@ class PrincessSemantics(object):
         return ast
 
     def stmt_iddecl(self, ast):  # noqa
+        return ast
+
+    def stmt_idassign(self, ast):  # noqa
         return ast
 
     def stmt_vardecl_rhs(self, ast):  # noqa

@@ -11,7 +11,7 @@ def test_const_declaration():
         Const(left = [IdDecl(name = Identifier("a"))], right = [Integer(50)])
     )
 
-def test_variable_declarataion():
+def test_variable_declaration():
     assert parse("let a = 10") == Program(
         Let(left = [IdDecl(name = Identifier("a"))], right = [Integer(10)])
     )
@@ -20,6 +20,14 @@ def test_variable_declarataion():
     )
     assert parse("var ptr:*"), Program(
         Var(left = [IdDecl(name = Identifier("ptr"), type = Pointer())])
+    )
+
+def test_variable_assign_and_declaration():
+    assert parse("let a, (b) = 10, 20") == Program(
+        Let(left = [
+            IdDecl(name = Identifier("a")),
+            IdAssign(Identifier("b"))
+        ], right = [Integer(10), Integer(20)])
     )
 
 def test_variable_declaration_multiple():
