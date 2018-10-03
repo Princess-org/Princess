@@ -57,7 +57,5 @@ class Program(Renderer):
         {value::\\n:}
     '''
 
-_compiler = Compiler()
-_codegen = PythonCodeGen()
 def compile(ast):
-    return _codegen.render(_compiler.walk(ast))
+    return PythonCodeGen().render(Compiler().walk(ast))
