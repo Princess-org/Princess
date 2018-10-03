@@ -154,7 +154,7 @@ def common_type(a, b, sign_convert = False):
     elif is_int(a) and is_float(b):
         result = b
     else: # Sanity check
-        raise TypeError("Incompatible types: %s and %s" % a, b)
+        assert False
 
     return result
 
@@ -169,15 +169,13 @@ def op_arithmetic(operator):
 
 def op_shift(operator): # Shift always keeps the type of the first argument, they both need to be ints
     def _operator(l, r):
-        if not is_int(type(l)) or not is_int(type(r)):
-            raise TypeError("Shift operation expects integer types, given: %s and %s", type(l), type(r))
+        assert is_int(type(l)) and is_int(type(r))
         return type(l)(operator(l.value, r.value))
     return _operator
 
 def op_bitwise(operator): # Bitwise operators only work on ints
     def _operator(l, r):
-        if not is_int(type(l)) or not is_int(type(r)):
-            raise TypeError("Bitwise operation expects integer types, given: %s and %s", type(l), type(r))
+        assert is_int(type(l)) and is_int(type(r))
         restype = common_type(type(l), type(r), sign_convert = False)
         return restype(operator(l.value, r.value))
     return _operator
@@ -188,8 +186,7 @@ def op_compare(operator):
     return _operator
     
 def op_invert(v):
-    if not is_int(type(v)):
-        raise TypeError("Negate operation expects integer type, given: %s", type(v))
+    assert is_int(type(v))
     return type(v)(~v.value)
 
 def op_negate(v):
@@ -197,6 +194,10 @@ def op_negate(v):
 
 def op_bool(v):
     return bool(v.value)
+
+def op_bool_eq(l, r):
+    assert type(l) == type(r) == c_bool
+    return l.value == r.value
 
 def _convert(f):
     return lambda s: (s, f(getattr(operator, s)))
@@ -216,6 +217,7 @@ for t in [c_int8, c_uint8, c_int16, c_uint16, c_int32, c_uint32, c_int64, c_uint
     t.__bool__ = op_bool
 
 c_bool.__bool__ = op_bool
+c_bool.__eq__ = op_bool_eq
 
 for t in [c_char, c_wchar]:
     for (op, f) in compare:

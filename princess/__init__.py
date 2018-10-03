@@ -12,3 +12,5 @@ def load_parser():
 def parse(input: str, trace = False, **kwargs):
     if instance.parser is None: load_parser()
     return instance.parser.parse(input, semantics = instance.model, rule_name = "program", **kwargs)
+
+from princess.compiler import compile, eval

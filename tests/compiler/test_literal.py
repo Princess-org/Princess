@@ -18,3 +18,10 @@ def test_char_literal():
 def test_int_literal():
     assert eval_expr("123") == c_int(123)
     assert eval_expr("-43") == c_int(-43)
+
+def test_bool_literal():
+    assert eval_expr("true") == c_bool(True)
+    assert eval_expr("false") == c_bool(False)
+
+def test_null():
+    assert eval_expr("null") == None

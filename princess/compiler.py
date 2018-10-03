@@ -6,7 +6,9 @@ from princess import model
 from princess import ast
 from princess.node import Node
 
-class Compiler(DepthFirstWalker):
+class Preprocess(DepthFirstWalker):
+    """ First compilation step, does simplify the AST """
+    
     def walk_UMinus(self, node: model.UMinus, *args):
         # UMinus(Integer(n)) -> Integer(-n)
 
@@ -20,13 +22,9 @@ class Compiler(DepthFirstWalker):
     def walk_default(self, node, *args):
         return node
 
-class CompilingFunction():
-    def __init__(self, name, args, returns):
-        self.name = name
-        self.args = args
-        self.returns = returns
-
 class PythonCodeGen(CodeGenerator):
+    """ Last compilation step, turns the AST into python code """
+
     def __init__(self, stack_size):
         self.stack_size = stack_size
         self.current_function = None
@@ -46,6 +44,7 @@ class Literal(Renderer):
     def _render_fields(self, fields):
         fields["value"] = repr(fields["value"])
 
+# Literals
 class Integer(Literal):
     template = "c_int({value})"
 class Float(Literal):
@@ -54,29 +53,51 @@ class String(Literal):
     template = "create_unicode_buffer({value})"
 class Char(Literal):
     template = "c_wchar({value})"
+class Boolean(Literal):
+    template = "c_bool({value})"
+class Null(Renderer):
+    template = "None"
 
+# Operators
 class UMinus(Renderer):
-    template = "-({right})"
-
+    template = "(-({right}))"
 class Add(Renderer):
     template = "({left} + {right})"
 class Sub(Renderer):
     template = "({left} - {right})"
 class Mul(Renderer):
     template = "({left} * {right})"
+class Div(Renderer):
+    template = "({left} / {right})"
 class Mod(Renderer):
     template = "({left} % {right})"
+class BAnd(Renderer):
+    template = "({left} & {right})"
+class BOr(Renderer):
+    template = "({left} | {right})"
+class Xor(Renderer):
+    template = "({left} ^ {right})"
+class And(Renderer):
+    template = "({left} and {right})"
+class Or(Renderer):
+    template = "({left} or {right})"
+class Not(Renderer):
+    template = "(not {right})"
+class Ptr(Renderer):
+    template = "(pointer({right}))"
+class Deref(Renderer):
+    template = "(({right}).contents)"
 
 class Return(Renderer):
     def _render_fields(self, fields):
         value = fields["value"]
         fun = self.codegen.current_function
-        if fun:
-            start = len(fun.args)
-            fields.update(values = 
-                ["env.set_local(%i, %s)" % (i + start, self.codegen.render(v)) 
-                    for i, v in enumerate(value)])
-
+        if fun != "__main":
+            #start = len(fun.args)
+            #fields.update(values = 
+            #    ["env.set_local(%i, %s)" % (i + start, self.codegen.render(v)) 
+            #        for i, v in enumerate(value)])
+            #
             return """\
                 {values::\\n:}
                 return
@@ -87,9 +108,30 @@ class Return(Renderer):
 
             return "return ({value::, :})"
 
+class Def(Renderer):
+    def _render_fields(self, fields):
+        name = fields["name"].ast[0]
+        body = fields["body"].ast
+        fields.update(name = name, body = body)
+        self.codegen.current_function = name
+
+    template = """\
+        def {name}(env):
+            {body:1:\\n:}
+    """
+
 class Program(Renderer):
     def _render_fields(self, fields):
-        fields.update(stack_size = self.codegen.stack_size)
+        value = fields["value"]
+        code = ast.Def(
+            name = ast.Identifier("__main"),
+            body = ast.Body(*value)
+        )
+
+        fields.update(
+            stack_size = self.codegen.stack_size,
+            code = code
+        )
 
     template = '''\
         from ctypes import *
@@ -97,17 +139,16 @@ class Program(Renderer):
 
         env = Environment(Stack({stack_size})) 
 
-        def __main():
         # --- start of code ---
-            {value::\\n:}
+        {code}
         # --- end of code ---
 
         if __name__ == "__main__":
-            env.result = __main()
+            env.result = __main(env = env)
     '''
 
 def compile(ast, stack_size = 128 * 1000):
-    return PythonCodeGen(stack_size).render(Compiler().walk(ast))
+    return PythonCodeGen(stack_size).render(Preprocess().walk(ast))
 
 def eval(ast):
     env = {'__name__': '__main__'}

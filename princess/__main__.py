@@ -1,9 +1,11 @@
-import sys, re
+import sys, re, argparse
 import colorama
 
 from colorama import ansi
-from princess import parse
+from princess import parse, eval
 from tatsu.exceptions import FailedParse
+
+args = {}
 
 UNBALANCED_PAREN_RE = re.compile(r"""
       (?P<string> \"(\\\"|[^\"])*\" | \'(\\\'|[^\'])*\')
@@ -38,14 +40,16 @@ def read_input():
         line += nline + "\n"
     return line.strip()
 
-def eval(src):
+def do_eval(src):
     try:
-        ast = parse(src)
-        print(ast)
+        if args.ast:
+            print(parse(src))
+        else:
+            print(eval(parse(src)))
     except FailedParse as e:
         print(ansi.Fore.RED, e, ansi.Fore.RESET, file = sys.stderr)
 
-def main(args):
+def main():
     colorama.init()
     print("Princess REPL")
     print("type exit to leave the prompt")
@@ -54,10 +58,14 @@ def main(args):
         try:
             line = read_input()
             if line == "exit": break
-            else: eval(line)
+            else: do_eval(line)
         except KeyboardInterrupt:
             print()
             break
 
 if __name__ == "__main__":
-    main(sys.argv)
+    parser = argparse.ArgumentParser(description = "Princess REPL")
+    parser.add_argument("--ast", "-a", action = "store_true", help = "Turns off evaluation and emits the AST")
+    args = parser.parse_args()
+
+    main()

@@ -45,9 +45,9 @@ def test_binary():
     assert c_uint8(0b10101010) | c_int8(0b01010101) == c_uint(0b11111111)
 
 def test_binary_invalid():
-    with raises(TypeError):
+    with raises(AssertionError):
         c_uint8(0) & c_double(10)
-    with raises(TypeError):
+    with raises(AssertionError):
         c_uint8(0) & c_float(10)
 
 def test_binary_sign():
@@ -57,3 +57,8 @@ def test_binary_sign():
 def test_char_eq():
     assert c_wchar("界") == c_wchar("界")
     assert c_wchar("A") != c_wchar("B")
+
+def test_bool_eq():
+    assert c_bool(True) == c_bool(True)
+    assert c_bool(False) == c_bool(False)
+    assert c_bool(True) != c_bool(False)
