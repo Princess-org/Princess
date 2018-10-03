@@ -66,6 +66,7 @@ class Environment:
     def __init__(self, stack: Stack):
         self.stack = stack
         self.stack_frames = []
+        self.result = None # Return value of the program
     
     def push(self, value):
         return self.stack.push(value)
@@ -113,6 +114,14 @@ class Environment:
     def pop_frame(self):
         Frame = self.stack_frames.pop()
         self.stack.free(sizeof(Frame))
+
+
+def string_value(v):
+    """ returns the string value of v, v is a wstring buffer.
+        calling v.value is not sufficient as it cuts off
+        at the first 0 terminator
+    """
+    return wstring_at(byref(v), len(v) - 1)
 
 # Add operators to c types
 
@@ -192,11 +201,11 @@ def op_bool(v):
 def _convert(f):
     return lambda s: (s, f(getattr(operator, s)))
 
-arithmetic = map(_convert(op_arithmetic), ["__add__", "__sub__", "__mul__", "__mod__", "__truediv__"])
-shift      = map(_convert(op_shift), ["__lshift__", "__rshift__"])
-bitwise    = map(_convert(op_bitwise), ["__and__", "__or__", "__xor__"])
-compare    = map(_convert(op_compare), ["__gt__", "__lt__", "__eq__"])
-all_ops    = list(itertools.chain(arithmetic, shift, bitwise, compare))
+arithmetic = list(map(_convert(op_arithmetic), ["__add__", "__sub__", "__mul__", "__mod__", "__truediv__"]))
+shift      = list(map(_convert(op_shift), ["__lshift__", "__rshift__"]))
+bitwise    = list(map(_convert(op_bitwise), ["__and__", "__or__", "__xor__"]))
+compare    = list(map(_convert(op_compare), ["__gt__", "__lt__", "__eq__"]))
+all_ops    = arithmetic + shift + bitwise + compare
 
 for t in [c_int8, c_uint8, c_int16, c_uint16, c_int32, c_uint32, c_int64, c_uint64, c_float, c_double]:
     for (op, f) in all_ops:
@@ -207,3 +216,7 @@ for t in [c_int8, c_uint8, c_int16, c_uint16, c_int32, c_uint32, c_int64, c_uint
     t.__bool__ = op_bool
 
 c_bool.__bool__ = op_bool
+
+for t in [c_char, c_wchar]:
+    for (op, f) in compare:
+        setattr(t, op, f)

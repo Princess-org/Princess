@@ -1,18 +1,20 @@
 from princess.ast import *
-from tests import compile_stmt
+from ctypes import *
+from tests import eval_expr, compile_stmt
+from princess.env import string_value
 
 def test_string_literal():
-    assert (compile_stmt("\"  0123 A a Ä   こんにちは世界 \"")
-        == "create_unicode_buffer('  0123 A a Ä   こんにちは世界 ')")
+    assert (string_value(eval_expr("\"  0123 A a Ä   こんにちは世界 \""))
+        == "  0123 A a Ä   こんにちは世界 ")
 
     # Escape sequences get mangled but this should be equivalent
-    assert (compile_stmt("\" \\a\\b\\f\\n\\t\\v\\'\\\"\\\\\\0 \"")
-        == "create_unicode_buffer(' \\x07\\x08\\x0c\\n\\t\\x0b\\\'\"\\\\\\x00 ')")
+    assert (string_value(eval_expr("\" \\a\\b\\f\\n\\t\\v\\'\\\"\\\\\\0 \""))
+        == " \a\b\f\n\t\v\'\"\\\0 ")
 
 def test_char_literal():
-    assert compile_stmt("'界'") == "c_wchar('界')"
-    assert compile_stmt("'\\a'") == "c_wchar('\\x07')"
+    assert eval_expr("'界'") == c_wchar('界')
+    assert eval_expr("'\\a'") == c_wchar('\x07')
 
 def test_int_literal():
-    assert compile_stmt("123") == "c_int(123)"
-    assert compile_stmt("-43") == "c_int(-43)"
+    assert eval_expr("123") == c_int(123)
+    assert eval_expr("-43") == c_int(-43)

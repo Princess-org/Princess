@@ -53,3 +53,7 @@ def test_binary_invalid():
 def test_binary_sign():
     assert type(c_uint16(0) & c_int16(0)) == c_uint16
     assert type(c_int16(0) & c_uint16(0)) == c_int16
+
+def test_char_eq():
+    assert c_wchar("界") == c_wchar("界")
+    assert c_wchar("A") != c_wchar("B")
