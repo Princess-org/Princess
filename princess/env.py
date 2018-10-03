@@ -178,10 +178,13 @@ def op_compare(operator):
         return c_bool(operator(l.value, r.value))
     return _operator
     
-def op_negate(v):
+def op_invert(v):
     if not is_int(type(v)):
         raise TypeError("Negate operation expects integer type, given: %s", type(v))
-    return type(v)(operator.__invert__(v.value))
+    return type(v)(~v.value)
+
+def op_negate(v):
+    return type(v)(-v.value)
 
 def op_bool(v):
     return bool(v.value)
@@ -199,7 +202,8 @@ for t in [c_int8, c_uint8, c_int16, c_uint16, c_int32, c_uint32, c_int64, c_uint
     for (op, f) in all_ops:
         setattr(t, op, f)
 
-    t.__invert__ = op_negate
+    t.__invert__ = op_invert
+    t.__neg__ = op_negate
     t.__bool__ = op_bool
 
 c_bool.__bool__ = op_bool

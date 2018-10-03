@@ -1,4 +1,5 @@
 import tatsu, princess, io, logging, re, pytest
+import princess.compiler
 
 skip = pytest.mark.skip
 skipif = pytest.mark.skipif
@@ -36,6 +37,12 @@ def parse(text, **kwargs):
         raise e from None   # Make sure to delete the traceback, we only care about the exception
 
     return parsed
+
+def compile(src):
+    return princess.compiler.compile(parse(src))
+
+def compile_stmt(src):
+    return princess.compiler.compile(parse(src).children_list()[0])
 
 def _dump_traceback(arg):
     if not isinstance(arg, princess.ast.Node): return

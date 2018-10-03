@@ -2,7 +2,7 @@ import sys
 from ctypes import *
 from pytest import raises
 
-from princess.eval import Stack, Environment, StackOverflow, StackUnderflow
+from princess.env import Stack, Environment, StackOverflow, StackUnderflow
 
 
 def test_basic():

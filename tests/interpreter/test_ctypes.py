@@ -3,7 +3,7 @@ import itertools
 from pytest import raises 
 
 # import statement gets the hooks in
-from princess.eval import TypeError
+from princess.env import TypeError
 
 signed_types = [c_int8, c_int16, c_int32, c_int64]
 unsigned_types = [c_uint8, c_uint16, c_uint32, c_uint64]
@@ -35,6 +35,7 @@ def test_sign_conversion():
 
 def test_unary():
     assert ~c_int16(0b1010101011111111) == c_int16(0b0101010100000000)
+    assert -c_int(20) == c_int(-20)
 
 def test_binary():
     assert c_int32(0b10101010) ^ c_int32(0b01010101) == c_int32(0b11111111) 
