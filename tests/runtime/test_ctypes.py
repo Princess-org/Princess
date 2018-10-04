@@ -3,7 +3,7 @@ import itertools
 from pytest import raises 
 
 # import statement gets the hooks in
-from princess.env import TypeError
+import princess.env
 
 signed_types = [c_int8, c_int16, c_int32, c_int64]
 unsigned_types = [c_uint8, c_uint16, c_uint32, c_uint64]
