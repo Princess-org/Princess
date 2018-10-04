@@ -1,5 +1,6 @@
 import os, operator, itertools
 from ctypes import *
+from princess.compiler import common_type, is_int
 
 if os.name == "nt":
     libc = cdll.LoadLibrary("msvcrt.dll")
@@ -124,39 +125,6 @@ def string_value(v):
     return wstring_at(byref(v), len(v) - 1)
 
 # Add operators to c types
-
-def is_int(t):
-    return t in [c_int8, c_int16, c_int32, c_int64] or is_unsigned(t)
-def is_unsigned(t):
-    return t in [c_uint8, c_uint16, c_uint32, c_uint64]
-def is_float(t):
-    return t in [c_float, c_double]
-def signed(t):
-    if is_unsigned(t):
-        return {c_uint8: c_int8, c_uint16: c_int16, c_uint32: c_int32, c_uint64: c_int64}[t]
-    return t
-
-class TypeError(Exception): pass
-
-def common_type(a, b, sign_convert = False):
-    """ Finds the common type of a and b, implicit up conversion """
-    if a == b: return a
-    elif is_int(a) and is_int(b):
-        # integer <-> integer conversion
-        result = b if sizeof(a) < sizeof(b) else a
-        # check sign, unsigned -> signed if signs differ
-        if sign_convert and is_unsigned(a) != is_unsigned(b):
-            result = signed(result)
-    elif is_float(a) and is_float(b):
-        result = b if sizeof(a) < sizeof(b) else a
-    elif is_float(a) and is_int(b):
-        result = a
-    elif is_int(a) and is_float(b):
-        result = b
-    else: # Sanity check
-        assert False
-
-    return result
 
 def op_arithmetic(operator):
     def _operator(l, r):

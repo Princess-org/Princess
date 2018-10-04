@@ -29,6 +29,7 @@ def ast_repr(value, indents = " ", indent = 0):
         return repr(value)
 
 class Node(tatsu.model.Node):
+    type = None
 
     def _count_keys(self):
         return len(list(filter(lambda k: not k.startswith("_"), vars(self).keys())))

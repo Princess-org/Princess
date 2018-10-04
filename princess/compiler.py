@@ -5,8 +5,43 @@ from tatsu.codegen import ModelRenderer, CodeGenerator
 from princess import model
 from princess import ast
 from princess.node import Node
+from ctypes import *
+from ctypes import _Pointer
 
-class Preprocess(DepthFirstWalker):
+def is_pointer(t):
+    return issubclass(t, _Pointer)
+def is_int(t):
+    return t in [c_int8, c_int16, c_int32, c_int64] or is_unsigned(t)
+def is_unsigned(t):
+    return t in [c_uint8, c_uint16, c_uint32, c_uint64]
+def is_float(t):
+    return t in [c_float, c_double]
+def signed(t):
+    if is_unsigned(t):
+        return {c_uint8: c_int8, c_uint16: c_int16, c_uint32: c_int32, c_uint64: c_int64}[t]
+    return t
+
+def common_type(a, b, sign_convert = False):
+    """ Finds the common type of a and b, implicit up conversion """
+    if a == b: return a
+    elif is_int(a) and is_int(b):
+        # integer <-> integer conversion
+        result = b if sizeof(a) < sizeof(b) else a
+        # check sign, unsigned -> signed if signs differ
+        if sign_convert and is_unsigned(a) != is_unsigned(b):
+            result = signed(result)
+    elif is_float(a) and is_float(b):
+        result = b if sizeof(a) < sizeof(b) else a
+    elif is_float(a) and is_int(b):
+        result = a
+    elif is_int(a) and is_float(b):
+        result = b
+    else: # Sanity check
+        assert False
+
+    return result
+
+class Prepass(DepthFirstWalker):
     """ First compilation step, does simplify the AST """
     
     def walk_UMinus(self, node: model.UMinus, *args):
@@ -21,6 +56,19 @@ class Preprocess(DepthFirstWalker):
 
     def walk_default(self, node, *args):
         return node
+
+class Typecheck(DepthFirstWalker):
+    """ Second compilation step, typechecking """
+    def walk_UnaryPreOp(self, node: model.UnaryPreOp):
+        node.type = node.right.type
+    
+    def walk_Deref(self, node: model.Deref):
+        assert is_pointer(node.right.type)
+        node.type = node.right.type._type_
+
+    def walk_Ptr(self, node: model.Ptr):
+        node.type = POINTER(node.right.type)
+
 
 class PythonCodeGen(CodeGenerator):
     """ Last compilation step, turns the AST into python code """
@@ -148,7 +196,9 @@ class Program(Renderer):
     '''
 
 def compile(ast, stack_size = 128 * 1000):
-    return PythonCodeGen(stack_size).render(Preprocess().walk(ast))
+    ast = Prepass().walk(ast)
+    ast = Typecheck().walk(ast)
+    return PythonCodeGen(stack_size).render(ast)
 
 def eval(ast):
     env = {'__name__': '__main__'}
