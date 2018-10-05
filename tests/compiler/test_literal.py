@@ -1,7 +1,6 @@
-from princess.ast import *
 from ctypes import *
-from tests import eval_expr, compile_stmt
-from princess.env import string_value
+from tests import eval_expr, compile
+from princess.env import string_value, eq
 
 def test_string_literal():
     assert (string_value(eval_expr("\"  0123 A a Ä   こんにちは世界 \""))
@@ -12,16 +11,16 @@ def test_string_literal():
         == " \a\b\f\n\t\v\'\"\\\0 ")
 
 def test_char_literal():
-    assert eval_expr("'界'") == c_wchar('界')
-    assert eval_expr("'\\a'") == c_wchar('\x07')
+    assert eq(eval_expr("'界'"), c_wchar('界'))
+    assert eq(eval_expr("'\\a'"), c_wchar('\x07'))
 
 def test_int_literal():
-    assert eval_expr("123") == c_int(123)
-    assert eval_expr("-43") == c_int(-43)
+    assert eq(eval_expr("123"), c_int(123))
+    assert eq(eval_expr("-43"), c_int(-43))
 
 def test_bool_literal():
-    assert eval_expr("true") == c_bool(True)
-    assert eval_expr("false") == c_bool(False)
+    assert eq(eval_expr("true"), c_bool(True))
+    assert eq(eval_expr("false"), c_bool(False))
 
 def test_null():
     assert eval_expr("null") == None

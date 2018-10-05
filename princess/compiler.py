@@ -1,10 +1,11 @@
-from tatsu.walkers import DepthFirstWalker
-from tatsu.codegen import ModelRenderer, CodeGenerator
+from ctypes import *
+from ctypes import _Pointer
+
+from tatsu.walkers import NodeWalker
+from tatsu.codegen import ModelRenderer, CodeGenerator, DelegatingRenderingFormatter
 from princess import model
 from princess import ast
 from princess.node import Node
-from ctypes import *
-from ctypes import _Pointer
 
 def is_pointer(t):
     return issubclass(t, _Pointer)
@@ -18,6 +19,12 @@ def signed(t):
     if is_unsigned(t):
         return {c_uint8: c_int8, c_uint16: c_int16, c_uint32: c_int32, c_uint64: c_int64}[t]
     return t
+
+def cast_to(a, node, b):
+    """ wraps node in a cast to b if a != b """
+    if a is b: 
+        return node
+    return ast.Cast(left = node, type = b)
 
 def common_type(a, b, sign_convert = False):
     """ Finds the common type of a and b, implicit up conversion """
@@ -39,12 +46,17 @@ def common_type(a, b, sign_convert = False):
 
     return result
 
+class DepthFirstWalker(NodeWalker):
+    def walk(self, node, *args, **kwargs):
+        if node:
+            node.map(self.walk)
+            return super().walk(node)
+
 class Prepass(DepthFirstWalker):
     """ First compilation step, does simplify the AST """
     
-    def walk_UMinus(self, node: model.UMinus, *args):
+    def walk_UMinus(self, node: model.UMinus):
         # UMinus(Integer(n)) -> Integer(-n)
-
         right = node.right
         if type(right) == model.Integer:
             return ast.Integer(-right.ast)
@@ -52,23 +64,106 @@ class Prepass(DepthFirstWalker):
             return ast.Float(-right.ast)
         return node
 
-    def walk_default(self, node, *args):
+    def walk_default(self, node):
         return node
+
+class ScopeInfo():
+    """ Scope information """
+    pass
 
 class Typecheck(DepthFirstWalker):
     """ Second compilation step, typechecking """
-    def walk_UnaryPreOp(self, node: model.UnaryPreOp, *args):
+
+    # Literals
+    def walk_Integer(self, node: model.Integer):
+        node.value = node.ast
+        node.type = c_int
+        return node
+    def walk_Float(self, node: model.Float):
+        node.value = node.ast
+        node.type = c_double
+        return node
+    def walk_String(self, node: model.String):
+        node.value = node.ast
+        node.type = c_wchar * len(node.ast)
+        return node
+    def walk_Char(self, node: model.Char):
+        node.value = node.ast
+        node.type = c_wchar
+        return node
+    def walk_Boolean(self, node: model.Boolean):
+        node.value = node.ast
+        node.type = c_bool
+        return node
+    def walk_Null(self, node: model.Null):
+        node.type = None
+        return node
+
+    # TODO Fix inheritance bug, PR: https://github.com/neogeny/TatSu/pull/78
+    def walk_BinaryOp(self, node: model.BinaryOp):
+        l = node.left.type
+        r = node.right.type
+
+        if isinstance(node, (model.Shl, model.Shr)):
+            # Shift operators
+            assert is_int(l) and is_int(r)
+            node.type = l
+
+            return node # No conversion
+        elif isinstance(node, (model.BAnd, model.BOr, model.Xor)):
+            # Bitwise, only works on ints
+            assert is_int(l) and is_int(r)
+            node.type = common_type(l, r, sign_convert = False)
+        elif isinstance(node, (model.PAdd, model.PSub)):
+            # TODO pointer - pointer
+            assert is_pointer(l) and is_int(r)
+            node.type = l
+
+            return node # No conversion
+        else:
+            # Arithmetic
+            node.type = common_type(l, r, sign_convert = True)
+
+        node.left = cast_to(l, node.left, node.type)
+        node.right = cast_to(r, node.right, node.type)
+
+        return node
+
+    def walk_UnaryPreOp(self, node: model.UnaryPreOp):
         node.type = node.right.type
+        return node
     
-    def walk_Deref(self, node: model.Deref, *args):
+    def walk_Deref(self, node: model.Deref):
         assert is_pointer(node.right.type)
         node.type = node.right.type._type_
-
-    def walk_Ptr(self, node: model.Ptr, *args):
-        node.type = POINTER(node.right.type)
-
-    def walk_default(self, node, *args):
         return node
+
+    def walk_Ptr(self, node: model.Ptr):
+        node.type = POINTER(node.right.type)
+        return node
+
+    def walk_Not(self, node: model.Not):
+        node.type = c_bool
+        assert node.right.type is c_bool, "'not' on incompatible type"
+        return node
+
+    def walk_default(self, node):
+        return node
+
+class Formatter(DelegatingRenderingFormatter):
+    def render(self, item, join='', **fields):
+        if isinstance(item, type):
+            return item.__name__
+        return super().render(item, join = join, **fields)
+
+class Renderer(ModelRenderer):
+    def _render_fields(self, fields):
+        pass
+
+    def render_fields(self, fields):
+        if isinstance(self.node.ast, list) or self.node._count_keys() == 0:
+            fields.update(value = self.node.ast)
+        return self._render_fields(fields)
 
 class PythonCodeGen(CodeGenerator):
     """ Last compilation step, turns the AST into python code """
@@ -78,15 +173,7 @@ class PythonCodeGen(CodeGenerator):
         self.current_function = None
 
         super().__init__(modules = [PythonCodeGen])
-
-    class Renderer(ModelRenderer):
-        def _render_fields(self, fields):
-            pass
-
-        def render_fields(self, fields):
-            if isinstance(self.node.ast, list) or self.node._count_keys() == 0:
-                fields.update(value = self.node.ast)
-            return self._render_fields(fields)
+        self.formatter = Formatter(self)
 
     class Literal(Renderer):
         def _render_fields(self, fields):
@@ -108,33 +195,33 @@ class PythonCodeGen(CodeGenerator):
 
     # Operators
     class UMinus(Renderer):
-        template = "(-({right}))"
+        template = "({type}(-({right}.value)))"
     class Add(Renderer):
-        template = "({left} + {right})"
+        template = "({type}({left}.value + {right}.value))"
     class Sub(Renderer):
-        template = "({left} - {right})"
+        template = "({type}({left}.value - {right}.value))"
     class Mul(Renderer):
-        template = "({left} * {right})"
+        template = "({type}({left}.value * {right}.value))"
     class Div(Renderer):
-        template = "({left} / {right})"
+        template = "({type}({left}.value / {right}.value))"
     class Mod(Renderer):
-        template = "({left} % {right})"
+        template = "({type}({left}.value % {right.value}))"
     class BAnd(Renderer):
-        template = "({left} & {right})"
+        template = "({type}({left}.value & {right}.value))"
     class BOr(Renderer):
-        template = "({left} | {right})"
+        template = "({type}({left}.value | {right}.value))"
     class Xor(Renderer):
-        template = "({left} ^ {right})"
+        template = "({type}({left}.value ^ {right}.value))"
     class And(Renderer):
-        template = "({left} and {right})"
+        template = "(c_bool({left}.value and {right}.value))"
     class Or(Renderer):
-        template = "({left} or {right})"
+        template = "(c_bool({left}.value or {right}.value))"
     class Not(Renderer):
-        template = "(not {right})"
+        template = "(c_bool(not {right}.value))"
     class Ptr(Renderer):
         template = "(pointer({right}))"
     class Deref(Renderer):
-        template = "(({right}).contents)"
+        template = "({right}.contents)"
 
     class Return(Renderer):
         def _render_fields(self, fields):
@@ -160,6 +247,9 @@ class PythonCodeGen(CodeGenerator):
         def _render_fields(self, fields):
             name = fields["name"].ast[0]
             body = fields["body"].ast
+            if len(body) == 1 and body[0] == None:
+                body[0] = ast.Null # Empty function compiles
+
             fields.update(name = name, body = body)
             self.codegen.current_function = name
 
@@ -204,6 +294,5 @@ def compile(ast, stack_size = 128 * 1000):
 def eval(ast):
     env = {'__name__': '__main__'}
     src = compile(ast)
-    print(src)
     exec(src, env)
     return env["env"].result

@@ -2,7 +2,8 @@ import sys, re, argparse
 import colorama
 
 from colorama import ansi
-from princess import parse, eval
+from princess import parse, eval, compile
+from princess import model, ast
 from tatsu.exceptions import FailedParse
 
 args = {}
@@ -42,11 +43,18 @@ def read_input():
 
 def do_eval(src):
     try:
+        _ast = parse(src)
         if args.ast:
-            print(parse(src))
+            print(_ast)
         else:
-            print(eval(parse(src)))
+            if len(_ast.ast) == 1 and isinstance(_ast.ast[0], model.Expression):
+                _ast.ast[0] = ast.Return(_ast.ast[0])
+
+            print(eval(_ast))
+
     except FailedParse as e:
+        print(ansi.Fore.RED, e, ansi.Fore.RESET, file = sys.stderr)
+    except AssertionError as e:
         print(ansi.Fore.RED, e, ansi.Fore.RESET, file = sys.stderr)
 
 def main():

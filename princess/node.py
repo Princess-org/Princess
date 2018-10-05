@@ -34,22 +34,12 @@ class Node(tatsu.model.Node):
     def _count_keys(self):
         return len(list(filter(lambda k: not k.startswith("_"), vars(self).keys())))
 
-    def _semantic(self, ast):
-        return ast
-    
-    def children_list(self, vars_sort_key = None):
-        children = super().children_list(vars_sort_key)
-        if isinstance(self.ast, list):
-            children += self.ast
-        return children
-    
-    def children_set(self):
-        children = super().children_set()
-        if isinstance(self.ast, list):
-            children += set(self.ast)
-        return children
-
-    children = children_list
+    def map(self, fun):
+        if (isinstance(self.ast, list)):
+            self._ast = [fun(v) for v in self.ast]
+        elif (isinstance(self.ast, dict)):
+            for key in filter(lambda k: not k.startswith("_"), vars(self).keys()):
+                setattr(self, key, fun(getattr(self, key)))
 
     def __eq__(self, other):
         if type(self) != type(other): return False
