@@ -7,52 +7,52 @@ from princess import model
 from princess import ast
 from princess.node import Node
 
+unsigned_t = set([c_uint8, c_uint16, c_uint32, c_uint64])
+signed_t = set([c_int8, c_int16, c_int32, c_int64])
+float_t = set([c_double, c_float])
+int_t = unsigned_t | signed_t
+primitive_t = int_t | float_t | set([c_bool, c_wchar])
+
 def is_pointer(t):
     return issubclass(t, _Pointer)
-def is_int(t):
-    return t in [c_int8, c_int16, c_int32, c_int64] or is_unsigned(t)
-def is_unsigned(t):
-    return t in [c_uint8, c_uint16, c_uint32, c_uint64]
-def is_float(t):
-    return t in [c_float, c_double]
 def signed(t):
-    if is_unsigned(t):
+    if t in signed_t:
         return {c_uint8: c_int8, c_uint16: c_int16, c_uint32: c_int32, c_uint64: c_int64}[t]
     return t
 
 def cast_to(a, node, b):
     """ wraps node in a cast to b if a != b """
-    if a is b: 
+    if a is b:
         return node
     return ast.Cast(left = node, type = b)
 
 def common_type(a, b, sign_convert = False):
     """ Finds the common type of a and b, implicit up conversion """
     if a == b: return a
-    elif is_int(a) and is_int(b):
+    elif a in int_t and b in int_t:
         # integer <-> integer conversion
         result = b if sizeof(a) < sizeof(b) else a
         # check sign, unsigned -> signed if signs differ
-        if sign_convert and is_unsigned(a) != is_unsigned(b):
+        if sign_convert and (a in unsigned_t) != (b in unsigned_t):
             result = signed(result)
-    elif is_float(a) and is_float(b):
+    elif a in float_t and b in float_t:
         result = b if sizeof(a) < sizeof(b) else a
-    elif is_float(a) and is_int(b):
+    elif a in float_t and b in int_t:
         result = a
-    elif is_int(a) and is_float(b):
+    elif a in int_t and b in float_t:
         result = b
     else: # Sanity check
         assert False
 
     return result
 
-class DepthFirstWalker(NodeWalker):
+class ScopeWalker(NodeWalker):
     def walk(self, node, *args, **kwargs):
         if node:
             node.map(self.walk)
             return super().walk(node)
 
-class Prepass(DepthFirstWalker):
+class Prepass(ScopeWalker):
     """ First compilation step, does simplify the AST """
     
     def walk_UMinus(self, node: model.UMinus):
@@ -71,7 +71,7 @@ class ScopeInfo():
     """ Scope information """
     pass
 
-class Typecheck(DepthFirstWalker):
+class Typecheck(ScopeWalker):
     """ Second compilation step, typechecking """
 
     # Literals
@@ -99,6 +99,10 @@ class Typecheck(DepthFirstWalker):
         node.type = None
         return node
 
+    def walk_Cast(self, node: model.Cast):
+        node.type = node.left
+        return node
+
     # TODO Fix inheritance bug, PR: https://github.com/neogeny/TatSu/pull/78
     def walk_BinaryOp(self, node: model.BinaryOp):
         l = node.left.type
@@ -106,17 +110,17 @@ class Typecheck(DepthFirstWalker):
 
         if isinstance(node, (model.Shl, model.Shr)):
             # Shift operators
-            assert is_int(l) and is_int(r)
+            assert l in int_t and r in int_t
             node.type = l
 
             return node # No conversion
         elif isinstance(node, (model.BAnd, model.BOr, model.Xor)):
             # Bitwise, only works on ints
-            assert is_int(l) and is_int(r)
+            assert l in int_t and r in int_t
             node.type = common_type(l, r, sign_convert = False)
         elif isinstance(node, (model.PAdd, model.PSub)):
             # TODO pointer - pointer
-            assert is_pointer(l) and is_int(r)
+            assert is_pointer(l) and r in int_t
             node.type = l
 
             return node # No conversion
@@ -205,7 +209,7 @@ class PythonCodeGen(CodeGenerator):
     class Div(Renderer):
         template = "({type}({left}.value / {right}.value))"
     class Mod(Renderer):
-        template = "({type}({left}.value % {right.value}))"
+        template = "({type}({left}.value % {right}.value))"
     class BAnd(Renderer):
         template = "({type}({left}.value & {right}.value))"
     class BOr(Renderer):
@@ -222,6 +226,17 @@ class PythonCodeGen(CodeGenerator):
         template = "(pointer({right}))"
     class Deref(Renderer):
         template = "({right}.contents)"
+
+    class Cast(Renderer):
+        def _render_fields(self, fields):
+            type = fields["type"]
+            right = fields["right"]
+            if type is right.type:
+                return "{right}"
+            elif type in primitive_t and right.type in primitive_t:
+                return "({type}({right}))"
+            else:
+                raise NotImplementedError()
 
     class Return(Renderer):
         def _render_fields(self, fields):

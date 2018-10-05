@@ -1,6 +1,6 @@
 import os, operator, itertools
 from ctypes import *
-from princess.compiler import common_type, is_int
+from princess.compiler import common_type
 
 if os.name == "nt":
     libc = cdll.LoadLibrary("msvcrt.dll")

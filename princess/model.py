@@ -275,7 +275,7 @@ class CompareOp(ModelBase):
     pass
 
 
-class Compare(ModelBase):
+class Compare(Expression):
     left = None
     right = None
 

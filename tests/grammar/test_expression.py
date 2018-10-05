@@ -1,10 +1,14 @@
-import pytest
+from pytest import skip
 from tests import parse, ast, assertFailedParse
 from princess.ast import *
 
 class TestIdentifier:
     def test_simple(self):
         assert parse("foo") == Program(Identifier("foo"))
+    
+    @skip
+    def test_unicode(self):
+        assert parse("🏳️‍🌈") == Program(Identifier("🏳️‍🌈"))
 
     def test_namespace(self):
         assert parse("foo::bar::baz") == Program(Identifier("foo", "bar", "baz"))
