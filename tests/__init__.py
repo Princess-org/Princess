@@ -76,4 +76,4 @@ def assertFailedParse(code, regex = None):
 # Convenience functions for testing
 
 def ast(src):
-    return parse(src).children_list()[0]
+    return parse(src).ast[0]

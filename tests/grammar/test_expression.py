@@ -1,5 +1,4 @@
-from pytest import skip
-from tests import parse, ast, assertFailedParse
+from tests import parse, ast, assertFailedParse, skip
 from princess.ast import *
 
 class TestIdentifier:
