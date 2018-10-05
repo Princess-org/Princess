@@ -27,6 +27,7 @@ Null = Null()
 
 __value_types(String, Char, Integer, Float, Boolean, Goto, Type, Unsigned, Word, IdAssign)
 __list_types(Array, Body, Identifier, Compare, Program, StructBody, Return)
+scoped_types = [Def, If, For, While] # TODO TatSu, multiple inheritance?
 
 Do = (lambda *args: model.Do(ast = Body(*args)))
 

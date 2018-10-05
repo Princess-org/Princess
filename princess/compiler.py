@@ -46,9 +46,49 @@ def common_type(a, b, sign_convert = False):
 
     return result
 
+# built in types and functions
+builtins = {
+    "char": c_wchar,
+    "bool": c_bool,
+
+    "byte": c_byte,
+    "short": c_short,
+    "int": c_long,
+    "long": c_longlong,
+
+    "ubyte": c_ubyte,
+    "ushort": c_ushort,
+    "uint": c_ulong,
+    "ulong": c_ulonglong,
+
+    "float": c_float,
+    "double": c_double,
+
+    "int8": c_int8,
+    "int16": c_int16,
+    "int32": c_int32,
+    "int64": c_int64,
+
+    "uint8": c_uint8,
+    "uint16": c_uint16,
+    "uint32": c_uint32,
+    "uint64": c_uint64,
+}
+
+class Scope(dict):
+    """ Scope information """
+    def __init__(self, parent):
+        self.level = getattr(parent, "level", 0)
+        self.parent = parent
+
 class ScopeWalker(NodeWalker):
+    def __init__(self):
+        self.scope = Scope(builtins)
+
     def walk(self, node, *args, **kwargs):
         if node:
+            if node in ast.scoped_types:
+                self.scope = Scope(self.scope)
             node.map(self.walk)
             return super().walk(node)
 
@@ -66,10 +106,6 @@ class Prepass(ScopeWalker):
 
     def walk_default(self, node):
         return node
-
-class ScopeInfo():
-    """ Scope information """
-    pass
 
 class Typecheck(ScopeWalker):
     """ Second compilation step, typechecking """
@@ -269,7 +305,7 @@ class PythonCodeGen(CodeGenerator):
             self.codegen.current_function = name
 
         template = """\
-            def {name}(env):
+            def {name}(_):
                 {body:1:\\n:}
         """
 
@@ -288,16 +324,16 @@ class PythonCodeGen(CodeGenerator):
 
         template = '''\
             from ctypes import *
-            from princess.env import Environment, Stack
+            from princess.env import Environment
 
-            env = Environment(Stack({stack_size})) 
+            env = Environment() 
 
             # --- start of code ---
             {code}
             # --- end of code ---
 
             if __name__ == "__main__":
-                env.result = __main(env = env)
+                env.result = __main(_ = None)
         '''
 
 def compile(ast, stack_size = 128 * 1000):
