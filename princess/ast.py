@@ -25,7 +25,7 @@ Continue = Continue()
 Break = Break()
 Null = Null()
 
-__value_types(String, Char, Integer, Float, Boolean, Goto, Type, Unsigned, Word, IdAssign)
+__value_types(String, Char, Integer, Float, Boolean, Goto, Unsigned, Word, IdAssign)
 __list_types(Array, Body, Identifier, Compare, Program, StructBody, Return)
 scoped_types = [Def, If, For, While] # TODO TatSu, multiple inheritance?
 

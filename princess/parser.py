@@ -944,7 +944,7 @@ class PrincessParser(Parser):
             []
         )
 
-    @tatsumasu('Type')
+    @tatsumasu()
     def _expr_type_(self):  # noqa
         self._token('type')
         self._type_()

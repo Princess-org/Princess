@@ -1,5 +1,6 @@
 import tatsu.model
 from tatsu.ast import AST
+from functools import reduce
 
 def ast_repr(value, indents = " ", indent = 0):
     istr = indents * indent
@@ -34,18 +35,36 @@ class Node(tatsu.model.Node):
     def _count_keys(self):
         return len(list(filter(lambda k: not k.startswith("_"), vars(self).keys())))
 
+    def children_list(self, vars_sort_key = None):
+        children = super().children_list(vars_sort_key)
+        if isinstance(self.ast, list):
+            children += self.ast
+        return children
+    
+    def children_set(self):
+        children = super().children_set()
+        if isinstance(self.ast, list):
+            children += set(self.ast)
+        return children
+
+    children = children_list
+
     def map(self, fun):
-        if (isinstance(self.ast, list)):
-            self._ast = [fun(v) for v in self.ast]
-        elif (isinstance(self.ast, dict)):
+        if isinstance(self.ast, list):
+            mapped = [fun(v) for v in self.ast]
+            mapped = reduce(lambda a, b: a + (list(b) if isinstance(b, tuple) else [b]), mapped, [])
+            self._ast = mapped
+        else:
             for key in filter(lambda k: not k.startswith("_"), vars(self).keys()):
-                setattr(self, key, fun(getattr(self, key)))
+                r = fun(getattr(self, key))
+                setattr(self, key, r)
 
     def __eq__(self, other):
+        if self is other: return True
         if type(self) != type(other): return False
 
         def _eq(a, b):
-            if a.ast is not None and not isinstance(a.ast, AST):
+            if self.ast is not None and not isinstance(self.ast, AST):
                 if a.ast != b.ast:
                     return False
 
@@ -60,3 +79,6 @@ class Node(tatsu.model.Node):
         return _eq(self, other) and _eq(other, self)
 
     def __str__(self): return ast_repr(self)
+
+    def __hash__(self):
+        return id(self)

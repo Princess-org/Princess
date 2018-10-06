@@ -1,6 +1,5 @@
 import os, operator, itertools
 from ctypes import *
-from princess.compiler import common_type
 
 if os.name == "nt":
     libc = cdll.LoadLibrary("msvcrt.dll")
@@ -27,4 +26,9 @@ def string_value(v):
     return wstring_at(byref(v), len(v) - 1)
 
 def eq(l, r):
+    if isinstance(l, tuple):
+        for l, r in zip(l, r):
+            if not eq(l, r): return False
+        return True
+
     return type(l) == type(r) and l.value == r.value

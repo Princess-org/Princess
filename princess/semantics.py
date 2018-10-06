@@ -29,6 +29,8 @@ class AssignOp(str, Enum):
     Mul = '*='; Mod = '%='; Div = '/='
     BAnd = '&='; BOr = '|='; Xor = '^='
 
+# TODO let/const/var?
+
 class Share(int, Enum):
     No = 0
     Import = 1

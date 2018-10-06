@@ -1,5 +1,10 @@
 from ctypes import *
 from ctypes import _Pointer
+from enum import Enum
+from keyword import iskeyword
+from collections.abc import MutableMapping
+from itertools import chain
+from datetime import datetime
 
 from tatsu.walkers import NodeWalker
 from tatsu.codegen import ModelRenderer, CodeGenerator, DelegatingRenderingFormatter
@@ -46,6 +51,24 @@ def common_type(a, b, sign_convert = False):
 
     return result
 
+def get_name(ident: model.Identifier):
+    name = getattr(ident, "identifier", None)
+    assert not name, ("Redeclaration of %s", name)
+    assert len(ident.ast) == 1, "scope resolution (::) not implemented"
+    return ident.ast[0]
+
+def get_name_ref(ident: model.Identifier):
+    name = getattr(ident, "identifier", None)
+    if name: return name
+    else:
+        name = get_name(ident)
+        return name
+
+def typecheck_assign(l, r):
+    # TODO implicit conversion!
+    assert l is r.type, "incompatible types"
+    return r
+
 # built in types and functions
 builtins = {
     "char": c_wchar,
@@ -75,25 +98,107 @@ builtins = {
     "uint64": c_uint64,
 }
 
-class Scope(dict):
+class Modifier(str, Enum):
+    Const = "const"
+    Var = "var"
+    Let = "let"
+    Type = "type"
+
+class Value:
+    def __init__(self, modifier: Modifier, name: str, tpe, export = False):
+        self.name = name
+        self.modifier = modifier
+        self.type = tpe
+        self.export = export
+        self.scope: Scope
+        self.identifier: str
+
+class Scope(MutableMapping):
     """ Scope information """
-    def __init__(self, parent):
-        self.level = getattr(parent, "level", 0)
+    def __init__(self, parent = builtins):
+        self.level = getattr(parent, "level", -1) + 1
         self.parent = parent
+        self.children = {}
+        self.dir = {}
+        self.tmpcount = 0
+        
+    def python_identifier(self, value: Value):
+        name = value.name
+        if self.level == 0:
+            if iskeyword(value.name):
+                name += "_"
+            if not value.export:
+                name = "_" + name
+        else:
+            name = "_" + str(self.level) + name
 
-class ScopeWalker(NodeWalker):
-    def __init__(self):
-        self.scope = Scope(builtins)
+        return name
 
-    def walk(self, node, *args, **kwargs):
-        if node:
-            if node in ast.scoped_types:
-                self.scope = Scope(self.scope)
+    def __iter__(self):
+        return chain(iter(self.dir), self.parent.__iter__())
+
+    def __delitem__(self, name):
+        raise NotImplementedError()
+
+    def __len__(self):
+        # Bloody inefficient!
+        return len(list(self.__iter__()))
+
+    def __getitem__(self, name):
+        if name in self.dir:
+            return self.dir[name]
+        return self.parent[name]
+
+    def __setitem__(self, name, value):
+        if name in self.parent:
+            self.parent[name] = value
+            return
+
+        assert isinstance(value, Value)
+        value.scope = self
+        value.identifier = self.python_identifier(value)
+        self.dir[name] = value
+
+    def enter_scope(self, node):
+        if node in self.children:
+            return self.children[node]
+
+        child = Scope(self)
+        self.children[node] = child
+        return child
+
+    def create_temporary(self, type):
+        name = "__tmp" + str(self.tmpcount)
+        v = Value(Modifier.Var, name, type)
+        self[name] = v
+        self.tmpcount += 1
+        return ast.Identifier(name = v.identifier)
+
+class ASTWalker(NodeWalker):
+    walk_scopes = True
+
+    def __init__(self, scope = None):
+        self.scope = scope
+
+    def walk(self, node):
+        supers_walk = super().walk
+        if isinstance(node, Node):
+            if self.walk_scopes:
+                scope = self.scope
+                self.scope = self.scope.enter_scope(node)
             node.map(self.walk)
-            return super().walk(node)
+            if self.walk_scopes:
+                self.scope = scope
+            return supers_walk(node)
+        elif isinstance(node, list):
+            return [self.walk(e) for e in iter(node)]
+        else:
+            return supers_walk(node)
+            
 
-class Prepass(ScopeWalker):
-    """ First compilation step, does simplify the AST """
+class Prepass(ASTWalker):
+    """ First step, does simplify the AST """
+    walk_scopes = False
     
     def walk_UMinus(self, node: model.UMinus):
         # UMinus(Integer(n)) -> Integer(-n)
@@ -103,12 +208,12 @@ class Prepass(ScopeWalker):
         elif type(right) == model.Float:
             return ast.Float(-right.ast)
         return node
-
+        
     def walk_default(self, node):
         return node
 
-class Typecheck(ScopeWalker):
-    """ Second compilation step, typechecking """
+class Typecheck(ASTWalker):
+    """ Third step, typechecking """
 
     # Literals
     def walk_Integer(self, node: model.Integer):
@@ -187,6 +292,56 @@ class Typecheck(ScopeWalker):
         assert node.right.type is c_bool, "'not' on incompatible type"
         return node
 
+    def walk_VarDecl(self, node: model.VarDecl):
+        declarations = []
+        export = node.share & ast.Share.Export
+        modifier = Modifier(node.keyword)
+        assert modifier != Modifier.Const, "const not implemented"
+
+        for a in node.left:
+            if type(a) is model.IdDecl:
+                name = get_name(a.name)
+                v = Value(modifier, name, a.type, export)
+                self.scope[name] = v # Add value to scope
+                declarations.append(ast.VarDecl(
+                    left = v, type = v.type, identifier = v.identifier, right = None))
+
+            elif type(a) is model.IdAssign:
+                declarations.append(ast.Assign(left = a.ast, right = None))
+            else:
+                assert False
+
+        index = 0
+        for b in node.right:
+            tpe = b.type
+            if isinstance(tpe, tuple):
+                tmp = self.scope.create_temporary(tpe)
+                declarations.insert(index, ast.Assign(left = tmp, right = b))
+                index += 1
+                for j, t in enumerate(tpe):
+                    declarations[index].right = ast.ArrayIndex(left = tmp, right = ast.Integer(j), type = t)
+                    index += 1
+            else:
+                declarations[index].right = b
+            index += 1
+
+        # typecheck
+        for decl in declarations:
+            if decl.left.type is None:
+                # type inference
+                decl.left.type = decl.right.type
+            else:
+                decl.right = typecheck_assign(decl.left.type, decl.right)
+            decl.type = decl.left.type # extract type into outer statement
+
+        return tuple(declarations)
+
+    def walk_Identifier(self, node: model.Identifier):
+        name = get_name_ref(node)
+        if name in self.scope:
+            node.identifier = self.scope[name].identifier
+        return node
+
     def walk_default(self, node):
         return node
 
@@ -208,20 +363,29 @@ class Renderer(ModelRenderer):
 class PythonCodeGen(CodeGenerator):
     """ Last compilation step, turns the AST into python code """
 
-    def __init__(self, stack_size):
-        self.stack_size = stack_size
-        self.current_function = None
+    def __init__(self):
+        #self.scope = scope
+        #self.current_function = None
 
         super().__init__(modules = [PythonCodeGen])
         self.formatter = Formatter(self)
 
+    #def render(self, node, join = '', **fields):
+    #    if isinstance(node, Node):
+    #        scope = self.scope
+    #        if node in ast.scoped_types:
+    #            self.scope = scope.get_scope(node)
+    #        result = super().render(node, join = join, **fields)
+    #        self.scope = scope # reset
+    #        return result
+        
     class Literal(Renderer):
         def _render_fields(self, fields):
             fields["value"] = repr(fields["value"])
 
     # Literals
     class Integer(Literal):
-        template = "c_int({value})"
+        template = "c_long({value})"
     class Float(Literal):
         template = "c_double({value})"
     class String(Literal):
@@ -233,9 +397,15 @@ class PythonCodeGen(CodeGenerator):
     class Null(Renderer):
         template = "None"
 
+    # Identifier
+    class Identifier(Renderer):
+        template = "{identifier}"
+
     # Operators
     class UMinus(Renderer):
         template = "({type}(-({right}.value)))"
+    class Invert(Renderer):
+        template = "({type}(~({right}.value)))"
     class Add(Renderer):
         template = "({type}({left}.value + {right}.value))"
     class Sub(Renderer):
@@ -277,22 +447,15 @@ class PythonCodeGen(CodeGenerator):
     class Return(Renderer):
         def _render_fields(self, fields):
             value = fields["value"]
-            fun = self.codegen.current_function
-            if fun != "__main":
-                #start = len(fun.args)
-                #fields.update(values = 
-                #    ["env.set_local(%i, %s)" % (i + start, self.codegen.render(v)) 
-                #        for i, v in enumerate(value)])
-                #
-                return """\
-                    {values::\\n:}
-                    return
-                """
-            else:
-                if any(type(v) == model.Do for v in value):
-                    raise NotImplementedError("Can't use 'do' expressions in return statement on top level")
+            if any(type(v) == model.Do for v in value):
+                raise NotImplementedError("Can't use 'do' expressions in return statement")
 
-                return "return ({value::, :})"
+            return "return ({value::, :})"
+
+    class VarDecl(Renderer):
+        template = """
+            {identifier}: {type} = {right}
+        """
 
     class Def(Renderer):
         def _render_fields(self, fields):
@@ -302,11 +465,11 @@ class PythonCodeGen(CodeGenerator):
                 body[0] = ast.Null # Empty function compiles
 
             fields.update(name = name, body = body)
-            self.codegen.current_function = name
+            #self.codegen.current_function = name
 
         template = """\
             def {name}(_):
-                {body:1:\\n:}
+                {body:1::}\
         """
 
     class Program(Renderer):
@@ -317,33 +480,35 @@ class PythonCodeGen(CodeGenerator):
                 body = ast.Body(*value)
             )
 
-            fields.update(
-                stack_size = self.codegen.stack_size,
-                code = code
-            )
+            fields.update(code = code, time = datetime.now())
 
         template = '''\
-            from ctypes import *
-            from princess.env import Environment
+            # This file was compiled by the grace of your highness
+            # ~ Princess Vi Nightfall ~
+            # on {time}
+            #
+            # Bow to the princess!
 
-            env = Environment() 
+            from princess.env import *
+
+            __env = Environment()
 
             # --- start of code ---
             {code}
             # --- end of code ---
 
-            if __name__ == "__main__":
-                env.result = __main(_ = None)
+            __env.result = __main(_ = None)
         '''
 
-def compile(ast, stack_size = 128 * 1000):
+def compile(ast):
     ast = Prepass().walk(ast)
-    ast = Typecheck().walk(ast)
-    src = PythonCodeGen(stack_size).render(ast)
+    scope = Scope()
+    ast = Typecheck(scope).walk(ast)
+    src = PythonCodeGen().render(ast)
+    print(src)
     return src
 
-def eval(ast):
-    env = {'__name__': '__main__'}
-    src = compile(ast)
-    exec(src, env)
-    return env["env"].result
+def eval(pysrc):
+    globals = {}
+    exec(pysrc, globals)
+    return globals["__env"].result

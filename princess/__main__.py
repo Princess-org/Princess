@@ -47,15 +47,16 @@ def do_eval(src):
         if args.ast:
             print(_ast)
         else:
-            if len(_ast.ast) == 1 and isinstance(_ast.ast[0], model.Expression):
-                _ast.ast[0] = ast.Return(_ast.ast[0])
-
-            print(eval(_ast))
+            pysrc = compile(_ast)
+            if args.src:
+                print(pysrc)
+                print()
+            print(eval(pysrc))
 
     except FailedParse as e:
-        print(ansi.Fore.RED, e, ansi.Fore.RESET, file = sys.stderr)
+        print(ansi.Fore.RED, "Parse Error: " + str(e), ansi.Fore.RESET, file = sys.stderr)
     except AssertionError as e:
-        print(ansi.Fore.RED, e, ansi.Fore.RESET, file = sys.stderr)
+        print(ansi.Fore.RED, "Compile Error: " + (str(e) or "???"), ansi.Fore.RESET, file = sys.stderr)
 
 def main():
     colorama.init()
@@ -74,6 +75,7 @@ def main():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description = "Princess REPL")
     parser.add_argument("--ast", "-a", action = "store_true", help = "Turns off evaluation and emits the AST")
+    parser.add_argument("--src", "-s", action = "store_true", help = "Emits the source code before evaluation")
     args = parser.parse_args()
 
     main()

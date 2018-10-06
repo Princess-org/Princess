@@ -1,5 +1,5 @@
 from ctypes import *
-from tests import eval_expr, compile
+from tests import eval_expr, eval
 from princess.env import string_value, eq
 
 def test_string_literal():

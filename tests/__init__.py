@@ -42,10 +42,7 @@ def compile(src):
     return princess.compiler.compile(parse(src))
 
 def eval(src):
-    return princess.compiler.eval(parse(src))
-
-def compile_stmt(src):
-    return princess.compiler.compile(parse(src).children_list()[0])
+    return princess.compiler.eval(compile(src))
 
 def eval_expr(src):
     return eval("return (%s)" % src)

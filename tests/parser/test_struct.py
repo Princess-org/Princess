@@ -4,9 +4,9 @@ from princess.ast import *
 def test_empty():
     assert parse("""\
         type struct {}
-    """) == Program(Type(
+    """) == Program(
         Struct(body = StructBody(None))
-    ))
+    )
 
 def test_simple():
     assert parse("""\
@@ -14,7 +14,7 @@ def test_simple():
             a: int; b: ->int
             c: *
         }
-    """) == Program(Type(
+    """) == Program(
         Struct(
             body = StructBody(
                 IdDecl(name = Identifier("a"), type = Identifier("int")),
@@ -22,7 +22,7 @@ def test_simple():
                 IdDecl(name = Identifier("c"), type = Pointer())
             )
         )
-    ))
+    )
 
 def test_nested():
     assert parse("""\
@@ -31,7 +31,7 @@ def test_nested():
                 sea: struct {}
             }
         }
-    """) == Program(Type(
+    """) == Program(
         Struct(
             body = StructBody(
                 IdDecl(
@@ -47,7 +47,7 @@ def test_nested():
                 )
             )
         )
-    ))
+    )
 
     assert parse("""\
         type struct {
@@ -56,7 +56,7 @@ def test_nested():
             }
             b: int
         }
-    """) == Program(Type(
+    """) == Program(
         Struct(
             body = StructBody(
                 Struct(
@@ -70,7 +70,7 @@ def test_nested():
                 )
             )
         )
-    ))
+    )
 
 def test_struct_if():
     """ struct with inline static if """
@@ -85,7 +85,7 @@ def test_struct_if():
                 a: float
             }
         }
-    """) == Program(Type(
+    """) == Program(
         Struct(
             body = StructBody(
                 If(
@@ -101,7 +101,7 @@ def test_struct_if():
                 )
             )
         )
-    ))
+    )
 
 def test_typedef():
     assert parse("""\
