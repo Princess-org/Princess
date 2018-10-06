@@ -8,6 +8,7 @@ def pytest_addoption(parser):
     parser.addoption("--no-compile", action = "store_true", help = "Don't compile the parser")
     parser.addoption("-C", "--colorize", action = "store_true", help = "Colorize Parser Trace") # TODO pytest has an option for this, use that?
     parser.addoption("-T", "--tatsu-trace", action = "store_true", help = "Print the Parser Trace on Error")
+    parser.addoption("-P", "--print-src", action = "store_true", help = "Print the compiled python source code")
     parser.addoption("--performance", action="store_true")
 
 def pytest_configure(config):

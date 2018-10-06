@@ -41,8 +41,11 @@ def parse(text, **kwargs):
 def compile(src):
     return princess.compiler.compile(parse(src))
 
-def eval(src):
-    return princess.compiler.eval(compile(src))
+def eval(src, print_src = False):
+    pysrc = compile(src)
+    if print_src or config.getoption("print_src"):
+        print(pysrc)
+    return princess.compiler.eval(pysrc)
 
 def eval_expr(src):
     return eval("return (%s)" % src)

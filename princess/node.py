@@ -54,10 +54,12 @@ class Node(tatsu.model.Node):
             mapped = [fun(v) for v in self.ast]
             mapped = reduce(lambda a, b: a + (list(b) if isinstance(b, tuple) else [b]), mapped, [])
             self._ast = mapped
-        else:
+        elif isinstance(self.ast, AST):
             for key in filter(lambda k: not k.startswith("_"), vars(self).keys()):
                 r = fun(getattr(self, key))
                 setattr(self, key, r)
+        else:
+            self._ast = fun(self.ast)
 
     def __eq__(self, other):
         if self is other: return True

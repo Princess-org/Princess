@@ -127,8 +127,6 @@ class Scope(MutableMapping):
         if self.level == 0:
             if iskeyword(value.name):
                 name += "_"
-            if not value.export:
-                name = "_" + name
         else:
             name = "_" + str(self.level) + name
 
@@ -185,7 +183,8 @@ class ASTWalker(NodeWalker):
         if isinstance(node, Node):
             if self.walk_scopes:
                 scope = self.scope
-                self.scope = self.scope.enter_scope(node)
+                if node in ast.scoped_types:
+                    self.scope = self.scope.enter_scope(node)
             node.map(self.walk)
             if self.walk_scopes:
                 self.scope = scope
@@ -292,6 +291,24 @@ class Typecheck(ASTWalker):
         assert node.right.type is c_bool, "'not' on incompatible type"
         return node
 
+    def __insert_assignments(self, declarations, node):
+        try:
+            index = 0
+            for b in node.right:
+                tpe = b.type
+                if isinstance(tpe, tuple):
+                    tmp = self.scope.create_temporary(tpe)
+                    declarations.insert(index, ast.Assign(left = tmp, right = b))
+                    index += 1
+                    for j, t in enumerate(tpe):
+                        declarations[index].right = ast.ArrayIndex(left = tmp, right = j, type = t)
+                        index += 1
+                else:
+                    declarations[index].right = b
+                index += 1
+        except IndexError:
+            assert False, "Imbalanced assignment"
+
     def walk_VarDecl(self, node: model.VarDecl):
         declarations = []
         export = node.share & ast.Share.Export
@@ -311,19 +328,7 @@ class Typecheck(ASTWalker):
             else:
                 assert False
 
-        index = 0
-        for b in node.right:
-            tpe = b.type
-            if isinstance(tpe, tuple):
-                tmp = self.scope.create_temporary(tpe)
-                declarations.insert(index, ast.Assign(left = tmp, right = b))
-                index += 1
-                for j, t in enumerate(tpe):
-                    declarations[index].right = ast.ArrayIndex(left = tmp, right = ast.Integer(j), type = t)
-                    index += 1
-            else:
-                declarations[index].right = b
-            index += 1
+        self.__insert_assignments(declarations, node)
 
         # typecheck
         for decl in declarations:
@@ -336,10 +341,27 @@ class Typecheck(ASTWalker):
 
         return tuple(declarations)
 
+    def walk_Assign(self, node: model.Assign):
+        declarations = []
+
+        for a in node.left:
+            declarations.append(ast.Assign(left = a, right = None))
+        
+        self.__insert_assignments(declarations, node)
+
+        # typecheck
+        for decl in declarations:
+            decl.right = typecheck_assign(decl.left.type, decl.right)
+            decl.type = decl.left.type # extract type into outer statement
+
+        return tuple(declarations)
+
     def walk_Identifier(self, node: model.Identifier):
         name = get_name_ref(node)
         if name in self.scope:
-            node.identifier = self.scope[name].identifier
+            value = self.scope[name]
+            node.identifier = value.identifier
+            node.type = value.type
         return node
 
     def walk_default(self, node):
@@ -454,8 +476,11 @@ class PythonCodeGen(CodeGenerator):
 
     class VarDecl(Renderer):
         template = """
-            {identifier}: {type} = {right}
+            {identifier}: {type} = {right}\
         """
+
+    class Assign(Renderer):
+        template = "{left} = {right}"
 
     class Def(Renderer):
         def _render_fields(self, fields):
@@ -468,8 +493,8 @@ class PythonCodeGen(CodeGenerator):
             #self.codegen.current_function = name
 
         template = """\
-            def {name}(_):
-                {body:1::}\
+            def {name}():
+                {body:1:\\n:}\
         """
 
     class Program(Renderer):
@@ -497,7 +522,7 @@ class PythonCodeGen(CodeGenerator):
             {code}
             # --- end of code ---
 
-            __env.result = __main(_ = None)
+            __env.result = __main()
         '''
 
 def compile(ast):
@@ -505,7 +530,6 @@ def compile(ast):
     scope = Scope()
     ast = Typecheck(scope).walk(ast)
     src = PythonCodeGen().render(ast)
-    print(src)
     return src
 
 def eval(pysrc):
