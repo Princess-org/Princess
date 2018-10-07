@@ -110,8 +110,8 @@ class Value:
         self.modifier = modifier
         self.type = tpe
         self.export = export
-        self.scope: Scope
-        self.identifier: str
+        self.scope = None
+        self.identifier = None
 
 class Scope(MutableMapping):
     """ Scope information """
@@ -476,7 +476,7 @@ class PythonCodeGen(CodeGenerator):
 
     class VarDecl(Renderer):
         template = """
-            {identifier}: {type} = {right}\
+            {identifier} = {right} # type: {type}\
         """
 
     class Assign(Renderer):
