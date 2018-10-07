@@ -21,7 +21,7 @@ primitive_t = int_t | float_t | set([c_bool, c_wchar])
 def is_pointer(t):
     return issubclass(t, _Pointer)
 def signed(t):
-    if t in signed_t:
+    if t in unsigned_t:
         return {c_uint8: c_int8, c_uint16: c_int16, c_uint32: c_int32, c_uint64: c_int64}[t]
     return t
 
@@ -69,9 +69,42 @@ def typecheck_assign(l, r):
     assert l is r.type, "incompatible types"
     return r
 
+class Modifier(str, Enum):
+    Const = "const"
+    Var = "var"
+    Let = "let"
+    Type = "type"
+
+class Value:
+    def __init__(self, modifier: Modifier, name: str, tpe, export = False, scope = None, identifier = None, value = None):
+        self.name = name
+        self.modifier = modifier
+        self.type = tpe
+        self.export = export
+        self.scope = scope
+        self.identifier = identifier
+        self.value = value
+
+    @staticmethod
+    def builtin(v):
+        if isinstance(v, tuple):
+            v = v[1]
+            name = v[0]
+        else:
+            name = v.__name__
+        if isinstance(v, type):
+            modifier = Modifier.Type
+        else:
+            raise NotImplementedError()
+        
+        return Value(
+            modifier = modifier, name = name, 
+            tpe = None, scope = builtins, 
+            identifier = name, value = v)
+
 # built in types and functions
 builtins = {
-    "char": c_wchar,
+    "char": c_byte,
     "bool": c_bool,
 
     "byte": c_byte,
@@ -98,20 +131,7 @@ builtins = {
     "uint64": c_uint64,
 }
 
-class Modifier(str, Enum):
-    Const = "const"
-    Var = "var"
-    Let = "let"
-    Type = "type"
-
-class Value:
-    def __init__(self, modifier: Modifier, name: str, tpe, export = False):
-        self.name = name
-        self.modifier = modifier
-        self.type = tpe
-        self.export = export
-        self.scope = None
-        self.identifier = None
+builtins = {k: Value.builtin(v) for k, v in builtins.items()}
 
 class Scope(MutableMapping):
     """ Scope information """
@@ -156,6 +176,15 @@ class Scope(MutableMapping):
         value.scope = self
         value.identifier = self.python_identifier(value)
         self.dir[name] = value
+
+    def get_const_value(self, v):
+        if isinstance(v, model.Identifier):
+            value = self[v.name]
+            assert (value.modifier == Modifier.Const 
+                or value.modifier == Modifier.Type)
+            v = value.value
+
+        return v
 
     def enter_scope(self, node):
         if node in self.children:
@@ -240,7 +269,10 @@ class Typecheck(ASTWalker):
         return node
 
     def walk_Cast(self, node: model.Cast):
-        node.type = node.left
+        tpe = self.scope.get_const_value(node.right)
+        if isinstance(node.left, (model.Integer, model.Float)):
+            node = node.left
+        node.type = tpe
         return node
 
     # TODO Fix inheritance bug, PR: https://github.com/neogeny/TatSu/pull/78
@@ -361,6 +393,7 @@ class Typecheck(ASTWalker):
         if name in self.scope:
             value = self.scope[name]
             node.identifier = value.identifier
+            node.name = name
             node.type = value.type
         return node
 
@@ -401,21 +434,14 @@ class PythonCodeGen(CodeGenerator):
     #        self.scope = scope # reset
     #        return result
         
+    # Literals
     class Literal(Renderer):
         def _render_fields(self, fields):
             fields["value"] = repr(fields["value"])
+        template = "{type}({value})"
 
-    # Literals
-    class Integer(Literal):
-        template = "c_long({value})"
-    class Float(Literal):
-        template = "c_double({value})"
     class String(Literal):
         template = "create_unicode_buffer({value})"
-    class Char(Literal):
-        template = "c_wchar({value})"
-    class Boolean(Literal):
-        template = "c_bool({value})"
     class Null(Renderer):
         template = "None"
 
@@ -456,15 +482,7 @@ class PythonCodeGen(CodeGenerator):
         template = "({right}.contents)"
 
     class Cast(Renderer):
-        def _render_fields(self, fields):
-            type = fields["type"]
-            right = fields["right"]
-            if type is right.type:
-                return "{right}"
-            elif type in primitive_t and right.type in primitive_t:
-                return "({type}({right}))"
-            else:
-                raise NotImplementedError()
+        template = "({type}({left}.value))"
 
     class Return(Renderer):
         def _render_fields(self, fields):

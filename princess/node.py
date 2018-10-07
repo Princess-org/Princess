@@ -18,7 +18,7 @@ def ast_repr(value, indents = " ", indent = 0):
         if has_keys:
             ret = class_name + " {\n"
             if isinstance(value.ast, list):
-                ret += "ast = " + ast_repr(value.ast, indents, indent) + "\n"
+                ret += indents + istr + "ast = " + ast_repr(value.ast, indents, indent + 1) + "\n"
             ret += ret_body
             ret += istr + "}"
         else:

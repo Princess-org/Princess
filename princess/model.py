@@ -85,7 +85,7 @@ class Identifier(Expression):
     root = None
 
 
-class Boolean(ModelBase):
+class Boolean(Literal):
     pass
 
 
