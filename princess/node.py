@@ -7,17 +7,22 @@ def ast_repr(value, indents = " ", indent = 0):
     if (isinstance(value, Node)):
         class_name = str(value.__class__.__name__)
 
-        if isinstance(value.ast, list) or value._count_keys() == 0:
-            return class_name + indents + ast_repr(value.ast, indents, indent)
-
-        ret = class_name + " {\n"
-
+        has_keys = False
+        ret_body = ""
         for k, v in sorted(vars(value).items()):
-            if v is not None and not k.startswith("_"): 
+            if v is not None and not k.startswith("_"):
+                has_keys = True
                 ast_r = ast_repr(v, indents, indent + 1)
-                ret += indents + istr + str(k) + " = " + ast_r + "\n"
+                ret_body += indents + istr + str(k) + " = " + ast_r + "\n"
 
-        ret += istr + "}"
+        if has_keys:
+            ret = class_name + " {\n"
+            if isinstance(value.ast, list):
+                ret += "ast = " + ast_repr(value.ast, indents, indent) + "\n"
+            ret += ret_body
+            ret += istr + "}"
+        else:
+            ret = class_name + indents + ast_repr(value.ast, indents, indent)
 
         return ret
     elif (isinstance(value, list)):
@@ -54,12 +59,12 @@ class Node(tatsu.model.Node):
             mapped = [fun(v) for v in self.ast]
             mapped = reduce(lambda a, b: a + (list(b) if isinstance(b, tuple) else [b]), mapped, [])
             self._ast = mapped
-        elif isinstance(self.ast, AST):
-            for key in filter(lambda k: not k.startswith("_"), vars(self).keys()):
-                r = fun(getattr(self, key))
-                setattr(self, key, r)
-        else:
+        elif self._ast is not None:
             self._ast = fun(self.ast)
+
+        for key in filter(lambda k: not k.startswith("_"), vars(self).keys()):
+            r = fun(getattr(self, key))
+            setattr(self, key, r)
 
     def __eq__(self, other):
         if self is other: return True

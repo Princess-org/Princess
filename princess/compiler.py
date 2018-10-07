@@ -170,7 +170,7 @@ class Scope(MutableMapping):
         v = Value(Modifier.Var, name, type)
         self[name] = v
         self.tmpcount += 1
-        return ast.Identifier(name = v.identifier)
+        return ast.Identifier(identifier = v.identifier, type = v.type)
 
 class ASTWalker(NodeWalker):
     walk_scopes = True
