@@ -8,6 +8,7 @@ from datetime import datetime
 
 from tatsu.walkers import NodeWalker
 from tatsu.codegen import ModelRenderer, CodeGenerator, DelegatingRenderingFormatter
+from tatsu.ast import AST
 from princess import model
 from princess import ast
 from princess.node import Node
@@ -296,6 +297,9 @@ class Typecheck(ASTWalker):
             node.type = l
 
             return node # No conversion
+        elif isinstance(node, (model.And, model.Or)):
+            assert node.right.type is node.left.type is c_bool, "incompatible type"
+            node.type = c_bool
         else:
             # Arithmetic
             node.type = common_type(l, r, sign_convert = True)
@@ -321,6 +325,10 @@ class Typecheck(ASTWalker):
     def walk_Not(self, node: model.Not):
         node.type = c_bool
         assert node.right.type is c_bool, "'not' on incompatible type"
+        return node
+
+    def walk_Compare(self, node: model.Compare):
+        node.type = c_bool
         return node
 
     def __insert_assignments(self, declarations, node):
@@ -404,6 +412,8 @@ class Formatter(DelegatingRenderingFormatter):
     def render(self, item, join='', **fields):
         if isinstance(item, type):
             return item.__name__
+        elif isinstance(item, Enum):
+            return item.value
         return super().render(item, join = join, **fields)
 
 class Renderer(ModelRenderer):
@@ -411,7 +421,7 @@ class Renderer(ModelRenderer):
         pass
 
     def render_fields(self, fields):
-        if isinstance(self.node.ast, list) or self.node._count_keys() == 0:
+        if not isinstance(self.node.ast, AST):
             fields.update(value = self.node.ast)
         return self._render_fields(fields)
 
@@ -450,6 +460,7 @@ class PythonCodeGen(CodeGenerator):
         template = "{identifier}"
 
     # Operators
+    # TODO Directly unwrap primitive values -> performance
     class UMinus(Renderer):
         template = "({type}(-({right}.value)))"
     class Invert(Renderer):
@@ -471,15 +482,23 @@ class PythonCodeGen(CodeGenerator):
     class Xor(Renderer):
         template = "({type}({left}.value ^ {right}.value))"
     class And(Renderer):
-        template = "(c_bool({left}.value and {right}.value))"
+        template = "({type}({left}.value and {right}.value))"
     class Or(Renderer):
-        template = "(c_bool({left}.value or {right}.value))"
+        template = "({type}({left}.value or {right}.value))"
     class Not(Renderer):
-        template = "(c_bool(not {right}.value))"
+        template = "({type}(not {right}.value))"
     class Ptr(Renderer):
         template = "(pointer({right}))"
     class Deref(Renderer):
         template = "({right}.contents)"
+
+    class Compare(Renderer):
+        def _render_fields(self, fields):
+            value = fields["value"]
+            for i in range(0, len(value), 2):
+                value[i] = "%s.value" % self.codegen.render(value[i])
+
+        template = "{type}({value:: :})"
 
     class Cast(Renderer):
         template = "({type}({left}.value))"
