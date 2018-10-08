@@ -246,7 +246,7 @@ class Typecheck(ASTWalker):
     # Literals
     def walk_Integer(self, node: model.Integer):
         node.value = node.ast
-        node.type = c_int
+        node.type = c_long
         return node
     def walk_Float(self, node: model.Float):
         node.value = node.ast
