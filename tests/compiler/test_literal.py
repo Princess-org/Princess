@@ -15,8 +15,8 @@ def test_char_literal():
     assert eq(eval_expr("'\\a'"), c_wchar('\x07'))
 
 def test_int_literal():
-    assert eq(eval_expr("123"), c_int(123))
-    assert eq(eval_expr("-43"), c_int(-43))
+    assert eq(eval_expr("123"), c_long(123))
+    assert eq(eval_expr("-43"), c_long(-43))
 
 def test_bool_literal():
     assert eq(eval_expr("true"), c_bool(True))
