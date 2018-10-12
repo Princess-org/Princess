@@ -471,8 +471,13 @@ class PythonCodeGen(CodeGenerator):
         template = "({type}({left}.value - {right}.value))"
     class Mul(Renderer):
         template = "({type}({left}.value * {right}.value))"
+
     class Div(Renderer):
-        template = "({type}({left}.value / {right}.value))"
+        def _render_fields(self, fields):
+            tpe = fields["type"]
+            op = "//" if tpe in int_t else "/"
+            return "({type}({left}.value %s {right}.value))" % op
+
     class Mod(Renderer):
         template = "({type}({left}.value % {right}.value))"
     class BAnd(Renderer):

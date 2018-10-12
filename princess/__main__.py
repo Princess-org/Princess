@@ -2,8 +2,8 @@ import sys, re, argparse
 import colorama
 
 from colorama import ansi
-from princess import parse, eval, compile
-from princess import model, ast
+from princess import parse, model, ast
+from princess.compiler import eval, compile
 from tatsu.exceptions import FailedParse
 
 args = {}
@@ -47,6 +47,12 @@ def do_eval(src):
         if args.ast:
             print(_ast)
         else:
+            if _ast: # Wrap inside return statement if its a single expression
+                children = _ast.children_list()
+                expr = _ast.children_list()[0]
+                if isinstance(expr, model.Expression) and len(children) == 1:
+                    _ast = ast.Program(ast.Return(expr))
+
             pysrc = compile(_ast)
             if args.src:
                 print(pysrc)

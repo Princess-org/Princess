@@ -25,11 +25,11 @@ class PrincessModelBuilderSemantics(ModelBuilderSemantics):
         ] + (types or [])
         super(PrincessModelBuilderSemantics, self).__init__(context=context, types=types)
 
-class Literal(ModelBase):
+class Expression(ModelBase):
     pass
 
 
-class Expression(ModelBase):
+class Literal(Expression):
     pass
 
 
@@ -41,15 +41,15 @@ class Type(ModelBase):
     pass
 
 
-class UnaryPostOp(ModelBase):
+class UnaryPostOp(Expression):
     pass
 
 
-class UnaryPreOp(ModelBase):
+class UnaryPreOp(Expression):
     pass
 
 
-class BinaryOp(ModelBase):
+class BinaryOp(Expression):
     pass
 
 
