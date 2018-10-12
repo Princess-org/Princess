@@ -546,7 +546,7 @@ class PrincessParser(Parser):
             []
         )
 
-    @tatsumasu('If')
+    @tatsumasu('ElseIf')
     def _stmt_struct_else_if_(self):  # noqa
         self._token('else')
         self._n__()
@@ -1875,7 +1875,7 @@ class PrincessParser(Parser):
             []
         )
 
-    @tatsumasu('If')
+    @tatsumasu('ElseIf')
     def _stmt_else_if_(self):  # noqa
         self._token('else')
         self._n__()

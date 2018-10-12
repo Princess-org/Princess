@@ -101,11 +101,11 @@ def test_if_statement():
             cond = Boolean(True),
             body = Body(Identifier("if_body")),
             else_if = [
-                If(
+                ElseIf(
                     cond = Boolean(False),
                     body = Body(Identifier("else_if_body"))
                 ),
-                If(
+                ElseIf(
                     cond = Boolean(True),
                     body = Body(Identifier("else_if_body"))
                 )
@@ -124,7 +124,7 @@ def test_static_if():
             cond = Boolean(True),
             body = EmptyBody,
             else_if = [
-                If(cond = Boolean(False), body = EmptyBody)
+                ElseIf(cond = Boolean(False), body = EmptyBody)
             ],
             else_ = Else(body = EmptyBody)
         )

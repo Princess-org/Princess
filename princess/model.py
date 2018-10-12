@@ -109,9 +109,16 @@ class Else(Statement):
     body = None
 
 
+class ElseIf(Statement):
+    body = None
+    cond = None
+
+
 class If(Statement):
     body = None
     cond = None
+    else_ = None
+    else_if = None
 
 
 class StructBody(ModelBase):

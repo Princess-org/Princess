@@ -91,7 +91,7 @@ def test_struct_if():
                 If(
                     cond = Boolean(False),
                     body = StructBody(IdDecl(name = Identifier("a"), type = Identifier("int"))),
-                    else_if = [If(
+                    else_if = [ElseIf(
                         cond = Boolean(False),
                         body = StructBody(IdDecl(name = Identifier("a"), type = Identifier("double")))
                     )],

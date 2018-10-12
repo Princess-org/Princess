@@ -524,19 +524,45 @@ class PythonCodeGen(CodeGenerator):
     class Assign(Renderer):
         template = "{left} = {right}"
 
+    class Body(Renderer):
+        def _render_fields(self, fields):
+            body = fields["value"]
+            if len(body) == 1 and body[0] == None:
+                fields.update(value = "pass")
+
+        template = """\
+            {value::\\n:}\
+        """
+
+    class If(Renderer):
+        template = """\
+            if {cond}:
+            {body:1::}
+            {else_if::\\n:}
+            {else_}\
+        """
+
+    class ElseIf(Renderer):
+        template = """\
+            elif {cond}:
+            {body:1::}\
+        """
+    
+    class Else(Renderer):
+        template = """\
+            else:
+            {body:1::}\
+        """
+
     class Def(Renderer):
         def _render_fields(self, fields):
             name = fields["name"].ast[0]
-            body = fields["body"].ast
-            if len(body) == 1 and body[0] == None:
-                body[0] = ast.Null # Empty function compiles
-
-            fields.update(name = name, body = body)
+            fields.update(name = name)
             #self.codegen.current_function = name
 
         template = """\
             def {name}():
-                {body:1:\\n:}\
+            {body:1::}\
         """
 
     class Program(Renderer):
