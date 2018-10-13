@@ -9,8 +9,7 @@ from datetime import datetime
 from tatsu.walkers import NodeWalker
 from tatsu.codegen import ModelRenderer, CodeGenerator, DelegatingRenderingFormatter
 from tatsu.ast import AST
-from princess import model
-from princess import ast
+from princess import model, ast, env
 from princess.node import Node
 
 unsigned_t = set([c_uint8, c_uint16, c_uint32, c_uint64])
@@ -18,6 +17,9 @@ signed_t = set([c_int8, c_int16, c_int32, c_int64])
 float_t = set([c_double, c_float])
 int_t = unsigned_t | signed_t
 primitive_t = int_t | float_t | set([c_bool, c_wchar])
+
+def is_reserved(name):
+    return iskeyword(name) or hasattr(env, name)
 
 def is_pointer(t):
     return issubclass(t, _Pointer)
@@ -53,18 +55,12 @@ def common_type(a, b, sign_convert = False):
     return result
 
 def get_name(ident: model.Identifier):
-    name = getattr(ident, "identifier", None)
-    assert not name, ("Redeclaration of %s", name)
+    if hasattr(ident, "name"):
+        return ident.name
+    
     assert len(ident.ast) == 1, "scope resolution (::) not implemented"
     return ident.ast[0]
-
-def get_name_ref(ident: model.Identifier):
-    name = getattr(ident, "identifier", None)
-    if name: return name
-    else:
-        name = get_name(ident)
-        return name
-
+        
 def typecheck_assign(l, r):
     # TODO implicit conversion!
     assert l is r.type, "incompatible types"
@@ -135,9 +131,16 @@ builtins = {
 builtins = {k: Value.builtin(v) for k, v in builtins.items()}
 
 class Scope(MutableMapping):
+    _scope_id = 0
+
+    @staticmethod
+    def scope_id():
+        Scope._scope_id += 1
+        return Scope._scope_id
+
     """ Scope information """
     def __init__(self, parent = builtins):
-        self.level = getattr(parent, "level", -1) + 1
+        self.level = 0 if parent == builtins else Scope.scope_id()
         self.parent = parent
         self.children = {}
         self.dir = {}
@@ -146,7 +149,7 @@ class Scope(MutableMapping):
     def python_identifier(self, value: Value):
         name = value.name
         if self.level == 0:
-            if iskeyword(value.name):
+            if is_reserved(value.name):
                 name += "_"
         else:
             name = "_" + str(self.level) + name
@@ -174,8 +177,6 @@ class Scope(MutableMapping):
             return
 
         assert isinstance(value, Value)
-        value.scope = self
-        value.identifier = self.python_identifier(value)
         self.dir[name] = value
 
     def get_const_value(self, v):
@@ -195,6 +196,12 @@ class Scope(MutableMapping):
         self.children[node] = child
         return child
 
+    def create_variable(self, value):
+        value.scope = self
+        value.identifier = self.python_identifier(value)
+        assert value.name not in self.dir, "Redeclaration of %s" % value.name
+        self.dir[value.name] = value
+
     def create_temporary(self, type):
         name = "__tmp" + str(self.tmpcount)
         v = Value(Modifier.Var, name, type)
@@ -213,7 +220,7 @@ class ASTWalker(NodeWalker):
         if isinstance(node, Node):
             if self.walk_scopes:
                 scope = self.scope
-                if node in ast.scoped_types:
+                if type(node) in ast.scoped_t:
                     self.scope = self.scope.enter_scope(node)
             node.map(self.walk)
             if self.walk_scopes:
@@ -331,6 +338,15 @@ class Typecheck(ASTWalker):
         node.type = c_bool
         return node
 
+    def walk_In(self, node: model.In):
+        for l in node.left:
+            if isinstance(l, model.IdDecl):
+                v = Value(modifier = node.keyword, name = get_name(l.name), tpe = c_long)
+                self.scope.create_variable(v)
+                l.identifier = v.identifier
+        assert len(node.right) == 1 and isinstance(node.right[0], model.Range), "For loop only supports iterating over a range" 
+        return node
+
     def __insert_assignments(self, declarations, node):
         try:
             index = 0
@@ -359,7 +375,7 @@ class Typecheck(ASTWalker):
             if type(a) is model.IdDecl:
                 name = get_name(a.name)
                 v = Value(modifier, name, a.type, export)
-                self.scope[name] = v # Add value to scope
+                self.scope.create_variable(v) # Add value to scope
                 declarations.append(ast.VarDecl(
                     left = v, type = v.type, identifier = v.identifier, right = None))
 
@@ -385,6 +401,8 @@ class Typecheck(ASTWalker):
         declarations = []
 
         for a in node.left:
+            if isinstance(a, model.Identifier):
+                assert a.modifier == "var", "Assign to constant"
             declarations.append(ast.Assign(left = a, right = None))
         
         self.__insert_assignments(declarations, node)
@@ -397,11 +415,12 @@ class Typecheck(ASTWalker):
         return tuple(declarations)
 
     def walk_Identifier(self, node: model.Identifier):
-        name = get_name_ref(node)
+        name = get_name(node)
+        node.name = name
         if name in self.scope:
             value = self.scope[name]
+            node.modifier = value.modifier
             node.identifier = value.identifier
-            node.name = name
             node.type = value.type
         return node
 
@@ -438,7 +457,7 @@ class PythonCodeGen(CodeGenerator):
     #def render(self, node, join = '', **fields):
     #    if isinstance(node, Node):
     #        scope = self.scope
-    #        if node in ast.scoped_types:
+    #        if node in ast.scoped_t:
     #            self.scope = scope.get_scope(node)
     #        result = super().render(node, join = join, **fields)
     #        self.scope = scope # reset
@@ -515,6 +534,29 @@ class PythonCodeGen(CodeGenerator):
                 raise NotImplementedError("Can't use 'do' expressions in return statement")
 
             return "return ({value::, :})"
+
+    class For(Renderer):
+        def _render_fields(self, fields):
+            iterator = fields["iterator"]
+            ref = iterator.left[0]
+            if isinstance(ref, model.IdDecl):
+                ident = ref.identifier
+            else:
+                ident = ref.ast
+            
+            fields.update(identifier = ident, range = iterator.right[0])
+
+        template = """\
+            for {identifier} in {range}:
+                {body:1::}\
+        """
+
+    class Range(Renderer):
+        def _render_fields(self, fields):
+            if fields["step"] is None:
+                fields.update(step = "None")
+
+        template = "p_range({from_}, {to}, {step})"
 
     class VarDecl(Renderer):
         template = """

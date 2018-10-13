@@ -18,7 +18,7 @@ def test_let_multiple_assign():
 
 def test_assign():
     prog = """\
-        let a = 0
+        var a = 0
         a = 20
         a = a + 5
         return a
@@ -27,7 +27,7 @@ def test_assign():
 
 def test_assign_multiple():
     prog = """\
-        let a, b, c = 0, 0, 0
+        var a, b, c = 0, 0, 0
         a, b, c = 10, 20, 30
         return a, b, c
     """
@@ -35,7 +35,7 @@ def test_assign_multiple():
 
 def test_assign_and_let():
     prog = """\
-        let a = 0
+        var a = 0
         let (a), b = 1, 2
         return a, b
     """

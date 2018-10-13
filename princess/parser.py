@@ -2000,28 +2000,57 @@ class PrincessParser(Parser):
         self._gather(block1, sep1)
         self.name_last_node('@')
 
+    @tatsumasu('IdAssign')
+    def _expr_in_assign_(self):  # noqa
+        self._n__()
+        self._identifier_()
+        self.name_last_node('@')
+
     @tatsumasu('In')
     def _expr_in_(self):  # noqa
-        with self._optional():
-            self._token('var')
-            self.name_last_node('keyword')
+        with self._group():
+            with self._choice():
+                with self._option():
+                    with self._group():
+                        with self._choice():
+                            with self._option():
+                                self._token('var')
+                            with self._option():
+                                self._token('let')
+                            self._error('no available options')
+                    self.name_last_node('keyword')
 
-        def sep2():
-            self._token(',')
+                    def sep3():
+                        self._token(',')
 
-        def block2():
-            self._stmt_iddecl_()
-        self._positive_gather(block2, sep2)
-        self.name_last_node('left')
+                    def block3():
+                        with self._choice():
+                            with self._option():
+                                self._stmt_idassign_()
+                            with self._option():
+                                self._stmt_iddecl_()
+                            self._error('no available options')
+                    self._positive_gather(block3, sep3)
+                    self.name_last_node('left')
+                with self._option():
+
+                    def sep6():
+                        self._token(',')
+
+                    def block6():
+                        self._expr_in_assign_()
+                    self._positive_gather(block6, sep6)
+                    self.name_last_node('left')
+                self._error('no available options')
         self._token('in')
         self._n__()
 
-        def sep4():
+        def sep9():
             self._token(',')
 
-        def block4():
+        def block9():
             self._stmt_vardecl_rhs_()
-        self._positive_gather(block4, sep4)
+        self._positive_gather(block9, sep9)
         self.name_last_node('right')
         self.ast._define(
             ['keyword', 'left', 'right'],
@@ -2682,6 +2711,9 @@ class PrincessSemantics(object):
         return ast
 
     def stmt_return(self, ast):  # noqa
+        return ast
+
+    def expr_in_assign(self, ast):  # noqa
         return ast
 
     def expr_in(self, ast):  # noqa

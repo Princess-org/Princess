@@ -25,6 +25,20 @@ def string_value(v):
     """
     return wstring_at(byref(v), len(v) - 1)
 
+def p_range(_from, to, step):
+    _from = _from.value
+    to = to.value + 1
+
+    if not step:
+        if to <= _from:
+            step = -1
+        else: step = 1
+    else:
+        step = step.value
+    
+    for x in range(_from, to, step):
+        yield c_long(x)
+
 def eq(l, r):
     if isinstance(l, tuple):
         for l, r in zip(l, r):

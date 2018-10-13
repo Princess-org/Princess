@@ -171,7 +171,7 @@ def test_for_simple():
         ast("var i = 0"),
         For(
             iterator = In(
-                left = [IdDecl(name = Identifier("i"))], 
+                left = [IdAssign(Identifier("i"))], 
                 right = [Range(from_ = Integer(1), to = Integer(20))]
             ),
             body = Body(

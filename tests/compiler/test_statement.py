@@ -20,3 +20,31 @@ def test_if_statement_complex():
         } else { }
     """
     assert eq(eval(prog), c_bool(True))
+
+def test_if_scoping():
+    prog = """\
+        var a = 20
+        if true {
+            if true {
+                a = 42
+            }
+            var a = 40
+            if true {
+                a = 60
+            }
+        } else {
+            var a = 50
+        }
+        return a
+    """
+    assert eq(eval(prog), c_long(42))
+
+def test_for_loop():
+    prog = """\
+        var a = 0
+        for var i in 1:20 {
+            a = a + 1
+        }
+        return a
+    """
+    assert eq(eval(prog), c_long(20))
