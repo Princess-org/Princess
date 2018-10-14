@@ -39,7 +39,7 @@ def test_if_scoping():
     """
     assert eq(eval(prog), c_long(42))
 
-def test_for_loop():
+def test_for_loop_range():
     prog = """\
         var a = 0
         for var i in 1:20 {
@@ -48,3 +48,15 @@ def test_for_loop():
         return a
     """
     assert eq(eval(prog), c_long(20))
+
+def test_while_loop():
+    prog = """\
+        var a = 10
+        var b = 0
+        while a > 0 { // TODO: Assign inside expression?
+            b = b + 1
+            a = a - 1
+        }
+        return b
+    """
+    assert eq(eval(prog), c_long(10))

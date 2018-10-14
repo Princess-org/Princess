@@ -535,6 +535,12 @@ class PythonCodeGen(CodeGenerator):
 
             return "return ({value::, :})"
 
+    class While(Renderer):
+        template = """\
+            while {cond}:
+                {body:1::}\
+        """
+
     class For(Renderer):
         def _render_fields(self, fields):
             iterator = fields["iterator"]
