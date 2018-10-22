@@ -29,7 +29,6 @@ KEYWORDS = {
     'const',
     'continue',
     'def',
-    'default',
     'else',
     'export',
     'false',
@@ -2127,15 +2126,16 @@ class PrincessParser(Parser):
         self._token('case')
         self._n__()
         self._cut()
+        with self._optional():
 
-        def sep1():
-            self._token(',')
+            def sep1():
+                self._token(',')
 
-        def block1():
-            self._stmt_case_rhs_()
-        self._positive_gather(block1, sep1)
-        self.name_last_node('value')
-        self._n__()
+            def block1():
+                self._stmt_case_rhs_()
+            self._positive_gather(block1, sep1)
+            self.name_last_node('value')
+            self._n__()
         self._token(':')
         self._n__()
         with self._group():
@@ -2148,25 +2148,6 @@ class PrincessParser(Parser):
         self.name_last_node('statement')
         self.ast._define(
             ['statement', 'value'],
-            []
-        )
-
-    @tatsumasu('Case')
-    def _stmt_default_(self):  # noqa
-        self._token('default')
-        self._n__()
-        self._token(':')
-        self._n__()
-        with self._group():
-            with self._choice():
-                with self._option():
-                    self._statement_noterm_()
-                with self._option():
-                    self._expression_()
-                self._error('no available options')
-        self.name_last_node('statement')
-        self.ast._define(
-            ['statement'],
             []
         )
 
@@ -2337,8 +2318,6 @@ class PrincessParser(Parser):
                 self._stmt_loop_()
             with self._option():
                 self._stmt_switch_()
-            with self._option():
-                self._stmt_default_()
             with self._option():
                 self._stmt_return_()
             with self._option():
@@ -2831,9 +2810,6 @@ class PrincessSemantics(object):
         return ast
 
     def stmt_case(self, ast):  # noqa
-        return ast
-
-    def stmt_default(self, ast):  # noqa
         return ast
 
     def stmt_label(self, ast):  # noqa

@@ -135,7 +135,7 @@ def test_switch():
         switch foo {
             case 1: noop
             case 2, 3: noop
-            default:
+            case:
                 noop
         }
     """) == Program(
