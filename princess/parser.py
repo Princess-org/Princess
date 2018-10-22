@@ -1000,6 +1000,17 @@ class PrincessParser(Parser):
             []
         )
 
+    @tatsumasu('Cast')
+    @nomemo
+    def _expr_autocast_(self):  # noqa
+        self._expr_10_()
+        self.name_last_node('left')
+        self._token('!!')
+        self.ast._define(
+            ['left'],
+            []
+        )
+
     @tatsumasu('PreInc')
     def _expr_preinc_(self):  # noqa
         self._token('++')
@@ -1514,6 +1525,8 @@ class PrincessParser(Parser):
                 self._expr_array_index_()
             with self._option():
                 self._expr_member_access_()
+            with self._option():
+                self._expr_autocast_()
             with self._option():
                 self._expr_postinc_()
             with self._option():
@@ -2504,6 +2517,9 @@ class PrincessSemantics(object):
         return ast
 
     def expr_cast(self, ast):  # noqa
+        return ast
+
+    def expr_autocast(self, ast):  # noqa
         return ast
 
     def expr_preinc(self, ast):  # noqa

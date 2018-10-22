@@ -209,6 +209,9 @@ def test_wrapping():
 def test_cast():
     assert parse("1!float") == Program(Cast(left = Integer(1), right = Identifier("float")))
 
+def test_autocast():
+    assert parse("1!!") == Program(Cast(left = Integer(1)))
+
 def test_if_expression():
     assert parse("foo = 10 if true else 20") == Program(
         Assign(
