@@ -130,6 +130,25 @@ def test_static_if():
         )
     )
 
+def test_switch():
+    assert parse("""\
+        switch foo {
+            case 1: noop
+            case 2, 3: noop
+            default:
+                noop
+        }
+    """) == Program(
+        Switch(
+            value = Identifier("foo"),
+            body = Body(
+                Case(value = [Integer(1)], statement = Identifier("noop")),
+                Case(value = [Integer(2), Integer(3)], statement = Identifier("noop")),
+                Case(statement = Identifier("noop"))
+            )
+        )
+    )
+
 def test_loop():
     assert parse("""\
         loop { continue; forever }

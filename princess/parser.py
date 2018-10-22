@@ -25,9 +25,11 @@ KEYWORDS = {
     'and',
     'as',
     'break',
+    'case',
     'const',
     'continue',
     'def',
+    'default',
     'else',
     'export',
     'false',
@@ -1929,6 +1931,20 @@ class PrincessParser(Parser):
             []
         )
 
+    @tatsumasu('Switch')
+    def _stmt_switch_(self):  # noqa
+        self._token('switch')
+        self._n__()
+        self._expression_()
+        self.name_last_node('value')
+        self._n__()
+        self._code_body_()
+        self.name_last_node('body')
+        self.ast._define(
+            ['body', 'value'],
+            []
+        )
+
     @tatsumasu('StaticIf')
     def _stmt_static_if_(self):  # noqa
         self._token('#')
@@ -2100,6 +2116,60 @@ class PrincessParser(Parser):
             []
         )
 
+    @tatsumasu()
+    def _stmt_case_rhs_(self):  # noqa
+        self._n__()
+        self._value_()
+        self.name_last_node('@')
+
+    @tatsumasu('Case')
+    def _stmt_case_(self):  # noqa
+        self._token('case')
+        self._n__()
+        self._cut()
+
+        def sep1():
+            self._token(',')
+
+        def block1():
+            self._stmt_case_rhs_()
+        self._positive_gather(block1, sep1)
+        self.name_last_node('value')
+        self._n__()
+        self._token(':')
+        self._n__()
+        with self._group():
+            with self._choice():
+                with self._option():
+                    self._statement_noterm_()
+                with self._option():
+                    self._expression_()
+                self._error('no available options')
+        self.name_last_node('statement')
+        self.ast._define(
+            ['statement', 'value'],
+            []
+        )
+
+    @tatsumasu('Case')
+    def _stmt_default_(self):  # noqa
+        self._token('default')
+        self._n__()
+        self._token(':')
+        self._n__()
+        with self._group():
+            with self._choice():
+                with self._option():
+                    self._statement_noterm_()
+                with self._option():
+                    self._expression_()
+                self._error('no available options')
+        self.name_last_node('statement')
+        self.ast._define(
+            ['statement'],
+            []
+        )
+
     @tatsumasu('Label')
     def _stmt_label_(self):  # noqa
         self._token('label')
@@ -2266,6 +2336,10 @@ class PrincessParser(Parser):
             with self._option():
                 self._stmt_loop_()
             with self._option():
+                self._stmt_switch_()
+            with self._option():
+                self._stmt_default_()
+            with self._option():
                 self._stmt_return_()
             with self._option():
                 self._stmt_continue_()
@@ -2284,7 +2358,13 @@ class PrincessParser(Parser):
                 self.name_last_node('@')
                 self._t_term_()
             with self._option():
-                self._stmt_label_()
+                with self._group():
+                    with self._choice():
+                        with self._option():
+                            self._stmt_label_()
+                        with self._option():
+                            self._stmt_case_()
+                        self._error('no available options')
                 self.name_last_node('@')
                 self._t_term_()
             with self._option():
@@ -2708,6 +2788,9 @@ class PrincessSemantics(object):
     def stmt_if(self, ast):  # noqa
         return ast
 
+    def stmt_switch(self, ast):  # noqa
+        return ast
+
     def stmt_static_if(self, ast):  # noqa
         return ast
 
@@ -2742,6 +2825,15 @@ class PrincessSemantics(object):
         return ast
 
     def stmt_pragma(self, ast):  # noqa
+        return ast
+
+    def stmt_case_rhs(self, ast):  # noqa
+        return ast
+
+    def stmt_case(self, ast):  # noqa
+        return ast
+
+    def stmt_default(self, ast):  # noqa
         return ast
 
     def stmt_label(self, ast):  # noqa
