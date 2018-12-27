@@ -94,7 +94,7 @@ class Lexer(PrincessBuffer):
                     text = ""
                     comment_stack -= 1
                 elif match.group("comment_eol"):
-                    text = ""
+                    text = "\n"
 
             append(text)
             pos = match.end()

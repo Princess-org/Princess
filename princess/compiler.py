@@ -18,12 +18,18 @@ float_t = set([c_double, c_float])
 int_t = unsigned_t | signed_t
 primitive_t = int_t | float_t | set([c_bool, c_wchar])
 
+class Function:
+    def __init__(self, arg_t, ret_t):
+        self.arg_t = arg_t  # Argument types
+        self.ret_t = ret_t  # Return types
+
 def is_reserved(name):
     return iskeyword(name) or hasattr(env, name)
 
 def is_pointer(t):
     return issubclass(t, _Pointer)
-def signed(t):
+
+def to_signed(t):
     if t in unsigned_t:
         return {c_uint8: c_int8, c_uint16: c_int16, c_uint32: c_int32, c_uint64: c_int64}[t]
     return t
@@ -42,7 +48,7 @@ def common_type(a, b, sign_convert = False):
         result = b if sizeof(a) < sizeof(b) else a
         # check sign, unsigned -> signed if signs differ
         if sign_convert and (a in unsigned_t) != (b in unsigned_t):
-            result = signed(result)
+            result = to_signed(result)
     elif a in float_t and b in float_t:
         result = b if sizeof(a) < sizeof(b) else a
     elif a in float_t and b in int_t:
@@ -60,10 +66,18 @@ def get_name(ident: model.Identifier):
     
     assert len(ident.ast) == 1, "scope resolution (::) not implemented"
     return ident.ast[0]
-        
+
+
 def typecheck_assign(l, r):
-    # TODO implicit conversion!
+    """ Typechecks and casts if applicable, by wrapping the right node """
+
+    # Implicit conversion
+    if isinstance(r, (model.Integer, model.Float)):
+        r.type = l
+    # FIXME Ensure size limit, float <> int !!
+
     assert l is r.type, "incompatible types"
+
     return r
 
 class Modifier(str, Enum):
@@ -71,6 +85,13 @@ class Modifier(str, Enum):
     Var = "var"
     Let = "let"
     Type = "type"
+
+class FunctionT:
+    """ Dedicated function type """
+
+    def __init__(self, argt, rett):
+        self.argt = argt
+        self.rett = rett
 
 class Value:
     def __init__(self, modifier: Modifier, name: str, tpe, export = False, scope = None, identifier = None, value = None):
@@ -130,7 +151,7 @@ builtins = {
 
 builtins = {k: Value.builtin(v) for k, v in builtins.items()}
 
-class Scope(MutableMapping):
+class Scope(MutableMapping): # TODO Why is this a mapping?
     _scope_id = 0
 
     @staticmethod
@@ -179,6 +200,11 @@ class Scope(MutableMapping):
         assert isinstance(value, Value)
         self.dir[name] = value
 
+    def type_lookup(self, t):
+        # TODO const value isn't enough for complicated types, this only works for identifiers
+        assert isinstance(t, model.Identifier), "Complex types as argument not implemented"
+        return self.get_const_value(t)
+
     def get_const_value(self, v):
         if isinstance(v, model.Identifier):
             value = self[v.name]
@@ -196,21 +222,26 @@ class Scope(MutableMapping):
         self.children[node] = child
         return child
 
-    def create_variable(self, value):
+    def create_variable(self, *args, **kwargs):
+        value = Value(*args, **kwargs)
         value.scope = self
         value.identifier = self.python_identifier(value)
         assert value.name not in self.dir, "Redeclaration of %s" % value.name
         self.dir[value.name] = value
+        return value
 
-    def create_temporary(self, type):
+    def create_function(self, name, argt = None, rett = None):
+        return self.create_variable(modifier = Modifier.Const, name = name, tpe = FunctionT(argt, rett))
+
+    def create_temporary(self, tpe):
         name = "__tmp" + str(self.tmpcount)
-        v = Value(Modifier.Var, name, type)
+        v = Value(Modifier.Var, name, tpe)
         self[name] = v
         self.tmpcount += 1
         return ast.Identifier(identifier = v.identifier, type = v.type)
 
 class ASTWalker(NodeWalker):
-    walk_scopes = True
+    walk_scopes = True  # TODO Rewrite, ugly
 
     def __init__(self, scope = None):
         self.scope = scope
@@ -248,8 +279,8 @@ class Prepass(ASTWalker):
     def walk_default(self, node):
         return node
 
-class Typecheck(ASTWalker):
-    """ Third step, typechecking """
+class Compile(ASTWalker):
+    """ Second step, typechecking and compiling """
 
     # Literals
     def walk_Integer(self, node: model.Integer):
@@ -277,6 +308,7 @@ class Typecheck(ASTWalker):
         return node
 
     def walk_Cast(self, node: model.Cast):
+        # Simplify cast if casting a literal
         tpe = self.scope.get_const_value(node.right)
         if isinstance(node.left, (model.Integer, model.Float)):
             node = node.left
@@ -341,8 +373,7 @@ class Typecheck(ASTWalker):
     def walk_In(self, node: model.In):
         for l in node.left:
             if isinstance(l, model.IdDecl):
-                v = Value(modifier = node.keyword, name = get_name(l.name), tpe = c_long)
-                self.scope.create_variable(v)
+                v = self.scope.create_variable(modifier = node.keyword, name = get_name(l.name), tpe = c_long)
                 l.identifier = v.identifier
         assert len(node.right) == 1 and isinstance(node.right[0], model.Range), "For loop only supports iterating over a range" 
         return node
@@ -352,7 +383,7 @@ class Typecheck(ASTWalker):
             index = 0
             for b in node.right:
                 tpe = b.type
-                if isinstance(tpe, tuple):
+                if isinstance(tpe, tuple):  # Parallel assignment
                     tmp = self.scope.create_temporary(tpe)
                     declarations.insert(index, ast.Assign(left = tmp, right = b))
                     index += 1
@@ -374,8 +405,7 @@ class Typecheck(ASTWalker):
         for a in node.left:
             if type(a) is model.IdDecl:
                 name = get_name(a.name)
-                v = Value(modifier, name, a.type, export)
-                self.scope.create_variable(v) # Add value to scope
+                v = self.scope.create_variable(modifier, name, self.scope.type_lookup(a.type), export) # Add value to scope
                 declarations.append(ast.VarDecl(
                     left = v, type = v.type, identifier = v.identifier, right = None))
 
@@ -417,11 +447,25 @@ class Typecheck(ASTWalker):
     def walk_Identifier(self, node: model.Identifier):
         name = get_name(node)
         node.name = name
+
         if name in self.scope:
             value = self.scope[name]
+            
             node.modifier = value.modifier
             node.identifier = value.identifier
             node.type = value.type
+
+        return node
+
+    def walk_Def(self, node: model.Def):
+
+        # TODO Check return arguments
+        self.scope.create_function(
+            name = get_name(node.name), 
+            argt = [self.scope.type_lookup(arg.type) for arg in node.args or []],
+            rett = [self.scope.type_lookup(r) for r in node.returns or []]
+        )
+
         return node
 
     def walk_default(self, node):
@@ -431,7 +475,7 @@ class Formatter(DelegatingRenderingFormatter):
     def render(self, item, join='', **fields):
         if isinstance(item, type):
             return item.__name__
-        elif isinstance(item, Enum):
+        elif isinstance(item, Enum): 
             return item.value
         return super().render(item, join = join, **fields)
 
@@ -515,6 +559,9 @@ class PythonCodeGen(CodeGenerator):
         template = "(pointer({right}))"
     class Deref(Renderer):
         template = "({right}.contents)"
+
+    class Call(Renderer):
+        template = "({left}({args::,:}))"
 
     class Compare(Renderer):
         def _render_fields(self, fields):
@@ -644,8 +691,9 @@ class PythonCodeGen(CodeGenerator):
 def compile(ast):
     ast = Prepass().walk(ast)
     scope = Scope()
-    ast = Typecheck(scope).walk(ast)
+    ast = Compile(scope).walk(ast)
     src = PythonCodeGen().render(ast)
+    print(src)
     return src
 
 def eval(pysrc):
