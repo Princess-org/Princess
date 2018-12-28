@@ -428,6 +428,8 @@ class Compile(ASTWalker):
         return tuple(declarations)
 
     def walk_Assign(self, node: model.Assign):
+        assert isinstance(node.parent, model.Body), "Nested assignments disallowed" # TODO
+
         declarations = []
 
         for a in node.left:

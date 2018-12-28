@@ -57,7 +57,7 @@ class Body(ModelBase):
     pass
 
 
-class Program(ModelBase):
+class Program(Body):
     pass
 
 
@@ -363,6 +363,11 @@ class TypeDecl(Statement):
     value = None
 
 
+class Switch(Statement):
+    body = None
+    value = None
+
+
 class StaticIf(Statement):
     body = None
     cond = None
@@ -401,6 +406,11 @@ class For(Statement):
 class Pragma(Statement):
     args = None
     name = None
+
+
+class Case(Statement):
+    statement = None
+    value = None
 
 
 class Label(Statement):
