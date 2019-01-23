@@ -1,3 +1,5 @@
+""" This file gets imported by every output file """
+
 import os, operator, itertools
 from ctypes import *
 

@@ -54,16 +54,19 @@ class Node(tatsu.model.Node):
 
     children = children_list
 
-    def map(self, fun):
-        if isinstance(self.ast, list):
+    def map(self, fun, include = lambda node: True):
+        if isinstance(self.ast, list): # Node ( a, b, ..., n )
             mapped = [fun(v) for v in self.ast]
             mapped = reduce(lambda a, b: a + (list(b) if isinstance(b, tuple) else [b]), mapped, [])
             self._ast = mapped
-        elif self._ast is not None:
+        elif self._ast is not None: # Node ( child )
             self._ast = fun(self.ast)
 
         for key in filter(lambda k: not k.startswith("_"), vars(self).keys()):
-            r = fun(getattr(self, key))
+            n = getattr(self, key)
+            if not include(n): continue
+    
+            r = fun(n)
             setattr(self, key, r)
 
     def __eq__(self, other):

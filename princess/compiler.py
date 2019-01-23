@@ -202,7 +202,7 @@ class Scope(MutableMapping): # TODO Why is this a mapping?
 
     def type_lookup(self, t):
         # TODO const value isn't enough for complicated types, this only works for identifiers
-        assert isinstance(t, model.Identifier), "Complex types as argument not implemented"
+        assert t is None or isinstance(t, model.Identifier), "Complex types as argument not implemented"
         return self.get_const_value(t)
 
     def get_const_value(self, v):
@@ -241,46 +241,26 @@ class Scope(MutableMapping): # TODO Why is this a mapping?
         return ast.Identifier(identifier = v.identifier, type = v.type)
 
 class ASTWalker(NodeWalker):
-    walk_scopes = True  # TODO Rewrite, ugly
-
     def __init__(self, scope = None):
-        self.scope = scope
+        self.scope = scope # type: Scope
 
-    def walk(self, node):
-        supers_walk = super().walk
-        if isinstance(node, Node):
-            if self.walk_scopes:
-                scope = self.scope
-                if type(node) in ast.scoped_t:
-                    self.scope = self.scope.enter_scope(node)
+    def enter_scope(self, node):
+        self.scope = self.scope.enter_scope(node)
+    def exit_scope(self):
+        self.scope = self.scope.parent
+
+    def walk_children(self, node):
+        if isinstance(node, list):
+            node[:] = [self.walk(e) for e in iter(node)]
+        elif isinstance(node, Node):
             node.map(self.walk)
-            if self.walk_scopes:
-                self.scope = scope
-            return supers_walk(node)
-        elif isinstance(node, list):
-            return [self.walk(e) for e in iter(node)]
-        else:
-            return supers_walk(node)
-            
 
-class Prepass(ASTWalker):
-    """ First step, does simplify the AST """
-    walk_scopes = False
-    
-    def walk_UMinus(self, node: model.UMinus):
-        # UMinus(Integer(n)) -> Integer(-n)
-        right = node.right
-        if type(right) == model.Integer:
-            return ast.Integer(-right.ast)
-        elif type(right) == model.Float:
-            return ast.Float(-right.ast)
-        return node
-        
-    def walk_default(self, node):
-        return node
+    def walk_child(self, node, *children):
+        assert isinstance(node, Node)
+        node.map(self.walk, lambda n: n in children)       
 
 class Compile(ASTWalker):
-    """ Second step, typechecking and compiling """
+    """ Typechecking and compiling """
 
     # Literals
     def walk_Integer(self, node: model.Integer):
@@ -308,6 +288,8 @@ class Compile(ASTWalker):
         return node
 
     def walk_Cast(self, node: model.Cast):
+        self.walk_children(node)
+
         # Simplify cast if casting a literal
         tpe = self.scope.get_const_value(node.right)
         if isinstance(node.left, (model.Integer, model.Float)):
@@ -317,6 +299,8 @@ class Compile(ASTWalker):
 
     # TODO Fix inheritance bug, PR: https://github.com/neogeny/TatSu/pull/78
     def walk_BinaryOp(self, node: model.BinaryOp):
+        self.walk_children(node)
+
         l = node.left.type
         r = node.right.type
 
@@ -349,28 +333,40 @@ class Compile(ASTWalker):
         return node
 
     def walk_UnaryPreOp(self, node: model.UnaryPreOp):
+        self.walk_children(node)
+
         node.type = node.right.type
         return node
     
     def walk_Deref(self, node: model.Deref):
+        self.walk_children(node)
+
         assert is_pointer(node.right.type)
         node.type = node.right.type._type_
         return node
 
     def walk_Ptr(self, node: model.Ptr):
+        self.walk_children(node)
+
         node.type = POINTER(node.right.type)
         return node
 
     def walk_Not(self, node: model.Not):
+        self.walk_children(node)
+
         node.type = c_bool
         assert node.right.type is c_bool, "'not' on incompatible type"
         return node
 
     def walk_Compare(self, node: model.Compare):
+        self.walk_children(node)
+
         node.type = c_bool
         return node
 
     def walk_In(self, node: model.In):
+        self.walk_children(node)
+
         for l in node.left:
             if isinstance(l, model.IdDecl):
                 v = self.scope.create_variable(modifier = node.keyword, name = get_name(l.name), tpe = c_long)
@@ -397,6 +393,8 @@ class Compile(ASTWalker):
             assert False, "Imbalanced assignment"
 
     def walk_VarDecl(self, node: model.VarDecl):
+        self.walk_children(node)
+
         declarations = []
         export = node.share & ast.Share.Export
         modifier = Modifier(node.keyword)
@@ -428,6 +426,8 @@ class Compile(ASTWalker):
         return tuple(declarations)
 
     def walk_Assign(self, node: model.Assign):
+        self.walk_children(node)
+
         assert isinstance(node.parent, model.Body), "Nested assignments disallowed" # TODO
 
         declarations = []
@@ -459,243 +459,46 @@ class Compile(ASTWalker):
 
         return node
 
+    def walk_Body(self, node: model.Body):
+        self.enter_scope(node)
+        self.walk_children(node)
+        self.exit_scope()
+
+        return node
+
     def walk_Def(self, node: model.Def):
 
+        self.walk_child(node, node.args, node.returns, node.name)
+
         # TODO Check return arguments
-        self.scope.create_function(
+        f = self.scope.create_function(
             name = get_name(node.name), 
             argt = [self.scope.type_lookup(arg.type) for arg in node.args or []],
             rett = [self.scope.type_lookup(r) for r in node.returns or []]
         )
+        node.name = f.identifier # TODO do this automatically?
+
+        if node.body:
+            scope = self.scope.enter_scope(node.body)
+            for arg in node.args or []:
+                # Create argument variables
+                v = scope.create_variable(Modifier.Var, get_name(arg.name), self.scope.type_lookup(arg.type))
+                arg.name = v.identifier # TODO See above
+
+            self.walk_child(node, node.body)
 
         return node
 
     def walk_default(self, node):
+        self.walk_children(node)
         return node
 
-class Formatter(DelegatingRenderingFormatter):
-    def render(self, item, join='', **fields):
-        if isinstance(item, type):
-            return item.__name__
-        elif isinstance(item, Enum): 
-            return item.value
-        return super().render(item, join = join, **fields)
-
-class Renderer(ModelRenderer):
-    def _render_fields(self, fields):
-        pass
-
-    def render_fields(self, fields):
-        if not isinstance(self.node.ast, AST):
-            fields.update(value = self.node.ast)
-        return self._render_fields(fields)
-
-class PythonCodeGen(CodeGenerator):
-    """ Last compilation step, turns the AST into python code """
-
-    def __init__(self):
-        #self.scope = scope
-        #self.current_function = None
-
-        super().__init__(modules = [PythonCodeGen])
-        self.formatter = Formatter(self)
-
-    #def render(self, node, join = '', **fields):
-    #    if isinstance(node, Node):
-    #        scope = self.scope
-    #        if node in ast.scoped_t:
-    #            self.scope = scope.get_scope(node)
-    #        result = super().render(node, join = join, **fields)
-    #        self.scope = scope # reset
-    #        return result
-        
-    # Literals
-    class Literal(Renderer):
-        def _render_fields(self, fields):
-            fields["value"] = repr(fields["value"])
-        template = "{type}({value})"
-
-    class String(Literal):
-        template = "create_unicode_buffer({value})"
-    class Null(Renderer):
-        template = "None"
-
-    # Identifier
-    class Identifier(Renderer):
-        template = "{identifier}"
-
-    # Operators
-    # TODO Directly unwrap primitive values -> performance
-    class UMinus(Renderer):
-        template = "({type}(-({right}.value)))"
-    class Invert(Renderer):
-        template = "({type}(~({right}.value)))"
-    class Add(Renderer):
-        template = "({type}({left}.value + {right}.value))"
-    class Sub(Renderer):
-        template = "({type}({left}.value - {right}.value))"
-    class Mul(Renderer):
-        template = "({type}({left}.value * {right}.value))"
-
-    class Div(Renderer):
-        def _render_fields(self, fields):
-            tpe = fields["type"]
-            op = "//" if tpe in int_t else "/"
-            return "({type}({left}.value %s {right}.value))" % op
-
-    class Mod(Renderer):
-        template = "({type}({left}.value % {right}.value))"
-    class BAnd(Renderer):
-        template = "({type}({left}.value & {right}.value))"
-    class BOr(Renderer):
-        template = "({type}({left}.value | {right}.value))"
-    class Xor(Renderer):
-        template = "({type}({left}.value ^ {right}.value))"
-    class And(Renderer):
-        template = "({type}({left}.value and {right}.value))"
-    class Or(Renderer):
-        template = "({type}({left}.value or {right}.value))"
-    class Not(Renderer):
-        template = "({type}(not {right}.value))"
-    class Ptr(Renderer):
-        template = "(pointer({right}))"
-    class Deref(Renderer):
-        template = "({right}.contents)"
-
-    class Call(Renderer):
-        template = "({left}({args::,:}))"
-
-    class Compare(Renderer):
-        def _render_fields(self, fields):
-            value = fields["value"]
-            for i in range(0, len(value), 2):
-                value[i] = "%s.value" % self.codegen.render(value[i])
-
-        template = "{type}({value:: :})"
-
-    class Cast(Renderer):
-        template = "({type}({left}.value))"
-
-    class Return(Renderer):
-        def _render_fields(self, fields):
-            value = fields["value"]
-            if any(type(v) == model.Do for v in value):
-                raise NotImplementedError("Can't use 'do' expressions in return statement")
-
-            return "return ({value::, :})"
-
-    class While(Renderer):
-        template = """\
-            while {cond}:
-                {body:1::}\
-        """
-
-    class For(Renderer):
-        def _render_fields(self, fields):
-            iterator = fields["iterator"]
-            ref = iterator.left[0]
-            if isinstance(ref, model.IdDecl):
-                ident = ref.identifier
-            else:
-                ident = ref.ast
-            
-            fields.update(identifier = ident, range = iterator.right[0])
-
-        template = """\
-            for {identifier} in {range}:
-                {body:1::}\
-        """
-
-    class Range(Renderer):
-        def _render_fields(self, fields):
-            if fields["step"] is None:
-                fields.update(step = "None")
-
-        template = "p_range({from_}, {to}, {step})"
-
-    class VarDecl(Renderer):
-        template = """
-            {identifier} = {right} # type: {type}\
-        """
-
-    class Assign(Renderer):
-        template = "{left} = {right}"
-
-    class Body(Renderer):
-        def _render_fields(self, fields):
-            body = fields["value"]
-            if len(body) == 1 and body[0] == None:
-                fields.update(value = "pass")
-
-        template = """\
-            {value::\\n:}\
-        """
-
-    class If(Renderer):
-        template = """\
-            if {cond}:
-            {body:1::}
-            {else_if::\\n:}
-            {else_}\
-        """
-
-    class ElseIf(Renderer):
-        template = """\
-            elif {cond}:
-            {body:1::}\
-        """
-    
-    class Else(Renderer):
-        template = """\
-            else:
-            {body:1::}\
-        """
-
-    class Def(Renderer):
-        def _render_fields(self, fields):
-            name = fields["name"].ast[0]
-            fields.update(name = name)
-            #self.codegen.current_function = name
-
-        template = """\
-            def {name}():
-            {body:1::}\
-        """
-
-    class Program(Renderer):
-        def _render_fields(self, fields):
-            value = fields["value"]
-            code = ast.Def(
-                name = ast.Identifier("__main"),
-                body = ast.Body(*value)
-            )
-
-            fields.update(code = code, time = datetime.now())
-
-        template = '''\
-            # This file was compiled by the grace of your highness
-            # ~ Princess Vi Nightfall ~
-            # on {time}
-            #
-            # Bow to the princess!
-
-            from princess.env import *
-
-            __env = Environment()
-
-            # --- start of code ---
-            {code}
-            # --- end of code ---
-
-            __env.result = __main()
-        '''
+from princess.codegen import PythonCodeGen
 
 def compile(ast):
-    ast = Prepass().walk(ast)
     scope = Scope()
     ast = Compile(scope).walk(ast)
     src = PythonCodeGen().render(ast)
-    print(src)
     return src
 
 def eval(pysrc):
