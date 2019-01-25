@@ -1,131 +1,79 @@
-import tatsu, princess, io, contextlib, logging, os, functools, inspect, sys, re
+import tatsu, princess, io, logging, re, pytest
+import princess.compiler
 
-from princess import ast_repr, grammar
-from princess.ast import node
-from unittest import skip, skipIf, skipUnless, expectedFailure
+skip = pytest.mark.skip
+skipif = pytest.mark.skipif
 
-import pytest
+from tatsu.exceptions import FailedParse
 
-def prog(n): return node.Program([n])
-
-class opt:
-    TRACEBACK = True
-    COLORIZE = False
+# command line options
+config = None
 
 def _traceback(src, **kwargs):
-    if opt.COLORIZE and not "colorize" in kwargs:
+    if config.getoption("colorize") and not "colorize" in kwargs:
         kwargs["colorize"] = True
-    if opt.TRACEBACK and not ("trace" in kwargs and kwargs["trace"]):
+    if config.getoption("tatsu_trace") and not ("trace" in kwargs and kwargs["trace"]):
         with io.StringIO() as buf:
             handlers = tatsu.util.logger.handlers
             tatsu.util.logger.handlers = [logging.StreamHandler(buf)]
             try:
                 princess.parse(src, trace = True, **kwargs)
-            except tatsu.exceptions.FailedParse: pass
+            except FailedParse: pass
             finally:
                 tatsu.util.logger.handlers = handlers
 
             return buf.getvalue()
     return None
 
-#class FailedParse(Exception):
-#    def __init__(self, src, exception, trace = False, **kwargs):
-#        self.trace = _traceback(src, **kwargs)
-#        self.exception = exception
-#
-#    def __str__(self):
-#        res = str(self.exception) if self.exception else ""
-#        if self.trace: 
-#            res += "\n\nParser Trace: \n" + self.trace
-#        return res
-
 def parse(text, **kwargs):
-    if opt.COLORIZE and not "colorize" in kwargs:
+    if config.getoption("colorize") and not "colorize" in kwargs:
         kwargs["colorize"] = True
         
-    parsed = princess.parse(text, **kwargs)
-    parsed._src = text
+    try:
+        parsed = princess.parse(text, **kwargs)
+        parsed._src = text
+    except FailedParse as e:
+        _traceback(text)
+        raise e from None   # Make sure to delete the traceback, we only care about the exception
+
     return parsed
 
-def _generate_traceback(arg):
-    if not isinstance(arg, princess.ast.Node): return None
-    if not hasattr(arg, "_src"): return None 
-    return _traceback(arg._src)
+def compile(src):
+    return princess.compiler.compile(parse(src))
 
-#def _append_traceback(e, first, second, prepend = None):
-#    if not opt.TRACEBACK: raise e
-#
-#    first = _generate_traceback(first)
-#    second = _generate_traceback(second)
-#    if first == None and second == None: raise e
-#
-#    sep = "\n"
-#    
-#    ret = prepend if prepend is not None else "\n\n"
-#    if first == None: 
-#        first = second
-#        second = None
-#    if second == None:
-#        ret += "Parser Trace:" + sep
-#    else:
-#        ret += "Parser Trace 1:" + sep
-#    #print("ret: ", ret)
-#    #print("first: ", first)
-#    #print("second: ", second)
-#    ret += first
-#    if second != None:
-#        ret += sep + "Parser Trace 2:" + sep + second
-#
-#    return AssertionError(str(e) + ret)
+def eval(src, print_src = False):
+    pysrc = compile(src)
+    if print_src or config.getoption("print_src"):
+        print(pysrc)
+    return princess.compiler.eval(pysrc)
 
-#class OldTestCase(unittest.TestCase):
-#    def assertEqual(self, first, second, msg = None):
-#        e = None
-#        try: return super().assertEqual(first, second, msg)
-#        except AssertionError as ex: e = ex
-#        if e: raise _append_traceback(e, first, second)
-#
-#    def assertNotEqual(self, first, second, msg = None):
-#        e = None
-#        try: return super().assertNotEqual(first, second, msg)
-#        except AssertionError as ex: e = ex
-#        if e: raise _append_traceback(e, first, second)
+def eval_expr(src):
+    return eval("return (%s)" % src)
 
+def _dump_traceback(arg):
+    if not isinstance(arg, princess.ast.Node): return
+    if not hasattr(arg, "_src"): return
+    
+    traceback = _traceback(arg._src)
 
-#    assertEquals = assertEqual
-#    assertNotEquals = assertNotEqual
-
-Integer = node.Integer
-Float = node.Float
-String = node.String
-Boolean = node.Boolean
-
-def Identifier(*args):
-    return node.Identifier(list(args))
-def Var(*args, **kwargs):
-    return node.VarDecl(keyword = 'var', *args, **kwargs)
-def Let(*args, **kwargs):
-    return node.VarDecl(keyword = 'let', *args, **kwargs)
+    # TODO Since pytest captures tatsu's log...
+    # print("Traceback:\n", file=sys.stderr)
+    # print(traceback, file=sys.stderr)
 
 def assertFailedParse(code, regex = None): 
-#    e = None
+    __tracebackhide__ = True # pylint: disable=W0612
+
     parsed = None
-#    try: 
-#        if regex:
-#            with self.assertRaisesRegex(tatsu.exceptions.FailedParse, regex): parsed = princess.parse(code)
-#        else: 
-#            with self.assertRaises(tatsu.exceptions.FailedParse): parsed = princess.parse(code)
-#    except AssertionError as ex: e = ex
-#    if e:
-#        prepend = None
-#        if parsed is None: parsed = princess.ast.Node()
-#        else: prepend = "\n\nResult: " + ast_repr(parsed) + "\n\n"
-#        parsed._src = code
-#        raise _append_traceback(e, parsed, None, prepend = prepend)
     try:
-        parsed = princess.parse(code)
-        print(_generate_traceback, file=sys.stderr)
-        raise AssertionError("No ParseException raised. Result = " + str(parsed))
-    except tatsu.exceptions.FailedParse as ex:
+        parsed = parse(code)
+        _dump_traceback(parsed)
+        raise AssertionError("No ParseException raised.\nResult = " + str(parsed))
+    except FailedParse as ex:
         if regex and not re.search(regex, str(ex)):
-            raise AssertionError("Exception message was `" + str(ex) + "` expected one matching the regex " + repr(regex))
+            _traceback(code)
+            raise AssertionError("Exception message didn't match " + repr(regex) + ".\nWas:\n\n" + str(ex)) from None
+
+# Convenience functions for testing
+
+def ast(src):
+    return parse(src).ast[0]

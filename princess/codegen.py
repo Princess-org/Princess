@@ -181,14 +181,22 @@ class PythonCodeGen(CodeGenerator):
 
 
     class DefArg(Renderer):
+<<<<<<< HEAD
         template = "{identifier}"
+=======
+        template = "{name}"
+>>>>>>> master
     class Def(Renderer):
         def _render_fields(self, fields):
             if not "args" in fields:
                 fields.update(args = [])
 
         template = """\
+<<<<<<< HEAD
             def {identifier}({args::, :}):
+=======
+            def {name}({args::, :}):
+>>>>>>> master
             {body:1::}\
         """
 
@@ -196,7 +204,11 @@ class PythonCodeGen(CodeGenerator):
         def _render_fields(self, fields):
             value = fields["value"]
             code = ast.Def(
+<<<<<<< HEAD
                 identifier = model.Identifier(identifier = "__main"),
+=======
+                name = model.Identifier(identifier = "__main"),
+>>>>>>> master
                 body = ast.Body(*value)
             )
 

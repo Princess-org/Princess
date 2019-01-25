@@ -17,21 +17,41 @@ import sys
 
 from tatsu.buffering import Buffer
 from tatsu.parsing import Parser
-from tatsu.parsing import tatsumasu, leftrec
+from tatsu.parsing import tatsumasu, leftrec, nomemo
 from tatsu.util import re, generic_main  # noqa
 
 
 KEYWORDS = {
     'and',
+    'as',
+    'break',
+    'case',
+    'const',
+    'continue',
+    'def',
     'else',
+    'export',
     'false',
+    'for',
+    'from',
+    'go_to',
     'if',
+    'import',
+    'in',
+    'label',
     'let',
+    'loop',
     'not',
+    'null',
     'or',
+    'return',
+    'struct',
     'true',
     'type',
+    'unsigned',
     'var',
+    'while',
+    'word',
 }  # type: ignore
 
 
@@ -39,7 +59,7 @@ class PrincessBuffer(Buffer):
     def __init__(
         self,
         text,
-        whitespace=re.compile('(?!)'),
+        whitespace=re.compile('[ ]+'),
         nameguard=None,
         comments_re=None,
         eol_comments_re=None,
@@ -62,7 +82,7 @@ class PrincessBuffer(Buffer):
 class PrincessParser(Parser):
     def __init__(
         self,
-        whitespace=re.compile('(?!)'),
+        whitespace=re.compile('[ ]+'),
         nameguard=None,
         comments_re=None,
         eol_comments_re=None,
@@ -98,68 +118,23 @@ class PrincessParser(Parser):
         def block1():
             self._statement_()
         self._closure(block1)
-        self.name_last_node('LIST')
-        self._n__()
+        self.name_last_node('@')
         self._cut()
         self._token('}')
-        self.ast._define(
-            ['LIST'],
-            []
-        )
 
     @tatsumasu('Program')
+    @nomemo
     def _program_(self):  # noqa
 
         def block1():
             self._statement_()
         self._closure(block1)
-        self.name_last_node('LIST')
+        self.name_last_node('@')
         self._check_eof()
-        self.ast._define(
-            ['LIST'],
-            []
-        )
 
     @tatsumasu()
     def _t_newline_(self):  # noqa
-        with self._choice():
-            with self._option():
-                self._pattern('[\\n]+')
-            with self._option():
-                self._t_eol_comment_()
-            self._error('no available options')
-
-    @tatsumasu()
-    def _t_ws_(self):  # noqa
-        self._pattern('[\\t ]+')
-
-    @tatsumasu()
-    def ___(self):  # noqa
-
-        def block0():
-            with self._choice():
-                with self._option():
-                    self._t_ws_()
-                with self._option():
-                    self._t_comment_()
-                self._error('no available options')
-        self._closure(block0)
-
-    @tatsumasu()
-    def _n__(self):  # noqa
-
-        def block0():
-            with self._choice():
-                with self._option():
-                    self._t_newline_()
-                with self._option():
-                    self.___()
-                self._error('no available options')
-        self._closure(block0)
-
-    @tatsumasu()
-    def _s__(self):  # noqa
-        self.___()
+        self._pattern('[\\n]+')
 
     @tatsumasu()
     def _t_term_(self):  # noqa
@@ -175,6 +150,10 @@ class PrincessParser(Parser):
                 with self._if():
                     self._token('}')
             self._error('no available options')
+
+    @tatsumasu()
+    def _n__(self):  # noqa
+        self._pattern('[\\n]*')
 
     @tatsumasu()
     def _digit_(self):  # noqa
@@ -336,7 +315,7 @@ class PrincessParser(Parser):
         )
 
     @tatsumasu()
-    def _t_num_lit_(self):  # noqa
+    def _t_int_literal_(self):  # noqa
         with self._group():
             with self._choice():
                 with self._option():
@@ -346,18 +325,26 @@ class PrincessParser(Parser):
                 with self._option():
                     self._t_oct_literal_()
                 with self._option():
-                    self._t_float_literal_()
-                with self._option():
                     self._t_dec_literal_()
                 self._error('no available options')
 
     @tatsumasu()
-    def _esc_char_(self):  # noqa
-        self._pattern('[abfnrtv\\\\\'"0]')
+    def _t_num_lit_(self):  # noqa
+        with self._group():
+            with self._choice():
+                with self._option():
+                    self._t_float_literal_()
+                with self._option():
+                    self._t_int_literal_()
+                self._error('no available options')
+
+    @tatsumasu()
+    def _ESC_CHAR_(self):  # noqa
+        self._pattern('[abfnrtv\\\\\'\\\\"0]')
         self.add_last_node_to_name('@')
 
     @tatsumasu()
-    def _esc_seq_(self):  # noqa
+    def _ESC_SEQ_(self):  # noqa
         with self._choice():
             with self._option():
                 with self._group():
@@ -387,49 +374,55 @@ class PrincessParser(Parser):
                     self._hex_digit_()
             with self._option():
                 self._cut()
-                self._esc_char_()
+                self._ESC_CHAR_()
             self._error('no available options')
 
     @tatsumasu()
-    def _t_char_(self):  # noqa
+    def _T_CHAR_(self):  # noqa
         with self._group():
             with self._choice():
                 with self._option():
                     with self._group():
-                        self._token('\\')
+                        self._pattern('\\\\')
                         self._cut()
-                        self._esc_seq_()
+                        self._ESC_SEQ_()
                         self.name_last_node('@')
                 with self._option():
                     self._pattern('[^\\0\\x7f\\x80"\\\\]+')
                 self._error('no available options')
 
+    @tatsumasu()
+    def _T_CHAR_S_(self):  # noqa
+        with self._group():
+            with self._choice():
+                with self._option():
+                    with self._group():
+                        self._pattern('\\\\')
+                        self._cut()
+                        self._ESC_SEQ_()
+                        self.name_last_node('@')
+                with self._option():
+                    self._pattern("[^\\0\\x7f\\x80'\\\\]")
+                self._error('no available options')
+
     @tatsumasu('Char')
-    def _t_char_lit_(self):  # noqa
+    def _T_CHAR_LIT_(self):  # noqa
         self._token("'")
-        self._t_char_()
-        self.name_last_node('VALUE')
+        self._T_CHAR_S_()
+        self.name_last_node('@')
         self._cut()
         self._token("'")
-        self.ast._define(
-            ['VALUE'],
-            []
-        )
 
     @tatsumasu('String')
-    def _t_string_lit_(self):  # noqa
+    def _T_STRING_LIT_(self):  # noqa
         self._token('"')
 
         def block1():
-            self._t_char_()
+            self._T_CHAR_()
         self._closure(block1)
-        self.name_last_node('VALUE')
+        self.name_last_node('@')
         self._cut()
         self._token('"')
-        self.ast._define(
-            ['VALUE'],
-            []
-        )
 
     @tatsumasu()
     def _t_ident_(self):  # noqa
@@ -454,40 +447,65 @@ class PrincessParser(Parser):
             []
         )
 
-    @tatsumasu('bool')
+    @tatsumasu()
     def _t_bool_(self):  # noqa
         with self._choice():
             with self._option():
                 self._token('true')
-                self._constant(1)
+                self._constant(True)
                 self.name_last_node('@')
             with self._option():
                 self._token('false')
-                self._constant({})
+                self._constant(False)
                 self.name_last_node('@')
             self._error('no available options')
 
     @tatsumasu('Boolean')
     def _t_bool_lit_(self):  # noqa
         self._t_bool_()
-        self.name_last_node('VALUE')
-        self.ast._define(
-            ['VALUE'],
-            []
-        )
+        self.name_last_node('@')
+
+    @tatsumasu('Null')
+    def _t_null_(self):  # noqa
+        self._token('null')
+        self._void()
+        self.name_last_node('@')
+
+    @tatsumasu()
+    def _array_element_(self):  # noqa
+        self._expression_()
+        self.name_last_node('@')
+
+    @tatsumasu('Array')
+    def _array_lit_(self):  # noqa
+        self._token('[')
+        self._cut()
+
+        def sep1():
+            self._token(',')
+
+        def block1():
+            self._array_element_()
+        self._gather(block1, sep1)
+        self.name_last_node('@')
+        self._token(']')
 
     @tatsumasu()
     def _literal_(self):  # noqa
         with self._group():
             with self._choice():
                 with self._option():
+                    self._array_lit_()
+                with self._option():
                     self._t_num_lit_()
                 with self._option():
                     self._t_bool_lit_()
                 with self._option():
-                    self._t_char_lit_()
+                    self._t_null_()
                 with self._option():
-                    self._t_string_lit_()
+                    self._T_CHAR_LIT_()
+                with self._option():
+                    self._T_STRING_LIT_()
                 self._error('no available options')
 
     @tatsumasu()
@@ -499,86 +517,361 @@ class PrincessParser(Parser):
                 self._identifier_()
             self._error('no available options')
 
-    @tatsumasu()
-    def _t_comment_start_(self):  # noqa
-        self._token('/*')
-
-    @tatsumasu()
-    def _t_comment_end_(self):  # noqa
-        self._token('*/')
-
-    @tatsumasu()
-    def _t_comment_(self):  # noqa
-        self._t_comment_start_()
-
-        def block0():
-            with self._choice():
-                with self._option():
-                    with self._group():
-                        with self._ifnot():
-                            self._t_comment_end_()
-                        with self._ifnot():
-                            self._t_comment_start_()
-                        self._pattern('.|\\n')
-                with self._option():
-                    self._t_comment_()
-                self._error('no available options')
-        self._closure(block0)
-        self._cut()
-        self._t_comment_end_()
-
-    @tatsumasu()
-    def _t_eol_comment_(self):  # noqa
-        self._token('//')
-        self._pattern('[^\\n]+')
-        with self._group():
-            with self._choice():
-                with self._option():
-                    self._token('\n')
-                with self._option():
-                    self._check_eof()
-                self._error('no available options')
-
     @tatsumasu('StructInit')
     def _struct_lit_(self):  # noqa
         self._token('{')
         self._n__()
+        with self._ifnot():
+            self._void()
         self._cut()
         self._token('}')
 
-    @tatsumasu('TypeStructural')
+    @tatsumasu('StructuralT')
     def _type_structural_(self):  # noqa
         self._token('{')
         self._n__()
+        with self._ifnot():
+            self._void()
         self._cut()
         self._token('}')
 
-    @tatsumasu('Type')
-    def _type_(self):  # noqa
-        with self._group():
-            with self._choice():
-                with self._option():
-                    self._type_structural_()
-                with self._option():
-                    self._expression_()
-                self._error('no available options')
-        self.name_last_node('VALUE')
+    @tatsumasu('Else')
+    def _stmt_struct_else_(self):  # noqa
+        self._token('else')
+        self._n__()
+        self._cut()
+        self._struct_body_()
+        self.name_last_node('body')
         self.ast._define(
-            ['VALUE'],
+            ['body'],
             []
         )
 
+    @tatsumasu('ElseIf')
+    def _stmt_struct_else_if_(self):  # noqa
+        self._token('else')
+        self._n__()
+        self._token('if')
+        self._n__()
+        self._cut()
+        self._expression_()
+        self.name_last_node('cond')
+        self._n__()
+        self._struct_body_()
+        self.name_last_node('body')
+        self.ast._define(
+            ['body', 'cond'],
+            []
+        )
+
+    @tatsumasu('If')
+    def _stmt_struct_if_(self):  # noqa
+        self._token('#if')
+        self._n__()
+        self._cut()
+        self._expression_()
+        self.name_last_node('cond')
+        self._n__()
+        self._struct_body_()
+        self.name_last_node('body')
+
+        def block3():
+            self._stmt_struct_else_if_()
+        self._closure(block3)
+        self.name_last_node('else_if')
+        with self._optional():
+            self._n__()
+            self._stmt_struct_else_()
+            self.name_last_node('else_')
+        self.ast._define(
+            ['body', 'cond', 'else_', 'else_if'],
+            []
+        )
+
+    @tatsumasu()
+    def _struct_def_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._void()
+                self.name_last_node('@')
+                self._t_term_()
+            with self._option():
+                self._struct_def_noterm_()
+                self.name_last_node('@')
+                self._t_term_()
+            self._error('no available options')
+
+    @tatsumasu()
+    def _struct_def_noterm_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._token('(')
+                with self._group():
+                    with self._choice():
+                        with self._option():
+                            self._void()
+                            self.name_last_node('@')
+                            with self._if():
+                                self._token(')')
+                        with self._option():
+                            self._struct_def_noterm_()
+                            self.name_last_node('@')
+                        self._error('no available options')
+                self._token(')')
+            with self._option():
+                with self._group():
+                    with self._choice():
+                        with self._option():
+                            self._type_struct_()
+                        with self._option():
+                            self._stmt_struct_if_()
+                        with self._option():
+                            self._stmt_iddecl_()
+                        self._error('no available options')
+                self.name_last_node('@')
+            self._error('no available options')
+
+    @tatsumasu('StructBody')
+    def _struct_body_(self):  # noqa
+        self._token('{')
+        self._n__()
+
+        def block1():
+            self._struct_def_()
+        self._closure(block1)
+        self.name_last_node('@')
+        self._n__()
+        self._token('}')
+
+    @tatsumasu('Struct')
+    def _type_struct_(self):  # noqa
+        self._token('struct')
+        self._n__()
+        self._struct_body_()
+        self.name_last_node('body')
+        self.ast._define(
+            ['body'],
+            []
+        )
+
+    @tatsumasu('PtrT')
+    def _type_ptr_(self):  # noqa
+        self._token('*')
+        with self._group():
+            with self._choice():
+                with self._option():
+                    self._token('var')
+                with self._option():
+                    self._token('let')
+                with self._option():
+                    self._constant('var')
+                self._error('no available options')
+        self.name_last_node('keyword')
+        with self._optional():
+            self._type_1_()
+            self.name_last_node('type')
+        self.ast._define(
+            ['keyword', 'type'],
+            []
+        )
+
+    @tatsumasu('RefT')
+    def _type_ref_(self):  # noqa
+        self._token('&')
+        with self._group():
+            with self._choice():
+                with self._option():
+                    self._token('var')
+                with self._option():
+                    self._token('let')
+                with self._option():
+                    self._constant('var')
+                self._error('no available options')
+        self.name_last_node('keyword')
+        with self._optional():
+            self._type_1_()
+            self.name_last_node('type')
+        self.ast._define(
+            ['keyword', 'type'],
+            []
+        )
+
+    @tatsumasu('ArrayT')
+    def _type_array_dyn_(self):  # noqa
+        self._token('[')
+        with self._group():
+            with self._choice():
+                with self._option():
+                    self._token('var')
+                with self._option():
+                    self._token('let')
+                with self._option():
+                    self._constant('var')
+                self._error('no available options')
+        self.name_last_node('keyword')
+        with self._optional():
+            self._type_()
+            self.name_last_node('type')
+        self._token(']')
+        self.ast._define(
+            ['keyword', 'type'],
+            []
+        )
+
+    @tatsumasu('ArrayT')
+    def _type_array_static_(self):  # noqa
+        self._token('[')
+        self._cut()
+        with self._group():
+            with self._choice():
+                with self._option():
+                    self._token('?')
+                with self._option():
+                    self._expression_()
+                self._error('no available options')
+        self.name_last_node('n')
+        with self._group():
+            with self._choice():
+                with self._option():
+                    self._token('var')
+                with self._option():
+                    self._token('let')
+                with self._option():
+                    self._constant('var')
+                self._error('no available options')
+        self.name_last_node('keyword')
+        with self._optional():
+            self._type_()
+            self.name_last_node('type')
+        self._token(']')
+        self.ast._define(
+            ['keyword', 'n', 'type'],
+            []
+        )
+
+    @tatsumasu()
+    def _type_array_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._type_array_dyn_()
+            with self._option():
+                self._type_array_static_()
+            self._error('no available options')
+
+    @tatsumasu()
+    @nomemo
+    def _type_list_elem_(self):  # noqa
+        self._type_()
+        self.name_last_node('@')
+
+    @tatsumasu()
+    @nomemo
+    def _type_list_(self):  # noqa
+        with self._choice():
+            with self._option():
+                with self._group():
+                    self._token('(')
+                    self._cut()
+
+                    def sep1():
+                        self._token(',')
+
+                    def block1():
+                        self._type_list_elem_()
+                    self._gather(block1, sep1)
+                    self.name_last_node('@')
+                    self._token(')')
+            with self._option():
+                self._type_()
+                self.add_last_node_to_name('@')
+            self._error('no available options')
+
+    @tatsumasu('FunctionT')
+    @nomemo
+    def _type_function_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._token('->')
+                with self._optional():
+                    self._type_list_()
+                    self.name_last_node('right')
+            with self._option():
+                self._type_list_()
+                self.name_last_node('left')
+                self._token('->')
+                with self._optional():
+                    self._type_list_()
+                    self.name_last_node('right')
+            self._error('no available options')
+        self.ast._define(
+            ['left', 'right'],
+            []
+        )
+
+    @tatsumasu('Unsigned')
+    def _type_unsigned_(self):  # noqa
+        self._token('unsigned')
+        self._type_2_()
+        self.name_last_node('@')
+
+    @tatsumasu('Word')
+    def _type_word_(self):  # noqa
+        self._token('word')
+        self._token('(')
+        self._t_int_literal_()
+        self.name_last_node('@')
+        self._token(')')
+
+    @tatsumasu()
+    def _type_2_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._token('(')
+                self._type_()
+                self.name_last_node('@')
+                self._token(')')
+            with self._option():
+                self._type_word_()
+            with self._option():
+                self._expr_10_()
+            self._error('no available options')
+
+    @tatsumasu()
+    def _type_1_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._type_struct_()
+            with self._option():
+                self._type_unsigned_()
+            with self._option():
+                self._type_structural_()
+            with self._option():
+                self._type_ptr_()
+            with self._option():
+                self._type_ref_()
+            with self._option():
+                self._type_array_()
+            with self._option():
+                self._type_2_()
+            self._error('no available options')
+
+    @tatsumasu()
+    @leftrec
+    def _type_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._type_function_()
+            with self._option():
+                self._type_1_()
+            self._error('no available options')
+
     @tatsumasu('CallArg')
     def _call_arg_named_(self):  # noqa
-        self._n__()
         self._identifier_()
         self.name_last_node('name')
-        self._n__()
         self._token('=')
-        self._n__()
-        self._n_expression_()
+        self._expression_call_()
         self.name_last_node('value')
-        self._n__()
         self.ast._define(
             ['name', 'value'],
             []
@@ -586,52 +879,53 @@ class PrincessParser(Parser):
 
     @tatsumasu('CallArg')
     def _call_arg_(self):  # noqa
-        self._n__()
-        self._n_expression_()
+        self._expression_call_()
         self.name_last_node('value')
-        self._n__()
         self.ast._define(
             ['value'],
             []
         )
 
-    @tatsumasu('Call')
-    def _expr_call_(self):  # noqa
-        self._expr_10_()
-        self.name_last_node('left')
-        self._s__()
+    @tatsumasu()
+    def _call_args_(self):  # noqa
         self._token('(')
-        self._n__()
 
-        def sep2():
+        def sep1():
             self._token(',')
 
-        def block2():
+        def block1():
             with self._choice():
                 with self._option():
                     self._call_arg_named_()
                 with self._option():
                     self._call_arg_()
                 self._error('no available options')
-        self._gather(block2, sep2)
-        self.name_last_node('args')
+        self._gather(block1, sep1)
+        self.name_last_node('@')
         self._cut()
         self._token(')')
+
+    @tatsumasu('Call')
+    @nomemo
+    def _expr_call_(self):  # noqa
+        self._expr_10_()
+        self.name_last_node('left')
+        self._call_args_()
+        self.name_last_node('args')
         self.ast._define(
             ['args', 'left'],
             []
         )
 
     @tatsumasu('ArrayIndex')
+    @nomemo
     def _expr_array_index_(self):  # noqa
         self._expr_10_()
         self.name_last_node('left')
-        self._s__()
         self._token('[')
-        self._n__()
-        self._n_expression_()
+        self._cut()
+        self._expression_()
         self.name_last_node('right')
-        self._n__()
         self._token(']')
         self.ast._define(
             ['left', 'right'],
@@ -639,13 +933,12 @@ class PrincessParser(Parser):
         )
 
     @tatsumasu('MemberAccess')
+    @nomemo
     def _expr_member_access_(self):  # noqa
         self._expr_10_()
         self.name_last_node('left')
-        self._s__()
         self._token('.')
-        self._n__()
-        self._expr_11_()
+        self._value_()
         self.name_last_node('right')
         self.ast._define(
             ['left', 'right'],
@@ -655,31 +948,41 @@ class PrincessParser(Parser):
     @tatsumasu()
     def _expr_type_(self):  # noqa
         self._token('type')
-        self._n__()
         self._type_()
         self.name_last_node('@')
 
+    @tatsumasu()
+    def _post_lh_(self):  # noqa
+        self._pattern('[\\d\\w\\(]')
+
     @tatsumasu('PostInc')
+    @nomemo
     def _expr_postinc_(self):  # noqa
         self._expr_10_()
         self.name_last_node('left')
-        self._token('--')
+        self._token('++')
+        with self._ifnot():
+            self._post_lh_()
         self.ast._define(
             ['left'],
             []
         )
 
     @tatsumasu('PostDec')
+    @nomemo
     def _expr_postdec_(self):  # noqa
         self._expr_10_()
         self.name_last_node('left')
-        self._token('++')
+        self._token('--')
+        with self._ifnot():
+            self._post_lh_()
         self.ast._define(
             ['left'],
             []
         )
 
     @tatsumasu('Cast')
+    @nomemo
     def _expr_cast_(self):  # noqa
         with self._group():
             with self._choice():
@@ -689,9 +992,7 @@ class PrincessParser(Parser):
                     self._expr_9_()
                 self._error('no available options')
         self.name_last_node('left')
-        self._s__()
         self._token('!')
-        self._n__()
         self._cut()
         self._type_()
         self.name_last_node('right')
@@ -700,10 +1001,20 @@ class PrincessParser(Parser):
             []
         )
 
+    @tatsumasu('Cast')
+    @nomemo
+    def _expr_autocast_(self):  # noqa
+        self._expr_10_()
+        self.name_last_node('left')
+        self._token('!!')
+        self.ast._define(
+            ['left'],
+            []
+        )
+
     @tatsumasu('PreInc')
     def _expr_preinc_(self):  # noqa
         self._token('++')
-        self._n__()
         self._cut()
         self._expr_9_()
         self.name_last_node('right')
@@ -715,7 +1026,6 @@ class PrincessParser(Parser):
     @tatsumasu('PreDec')
     def _expr_predec_(self):  # noqa
         self._token('--')
-        self._n__()
         self._cut()
         self._expr_9_()
         self.name_last_node('right')
@@ -727,7 +1037,6 @@ class PrincessParser(Parser):
     @tatsumasu('UMinus')
     def _expr_uminus_(self):  # noqa
         self._token('-')
-        self._n__()
         self._cut()
         self._expr_9_()
         self.name_last_node('right')
@@ -739,7 +1048,6 @@ class PrincessParser(Parser):
     @tatsumasu('Deref')
     def _expr_deref_(self):  # noqa
         self._token('@')
-        self._n__()
         self._cut()
         self._expr_9_()
         self.name_last_node('right')
@@ -751,7 +1059,6 @@ class PrincessParser(Parser):
     @tatsumasu('Ptr')
     def _expr_ptr_(self):  # noqa
         self._token('*')
-        self._n__()
         self._cut()
         self._expr_9_()
         self.name_last_node('right')
@@ -763,7 +1070,6 @@ class PrincessParser(Parser):
     @tatsumasu('Invert')
     def _expr_invert_(self):  # noqa
         self._token('~')
-        self._n__()
         self._cut()
         self._expr_9_()
         self.name_last_node('right')
@@ -775,7 +1081,6 @@ class PrincessParser(Parser):
     @tatsumasu('Not')
     def _expr_not_(self):  # noqa
         self._token('not')
-        self._n__()
         self._cut()
         self._expr_9_()
         self.name_last_node('right')
@@ -785,10 +1090,10 @@ class PrincessParser(Parser):
         )
 
     @tatsumasu('Shr')
+    @nomemo
     def _expr_shr_(self):  # noqa
         self._expr_7_()
         self.name_last_node('left')
-        self._s__()
         self._token('>>')
         self._n__()
         self._cut()
@@ -800,10 +1105,10 @@ class PrincessParser(Parser):
         )
 
     @tatsumasu('Shl')
+    @nomemo
     def _expr_shl_(self):  # noqa
         self._expr_7_()
         self.name_last_node('left')
-        self._s__()
         self._token('<<')
         self._n__()
         self._cut()
@@ -815,10 +1120,10 @@ class PrincessParser(Parser):
         )
 
     @tatsumasu('BAnd')
+    @nomemo
     def _expr_band_(self):  # noqa
         self._expr_7_()
         self.name_last_node('left')
-        self._s__()
         self._token('&')
         self._n__()
         self._cut()
@@ -830,10 +1135,10 @@ class PrincessParser(Parser):
         )
 
     @tatsumasu('BOr')
+    @nomemo
     def _expr_bor_(self):  # noqa
         self._expr_7_()
         self.name_last_node('left')
-        self._s__()
         self._token('|')
         self._n__()
         self._cut()
@@ -845,10 +1150,10 @@ class PrincessParser(Parser):
         )
 
     @tatsumasu('Xor')
+    @nomemo
     def _expr_xor_(self):  # noqa
         self._expr_7_()
         self.name_last_node('left')
-        self._s__()
         self._token('^')
         self._n__()
         self._cut()
@@ -860,10 +1165,10 @@ class PrincessParser(Parser):
         )
 
     @tatsumasu('Mul')
+    @nomemo
     def _expr_mul_(self):  # noqa
         self._expr_6_()
         self.name_last_node('left')
-        self._s__()
         self._token('*')
         self._n__()
         self._cut()
@@ -875,10 +1180,10 @@ class PrincessParser(Parser):
         )
 
     @tatsumasu('Div')
+    @nomemo
     def _expr_div_(self):  # noqa
         self._expr_6_()
         self.name_last_node('left')
-        self._s__()
         self._token('/')
         self._n__()
         self._cut()
@@ -890,10 +1195,10 @@ class PrincessParser(Parser):
         )
 
     @tatsumasu('Mod')
+    @nomemo
     def _expr_mod_(self):  # noqa
         self._expr_6_()
         self.name_last_node('left')
-        self._s__()
         self._token('%')
         self._n__()
         self._cut()
@@ -904,11 +1209,41 @@ class PrincessParser(Parser):
             []
         )
 
+    @tatsumasu('PAdd')
+    @nomemo
+    def _expr_padd_(self):  # noqa
+        self._expr_5_()
+        self.name_last_node('left')
+        self._token('++')
+        self._n__()
+        self._cut()
+        self._expr_6_()
+        self.name_last_node('right')
+        self.ast._define(
+            ['left', 'right'],
+            []
+        )
+
+    @tatsumasu('PSub')
+    @nomemo
+    def _expr_psub_(self):  # noqa
+        self._expr_5_()
+        self.name_last_node('left')
+        self._token('--')
+        self._n__()
+        self._cut()
+        self._expr_6_()
+        self.name_last_node('right')
+        self.ast._define(
+            ['left', 'right'],
+            []
+        )
+
     @tatsumasu('Add')
+    @nomemo
     def _expr_add_(self):  # noqa
         self._expr_5_()
         self.name_last_node('left')
-        self._s__()
         self._token('+')
         self._n__()
         self._cut()
@@ -920,10 +1255,10 @@ class PrincessParser(Parser):
         )
 
     @tatsumasu('Sub')
+    @nomemo
     def _expr_sub_(self):  # noqa
         self._expr_5_()
         self.name_last_node('left')
-        self._s__()
         self._token('-')
         self._n__()
         self._cut()
@@ -934,7 +1269,7 @@ class PrincessParser(Parser):
             []
         )
 
-    @tatsumasu()
+    @tatsumasu('CompareOp')
     def _cmp_op_(self):  # noqa
         with self._group():
             with self._choice():
@@ -954,7 +1289,6 @@ class PrincessParser(Parser):
 
     @tatsumasu()
     def _expr_cmp_(self):  # noqa
-        self._s__()
         self._cmp_op_()
         self.name_last_node('op')
         self._n__()
@@ -967,6 +1301,7 @@ class PrincessParser(Parser):
         )
 
     @tatsumasu('Compare')
+    @nomemo
     def _expr_cmp_start_(self):  # noqa
         self._expr_5_()
         self.name_last_node('left')
@@ -981,12 +1316,11 @@ class PrincessParser(Parser):
         )
 
     @tatsumasu('And')
+    @nomemo
     def _expr_and_(self):  # noqa
         self._expr_3_()
         self.name_last_node('left')
-        self._s__()
         self._token('and')
-        self._n__()
         self._cut()
         self._expr_4_()
         self.name_last_node('right')
@@ -996,12 +1330,11 @@ class PrincessParser(Parser):
         )
 
     @tatsumasu('Or')
+    @nomemo
     def _expr_or_(self):  # noqa
         self._expr_2_()
         self.name_last_node('left')
-        self._s__()
         self._token('or')
-        self._n__()
         self._cut()
         self._expr_3_()
         self.name_last_node('right')
@@ -1010,10 +1343,14 @@ class PrincessParser(Parser):
             []
         )
 
-    @tatsumasu()
+    @tatsumasu('AssignOp')
     def _assign_op_(self):  # noqa
         with self._group():
             with self._choice():
+                with self._option():
+                    self._token('++=')
+                with self._option():
+                    self._token('--=')
                 with self._option():
                     self._token('+=')
                 with self._option():
@@ -1034,15 +1371,13 @@ class PrincessParser(Parser):
                     self._token('>>=')
                 with self._option():
                     self._token('<<=')
-                with self._option():
-                    self._token('=')
                 self._error('no available options')
 
-    @tatsumasu('Assign')
-    def _expr_assign_(self):  # noqa
+    @tatsumasu('AssignAndOp')
+    @nomemo
+    def _expr_assign_op_(self):  # noqa
         self._expr_2_()
         self.name_last_node('left')
-        self._s__()
         self._assign_op_()
         self.name_last_node('op')
         self._n__()
@@ -1054,25 +1389,115 @@ class PrincessParser(Parser):
             []
         )
 
+    @tatsumasu()
+    def _expr_assign_lhs_(self):  # noqa
+        self._expr_2_()
+        self.name_last_node('@')
+
+    @tatsumasu()
+    def _expr_assign_rhs_(self):  # noqa
+        with self._group():
+            with self._choice():
+                with self._option():
+                    self._struct_lit_()
+                with self._option():
+                    self._expr_1_()
+                self._error('no available options')
+        self.name_last_node('@')
+
+    @tatsumasu('Assign')
+    def _expr_assign_(self):  # noqa
+
+        def sep1():
+            self._token(',')
+
+        def block1():
+            self._expr_assign_lhs_()
+        self._positive_gather(block1, sep1)
+        self.name_last_node('left')
+        self._token('=')
+        self._n__()
+        self._cut()
+
+        def sep3():
+            self._token(',')
+
+        def block3():
+            self._expr_assign_rhs_()
+        self._positive_gather(block3, sep3)
+        self.name_last_node('right')
+        self.ast._define(
+            ['left', 'right'],
+            []
+        )
+
     @tatsumasu('IfExpr')
     def _expr_if_(self):  # noqa
         self._expr_2_()
         self.name_last_node('if_true')
         with self._group():
-            self._s__()
             self._token('if')
-            self._n__()
+        self._n__()
         self._cut()
         self._expr_1_()
         self.name_last_node('cond')
+        self._n__()
         with self._group():
-            self._n__()
             self._token('else')
-            self._n__()
+        self._n__()
         self._expr_1_()
         self.name_last_node('if_false')
         self.ast._define(
             ['cond', 'if_false', 'if_true'],
+            []
+        )
+
+    @tatsumasu('Do')
+    def _expr_do_(self):  # noqa
+        self._token('do')
+        self._n__()
+        self._cut()
+        self._code_body_()
+        self.name_last_node('@')
+
+    @tatsumasu('Range')
+    @nomemo
+    def _expr_range_(self):  # noqa
+        with self._optional():
+            self._expr_1_()
+            self.name_last_node('from_')
+        self._token(':')
+        with self._optional():
+            self._n__()
+            self._expr_1_()
+            self.name_last_node('to')
+            with self._optional():
+                self._token(':')
+                self._n__()
+                self._expr_1_()
+                self.name_last_node('step')
+        self.ast._define(
+            ['from_', 'step', 'to'],
+            []
+        )
+
+    @tatsumasu('Range')
+    def _expr_rangec_(self):  # noqa
+        with self._optional():
+            self._expr_1c_()
+            self.name_last_node('from_')
+        self._token(':')
+        with self._optional():
+            self._n__()
+            self._expr_1c_()
+            self.name_last_node('to')
+            with self._optional():
+                self._token(':')
+                self._n__()
+                self._expr_1c_()
+                self.name_last_node('step')
+        self.ast._define(
+            ['from_', 'step', 'to'],
             []
         )
 
@@ -1082,10 +1507,8 @@ class PrincessParser(Parser):
             with self._option():
                 self._token('(')
                 self._cut()
-                self._n__()
-                self._n_expression_()
+                self._expression_()
                 self.name_last_node('@')
-                self._n__()
                 self._token(')')
             with self._option():
                 self._value_()
@@ -1104,6 +1527,8 @@ class PrincessParser(Parser):
             with self._option():
                 self._expr_member_access_()
             with self._option():
+                self._expr_autocast_()
+            with self._option():
                 self._expr_postinc_()
             with self._option():
                 self._expr_postdec_()
@@ -1112,6 +1537,7 @@ class PrincessParser(Parser):
             self._error('no available options')
 
     @tatsumasu()
+    @nomemo
     def _expr_9_(self):  # noqa
         with self._choice():
             with self._option():
@@ -1133,6 +1559,7 @@ class PrincessParser(Parser):
             self._error('no available options')
 
     @tatsumasu()
+    @nomemo
     def _expr_8_(self):  # noqa
         with self._choice():
             with self._option():
@@ -1178,6 +1605,10 @@ class PrincessParser(Parser):
     def _expr_5_(self):  # noqa
         with self._choice():
             with self._option():
+                self._expr_padd_()
+            with self._option():
+                self._expr_psub_()
+            with self._option():
                 self._expr_add_()
             with self._option():
                 self._expr_sub_()
@@ -1186,6 +1617,7 @@ class PrincessParser(Parser):
             self._error('no available options')
 
     @tatsumasu()
+    @nomemo
     def _expr_4_(self):  # noqa
         with self._choice():
             with self._option():
@@ -1215,8 +1647,13 @@ class PrincessParser(Parser):
             self._error('no available options')
 
     @tatsumasu()
+    @nomemo
     def _expr_1_(self):  # noqa
         with self._choice():
+            with self._option():
+                self._expr_do_()
+            with self._option():
+                self._expr_assign_op_()
             with self._option():
                 self._expr_assign_()
             with self._option():
@@ -1226,53 +1663,214 @@ class PrincessParser(Parser):
             self._error('no available options')
 
     @tatsumasu()
-    def _n_expression_(self):  # noqa
-        self._expr_1_()
+    @nomemo
+    def _expr_0_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._expr_range_()
+            with self._option():
+                self._expr_1_()
+            self._error('no available options')
 
     @tatsumasu()
+    @nomemo
     def _expression_(self):  # noqa
-        self._expr_1_()
+        self._expr_0_()
+
+    @tatsumasu()
+    def _expr_1c_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._expr_do_()
+            with self._option():
+                self._expr_if_()
+            with self._option():
+                self._expr_2_()
+            self._error('no available options')
+
+    @tatsumasu()
+    def _expr_0c_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._expr_rangec_()
+            with self._option():
+                self._expr_1c_()
+            self._error('no available options')
+
+    @tatsumasu()
+    def _expression_call_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._struct_lit_()
+            with self._option():
+                self._expr_0c_()
+            self._error('no available options')
+
+    @tatsumasu('Share')
+    def _import_marker_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._token('export')
+                self._constant(2)
+                self.name_last_node('@')
+            with self._option():
+                self._constant(0)
+            self._error('no available options')
+
+    @tatsumasu('ImportModule')
+    def _stmt_import_module_(self):  # noqa
+        self._n__()
+        self._identifier_()
+        self.name_last_node('name')
+        with self._optional():
+            self._token('as')
+            self._n__()
+            self._identifier_()
+            self.name_last_node('alias')
+        self.ast._define(
+            ['alias', 'name'],
+            []
+        )
+
+    @tatsumasu('Import')
+    def _stmt_import_(self):  # noqa
+        with self._optional():
+            self._import_marker_()
+            self.name_last_node('share')
+            self._n__()
+        self._token('import')
+
+        def sep2():
+            self._token(',')
+
+        def block2():
+            self._stmt_import_module_()
+        self._positive_gather(block2, sep2)
+        self.name_last_node('modules')
+        self.ast._define(
+            ['modules', 'share'],
+            []
+        )
+
+    @tatsumasu('IdDecl')
+    def _stmt_iddecl_(self):  # noqa
+        self._n__()
+        self._identifier_()
+        self.name_last_node('name')
+        with self._optional():
+            self._token(':')
+            self._n__()
+            self._type_()
+            self.name_last_node('type')
+        self.ast._define(
+            ['name', 'type'],
+            []
+        )
+
+    @tatsumasu('IdAssign')
+    def _stmt_idassign_(self):  # noqa
+        self._n__()
+        self._token('(')
+        self._n__()
+        self._expression_()
+        self.name_last_node('@')
+        self._n__()
+        self._token(')')
+
+    @tatsumasu()
+    def _stmt_vardecl_rhs_(self):  # noqa
+        self._n__()
+        with self._group():
+            with self._choice():
+                with self._option():
+                    self._struct_lit_()
+                with self._option():
+                    self._expression_()
+                self._error('no available options')
+        self.name_last_node('@')
 
     @tatsumasu('VarDecl')
     def _stmt_vardecl_(self):  # noqa
+        with self._optional():
+            self._share_marker_()
+            self.name_last_node('share')
+            self._n__()
         with self._group():
             with self._choice():
                 with self._option():
                     self._token('var')
                 with self._option():
                     self._token('let')
+                with self._option():
+                    self._token('const')
                 self._error('no available options')
         self.name_last_node('keyword')
         self._n__()
-        self._identifier_()
-        self.name_last_node('name')
+        self._cut()
+
+        def sep4():
+            self._token(',')
+
+        def block4():
+            with self._choice():
+                with self._option():
+                    self._stmt_idassign_()
+                with self._option():
+                    self._stmt_iddecl_()
+                self._error('no available options')
+        self._positive_gather(block4, sep4)
+        self.name_last_node('left')
         with self._optional():
-            self._n__()
-            self._token(':')
-            self._n__()
-            self._type_()
-            self.name_last_node('type')
-        with self._optional():
-            self._n__()
             self._token('=')
             self._n__()
-            self._expression_()
-            self.name_last_node('value')
+
+            def sep7():
+                self._token(',')
+
+            def block7():
+                self._stmt_vardecl_rhs_()
+            self._positive_gather(block7, sep7)
+            self.name_last_node('right')
         self.ast._define(
-            ['keyword', 'name', 'type', 'value'],
+            ['keyword', 'left', 'right', 'share'],
             []
         )
+
+    @tatsumasu()
+    def _stmt_typedecl_lhs_(self):  # noqa
+        self._n__()
+        self._identifier_()
+        self.name_last_node('@')
+        self._n__()
+
+    @tatsumasu()
+    def _stmt_typedecl_rhs_(self):  # noqa
+        self._n__()
+        self._type_()
+        self.name_last_node('@')
+        self._n__()
 
     @tatsumasu('TypeDecl')
     def _stmt_typedecl_(self):  # noqa
         self._token('type')
         self._n__()
-        self._identifier_()
+
+        def sep1():
+            self._token(',')
+
+        def block1():
+            self._stmt_typedecl_lhs_()
+        self._positive_gather(block1, sep1)
         self.name_last_node('name')
-        self._n__()
         self._token('=')
         self._n__()
-        self._type_()
+
+        def sep3():
+            self._token(',')
+
+        def block3():
+            self._stmt_typedecl_rhs_()
+        self._positive_gather(block3, sep3)
         self.name_last_node('value')
         self.ast._define(
             ['name', 'value'],
@@ -1281,10 +1879,9 @@ class PrincessParser(Parser):
 
     @tatsumasu('Else')
     def _stmt_else_(self):  # noqa
-        self._n__()
         self._token('else')
-        self._cut()
         self._n__()
+        self._cut()
         self._code_body_()
         self.name_last_node('body')
         self.ast._define(
@@ -1292,14 +1889,13 @@ class PrincessParser(Parser):
             []
         )
 
-    @tatsumasu('If')
+    @tatsumasu('ElseIf')
     def _stmt_else_if_(self):  # noqa
-        self._n__()
         self._token('else')
         self._n__()
         self._token('if')
-        self._cut()
         self._n__()
+        self._cut()
         self._expression_()
         self.name_last_node('cond')
         self._n__()
@@ -1313,8 +1909,8 @@ class PrincessParser(Parser):
     @tatsumasu('If')
     def _stmt_if_(self):  # noqa
         self._token('if')
-        self._cut()
         self._n__()
+        self._cut()
         self._expression_()
         self.name_last_node('cond')
         self._n__()
@@ -1326,19 +1922,36 @@ class PrincessParser(Parser):
         self._closure(block3)
         self.name_last_node('else_if')
         with self._optional():
+            self._n__()
             self._stmt_else_()
             self.name_last_node('else_')
         self.ast._define(
             ['body', 'cond', 'else_', 'else_if'],
+            []
+        )
+
+    @tatsumasu('Switch')
+    def _stmt_switch_(self):  # noqa
+        self._token('switch')
+        self._n__()
+        self._expression_()
+        self.name_last_node('value')
+        self._n__()
+        self._code_body_()
+        self.name_last_node('body')
+        self.ast._define(
+            ['body', 'value'],
             []
         )
 
     @tatsumasu('StaticIf')
     def _stmt_static_if_(self):  # noqa
         self._token('#')
+        with self._ifnot():
+            self._token(' ')
         self._token('if')
-        self._cut()
         self._n__()
+        self._cut()
         self._expression_()
         self.name_last_node('cond')
         self._n__()
@@ -1350,6 +1963,7 @@ class PrincessParser(Parser):
         self._closure(block3)
         self.name_last_node('else_if')
         with self._optional():
+            self._n__()
             self._stmt_else_()
             self.name_last_node('else_')
         self.ast._define(
@@ -1357,32 +1971,411 @@ class PrincessParser(Parser):
             []
         )
 
+    @tatsumasu('While')
+    def _stmt_while_loop_(self):  # noqa
+        self._token('while')
+        self._n__()
+        self._cut()
+        self._expression_()
+        self.name_last_node('cond')
+        self._n__()
+        self._code_body_()
+        self.name_last_node('body')
+        self.ast._define(
+            ['body', 'cond'],
+            []
+        )
+
+    @tatsumasu('While')
+    def _stmt_loop_(self):  # noqa
+        self._token('loop')
+        self._n__()
+        self._cut()
+        self._code_body_()
+        self.name_last_node('body')
+        self.ast._define(
+            ['body'],
+            []
+        )
+
+    @tatsumasu('Continue')
+    def _stmt_continue_(self):  # noqa
+        self._token('continue')
+        self._void()
+        self.name_last_node('@')
+
+    @tatsumasu('Break')
+    def _stmt_break_(self):  # noqa
+        self._token('break')
+        self._void()
+        self.name_last_node('@')
+
     @tatsumasu()
+    def _ret_arg_(self):  # noqa
+        self._n__()
+        self._expression_()
+        self.name_last_node('@')
+
+    @tatsumasu('Return')
+    def _stmt_return_(self):  # noqa
+        self._token('return')
+
+        def sep1():
+            self._token(',')
+
+        def block1():
+            self._ret_arg_()
+        self._gather(block1, sep1)
+        self.name_last_node('@')
+
+    @tatsumasu('IdAssign')
+    def _expr_in_assign_(self):  # noqa
+        self._n__()
+        self._identifier_()
+        self.name_last_node('@')
+
+    @tatsumasu('In')
+    def _expr_in_(self):  # noqa
+        with self._group():
+            with self._choice():
+                with self._option():
+                    with self._group():
+                        with self._choice():
+                            with self._option():
+                                self._token('var')
+                            with self._option():
+                                self._token('let')
+                            self._error('no available options')
+                    self.name_last_node('keyword')
+
+                    def sep3():
+                        self._token(',')
+
+                    def block3():
+                        with self._choice():
+                            with self._option():
+                                self._stmt_idassign_()
+                            with self._option():
+                                self._stmt_iddecl_()
+                            self._error('no available options')
+                    self._positive_gather(block3, sep3)
+                    self.name_last_node('left')
+                with self._option():
+
+                    def sep6():
+                        self._token(',')
+
+                    def block6():
+                        self._expr_in_assign_()
+                    self._positive_gather(block6, sep6)
+                    self.name_last_node('left')
+                self._error('no available options')
+        self._token('in')
+        self._n__()
+
+        def sep9():
+            self._token(',')
+
+        def block9():
+            self._stmt_vardecl_rhs_()
+        self._positive_gather(block9, sep9)
+        self.name_last_node('right')
+        self.ast._define(
+            ['keyword', 'left', 'right'],
+            []
+        )
+
+    @tatsumasu('For')
+    def _stmt_for_loop_(self):  # noqa
+        self._token('for')
+        self._n__()
+        self._expr_in_()
+        self.name_last_node('iterator')
+        self._n__()
+        self._code_body_()
+        self.name_last_node('body')
+        self.ast._define(
+            ['body', 'iterator'],
+            []
+        )
+
+    @tatsumasu()
+    def _pragma_ident_(self):  # noqa
+        self._pattern('[#]{1,2}(?!\\d)\\w+')
+
+    @tatsumasu('Pragma')
+    def _stmt_pragma_(self):  # noqa
+        self._pragma_ident_()
+        self.name_last_node('name')
+        with self._optional():
+            self._call_args_()
+            self.name_last_node('args')
+        self.ast._define(
+            ['args', 'name'],
+            []
+        )
+
+    @tatsumasu()
+    def _stmt_case_rhs_(self):  # noqa
+        self._n__()
+        self._value_()
+        self.name_last_node('@')
+
+    @tatsumasu('Case')
+    def _stmt_case_(self):  # noqa
+        self._token('case')
+        self._n__()
+        self._cut()
+        with self._optional():
+
+            def sep1():
+                self._token(',')
+
+            def block1():
+                self._stmt_case_rhs_()
+            self._positive_gather(block1, sep1)
+            self.name_last_node('value')
+            self._n__()
+        self._token(':')
+        self._n__()
+        with self._group():
+            with self._choice():
+                with self._option():
+                    self._statement_noterm_()
+                with self._option():
+                    self._expression_()
+                self._error('no available options')
+        self.name_last_node('statement')
+        self.ast._define(
+            ['statement', 'value'],
+            []
+        )
+
+    @tatsumasu('Label')
+    def _stmt_label_(self):  # noqa
+        self._token('label')
+        self._n__()
+        self._cut()
+        self._identifier_()
+        self.name_last_node('name')
+        self._n__()
+        self._token(':')
+        self._n__()
+        with self._group():
+            with self._choice():
+                with self._option():
+                    self._statement_noterm_()
+                with self._option():
+                    self._expression_()
+                self._error('no available options')
+        self.name_last_node('statement')
+        self.ast._define(
+            ['name', 'statement'],
+            []
+        )
+
+    @tatsumasu('Goto')
+    def _stmt_goto_(self):  # noqa
+        self._token('go_to')
+        self._n__()
+        self._cut()
+        self._identifier_()
+        self.name_last_node('@')
+
+    @tatsumasu()
+    def _return_type_(self):  # noqa
+        self._n__()
+        self._type_()
+        self.name_last_node('@')
+
+    @tatsumasu('DefArg')
+    def _def_arg_(self):  # noqa
+        with self._group():
+            with self._choice():
+                with self._option():
+                    self._token('let')
+                with self._option():
+                    self._token('var')
+                with self._option():
+                    self._token('type')
+                with self._option():
+                    self._constant('var')
+                self._error('no available options')
+        self.name_last_node('keyword')
+        self._identifier_()
+        self.name_last_node('name')
+        with self._optional():
+            self._token(':')
+            self._type_()
+            self.name_last_node('type')
+        with self._optional():
+            self._token('=')
+            self._expression_call_()
+            self.name_last_node('value')
+        self.ast._define(
+            ['keyword', 'name', 'type', 'value'],
+            []
+        )
+
+    @tatsumasu()
+    def _def_body_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._code_body_()
+                self.name_last_node('@')
+            with self._option():
+                self._token('=')
+                self._n__()
+                self._expression_()
+                self.name_last_node('@')
+            self._error('no available options')
+
+    @tatsumasu('Share')
+    def _share_marker_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._token('export')
+                self._n__()
+                self._token('import')
+                self._constant(3)
+                self.name_last_node('@')
+            with self._option():
+                self._token('export')
+                self._constant(2)
+                self.name_last_node('@')
+            with self._option():
+                self._token('import')
+                self._constant(1)
+                self.name_last_node('@')
+            with self._option():
+                self._constant(0)
+                self.name_last_node('@')
+            self._error('no available options')
+
+    @tatsumasu('Def')
+    def _stmt_def_(self):  # noqa
+        with self._optional():
+            self._share_marker_()
+            self.name_last_node('share')
+            self._n__()
+        self._token('def')
+        self._n__()
+        self._cut()
+        self._identifier_()
+        self.name_last_node('name')
+        with self._optional():
+            self._token('(')
+            self._cut()
+
+            def sep3():
+                self._token(',')
+
+            def block3():
+                self._def_arg_()
+            self._gather(block3, sep3)
+            self.name_last_node('args')
+            self._token(')')
+        with self._optional():
+            self._token('->')
+
+            def sep5():
+                self._token(',')
+
+            def block5():
+                self._return_type_()
+            self._gather(block5, sep5)
+            self.name_last_node('returns')
+        with self._optional():
+            self._def_body_()
+            self.name_last_node('body')
+        self.ast._define(
+            ['args', 'body', 'name', 'returns', 'share'],
+            []
+        )
+
+    @tatsumasu()
+    def _stmt_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._stmt_vardecl_()
+            with self._option():
+                self._stmt_typedecl_()
+            with self._option():
+                self._stmt_if_()
+            with self._option():
+                self._stmt_def_()
+            with self._option():
+                self._stmt_import_()
+            with self._option():
+                self._stmt_static_if_()
+            with self._option():
+                self._stmt_pragma_()
+            with self._option():
+                self._stmt_for_loop_()
+            with self._option():
+                self._stmt_while_loop_()
+            with self._option():
+                self._stmt_loop_()
+            with self._option():
+                self._stmt_switch_()
+            with self._option():
+                self._stmt_return_()
+            with self._option():
+                self._stmt_continue_()
+            with self._option():
+                self._stmt_break_()
+            with self._option():
+                self._stmt_goto_()
+            self._error('no available options')
+
+    @tatsumasu()
+    @nomemo
     def _statement_(self):  # noqa
         with self._choice():
             with self._option():
-                self.___()
                 self._void()
                 self.name_last_node('@')
                 self._t_term_()
             with self._option():
-                self.___()
                 with self._group():
                     with self._choice():
                         with self._option():
-                            self._stmt_vardecl_()
+                            self._stmt_label_()
                         with self._option():
-                            self._stmt_typedecl_()
-                        with self._option():
-                            self._stmt_if_()
-                        with self._option():
-                            self._stmt_static_if_()
-                        with self._option():
-                            self._expression_()
+                            self._stmt_case_()
                         self._error('no available options')
                 self.name_last_node('@')
-                self.___()
                 self._t_term_()
+            with self._option():
+                self._statement_noterm_()
+                self.name_last_node('@')
+                self._t_term_()
+            with self._option():
+                self._expression_()
+                self.name_last_node('@')
+                self._t_term_()
+            self._error('no available options')
+
+    @tatsumasu()
+    def _statement_noterm_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._token('(')
+                with self._group():
+                    with self._choice():
+                        with self._option():
+                            self._void()
+                            self.name_last_node('@')
+                            with self._if():
+                                self._token(')')
+                        with self._option():
+                            self._statement_noterm_()
+                            self.name_last_node('@')
+                        self._error('no available options')
+                self._token(')')
+            with self._option():
+                self._stmt_()
+                self.name_last_node('@')
             self._error('no available options')
 
 
@@ -1396,19 +2389,10 @@ class PrincessSemantics(object):
     def t_newline(self, ast):  # noqa
         return ast
 
-    def t_ws(self, ast):  # noqa
-        return ast
-
-    def _(self, ast):  # noqa
+    def t_term(self, ast):  # noqa
         return ast
 
     def n_(self, ast):  # noqa
-        return ast
-
-    def s_(self, ast):  # noqa
-        return ast
-
-    def t_term(self, ast):  # noqa
         return ast
 
     def digit(self, ast):  # noqa
@@ -1444,22 +2428,28 @@ class PrincessSemantics(object):
     def t_bin_literal(self, ast):  # noqa
         return ast
 
+    def t_int_literal(self, ast):  # noqa
+        return ast
+
     def t_num_lit(self, ast):  # noqa
         return ast
 
-    def esc_char(self, ast):  # noqa
+    def ESC_CHAR(self, ast):  # noqa
         return ast
 
-    def esc_seq(self, ast):  # noqa
+    def ESC_SEQ(self, ast):  # noqa
         return ast
 
-    def t_char(self, ast):  # noqa
+    def T_CHAR(self, ast):  # noqa
         return ast
 
-    def t_char_lit(self, ast):  # noqa
+    def T_CHAR_S(self, ast):  # noqa
         return ast
 
-    def t_string_lit(self, ast):  # noqa
+    def T_CHAR_LIT(self, ast):  # noqa
+        return ast
+
+    def T_STRING_LIT(self, ast):  # noqa
         return ast
 
     def t_ident(self, ast):  # noqa
@@ -1474,28 +2464,82 @@ class PrincessSemantics(object):
     def t_bool_lit(self, ast):  # noqa
         return ast
 
+    def t_null(self, ast):  # noqa
+        return ast
+
+    def array_element(self, ast):  # noqa
+        return ast
+
+    def array_lit(self, ast):  # noqa
+        return ast
+
     def literal(self, ast):  # noqa
         return ast
 
     def value(self, ast):  # noqa
         return ast
 
-    def t_comment_start(self, ast):  # noqa
-        return ast
-
-    def t_comment_end(self, ast):  # noqa
-        return ast
-
-    def t_comment(self, ast):  # noqa
-        return ast
-
-    def t_eol_comment(self, ast):  # noqa
-        return ast
-
     def struct_lit(self, ast):  # noqa
         return ast
 
     def type_structural(self, ast):  # noqa
+        return ast
+
+    def stmt_struct_else(self, ast):  # noqa
+        return ast
+
+    def stmt_struct_else_if(self, ast):  # noqa
+        return ast
+
+    def stmt_struct_if(self, ast):  # noqa
+        return ast
+
+    def struct_def(self, ast):  # noqa
+        return ast
+
+    def struct_def_noterm(self, ast):  # noqa
+        return ast
+
+    def struct_body(self, ast):  # noqa
+        return ast
+
+    def type_struct(self, ast):  # noqa
+        return ast
+
+    def type_ptr(self, ast):  # noqa
+        return ast
+
+    def type_ref(self, ast):  # noqa
+        return ast
+
+    def type_array_dyn(self, ast):  # noqa
+        return ast
+
+    def type_array_static(self, ast):  # noqa
+        return ast
+
+    def type_array(self, ast):  # noqa
+        return ast
+
+    def type_list_elem(self, ast):  # noqa
+        return ast
+
+    def type_list(self, ast):  # noqa
+        return ast
+
+    def type_function(self, ast):  # noqa
+        return ast
+
+    def type_unsigned(self, ast):  # noqa
+        return ast
+
+    def type_word(self, ast):  # noqa
+        return ast
+
+    def type_2(self, ast):  # noqa
+        return ast
+
+    def type_1(self, ast):  # noqa
         return ast
 
     def type(self, ast):  # noqa
@@ -1505,6 +2549,9 @@ class PrincessSemantics(object):
         return ast
 
     def call_arg(self, ast):  # noqa
+        return ast
+
+    def call_args(self, ast):  # noqa
         return ast
 
     def expr_call(self, ast):  # noqa
@@ -1519,6 +2566,9 @@ class PrincessSemantics(object):
     def expr_type(self, ast):  # noqa
         return ast
 
+    def post_lh(self, ast):  # noqa
+        return ast
+
     def expr_postinc(self, ast):  # noqa
         return ast
 
@@ -1526,6 +2576,9 @@ class PrincessSemantics(object):
         return ast
 
     def expr_cast(self, ast):  # noqa
+        return ast
+
+    def expr_autocast(self, ast):  # noqa
         return ast
 
     def expr_preinc(self, ast):  # noqa
@@ -1573,6 +2626,12 @@ class PrincessSemantics(object):
     def expr_mod(self, ast):  # noqa
         return ast
 
+    def expr_padd(self, ast):  # noqa
+        return ast
+
+    def expr_psub(self, ast):  # noqa
+        return ast
+
     def expr_add(self, ast):  # noqa
         return ast
 
@@ -1597,10 +2656,28 @@ class PrincessSemantics(object):
     def assign_op(self, ast):  # noqa
         return ast
 
+    def expr_assign_op(self, ast):  # noqa
+        return ast
+
+    def expr_assign_lhs(self, ast):  # noqa
+        return ast
+
+    def expr_assign_rhs(self, ast):  # noqa
+        return ast
+
     def expr_assign(self, ast):  # noqa
         return ast
 
     def expr_if(self, ast):  # noqa
+        return ast
+
+    def expr_do(self, ast):  # noqa
+        return ast
+
+    def expr_range(self, ast):  # noqa
+        return ast
+
+    def expr_rangec(self, ast):  # noqa
         return ast
 
     def expr_11(self, ast):  # noqa
@@ -1636,13 +2713,46 @@ class PrincessSemantics(object):
     def expr_1(self, ast):  # noqa
         return ast
 
-    def n_expression(self, ast):  # noqa
+    def expr_0(self, ast):  # noqa
         return ast
 
     def expression(self, ast):  # noqa
         return ast
 
+    def expr_1c(self, ast):  # noqa
+        return ast
+
+    def expr_0c(self, ast):  # noqa
+        return ast
+
+    def expression_call(self, ast):  # noqa
+        return ast
+
+    def import_marker(self, ast):  # noqa
+        return ast
+
+    def stmt_import_module(self, ast):  # noqa
+        return ast
+
+    def stmt_import(self, ast):  # noqa
+        return ast
+
+    def stmt_iddecl(self, ast):  # noqa
+        return ast
+
+    def stmt_idassign(self, ast):  # noqa
+        return ast
+
+    def stmt_vardecl_rhs(self, ast):  # noqa
+        return ast
+
     def stmt_vardecl(self, ast):  # noqa
+        return ast
+
+    def stmt_typedecl_lhs(self, ast):  # noqa
+        return ast
+
+    def stmt_typedecl_rhs(self, ast):  # noqa
         return ast
 
     def stmt_typedecl(self, ast):  # noqa
@@ -1657,10 +2767,79 @@ class PrincessSemantics(object):
     def stmt_if(self, ast):  # noqa
         return ast
 
+    def stmt_switch(self, ast):  # noqa
+        return ast
+
     def stmt_static_if(self, ast):  # noqa
         return ast
 
+    def stmt_while_loop(self, ast):  # noqa
+        return ast
+
+    def stmt_loop(self, ast):  # noqa
+        return ast
+
+    def stmt_continue(self, ast):  # noqa
+        return ast
+
+    def stmt_break(self, ast):  # noqa
+        return ast
+
+    def ret_arg(self, ast):  # noqa
+        return ast
+
+    def stmt_return(self, ast):  # noqa
+        return ast
+
+    def expr_in_assign(self, ast):  # noqa
+        return ast
+
+    def expr_in(self, ast):  # noqa
+        return ast
+
+    def stmt_for_loop(self, ast):  # noqa
+        return ast
+
+    def pragma_ident(self, ast):  # noqa
+        return ast
+
+    def stmt_pragma(self, ast):  # noqa
+        return ast
+
+    def stmt_case_rhs(self, ast):  # noqa
+        return ast
+
+    def stmt_case(self, ast):  # noqa
+        return ast
+
+    def stmt_label(self, ast):  # noqa
+        return ast
+
+    def stmt_goto(self, ast):  # noqa
+        return ast
+
+    def return_type(self, ast):  # noqa
+        return ast
+
+    def def_arg(self, ast):  # noqa
+        return ast
+
+    def def_body(self, ast):  # noqa
+        return ast
+
+    def share_marker(self, ast):  # noqa
+        return ast
+
+    def stmt_def(self, ast):  # noqa
+        return ast
+
+    def stmt(self, ast):  # noqa
+        return ast
+
     def statement(self, ast):  # noqa
+        return ast
+
+    def statement_noterm(self, ast):  # noqa
         return ast
 
 

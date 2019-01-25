@@ -1,4 +1,4 @@
-# Princess
+# Princess [![Build Status](https://travis-ci.com/Victorious3/Princess.svg?token=GCuZsys2sc7hxCMZKs2a&branch=master)](https://travis-ci.com/Victorious3/Princess)
 ## Goals
 - The language should be at least as fast to compile as C, it should be possible to have a compiler for it run on an embedded device
 - The language should provide direct access to the underlying hardware, so it should be possible to write a bootloader without using any 
@@ -109,7 +109,7 @@ type Matrix3d = [3 [3 double]]
 - In an ambigious case you can end a statement with `;`.
 - A new statement can only start on a new line, or after `;`.
 - `,` is used as delimiter inside statements.
-- Both `,` and `;` are optional if there's a line break to clearly separate statements/expressions.
+- `;` is optional if there's a line break to clearly separate statements/expressions.
 - `()` is used to group expressions, `{}` is used to group statements.
 - Every expression is also a statement.
 
@@ -120,13 +120,9 @@ enum {
 }
 call // Equivalent to below
 call()
-call(
-    para = 1 // No comma needed
-    parb = 2
-)
 
 def fun(
-    par1: int // No comma needed
+    par1: int,
     par2: int
 ) {
     foo +
@@ -186,10 +182,16 @@ A -> B             // Takes A, returns B
 []        == [var]     == struct {value: *, size: size}        // mutable dynamic array of unknown type (void*)
 
 // Pointer types:
-*  == * var     // raw pointer to a mutable value, same as void* in C
-&  == * let     // raw pointer to an immutable value, s ame as const void* in C
-*T == * var T   // pointer to a mutable value of type T
-&T == * let T   // pointer to an immutable value of type T
+*  == *var     // raw pointer to a mutable value, same as void* in C
+*let           // pointer to an immutable value, same as const void* in C
+*T == *var T   // pointer to a mutable value, same as T* in C
+*let T         // pointer to an immutable value, same as const T* in C
+
+// Reference types:
+& == &var      // mutable reference of unknown type (Compareable to Object in java)
+&let           // immutable reference of unknown type
+&T == &var T   // mutable reference of type T
+&let T         // immutable reference of type T
 ```
 
 ## Functions
@@ -212,7 +214,6 @@ The `_` means "discard value"
 ```
 def add_i(par: int, par2: int) -> int = par + par2;
 ```
-TODO: Could conflict with potential `def rename = foo` syntax, but same as `const rename = *foo`
 
 Functions can be nested but they don't increase the lifetime
 of the parent function.
@@ -220,7 +221,6 @@ of the parent function.
 ### Functions that return types:
 
 A function that returns a type is implicitly `#static` (Unless `#runtime_types` is specified)
-It can only return one value. (Subject to change)
 Be aware of name collisions, as such functions can be used in place of a type.
 Expressions take precidence over types, disambiguate with `type(T)`
 
@@ -283,7 +283,7 @@ type polymorph(type A = int) = struct {
 ```
 type S = type {
     value: int
-    def a_fun(this)
+    def a_fun(this)            // `this` refers to this type
     def b_fun(this, string)
 }
 type B = type {
@@ -308,8 +308,82 @@ Do note that this makes a function polymorphic, and thus it cant be exported to 
 A function that accepts a known type as vararg can be exported, however, this is treated like a
 dynamic array or a static array, depending on the context
 
-### Operators: 
-like C, but no comma operator
+### References:
+
+To illustrate the difference between references, pointers and distinct types:
+```
+// Imagine we didn't leak any memory
+
+type I = { def some_function(this, int) }
+type S1 = struct {a: int} // size_of(S1) == size_of(int)
+type S2 = struct {}       // size_of(S2) == 0
+
+// implementation
+def some_function(this: S1, i: int) {...}
+def some_function(this: S2, i: int) {...}
+
+// I accept a strutural type
+def function1(a: I) {
+       a = {}!S2 // This doesn't compile, I is a distinct type!
+       // Imagine what would happen down here
+       a = {1}!S1 // Oops, a now has two different sizes?!
+}
+def function2(a: *I) {
+       a = allocate(S1) // This is legal
+       a = allocate(S2) // This too     
+       // a = allocate(int) // Type error!
+
+       // So far so good, but what about this?
+       a.some_function(2) // What function do we call now??
+       // This call will blow up if we don't call function2 with a pointer to S2!
+}
+function2({1}!S1)    // some_function::(S1, int)
+function2({}!S2)     // some_function::(S2, int)
+
+def function3(a: &I) {
+       // This is all fine
+       a.some_function()
+       print(type_of(a))  // This will print something depending on a
+       
+       a = allocate(&S1)
+       a.a = 20 // set instance variable
+       a.some_function(1) // We always call some_function::(S1, int)
+       a = allocate(&S2)
+       a.some_function(1) // We always call some_function::(S2, int)
+       
+       #static print(type_of(a)) // This will print "&I" !
+}
+function3({1}!S1)   // prints the type of S1
+function3({}!S2)    // prints the type of S2
+
+```
+
+## Operators
+
+### Pointer arithmetic:
+
+Pointer arithmetic is performed using the separate operators `++` and `--`.
+Both exist in the forms `ptr++`, `++ptr` and `ptr ++ n`. You can also subtract pointers using `ptr1 -- ptr2`, here both need to be of the same concrete type.
+These operators can not be overloaded, and are thus guaranteed to only do pointer arithmetic. Consequently, `++` and `--` can not be used on numeric values. Use `+= 1` or `-= 1` instead.
+
+When comparing pointers you have to cast one of them to `*` (void pointer) to compare the pointer values (as opposed to the values that are pointed to).
+
+```
+let va, vb = 2, 3
+var a, b = *va, *vb
+
+var b: *int = a++
+var c: *int = ++a
+var d: *int = a ++ 4
+var e: *int = a -- 4
+let f: size = a -- b // (distance, scalar)
+
+let g = a + b // this is 5
+let h = a - b // this is -1
+let i = a += 1 // this would be (*a)++ in C
+```
+
+### Size and Alignment:
 
 ```
 // size_of:
@@ -410,7 +484,6 @@ let a4 = array([20 [5 int]]) // Also multi dimensional array
 like C but with a different syntax
 ```
 *T
-&T // This is a pointer to a let (same as const * in C)
 
 var a = 42
 let b = 8
@@ -495,14 +568,14 @@ type MyStruct = struct {
 
 ### Enums:
 ```
-enum [type] [#flags] { }
+enum [: <type>] [#flags] { }
 ```
 
 type is optional, defaults to int
 
 #### Example:
 ```
-enum int {
+enum: int {
     FOO; BAR; BAZ = 10 // FOO == 1, BAR == 2, BAZ == 10
 }
 ```
@@ -555,12 +628,11 @@ a = do {
 ```
 Blocks are expressions and evaluate to the last value
 
-### Regions:
+### Pragma regions:
 
-#### TODO: This should be changed
-Blocks should not be confused with regions that don't create a new scope
+Creates a new scope for a pragma
 ```
-{ // Doesn't create a new scope, can be useful for applying pragmas
+#pragma { // Doesn't create a new scope, can be useful for applying pragmas
        #no_bounds_check
        // ... bounds check <off> here
 }
@@ -578,16 +650,7 @@ label <label>: statement
 go_to <label>
 ```
 
-### For Loop:
-```
-for <variable>, <to>, [step] {...}
-
-for var a = 5, 10 {
-    ...
-}
-```
-
-### For in loop:
+### For loop:
 
 ```
 for var a: &int in array { // Can capture by reference, pointer or by value
@@ -597,13 +660,13 @@ for var a: &int in array { // Can capture by reference, pointer or by value
 
 It's simplified from the C++ version, for everything else use
 
-### While loop
+### While loop:
 
 ```
 while <condition> {...}
 loop {} // Same as while true
 ```
-### if statement:
+### If statement:
 ```
 if <condition> {...} else if <condition> {...} else {...}
 // You can leave out the brackets for a single expression
@@ -659,32 +722,32 @@ floatN -> floatM // Where M >= N
 
 ```
 switch [#fallthrough] <type> {
-if <var>[,<var>...]:
+case <var>[,<var>...]:
     ...
     [break | continue]
 }
 ```
 
-Just like C, the switch statement works like a labeled goto.
+Like C, the switch statement works like a labeled goto.
 No implicit fallthrough
 
 Example:
 
 ```
-switch number {
-if 1, 2:
+switch number [#fallthrough] {
+case 1, 2:
     printf("This is either 1 or 2")
-if 3:
+case 3:
     printf("This is a 3")
     continue
-if 4:
+case 4:
     printf("This is a 3 or a 4")
-else:
+case:
     printf("This is some other number")
 }
 ```
 
-TODO: case statement
+TODO: match statement (extended switch statement)
 
 ### Type inference:
 

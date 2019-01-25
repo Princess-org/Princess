@@ -1,92 +1,52 @@
-import tatsu, inspect, princess
-from tatsu.model import AST
+# Constructors
 
-class Node(tatsu.model.Node):
-    def __init__(self, _run_semantic = True, **kwargs):
-        self._run_semantic = _run_semantic
-        super().__init__(**kwargs)
+from princess import model
+from princess.model import *
+from princess.semantics import AssignOp, CompareOp, Share
 
-    # member access on LIST
-    # pylint: disable=E1101
-    def __postinit__(self, ast):
-        if self._run_semantic: ast = self._semantic(ast) 
-        super().__postinit__(ast)
-        if hasattr(self, "LIST"):
-            self._adopt_children(self.LIST)
-            self._is_list = True
-        else:
-            self._is_list = False
+def __value_type(cst):
+    return lambda value: cst(ast = value)
 
-    def _semantic(self, ast):
-        return ast
-    
-    def children_list(self, vars_sort_key = None):
-        if self._is_list:
-            return list(self.LIST)
-        return super().children_list(vars_sort_key)
-    
-    def children_set(self):
-        if self._is_list:
-            return set(self.LIST)
-        return super().children_set()
+def __value_types(*args):
+    for arg in args:
+        name = arg.__name__
+        globals()[name] = __value_type(arg)
 
-    children = children_list
+def __list_type(cst):
+    return lambda *args: cst(ast = list(args))
 
-    def __eq__(self, other):
-        if type(self) != type(other): return False
-        for k, v in vars(self).items():
-            if k.startswith("_"): continue
-            if hasattr(other, k) and getattr(other, k) == v: continue
-            if v is None: continue                      # ignore None
-            if isinstance(v, list) and not v: continue  # ignore empty list
-            return False
-        return True
+def __list_types(*args):
+    for arg in args:
+        name = arg.__name__
+        globals()[name] = __list_type(arg)
 
-    # TODO: make this correspond to do the node.XYZ(...) syntax
-    def __str__(self): return princess.util.ast_repr(self)
+EmptyBody = Body(ast = [None])
+Continue = Continue()
+Break = Break()
+Null = Null()
 
-# Generator function, this makes sure that it always pulls out every subclass no matter where it's defined
-def __get_subclasses(cls):
-    for subclass in cls.__subclasses__():
-        yield from __get_subclasses(subclass)
-        yield subclass
+__value_types(String, Char, Integer, Float, Boolean, Goto, Unsigned, Word, IdAssign)
+__list_types(Array, Body, Identifier, Compare, Program, StructBody, Return)
+# scoped_t = [If, Else, ElseIf, For, While, Do, Def] # TODO
 
-# List of all nodes, magical object
-node_classes = __get_subclasses(Node)
+Do = (lambda *args: model.Do(ast = Body(*args)))
 
-class NodeDict(object):
-    def __getattr__(self, name):
-        def apply(*args, **kwargs):
-            return get_node(name, *args, **kwargs)
-        return apply
-node = NodeDict()
+Var = (lambda *args, **kwargs: 
+    model.VarDecl(keyword = 'var', share = Share.No, *args, **kwargs))
+Let = (lambda *args, **kwargs: 
+    model.VarDecl(keyword = 'let', share = Share.No, *args, **kwargs))
+Const = (lambda *args, **kwargs: 
+    model.VarDecl(keyword = 'const', share = Share.No, *args, **kwargs))
 
-REMOVE = object()
-def copy(ast, **kwargs):
-    d = {}
-    for k, v in ast.items():
-        if k in kwargs:
-            if kwargs[k] != REMOVE: 
-                d[k] = kwargs[k]
-        else:
-            d[k] = v
-    return AST(d)
-AST.copy_with = copy
+Pointer = (lambda type = None, keyword = 'var': 
+    model.PtrT(keyword = keyword, type = type))
+Reference = (lambda type = None, keyword = 'var': 
+    model.RefT(keyword = keyword, type = type))
 
-def get_node(_name: str, *args, **kwargs):
-    ctor = princess.semantic._get_constructor(_name, princess.semantic.base_type)
+ArrayT = (lambda type = None, n = None, keyword = 'var': 
+    model.ArrayT(n = n, keyword = keyword, type = type))
 
-    # Special cases for single value, single list
-    if len(args) == 1:
-        a0 = args[0]
-        if (isinstance(a0, list)):
-            ast = AST(kwargs, LIST = a0)
-        else: ast = AST(kwargs, VALUE = args[0])
-    elif (len(args) > 1):
-        ast = AST(kwargs, LIST = list(args))
-    else: ast = AST(kwargs)
-    
-    if issubclass(ctor, Node):
-        return ctor(ast = ast, _run_semantic = False)
-    
-    return ctor(ast = ast)
+Def = (lambda share = Share.No, *args, **kwargs:
+    model.Def(share = share, *args, **kwargs))
+DefArg = (lambda keyword = 'var', *args, **kwargs:
+    model.DefArg(keyword = keyword, *args, **kwargs))
