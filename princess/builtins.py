@@ -1,13 +1,11 @@
 from ctypes import *
 
-from princess.compiler import Modifier, Value, Scope
+from princess.compiler import Modifier, Value, Scope, FunctionT
 
 builtins = Scope(None, level = 0)
-builtins.create_function("print", [...], [])
-builtins.create_variable(Modifier.Type, "char", value = c_byte)
 
 # built in types and functions
-"""builtins = {
+_builtins = {
     # types
     "char": c_byte,
     "bool": c_bool,
@@ -34,22 +32,15 @@ builtins.create_variable(Modifier.Type, "char", value = c_byte)
     "uint16": c_uint16,
     "uint32": c_uint32,
     "uint64": c_uint64,
-}"""
 
-def builtin(v):
-    if isinstance(v, tuple):
-        v = v[1]
-        name = v[0]
-    else:
-        name = v.__name__
+    # functions
+    "print": FunctionT([...], [])
+}
+
+for identifier, v in _builtins.items():
     if isinstance(v, type):
-        modifier = Modifier.Type
+        builtins.create_type(identifier, v)
+    elif isinstance(v, FunctionT):
+        builtins.create_function(identifier, v.arg_t, v.ret_t)
     else:
         raise NotImplementedError()
-    
-    return Value(
-        modifier = modifier, name = name, 
-        tpe = None, scope = builtins, 
-        identifier = name, value = v)
-
-builtins = {k: builtin(v) for k, v in builtins.items()}

@@ -18,11 +18,6 @@ float_t = set([c_double, c_float])
 int_t = unsigned_t | signed_t
 primitive_t = int_t | float_t | set([c_bool, c_wchar])
 
-class Function:
-    def __init__(self, arg_t, ret_t):
-        self.arg_t = arg_t  # Argument types
-        self.ret_t = ret_t  # Return types
-
 def is_reserved(name):
     return iskeyword(name) or hasattr(env, name)
 
@@ -89,9 +84,9 @@ class Modifier(str, Enum):
 class FunctionT:
     """ Dedicated function type """
 
-    def __init__(self, argt, rett):
-        self.argt = argt
-        self.rett = rett
+    def __init__(self, arg_t, ret_t):
+        self.arg_t = arg_t
+        self.ret_t = ret_t
 
 class Value:
     def __init__(self, modifier: Modifier, name: str, tpe, export = False, scope = None, identifier = None, value = None):
@@ -125,10 +120,19 @@ class Scope:
 
         return name
 
+    def __contains__(self, name):
+        if name in self.dir:
+            return True
+        elif self.parent:
+            return name in self.parent
+        return False
+
     def __getitem__(self, name):
         if name in self.dir:
             return self.dir[name]
-        return self.parent[name]
+        elif self.parent:
+            return self.parent[name]
+        else: raise KeyError()
 
     def __setitem__(self, name, value):
         if name in self.parent:
@@ -168,8 +172,10 @@ class Scope:
         self.dir[value.name] = value
         return value
 
-    def create_function(self, name, argt = None, rett = None):
-        return self.create_variable(modifier = Modifier.Const, name = name, tpe = FunctionT(argt, rett))
+    def create_type(self, name, value):
+        return self.create_variable(modifier = Modifier.Type, name = name, tpe = None, value = value)
+    def create_function(self, name, arg_t = None, ret_t = None):
+        return self.create_variable(modifier = Modifier.Const, name = name, tpe = FunctionT(arg_t, ret_t))
 
     def create_temporary(self, tpe):
         name = "__tmp" + str(self.tmpcount)
@@ -409,8 +415,8 @@ class Compile(ASTWalker):
         # TODO Check return arguments
         f = self.scope.create_function(
             name = get_name(node.name), 
-            argt = [self.scope.type_lookup(arg.type) for arg in node.args or []],
-            rett = [self.scope.type_lookup(r) for r in node.returns or []]
+            arg_t = [self.scope.type_lookup(arg.type) for arg in node.args or []],
+            ret_t = [self.scope.type_lookup(r) for r in node.returns or []]
         )
         node.identifier = f.identifier # TODO Maybe redundant
 
