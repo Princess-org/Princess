@@ -56,9 +56,9 @@ def eq(l, r):
             if not eq(l, r): return False
         return True
 
-    if not type(l) == type(r): return False
+    if type(l) != type(r): return False
 
     if isinstance(l, Array):
         return list(l) == list(r)
     else:
-        l.value == r.value
+        return l.value == r.value

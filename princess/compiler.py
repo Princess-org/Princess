@@ -104,7 +104,7 @@ class Scope:
     _scope_id = 0
 
     """ Scope information """
-    def __init__(self, parent, level = None):
+    def __init__(self, parent):
         self.id = Scope._scope_id
         self.parent = parent
         self.children = {}
@@ -114,7 +114,7 @@ class Scope:
         Scope._scope_id += 1
         
     def python_identifier(self, name):
-        if self.id == 0:
+        if not self.parent or self.parent is builtins: # builtin or top level
             if is_reserved(name):
                 name += "_"
         else:
@@ -401,7 +401,7 @@ class Compile(ASTWalker):
     def walk_Assign(self, node: model.Assign):
         self.walk_children(node)
 
-        assert isinstance(node.parent, model.Body), "Nested assignments disallowed" # TODO
+        assert isinstance(node.parent, (model.Body, model.Program)), "Nested assignments disallowed" # TODO
 
         declarations = []
 
@@ -468,9 +468,7 @@ class Compile(ASTWalker):
 from princess import pbuiltins
 from princess.codegen import PythonCodeGen
 
-import inspect
-
-builtins = Scope(None, level = 0)
+builtins = Scope(None)
 for k in dir(pbuiltins):
     v = getattr(pbuiltins, k)
     if isinstance(v, type):
@@ -479,7 +477,8 @@ for k in dir(pbuiltins):
         builtins.create_function(k) # TODO: argument checks
 
 def compile(ast):
-    ast = Compile(builtins).walk(ast)
+    global_scope = Scope(builtins)
+    ast = Compile(global_scope).walk(ast)
     src = PythonCodeGen().render(ast)
     return src
 

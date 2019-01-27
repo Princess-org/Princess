@@ -10,9 +10,3 @@ def test_print(capfd):
     """
     eval(prog)
     assert capfd.readouterr().out == "70 foobar\n"
-
-def test_malloc():
-    prog = """\
-        let i = allocate(int)
-        free(i)
-    """

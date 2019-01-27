@@ -57,7 +57,7 @@ class Body(ModelBase):
     pass
 
 
-class Program(Body):
+class Program(ModelBase):
     pass
 
 
