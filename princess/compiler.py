@@ -90,7 +90,7 @@ class FunctionT:
 
 class Value:
     def __init__(self, modifier: Modifier, name: str, tpe, export = False, scope = None, identifier = None, value = None):
-        self.name = name    # real name
+        self.name = name    # real name, used by the source code
         self.modifier = modifier
         self.type = tpe
         self.export = export
@@ -164,18 +164,27 @@ class Scope:
         self.children[node] = child
         return child
 
-    def create_variable(self, *args, **kwargs):
-        value = Value(*args, **kwargs)
-        value.scope = self
-        value.identifier = self.python_identifier(value.name)
-        assert value.name not in self.dir, "Redeclaration of %s" % value.name
-        self.dir[value.name] = value
-        return value
+    def create_variable(self, modifier: Modifier, name: str, tpe, export = False, value = None, identifier = None):
+        assert name not in self.dir, "Redeclaration of %s" % name
+        
+        v = Value(
+            modifier = modifier,
+            name = name,
+            tpe = tpe,
+            export = export,
+            identifier = identifier or self.python_identifier(name),
+            scope = self,
+            value = value
+        )
 
-    def create_type(self, name, value):
-        return self.create_variable(modifier = Modifier.Type, name = name, tpe = None, value = value)
-    def create_function(self, name, arg_t = None, ret_t = None):
-        return self.create_variable(modifier = Modifier.Const, name = name, tpe = FunctionT(arg_t, ret_t))
+        self.dir[name] = v
+
+        return v
+
+    def create_type(self, name, value, identifier = None):
+        return self.create_variable(modifier = Modifier.Type, name = name, tpe = None, value = value, identifier = identifier)
+    def create_function(self, name, arg_t = None, ret_t = None, identifier = None):
+        return self.create_variable(modifier = Modifier.Const, name = name, tpe = FunctionT(arg_t, ret_t), identifier = identifier)
 
     def create_temporary(self, tpe):
         name = "__tmp" + str(self.tmpcount)
