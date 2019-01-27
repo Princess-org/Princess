@@ -1,5 +1,5 @@
 from ctypes import *
-from tests import eval_expr, eval
+from tests import eval_expr, eval, skip
 from princess.env import eq
 
 def test_let_simple():
@@ -49,3 +49,9 @@ def test_types():
         return a, b, c
     """
     assert eq(eval(prog), (c_long(20), c_byte(20), c_byte(20)))
+
+@skip
+def test_declare_no_assign():
+    eval("var a: int")
+    eval("var a") # fail
+    eval("let b: int") # fail

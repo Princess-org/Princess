@@ -24,3 +24,6 @@ def test_bool_literal():
 
 def test_null():
     assert eval_expr("null") == None
+
+def test_array():
+    assert eq(eval_expr("[1, 2, 3, 4]"), (c_long * 4)(1, 2, 3, 4))

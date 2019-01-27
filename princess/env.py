@@ -2,6 +2,7 @@
 
 import os, operator, itertools
 from ctypes import *
+from ctypes import _SimpleCData
 
 if os.name == "nt":
     libc = cdll.LoadLibrary("msvcrt.dll")
@@ -21,11 +22,19 @@ class Environment:
         self.result = None # Return value of the program
 
 def string_value(v):
-    """ returns the string value of v, v is a wstring buffer.
+    """ returns the string value of v
         calling v.value is not sufficient as it cuts off
         at the first 0 terminator
     """
-    return wstring_at(byref(v), len(v) - 1)
+
+    if isinstance(v, _SimpleCData):
+        return str(v.value)
+    elif isinstance(v, Array):
+        if v._type_ is c_wchar:
+            return wstring_at(byref(v), len(v) - 1)
+        return dir(v)
+    else:
+        return str(v)
 
 def p_range(_from, to, step):
     _from = _from.value
@@ -47,4 +56,9 @@ def eq(l, r):
             if not eq(l, r): return False
         return True
 
-    return type(l) == type(r) and l.value == r.value
+    if not type(l) == type(r): return False
+
+    if isinstance(l, Array):
+        return list(l) == list(r)
+    else:
+        l.value == r.value

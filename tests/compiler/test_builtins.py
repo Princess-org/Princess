@@ -6,7 +6,13 @@ def test_print(capfd):
     prog = """\
         let a = 30
         let b = 40
-        print(a + b)
+        print(a + b, "foobar")
     """
     eval(prog)
-    assert capfd.readouterr().out == "c_long(70)\n"
+    assert capfd.readouterr().out == "70 foobar\n"
+
+def test_malloc():
+    prog = """\
+        let i = allocate(int)
+        free(i)
+    """

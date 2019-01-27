@@ -10,7 +10,7 @@ from princess.compiler import int_t
 class Formatter(DelegatingRenderingFormatter):
     def render(self, item, join='', **fields):
         if isinstance(item, type):
-            return item.__name__
+            return item.__name__ # TODO use actual type names, reverse lookup in builtins?
         elif isinstance(item, Enum): 
             return item.value
         return super().render(item, join = join, **fields)
@@ -41,6 +41,14 @@ class PythonCodeGen(CodeGenerator):
         template = "create_unicode_buffer({value})"
     class Null(Renderer):
         template = "None"
+
+    class Array(Renderer):
+        def _render_fields(self, fields):
+            # simplify literals
+            fields["value"] = [
+                v.value if isinstance(v, model.Literal) else v
+                for v in fields["value"]]
+        template = "({value_type} * {length})({value::, :})"
 
     # Identifier
     class Identifier(Renderer):
@@ -210,6 +218,7 @@ class PythonCodeGen(CodeGenerator):
             # Bow to the princess!
 
             from princess.env import *
+            from princess.pbuiltins import *
 
             __env = Environment()
 

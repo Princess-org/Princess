@@ -65,6 +65,8 @@ def get_name(ident: model.Identifier):
 
 def typecheck_assign(l, r):
     """ Typechecks and casts if applicable, by wrapping the right node """
+    if not r:
+        return ast.Null
 
     # Implicit conversion
     if isinstance(r, (model.Integer, model.Float)):
@@ -240,6 +242,25 @@ class Compile(ASTWalker):
         node.type = None
         return node
 
+    def walk_Array(self, node: model.Array):
+        common_type
+        self.walk_children(node)
+
+        node.length = len(node.ast)
+
+        if node.ast:
+            tpe = node.ast[0].type
+            for v in node.ast[1:]:
+                tpe = common_type(tpe, v.type)
+
+            node.value_type = tpe
+            node.type = tpe * node.length
+        else:
+            node.value_type = None
+            node.type = None
+
+        return node
+
     def walk_Cast(self, node: model.Cast):
         self.walk_children(node)
 
@@ -329,7 +350,7 @@ class Compile(ASTWalker):
     def __insert_assignments(self, declarations, node):
         try:
             index = 0
-            for b in node.right:
+            for b in node.right or []:
                 tpe = b.type
                 if isinstance(tpe, tuple):  # Parallel assignment
                     tmp = self.scope.create_temporary(tpe)
@@ -444,12 +465,21 @@ class Compile(ASTWalker):
         self.walk_children(node)
         return node
 
+from princess import pbuiltins
 from princess.codegen import PythonCodeGen
-from princess.builtins import builtins
+
+import inspect
+
+builtins = Scope(None, level = 0)
+for k in dir(pbuiltins):
+    v = getattr(pbuiltins, k)
+    if isinstance(v, type):
+        builtins.create_type(k, v)
+    elif callable(v):
+        builtins.create_function(k) # TODO: argument checks
 
 def compile(ast):
-    scope = builtins
-    ast = Compile(scope).walk(ast)
+    ast = Compile(builtins).walk(ast)
     src = PythonCodeGen().render(ast)
     return src
 
