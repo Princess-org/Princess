@@ -5,6 +5,7 @@ from keyword import iskeyword
 from collections.abc import MutableMapping
 from itertools import chain
 from datetime import datetime
+from functools import reduce
 
 from tatsu.walkers import NodeWalker
 from tatsu.codegen import ModelRenderer, CodeGenerator, DelegatingRenderingFormatter
@@ -20,9 +21,12 @@ primitive_t = int_t | float_t | set([c_bool, c_wchar])
 
 def is_reserved(name):
     return iskeyword(name) or hasattr(env, name)
-
 def is_pointer(t):
     return issubclass(t, _Pointer)
+def is_array(t):
+    return issubclass(t, Array)
+def is_function(t):
+    return isinstance(t, FunctionT)
 
 def to_signed(t):
     if t in unsigned_t:
@@ -50,8 +54,8 @@ def common_type(a, b, sign_convert = False):
         result = a
     elif a in int_t and b in float_t:
         result = b
-    else: # Sanity check
-        assert False
+    else: # Sanity check TODO: Raise proper exception
+        assert False, "Incompatible types %s %s" % (a, b)
 
     return result
 
@@ -63,7 +67,7 @@ def get_name(ident: model.Identifier):
     return ident.ast[0]
 
 
-def typecheck_assign(l, r):
+def typecheck_assign(l: type, r: Node) -> Node:
     """ Typechecks and casts if applicable, by wrapping the right node """
     if not r:
         return ast.Null
@@ -86,7 +90,7 @@ class Modifier(str, Enum):
 class FunctionT:
     """ Dedicated function type """
 
-    def __init__(self, arg_t, ret_t):
+    def __init__(self, arg_t: tuple, ret_t: tuple):
         self.arg_t = arg_t
         self.ret_t = ret_t
 
@@ -107,7 +111,7 @@ class Scope:
     def __init__(self, parent):
         self.id = Scope._scope_id
         self.parent = parent
-        self.children = {}
+        self.children = {} # mapping Node -> Scope, to allow scope information to be preserved over multiple compilation passes
         self.dir = {}
         self.tmpcount = 0
         
@@ -165,6 +169,9 @@ class Scope:
         child = Scope(self)
         self.children[node] = child
         return child
+    
+    def exit_scope(self):
+        return self.parent
 
     def create_variable(self, modifier: Modifier, name: str, tpe, export = False, value = None, identifier = None):
         assert name not in self.dir, "Redeclaration of %s" % name
@@ -190,19 +197,34 @@ class Scope:
 
     def create_temporary(self, tpe):
         name = "__tmp" + str(self.tmpcount)
-        v = Value(Modifier.Var, name, tpe)
-        self[name] = v
+        v = self.create_variable(Modifier.Var, name, tpe)
         self.tmpcount += 1
-        return ast.Identifier(identifier = v.identifier, type = v.type)
+        return model.Identifier(identifier = v.identifier, type = v.type)
 
 class ASTWalker(NodeWalker):
     def __init__(self, scope = None):
         self.scope = scope # type: Scope
+        self.function_stack = []
+        self.current_function = None
 
     def enter_scope(self, node):
         self.scope = self.scope.enter_scope(node)
     def exit_scope(self):
-        self.scope = self.scope.parent
+        self.scope = self.scope.exit_scope()
+
+    def walk_Body(self, node: model.Body):
+        self.enter_scope(node)
+        self.walk_children(node)
+        self.exit_scope()
+
+        return node
+
+    # TODO Make this part of Scope?
+    def enter_function(self, f: Value):
+        self.function_stack.append(f)
+        self.current_function = f
+    def exit_function(self):
+        self.current_function = self.function_stack.pop()
 
     def walk_children(self, node):
         if isinstance(node, list):
@@ -212,7 +234,11 @@ class ASTWalker(NodeWalker):
 
     def walk_child(self, node, *children):
         assert isinstance(node, Node)
-        node.map(self.walk, lambda n: n in children)       
+        node.map(self.walk, lambda n: n in children)
+
+    def walk_default(self, node):
+        self.walk_children(node)
+        return node
 
 class Compile(ASTWalker):
     """ Typechecking and compiling """
@@ -243,7 +269,6 @@ class Compile(ASTWalker):
         return node
 
     def walk_Array(self, node: model.Array):
-        common_type
         self.walk_children(node)
 
         node.length = len(node.ast)
@@ -261,6 +286,23 @@ class Compile(ASTWalker):
 
         return node
 
+    def walk_ArrayIndex(self, node: model.ArrayIndex):
+        self.walk_children(node)
+
+        assert is_array(node.left.type), "Can only index arrays"
+        node.array_type = node.left.type
+        node.type = node.left.type._type_
+
+        return node
+
+    def walk_Call(self, node: model.Call):
+        self.walk_children(node)
+
+        assert is_function(node.left.type), "Can only call functions"
+        node.type = node.left.type.ret_t
+
+        return node
+
     def walk_Cast(self, node: model.Cast):
         self.walk_children(node)
 
@@ -270,6 +312,20 @@ class Compile(ASTWalker):
             node = node.left
         node.type = tpe
         return node
+
+    def walk_UMinus(self, node: model.UMinus):
+        # UMinus(Integer(n)) -> Integer(-n)
+        right = node.right
+
+        if isinstance(right, model.Integer):
+            node = ast.Integer(-right.ast)
+        elif isinstance(right, model.Float):
+            node = ast.Float(-right.ast)
+        else:
+            self.walk_UnaryPreOp(node)
+            return node
+
+        return self.walk(node)
 
     def walk_BinaryOp(self, node: model.BinaryOp):
         self.walk_children(node)
@@ -357,7 +413,7 @@ class Compile(ASTWalker):
                     declarations.insert(index, ast.Assign(left = tmp, right = b))
                     index += 1
                     for j, t in enumerate(tpe):
-                        declarations[index].right = ast.ArrayIndex(left = tmp, right = j, type = t)
+                        declarations[index].right = ast.ArrayIndex(left = tmp, right = model.Integer(value = j), type = t, array_type = tpe)
                         index += 1
                 else:
                     declarations[index].right = b
@@ -395,7 +451,7 @@ class Compile(ASTWalker):
             else:
                 decl.right = typecheck_assign(decl.left.type, decl.right)
             decl.type = decl.left.type # extract type into outer statement
-
+        
         return tuple(declarations)
 
     def walk_Assign(self, node: model.Assign):
@@ -432,21 +488,15 @@ class Compile(ASTWalker):
 
         return node
 
-    def walk_Body(self, node: model.Body):
-        self.enter_scope(node)
-        self.walk_children(node)
-        self.exit_scope()
-
-        return node
-
+    # TODO Rewrite
     def walk_Def(self, node: model.Def):
         self.walk_child(node, node.args, node.returns, node.name)
 
         # TODO Check return arguments
         f = self.scope.create_function(
             name = get_name(node.name), 
-            arg_t = [self.scope.type_lookup(arg.type) for arg in node.args or []],
-            ret_t = [self.scope.type_lookup(r) for r in node.returns or []]
+            arg_t = tuple(self.scope.type_lookup(arg.type) for arg in node.args or []),
+            ret_t = tuple(self.scope.type_lookup(r) for r in node.returns or [])
         )
         node.identifier = f.identifier # TODO Maybe redundant
 
@@ -457,11 +507,13 @@ class Compile(ASTWalker):
                 v = scope.create_variable(Modifier.Var, get_name(arg.name), self.scope.type_lookup(arg.type))
                 arg.identifier = v.identifier
 
+            self.enter_function(f)
             self.walk_child(node, node.body)
+            self.exit_function()
 
         return node
-
-    def walk_default(self, node):
+    
+    def walk_Return(self, node: model.Return):
         self.walk_children(node)
         return node
 
