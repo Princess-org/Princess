@@ -1,5 +1,6 @@
 from ctypes import *
 from tests import eval_expr, eval, skip
+from pytest import raises
 from princess.env import eq
 
 def test_let_simple():
@@ -45,13 +46,15 @@ def test_types():
     prog = """\
         var a: int = 20
         var b: byte = a !byte
-        var c: byte = 20
-        return a, b, c
+        var c: byte, d: byte = 20, 30
+        return a, b, c, d
     """
-    assert eq(eval(prog), (c_long(20), c_byte(20), c_byte(20)))
+    assert eq(eval(prog), (c_long(20), c_byte(20), c_byte(20), c_byte(30)))
 
-@skip
 def test_declare_no_assign():
     eval("var a: int")
-    eval("var a") # fail
-    eval("let b: int") # fail
+
+    with raises(AssertionError, match = "Couldn't infer type for var"):
+        eval("var a")
+    with raises(AssertionError, match = "Unbalanced assignment for let"):
+        eval("let b: int")

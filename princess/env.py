@@ -50,6 +50,12 @@ def p_range(_from, to, step):
     for x in range(_from, to, step):
         yield c_long(x)
 
+def p_cast(_from, to):
+    if isinstance(to, tuple):
+        return (p_cast(f, t) for f, t in zip(_from, to))
+    else:
+        return to(_from.value)
+
 def eq(l, r):
     if isinstance(l, tuple):
         for l, r in zip(l, r):

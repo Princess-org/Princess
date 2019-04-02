@@ -5,11 +5,15 @@ from tatsu.codegen import DelegatingRenderingFormatter, ModelRenderer, CodeGener
 from tatsu.model import AST
 
 from princess import model, ast
-from princess.compiler import int_t
+from princess.compiler import int_t, INT_T, FLOAT_T
 
 class Formatter(DelegatingRenderingFormatter):
     def render(self, item, join='', **fields):
-        if isinstance(item, type):
+        if item is INT_T:
+            return "c_long"
+        elif item is FLOAT_T:
+            return "c_double"
+        elif isinstance(item, type):
             return item.__name__ # TODO use actual type names, reverse lookup in builtins?
         elif isinstance(item, Enum): 
             return item.value
@@ -110,7 +114,7 @@ class PythonCodeGen(CodeGenerator):
         template = "{type}({value:: :})"
 
     class Cast(Renderer):
-        template = "({type}({left}.value))"
+        template = "p_cast({left}, {type})"
 
     class Return(Renderer):
         def _render_fields(self, fields):
@@ -149,13 +153,20 @@ class PythonCodeGen(CodeGenerator):
 
         template = "p_range({from_}, {to}, {step})"
 
+    class IdDecl(Renderer):
+        template = "{identifier}"
+    class IdAssign(Renderer):
+        template = "{value}"
+        
     class VarDecl(Renderer):
-        template = """
-            {identifier} = {right} # type: {type}\
-        """
-
-    class Assign(Renderer):
-        template = "{left} = {right}"
+        def _render_fields(self, fields):
+            if "type" in fields:
+                return "{left::, :} = p_cast(({right::, :}), ({type::, :}))"
+            else:
+                return "{left::, :} = {right::, :}"
+    
+    class Assign(VarDecl):
+        pass
 
     class Body(Renderer):
         def _render_fields(self, fields):

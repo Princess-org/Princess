@@ -3,8 +3,9 @@ from ctypes import _Pointer
 from enum import Enum
 from keyword import iskeyword
 from collections.abc import MutableMapping
-from itertools import chain
+from itertools import chain, zip_longest
 from datetime import datetime
+from functools import reduce
 
 from tatsu.walkers import NodeWalker
 from tatsu.codegen import ModelRenderer, CodeGenerator, DelegatingRenderingFormatter
@@ -12,11 +13,34 @@ from tatsu.ast import AST
 from princess import model, ast, env
 from princess.node import Node
 
+# Literal types
+class INT_T(c_long): pass
+class FLOAT_T(c_double): pass
+
 unsigned_t = set([c_uint8, c_uint16, c_uint32, c_uint64])
-signed_t = set([c_int8, c_int16, c_int32, c_int64])
-float_t = set([c_double, c_float])
+signed_t = set([c_int8, c_int16, c_int32, c_int64, INT_T])
+float_t = set([c_double, c_float, FLOAT_T])
 int_t = unsigned_t | signed_t
 primitive_t = int_t | float_t | set([c_bool, c_wchar])
+
+# TODO Stop using ctypes
+def types_eq(l, r):
+    """ compares two type tuples for equality, note that INT_T == c_long and FLOAT_T == c_double """
+    assert l is not None and r is not None
+    if len(l) != len(r): return False
+    for lt, rt in zip(l, r):
+        if lt != rt:
+            if rt in (INT_T, FLOAT_T):
+                t = lt
+                lt = rt
+                rt = t
+            if lt is INT_T and rt is c_long:
+                continue
+            elif lt is FLOAT_T and rt is c_double:
+                continue
+            return False
+    return True
+
 
 def is_reserved(name):
     return iskeyword(name) or hasattr(env, name)
@@ -51,7 +75,7 @@ def common_type(a, b, sign_convert = False):
     elif a in int_t and b in float_t:
         result = b
     else: # Sanity check
-        assert False
+        assert False, "Incompatible types"
 
     return result
 
@@ -63,19 +87,23 @@ def get_name(ident: model.Identifier):
     return ident.ast[0]
 
 
-def typecheck_assign(l, r):
-    """ Typechecks and casts if applicable, by wrapping the right node """
-    if not r:
-        return ast.Null
+def typecheck(t, r):
+    """ Typechecks and casts if applicable, returning the new type """
+    if t is None:
+        return r # infer type
 
     # Implicit conversion
-    if isinstance(r, (model.Integer, model.Float)):
-        r.type = l
+    if r in (INT_T, FLOAT_T):
+        r = t
     # FIXME Ensure size limit, float <> int !!
 
-    assert l is r.type, "incompatible types"
+    assert t is r, "incompatible types"
 
     return r
+
+def flatten_type(types):
+    """ extracts type tuples into a single type tuple """
+    return reduce(lambda a, b: a + b if isinstance(b, tuple) else a + (b,), types, ())
 
 class Modifier(str, Enum):
     Const = "const"
@@ -212,7 +240,7 @@ class ASTWalker(NodeWalker):
 
     def walk_child(self, node, *children):
         assert isinstance(node, Node)
-        node.map(self.walk, lambda n: n in children)       
+        node.map(self.walk, lambda n: n in children)   
 
 class Compile(ASTWalker):
     """ Typechecking and compiling """
@@ -220,11 +248,11 @@ class Compile(ASTWalker):
     # Literals
     def walk_Integer(self, node: model.Integer):
         node.value = node.ast
-        node.type = c_long
+        node.type = INT_T
         return node
     def walk_Float(self, node: model.Float):
         node.value = node.ast
-        node.type = c_double
+        node.type = FLOAT_T
         return node
     def walk_String(self, node: model.String):
         node.value = node.ast
@@ -347,77 +375,65 @@ class Compile(ASTWalker):
         assert len(node.right) == 1 and isinstance(node.right[0], model.Range), "For loop only supports iterating over a range" 
         return node
 
-    def __insert_assignments(self, declarations, node):
-        try:
-            index = 0
-            for b in node.right or []:
-                tpe = b.type
-                if isinstance(tpe, tuple):  # Parallel assignment
-                    tmp = self.scope.create_temporary(tpe)
-                    declarations.insert(index, ast.Assign(left = tmp, right = b))
-                    index += 1
-                    for j, t in enumerate(tpe):
-                        declarations[index].right = ast.ArrayIndex(left = tmp, right = j, type = t)
-                        index += 1
-                else:
-                    declarations[index].right = b
-                index += 1
-        except IndexError:
-            assert False, "Imbalanced assignment"
-
     def walk_VarDecl(self, node: model.VarDecl):
         self.walk_children(node)
 
-        declarations = []
         export = node.share & ast.Share.Export
         modifier = Modifier(node.keyword)
-        assert modifier != Modifier.Const, "const not implemented"
+        assert modifier is not Modifier.Const, "const not implemented"
 
-        for a in node.left:
-            if type(a) is model.IdDecl:
-                name = get_name(a.name)
-                v = self.scope.create_variable(modifier, name, self.scope.type_lookup(a.type), export) # Add value to scope
-                declarations.append(ast.VarDecl(
-                    left = v, type = v.type, identifier = v.identifier, right = None))
+        if node.right is None: 
+            node.right = []
 
-            elif type(a) is model.IdAssign:
-                declarations.append(ast.Assign(left = a.ast, right = None))
+        types_r = flatten_type(r.type for r in node.right)
+
+        if modifier is Modifier.Let:
+            assert len(types_r) == len(node.left), "Unbalanced assignment for let"
+        else:
+            assert len(types_r) <= len(node.left), "Nothing to assign to"
+
+        types_r_casted = ()
+        for l, r in zip_longest(node.left, types_r):
+            if isinstance(l, model.IdDecl):
+                name = get_name(l.name)
+                tpe = self.scope.type_lookup(l.type)
+
+                if r is not None:
+                    tpe = typecheck(tpe, r)
+                    types_r_casted += (tpe,)
+
+                if modifier is Modifier.Var:
+                    assert tpe is not None, "Couldn't infer type for var"
+
+                v = self.scope.create_variable(modifier, name, tpe, export) # Add value to scope
+                l.identifier = v.identifier
             else:
-                assert False
+                assert r is not None, "Need to assign value"
+                types_r_casted += (typecheck(l.type, r),)
 
-        self.__insert_assignments(declarations, node)
+        if len(node.right) < len(node.left):
+            node.right.extend([ast.Null] * (len(node.left) - len(node.right)))
 
-        # typecheck
-        for decl in declarations:
-            if decl.left.type is None:
-                # type inference
-                decl.left.type = decl.right.type
-            else:
-                decl.right = typecheck_assign(decl.left.type, decl.right)
-            decl.type = decl.left.type # extract type into outer statement
-
-        return tuple(declarations)
+        if not types_eq(types_r_casted, types_r):
+            node.type = types_r_casted
+        return node
 
     def walk_Assign(self, node: model.Assign):
         self.walk_children(node)
 
         assert isinstance(node.parent, (model.Body, model.Program)), "Nested assignments disallowed" # TODO
 
-        declarations = []
+        types_r = flatten_type(r.type for r in node.right)
+        types_r_casted = ()
+        types_l = [l.type for l in node.left]
 
-        for a in node.left:
-            if isinstance(a, model.Identifier):
-                assert a.modifier == "var", "Assign to constant"
-            declarations.append(ast.Assign(left = a, right = None))
-        
-        self.__insert_assignments(declarations, node)
+        assert len(types_r) == len(types_l), "Unbalanced assignment"
+        for l, r in zip(types_l, types_r):
+            types_r_casted += (typecheck(l, r),)
 
-        # typecheck
-        for decl in declarations:
-            decl.right = typecheck_assign(decl.left.type, decl.right)
-            decl.type = decl.left.type # extract type into outer statement
-
-        return tuple(declarations)
+        if types_eq(types_r_casted, types_r):
+            node.type = types_r_casted
+        return node
 
     def walk_Identifier(self, node: model.Identifier):
         name = get_name(node)
