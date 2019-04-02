@@ -6,7 +6,7 @@ from tatsu.codegen import DelegatingRenderingFormatter, ModelRenderer, CodeGener
 from tatsu.model import AST
 
 from princess import model, ast
-from princess.compiler import int_t, INT_T, FLOAT_T
+from princess.compiler import int_t, INT_T, FLOAT_T, is_pointer
 
 def unpack_literal(node):
     """ turns wrapped literal into value, like c_int(5) -> 5 """
@@ -16,11 +16,15 @@ def unpack_literal(node):
 
 class Formatter(DelegatingRenderingFormatter):
     def render(self, item, join='', **fields):
-        if item is INT_T:
+        if item is None:
+            return "None"
+        elif item is INT_T:
             return "c_long"
         elif item is FLOAT_T:
             return "c_double"
         elif isinstance(item, type):
+            if is_pointer(item):
+                return "POINTER(%s)" % self.render(item._type_)
             return item.__name__ # TODO use actual type names, reverse lookup in builtins?
         elif isinstance(item, Enum): 
             return item.value
@@ -168,26 +172,15 @@ class PythonCodeGen(CodeGenerator):
         """
 
     class Range(Renderer):
-        def _render_fields(self, fields):
-            if fields["step"] is None:
-                fields.update(step = "None")
-
         template = "p_range({from_}, {to}, {step})"
-
     class IdDecl(Renderer):
         template = "{identifier}"
     class IdAssign(Renderer):
-        template = "{value}"
-        
+        template = "{value}.value"
     class VarDecl(Renderer):
-        def _render_fields(self, fields):
-            if "type" in fields:
-                return "{left::, :} = p_cast(({right::, :}), ({type::, :}))"
-            else:
-                return "{left::, :} = {right::, :}"
-    
-    class Assign(VarDecl):
-        pass
+        template = "{left::, :} = p_declare(({right::, :}), ({type::, :}))"
+    class Assign(Renderer):
+        template = "{left::, :%s.value} = p_assign(({right::, :}))"
 
     class Body(Renderer):
         def _render_fields(self, fields):
@@ -224,7 +217,7 @@ class PythonCodeGen(CodeGenerator):
         template = "{identifier}"
     class Def(Renderer):
         def _render_fields(self, fields):
-            if not "args" in fields:
+            if not "args" in fields or fields["args"] is None:
                 fields.update(args = [])
 
         template = """\

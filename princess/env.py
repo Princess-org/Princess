@@ -21,7 +21,7 @@ class Environment:
     def __init__(self):
         self.result = None # Return value of the program
 
-def string_value(v):
+def p_string_value(v):
     """ returns the string value of v
         calling v.value is not sufficient as it cuts off
         at the first 0 terminator
@@ -54,12 +54,28 @@ def p_cast(_from, to):
     if isinstance(to, tuple):
         return (p_cast(f, t) for f, t in zip(_from, to))
     else:
+        if isinstance(_from, to): 
+            return _from
         return to(_from.value)
 
-def eq(l, r):
+
+def p_declare(values, types):
+    if isinstance(types, tuple):
+        values = values if isinstance(values, tuple) else (values,)
+        return (p_cast(v, t) if t else v.value for v, t in itertools.zip_longest(values, types))
+    else:
+        return p_cast(values, types) if types else values.value
+
+def p_assign(values):
+    if isinstance(values, tuple):
+        return (v.value for v in values)
+    else:
+        return values.value
+
+def p_eq(l, r):
     if isinstance(l, tuple):
         for l, r in zip(l, r):
-            if not eq(l, r): return False
+            if not p_eq(l, r): return False
         return True
 
     if type(l) != type(r): return False

@@ -1,6 +1,6 @@
 from ctypes import *
 from tests import eval_expr, eval
-from princess.env import eq
+from princess.env import p_eq
 
 def test_simple_function():
     prog = """\
@@ -10,7 +10,7 @@ def test_simple_function():
 
         return test_function()
     """
-    assert eq(eval(prog), c_long(42))
+    assert p_eq(eval(prog), c_long(42))
 
 def test_args():
     prog = """\
@@ -21,4 +21,4 @@ def test_args():
         return add(10, 20)
     """
 
-    assert eq(eval(prog), c_long(30))
+    assert p_eq(eval(prog), c_long(30))

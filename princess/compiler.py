@@ -23,25 +23,6 @@ float_t = set([c_double, c_float, FLOAT_T])
 int_t = unsigned_t | signed_t
 primitive_t = int_t | float_t | set([c_bool, c_wchar])
 
-# TODO Stop using ctypes
-def types_eq(l, r):
-    """ compares two type tuples for equality, note that INT_T == c_long and FLOAT_T == c_double """
-    assert l is not None and r is not None
-    if len(l) != len(r): return False
-    for lt, rt in zip(l, r):
-        if lt != rt:
-            if rt in (INT_T, FLOAT_T):
-                t = lt
-                lt = rt
-                rt = t
-            if lt is INT_T and rt is c_long:
-                continue
-            elif lt is FLOAT_T and rt is c_double:
-                continue
-            return False
-    return True
-
-
 def is_reserved(name):
     return iskeyword(name) or hasattr(env, name)
 def is_pointer(t):
@@ -92,8 +73,10 @@ def get_name(ident: model.Identifier):
 
 def typecheck(t, r):
     """ Typechecks and casts if applicable, returning the new type """
-    if t is None:
-        return r # infer type
+    if t is None: # infer type
+        if r is INT_T: return c_long
+        elif r is FLOAT_T: return c_double
+        else: return r 
 
     # Implicit conversion
     if r in (INT_T, FLOAT_T):
@@ -464,13 +447,14 @@ class Compile(ASTWalker):
                 l.identifier = v.identifier
             else:
                 assert r is not None, "Need to assign value"
-                types_r_casted += (typecheck(l.type, r),)
+                typecheck(l.type, r)
+                types_r_casted += (None,) # None means assignment
 
         if len(node.right) < len(node.left):
             node.right.extend([ast.Null] * (len(node.left) - len(node.right)))
 
-        if not types_eq(types_r_casted, types_r):
-            node.type = types_r_casted
+        node.type = types_r_casted
+
         return node
 
     def walk_Assign(self, node: model.Assign):
@@ -479,15 +463,12 @@ class Compile(ASTWalker):
         assert isinstance(node.parent, (model.Body, model.Program)), "Nested assignments disallowed" # TODO
 
         types_r = flatten_type(r.type for r in node.right)
-        types_r_casted = ()
         types_l = [l.type for l in node.left]
 
         assert len(types_r) == len(types_l), "Unbalanced assignment"
         for l, r in zip(types_l, types_r):
-            types_r_casted += (typecheck(l, r),)
+            typecheck(l, r)
 
-        if types_eq(types_r_casted, types_r):
-            node.type = types_r_casted
         return node
 
     def walk_Identifier(self, node: model.Identifier):

@@ -1,21 +1,21 @@
 from ctypes import *
 from tests import eval_expr, eval, skip
 from pytest import raises
-from princess.env import eq
+from princess.env import p_eq
 
 def test_let_simple():
     prog = """\
         let a = 10 * 2
         return a
     """
-    assert eq(eval(prog), c_long(20))
+    assert p_eq(eval(prog), c_long(20))
 
 def test_let_multiple_assign():
     prog = """\
         let a, b = 1, 2
         return a, b
     """
-    assert eq(eval(prog), (c_long(1), c_long(2)))
+    assert p_eq(eval(prog), (c_long(1), c_long(2)))
 
 def test_assign():
     prog = """\
@@ -24,7 +24,7 @@ def test_assign():
         a = a + 5
         return a
     """
-    assert eq(eval(prog), c_long(25))
+    assert p_eq(eval(prog), c_long(25))
 
 def test_assign_multiple():
     prog = """\
@@ -32,7 +32,7 @@ def test_assign_multiple():
         a, b, c = 10, 20, 30
         return a, b, c
     """
-    assert eq(eval(prog), (c_long(10), c_long(20), c_long(30)))
+    assert p_eq(eval(prog), (c_long(10), c_long(20), c_long(30)))
 
 @skip
 def test_assign_multiple_call():
@@ -43,7 +43,7 @@ def test_assign_multiple_call():
         let c, b, a = test()
         return a, b, c
     """
-    assert eq(eval(prog), (c_longlong(-2), c_double(2.5), c_long(1)))
+    assert p_eq(eval(prog), (c_longlong(-2), c_double(2.5), c_long(1)))
 
 def test_assign_and_let():
     prog = """\
@@ -51,7 +51,7 @@ def test_assign_and_let():
         let (a), b = 1, 2
         return a, b
     """
-    assert eq(eval(prog), (c_long(1), c_long(2)))
+    assert p_eq(eval(prog), (c_long(1), c_long(2)))
 
 def test_types():
     prog = """\
@@ -60,7 +60,7 @@ def test_types():
         var c: byte, d: byte = 20, 30
         return a, b, c, d
     """
-    assert eq(eval(prog), (c_long(20), c_byte(20), c_byte(20), c_byte(30)))
+    assert p_eq(eval(prog), (c_long(20), c_byte(20), c_byte(20), c_byte(30)))
 
 def test_declare_no_assign():
     eval("var a: int")

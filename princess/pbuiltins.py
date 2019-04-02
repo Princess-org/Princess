@@ -29,4 +29,4 @@ uint64 = ctypes.c_uint64
 
 # functions
 def print(*args):
-    builtins.print(*(env.string_value(arg) for arg in args))
+    builtins.print(*(env.p_string_value(arg) for arg in args))
