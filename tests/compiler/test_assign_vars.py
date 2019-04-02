@@ -34,6 +34,17 @@ def test_assign_multiple():
     """
     assert eq(eval(prog), (c_long(10), c_long(20), c_long(30)))
 
+@skip
+def test_assign_multiple_call():
+    prog = """\
+        def test -> int, double, long {
+            return 1, 2.5, -2
+        }
+        let c, b, a = test()
+        return a, b, c
+    """
+    assert eq(eval(prog), (c_longlong(-2), c_double(2.5), c_long(1)))
+
 def test_assign_and_let():
     prog = """\
         var a = 0

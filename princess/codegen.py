@@ -1,3 +1,4 @@
+import ctypes
 from enum import Enum
 from datetime import datetime
 
@@ -6,6 +7,12 @@ from tatsu.model import AST
 
 from princess import model, ast
 from princess.compiler import int_t, INT_T, FLOAT_T
+
+def unpack_literal(node):
+    """ turns wrapped literal into value, like c_int(5) -> 5 """
+    if isinstance(node, model.Literal):
+        return node.value
+    return node
 
 class Formatter(DelegatingRenderingFormatter):
     def render(self, item, join='', **fields):
@@ -49,9 +56,7 @@ class PythonCodeGen(CodeGenerator):
     class Array(Renderer):
         def _render_fields(self, fields):
             # simplify literals
-            fields["value"] = [
-                v.value if isinstance(v, model.Literal) else v
-                for v in fields["value"]]
+            fields["value"] = [unpack_literal(v) for v in fields["value"]]
         template = "({value_type} * {length})({value::, :})"
 
     # Identifier
@@ -105,13 +110,29 @@ class PythonCodeGen(CodeGenerator):
 
         template = "{value}"
 
+    class ArrayIndex(Renderer):
+        def _render_fields(self, fields):            
+            right = fields["right"]
+            array_type = fields["array_type"]
+
+            if isinstance(right, model.Literal):
+                fields["right"] = right.value
+                template = "({left}[{right}])"
+            else:
+                template = "({left}[{right}.value])"
+
+            if not isinstance(array_type, tuple):
+                template = "({type}%s)" % template
+
+            return template
+
     class Compare(Renderer):
         def _render_fields(self, fields):
             value = fields["value"]
             for i in range(0, len(value), 2):
                 value[i] = "%s.value" % self.codegen.render(value[i])
 
-        template = "{type}({value:: :})"
+        template = "({type}({value:: :}))"
 
     class Cast(Renderer):
         template = "p_cast({left}, {type})"
@@ -122,7 +143,7 @@ class PythonCodeGen(CodeGenerator):
             if any(type(v) == model.Do for v in value):
                 raise NotImplementedError("Can't use 'do' expressions in return statement")
 
-            return "return ({value::, :})"
+            return "return {value::, :}"
 
     class While(Renderer):
         template = """\

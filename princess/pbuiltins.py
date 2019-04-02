@@ -15,7 +15,7 @@ ushort = ctypes.c_ushort
 uint = ctypes.c_ulong
     
 float = ctypes.c_float
-double = ctypes.c_double,
+double = ctypes.c_double
 
 int8 = ctypes.c_int8
 int16 = ctypes.c_int16

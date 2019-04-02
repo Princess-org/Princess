@@ -27,3 +27,7 @@ def test_cast():
 
 def test_sign_conv():
     assert eq(eval_expr("10!uint * -5"), c_long(-50))
+
+def test_array_access():
+    assert eq(eval_expr("[1, 2, 3, 4][1]"), c_long(2))
+    assert eq(eval_expr("[1, 1.5, -3][2]"), c_double(-3))
