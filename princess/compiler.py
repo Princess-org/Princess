@@ -159,9 +159,15 @@ class Scope:
         self.dir[name] = value
 
     def type_lookup(self, t):
-        # TODO const value isn't enough for complicated types, this only works for identifiers
-        assert t is None or isinstance(t, model.Identifier), "Complex types as argument not implemented"
-        return self.get_const_value(t)
+        if t is None:
+            return None
+        elif isinstance(t, model.Identifier):
+            return self.get_const_value(t)
+        elif isinstance(t, model.PtrT):
+            return POINTER(self.type_lookup(t.type))
+        
+        assert False, "Type not implemented" # TODO Arrays, etc
+
 
     def get_const_value(self, v):
         if isinstance(v, model.Identifier):
