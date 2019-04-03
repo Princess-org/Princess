@@ -34,7 +34,6 @@ def test_assign_multiple():
     """
     assert p_eq(eval(prog), (c_long(10), c_long(20), c_long(30)))
 
-@skip
 def test_assign_multiple_call():
     prog = """\
         def test -> int, double, long {

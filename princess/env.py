@@ -3,6 +3,7 @@
 import os, operator, itertools
 from ctypes import *
 from ctypes import _SimpleCData
+from princess import compiler
 
 if os.name == "nt":
     libc = cdll.LoadLibrary("msvcrt.dll")
@@ -52,23 +53,35 @@ def p_range(_from, to, step):
 
 def p_cast(_from, to):
     if isinstance(to, tuple):
-        return (p_cast(f, t) for f, t in zip(_from, to))
+        return tuple(p_cast(f, t) for f, t in zip(_from, to))
     else:
         if isinstance(_from, to): 
             return _from
-        return to(_from.value)
+        elif compiler.is_pointer(to):
+            return cast(_from, to)
+        else: return to(_from.value)
 
+def p_copy(v, tpe):
+    if compiler.is_pointer(tpe):
+        return cast(v, tpe)
+    else:
+        return tpe(v.value) if v else tpe()
+
+# unpacks single values
+def p_return(values):
+    if len(values) == 1:
+        return values[0]
+    return values
 
 def p_declare(values, types):
     if isinstance(types, tuple):
-        values = values if isinstance(values, tuple) else (values,)
-        return (p_cast(v, t) if t else v.value for v, t in itertools.zip_longest(values, types))
+        return p_return(tuple(p_declare(v, t) for v, t in itertools.zip_longest(values, types)))
     else:
-        return p_cast(values, types) if types else values.value
+        return p_copy(values, types) if types else values.value
 
 def p_assign(values):
     if isinstance(values, tuple):
-        return (v.value for v in values)
+        return p_return(tuple(v.value for v in values))
     else:
         return values.value
 

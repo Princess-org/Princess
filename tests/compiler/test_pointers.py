@@ -33,5 +33,15 @@ def test_pass_pointer_to_function():
         return a
     """
     assert p_eq(eval(prog), c_long(21))
+
+def test_malloc_free():
+    prog = """\
+        let a = allocate(int)
+        @a = 20
+        let b = @a
+        free(a)
+        return b
+    """
+    assert p_eq(eval(prog), c_long(20))
     
 

@@ -26,7 +26,7 @@ primitive_t = int_t | float_t | set([c_bool, c_wchar])
 def is_reserved(name):
     return iskeyword(name) or hasattr(env, name)
 def is_pointer(t):
-    return issubclass(t, _Pointer)
+    return t is c_void_p or issubclass(t, _Pointer)
 def is_array(t):
     return issubclass(t, Array)
 def is_function(t):
@@ -100,9 +100,10 @@ class Modifier(str, Enum):
 class FunctionT:
     """ Dedicated function type """
 
-    def __init__(self, arg_t: tuple, ret_t: tuple):
+    def __init__(self, arg_t: tuple, ret_t: tuple, typecheck_macro = None):
         self.arg_t = arg_t
         self.ret_t = ret_t
+        self.typecheck_macro = typecheck_macro
 
 class Value:
     def __init__(self, modifier: Modifier, name: str, tpe, export = False, scope = None, identifier = None, value = None):
@@ -208,8 +209,8 @@ class Scope:
 
     def create_type(self, name, value, identifier = None):
         return self.create_variable(modifier = Modifier.Type, name = name, tpe = None, value = value, identifier = identifier)
-    def create_function(self, name, arg_t = None, ret_t = None, identifier = None):
-        return self.create_variable(modifier = Modifier.Const, name = name, tpe = FunctionT(arg_t, ret_t), identifier = identifier)
+    def create_function(self, name, arg_t = None, ret_t = None, typecheck_macro = None, identifier = None):
+        return self.create_variable(modifier = Modifier.Const, name = name, tpe = FunctionT(arg_t, ret_t, typecheck_macro), identifier = identifier)
 
     def create_temporary(self, tpe):
         name = "__tmp" + str(self.tmpcount)
@@ -315,7 +316,12 @@ class Compile(ASTWalker):
         self.walk_children(node)
 
         assert is_function(node.left.type), "Can only call functions"
-        node.type = node.left.type.ret_t
+        funct = node.left.type
+        node.type = funct.ret_t
+
+        if funct.typecheck_macro:
+            t = funct.typecheck_macro(self.scope, *node.args)
+            node.type = t if isinstance(t, tuple) else (t,)
 
         return node
 
@@ -323,7 +329,8 @@ class Compile(ASTWalker):
         self.walk_children(node)
 
         # Simplify cast if casting a literal
-        tpe = self.scope.get_const_value(node.right)
+        tpe = self.scope.type_lookup(node.right)
+
         if isinstance(node.left, (model.Integer, model.Float)):
             node = node.left
         node.type = tpe
@@ -444,7 +451,8 @@ class Compile(ASTWalker):
 
                 if r is not None:
                     tpe = typecheck(tpe, r)
-                    types_r_casted += (tpe,)
+                
+                types_r_casted += (tpe,)
 
                 if modifier is Modifier.Var:
                     assert tpe is not None, "Couldn't infer type for var"
@@ -456,8 +464,8 @@ class Compile(ASTWalker):
                 typecheck(l.type, r)
                 types_r_casted += (None,) # None means assignment
 
-        if len(node.right) < len(node.left):
-            node.right.extend([ast.Null] * (len(node.left) - len(node.right)))
+        if len(types_r) < len(node.left):
+            node.right.extend([ast.Null] * (len(node.left) - len(types_r)))
 
         node.type = types_r_casted
 
@@ -469,7 +477,7 @@ class Compile(ASTWalker):
         assert isinstance(node.parent, (model.Body, model.Program)), "Nested assignments disallowed" # TODO
 
         types_r = flatten_type(r.type for r in node.right)
-        types_l = [l.type for l in node.left]
+        types_l = tuple(l.type for l in node.left)
 
         assert len(types_r) == len(types_l), "Unbalanced assignment"
         for l, r in zip(types_l, types_r):
@@ -524,11 +532,13 @@ from princess.codegen import PythonCodeGen
 
 builtins = Scope(None)
 for k in dir(pbuiltins):
+    if k.startswith("_"): continue
+        
     v = getattr(pbuiltins, k)
     if isinstance(v, type):
         builtins.create_type(k, v)
     elif callable(v):
-        builtins.create_function(k) # TODO: argument checks
+        builtins.create_function(k, getattr(v, "arg_t", None), getattr(v, "ret_t", None), getattr(v, "typecheck_macro", None))
 
 def compile(ast):
     global_scope = Scope(builtins)

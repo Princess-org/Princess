@@ -49,7 +49,7 @@ class PythonCodeGen(CodeGenerator):
     # Literals
     class Literal(Renderer):
         def _render_fields(self, fields):
-            fields["value"] = repr(fields["value"])
+            fields.update(value = repr(fields["value"]))
         template = "{type}({value})"
 
     class String(Literal):
@@ -60,11 +60,13 @@ class PythonCodeGen(CodeGenerator):
     class Array(Renderer):
         def _render_fields(self, fields):
             # simplify literals
-            fields["value"] = [unpack_literal(v) for v in fields["value"]]
+            fields.update(value = [unpack_literal(v) for v in fields["value"]])
         template = "({value_type} * {length})({value::, :})"
 
     # Identifier
     class Identifier(Renderer):
+        def _render_fields(self, fields):
+            assert "identifier" in fields, "Undefined variable %s" % fields["name"]
         template = "{identifier}"
 
     # Operators
@@ -106,7 +108,15 @@ class PythonCodeGen(CodeGenerator):
         template = "({right}.contents)"
 
     class Call(Renderer):
-        template = "({left}({args::, :}))"
+        def _render_fields(self, fields):
+            prefix = ""
+            tpe = fields["type"]            
+            if tpe and len(tpe) > 1:
+                prefix = "*"
+
+            fields.update(prefix = prefix)
+
+        template = "{prefix}{left}({args::, :})"
     class CallArg(Renderer):
         def _render_fields(self, fields):
             if "identifier" in fields:
@@ -120,7 +130,7 @@ class PythonCodeGen(CodeGenerator):
             array_type = fields["array_type"]
 
             if isinstance(right, model.Literal):
-                fields["right"] = right.value
+                fields.update(right = right.value)
                 template = "({left}[{right}])"
             else:
                 template = "({left}[{right}.value])"
@@ -147,7 +157,7 @@ class PythonCodeGen(CodeGenerator):
             if any(type(v) == model.Do for v in value):
                 raise NotImplementedError("Can't use 'do' expressions in return statement")
 
-            return "return {value::, :}"
+            return "return p_return(({value::, :},))"
 
     class While(Renderer):
         template = """\
@@ -178,9 +188,9 @@ class PythonCodeGen(CodeGenerator):
     class IdAssign(Renderer):
         template = "{value}.value"
     class VarDecl(Renderer):
-        template = "{left::, :} = p_declare(({right::, :}), ({type::, :}))"
+        template = "{left::, :} = p_declare(({right::, :},), ({type::, :},))"
     class Assign(Renderer):
-        template = "{left::, :%s.value} = p_assign(({right::, :}))"
+        template = "{left::, :%s.value} = p_assign(({right::, :},))"
 
     class Body(Renderer):
         def _render_fields(self, fields):
