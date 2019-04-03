@@ -588,6 +588,46 @@ class PrincessParser(Parser):
             []
         )
 
+    @tatsumasu('IdDecl')
+    def _var_iddecl_(self):  # noqa
+        self._n__()
+        self._identifier_()
+        self.name_last_node('name')
+        with self._optional():
+            self._token(':')
+            self._n__()
+            self._type_()
+            self.name_last_node('type')
+        self.ast._define(
+            ['name', 'type'],
+            []
+        )
+
+    @tatsumasu('IdAssign')
+    def _var_idassign_(self):  # noqa
+        self._n__()
+        self._token('(')
+        self._n__()
+        self._expression_()
+        self.name_last_node('@')
+        self._n__()
+        self._token(')')
+
+    @tatsumasu('IdDeclStruct')
+    def _struct_iddecl_(self):  # noqa
+        self._n__()
+        self._identifier_()
+        self.name_last_node('name')
+        with self._optional():
+            self._token(':')
+            self._n__()
+            self._type_()
+            self.name_last_node('type')
+        self.ast._define(
+            ['name', 'type'],
+            []
+        )
+
     @tatsumasu()
     def _struct_def_(self):  # noqa
         with self._choice():
@@ -626,7 +666,7 @@ class PrincessParser(Parser):
                         with self._option():
                             self._stmt_struct_if_()
                         with self._option():
-                            self._stmt_iddecl_()
+                            self._struct_iddecl_()
                         self._error('no available options')
                 self.name_last_node('@')
             self._error('no available options')
@@ -1752,31 +1792,6 @@ class PrincessParser(Parser):
             []
         )
 
-    @tatsumasu('IdDecl')
-    def _stmt_iddecl_(self):  # noqa
-        self._n__()
-        self._identifier_()
-        self.name_last_node('name')
-        with self._optional():
-            self._token(':')
-            self._n__()
-            self._type_()
-            self.name_last_node('type')
-        self.ast._define(
-            ['name', 'type'],
-            []
-        )
-
-    @tatsumasu('IdAssign')
-    def _stmt_idassign_(self):  # noqa
-        self._n__()
-        self._token('(')
-        self._n__()
-        self._expression_()
-        self.name_last_node('@')
-        self._n__()
-        self._token(')')
-
     @tatsumasu()
     def _stmt_vardecl_rhs_(self):  # noqa
         self._n__()
@@ -1814,9 +1829,9 @@ class PrincessParser(Parser):
         def block4():
             with self._choice():
                 with self._option():
-                    self._stmt_idassign_()
+                    self._var_idassign_()
                 with self._option():
-                    self._stmt_iddecl_()
+                    self._var_iddecl_()
                 self._error('no available options')
         self._positive_gather(block4, sep4)
         self.name_last_node('left')
@@ -1841,14 +1856,12 @@ class PrincessParser(Parser):
         self._n__()
         self._identifier_()
         self.name_last_node('@')
-        self._n__()
 
     @tatsumasu()
     def _stmt_typedecl_rhs_(self):  # noqa
         self._n__()
         self._type_()
         self.name_last_node('@')
-        self._n__()
 
     @tatsumasu('TypeDecl')
     def _stmt_typedecl_(self):  # noqa
@@ -1862,6 +1875,7 @@ class PrincessParser(Parser):
             self._stmt_typedecl_lhs_()
         self._positive_gather(block1, sep1)
         self.name_last_node('name')
+        self._n__()
         self._token('=')
         self._n__()
 
@@ -2054,9 +2068,9 @@ class PrincessParser(Parser):
                     def block3():
                         with self._choice():
                             with self._option():
-                                self._stmt_idassign_()
+                                self._var_idassign_()
                             with self._option():
-                                self._stmt_iddecl_()
+                                self._var_iddecl_()
                             self._error('no available options')
                     self._positive_gather(block3, sep3)
                     self.name_last_node('left')
@@ -2494,6 +2508,15 @@ class PrincessSemantics(object):
     def stmt_struct_if(self, ast):  # noqa
         return ast
 
+    def var_iddecl(self, ast):  # noqa
+        return ast
+
+    def var_idassign(self, ast):  # noqa
+        return ast
+
+    def struct_iddecl(self, ast):  # noqa
+        return ast
+
     def struct_def(self, ast):  # noqa
         return ast
 
@@ -2735,12 +2758,6 @@ class PrincessSemantics(object):
         return ast
 
     def stmt_import(self, ast):  # noqa
-        return ast
-
-    def stmt_iddecl(self, ast):  # noqa
-        return ast
-
-    def stmt_idassign(self, ast):  # noqa
         return ast
 
     def stmt_vardecl_rhs(self, ast):  # noqa

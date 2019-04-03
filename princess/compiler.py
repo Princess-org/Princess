@@ -97,6 +97,26 @@ class Modifier(str, Enum):
     Let = "let"
     Type = "type"
 
+class StructT(Structure):
+    """ Dedicated structure type, don't read what follows unless enough holy water is at hand """
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        base_p = cast(pointer(self), c_void_p).value
+        cls = type(self)
+
+        for name, tpe in self._fields_:
+            offset = getattr(cls, name).offset
+            value = cast(c_void_p(base_p + offset), POINTER(tpe)).contents
+            self.__dict__[name] = value
+    
+    def __getattribute__(self, name):
+        values = super().__getattribute__("__dict__")
+        if name in values:
+            return values[name]
+
+        return super().__getattribute__(name)
+
 class FunctionT:
     """ Dedicated function type """
 
@@ -163,9 +183,16 @@ class Scope:
         if t is None:
             return None
         elif isinstance(t, model.Identifier):
-            return self.get_const_value(t)
+            v = self.get_const_value(t)
+            v._identifier = t # Reverse lookup for codegen, needed for custom types
+            return v
         elif isinstance(t, model.PtrT):
             return POINTER(self.type_lookup(t.type))
+        elif isinstance(t, model.Struct):
+            fields = [
+                (field.name.name, self.type_lookup(field.type)) for field in t.body.ast # TODO inference
+            ] 
+            return env.p_struct_type(fields)
         
         assert False, "Type not implemented" # TODO Arrays, etc
 
@@ -426,6 +453,17 @@ class Compile(ASTWalker):
         assert len(node.right) == 1 and isinstance(node.right[0], model.Range), "For loop only supports iterating over a range" 
         return node
 
+    def walk_TypeDecl(self, node: model.TypeDecl):
+        self.walk_children(node)
+
+        assert len(node.name) == len(node.value) == 1, "Parallel type assignment not implemented" # TODO
+
+        name = node.name[0].name
+        tpe = self.scope.type_lookup(node.value[0])
+        self.scope.create_type(name, tpe)
+
+        return node
+
     def walk_VarDecl(self, node: model.VarDecl):
         self.walk_children(node)
 
@@ -547,6 +585,9 @@ def compile(ast):
     return src
 
 def eval(pysrc):
+    return eval_globals(pysrc)["__env"].result
+
+def eval_globals(pysrc):
     globals = {}
     exec(pysrc, globals)
-    return globals["__env"].result
+    return globals

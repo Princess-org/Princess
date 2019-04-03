@@ -17,9 +17,9 @@ def test_simple():
     """) == Program(
         Struct(
             body = StructBody(
-                IdDecl(name = Identifier("a"), type = Identifier("int")),
-                IdDecl(name = Identifier("b"), type = FunctionT(right = [Identifier("int")])),
-                IdDecl(name = Identifier("c"), type = Pointer())
+                IdDeclStruct(name = Identifier("a"), type = Identifier("int")),
+                IdDeclStruct(name = Identifier("b"), type = FunctionT(right = [Identifier("int")])),
+                IdDeclStruct(name = Identifier("c"), type = Pointer())
             )
         )
     )
@@ -34,11 +34,11 @@ def test_nested():
     """) == Program(
         Struct(
             body = StructBody(
-                IdDecl(
+                IdDeclStruct(
                     name = Identifier("deep"),
                     type = Struct(
                         body = StructBody(
-                            IdDecl(
+                            IdDeclStruct(
                                 name = Identifier("sea"),
                                 type = Struct(body = StructBody(None))
                             )
@@ -61,10 +61,10 @@ def test_nested():
             body = StructBody(
                 Struct(
                     body = StructBody(
-                        IdDecl(name = Identifier("a"), type = Identifier("int"))
+                        IdDeclStruct(name = Identifier("a"), type = Identifier("int"))
                     )
                 ),
-                IdDecl(
+                IdDeclStruct(
                     name = Identifier("b"),
                     type = Identifier("int")
                 )
@@ -90,13 +90,13 @@ def test_struct_if():
             body = StructBody(
                 If(
                     cond = Boolean(False),
-                    body = StructBody(IdDecl(name = Identifier("a"), type = Identifier("int"))),
+                    body = StructBody(IdDeclStruct(name = Identifier("a"), type = Identifier("int"))),
                     else_if = [ElseIf(
                         cond = Boolean(False),
-                        body = StructBody(IdDecl(name = Identifier("a"), type = Identifier("double")))
+                        body = StructBody(IdDeclStruct(name = Identifier("a"), type = Identifier("double")))
                     )],
                     else_ = Else(
-                        body = StructBody(IdDecl(name = Identifier("a"), type = Identifier("float")))
+                        body = StructBody(IdDeclStruct(name = Identifier("a"), type = Identifier("float")))
                     )
                 )
             )
@@ -112,3 +112,9 @@ def test_typedef():
             value = [Struct(body = StructBody(None))]
         )
     )
+
+def test_typedef_bug():
+    parse("""\
+        type a = struct {}
+        a
+    """)

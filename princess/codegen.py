@@ -6,7 +6,7 @@ from tatsu.codegen import DelegatingRenderingFormatter, ModelRenderer, CodeGener
 from tatsu.model import AST
 
 from princess import model, ast
-from princess.compiler import int_t, INT_T, FLOAT_T, is_pointer
+from princess.compiler import int_t, INT_T, FLOAT_T, is_pointer, StructT
 
 def unpack_literal(node):
     """ turns wrapped literal into value, like c_int(5) -> 5 """
@@ -19,15 +19,19 @@ class Formatter(DelegatingRenderingFormatter):
         if item is None:
             return "None"
         elif item is INT_T:
-            return "c_long"
+            return "int"
         elif item is FLOAT_T:
-            return "c_double"
+            return "double"
         elif isinstance(item, type):
             if is_pointer(item):
                 return "POINTER(%s)" % self.render(item._type_)
+            elif issubclass(item, StructT):
+                return item._identifier.identifier
+
             return item.__name__ # TODO use actual type names, reverse lookup in builtins?
         elif isinstance(item, Enum): 
             return item.value
+
         return super().render(item, join = join, **fields)
 
 class Renderer(ModelRenderer):
@@ -66,8 +70,23 @@ class PythonCodeGen(CodeGenerator):
     # Identifier
     class Identifier(Renderer):
         def _render_fields(self, fields):
-            assert "identifier" in fields, "Undefined variable %s" % fields["name"]
+            if "identifier" not in fields:  # TODO error out on undefined fields
+                fields.update(identifier = fields["name"])
         template = "{identifier}"
+
+    # Struct
+    class IdDeclStruct(Renderer):
+        template = "(\"{name}\", {type})"
+    class StructBody(Renderer):
+        template = """\
+            {value::\\n:%s,}
+        """
+    class Struct(Renderer):
+        template = """\
+            (p_struct_type([
+            {body:1::}
+            ]))\
+        """
 
     # Operators
     # TODO Directly unwrap primitive values -> performance
@@ -140,6 +159,9 @@ class PythonCodeGen(CodeGenerator):
 
             return template
 
+    class MemberAccess(Renderer):
+        template = "({left}.{right})"
+
     class Compare(Renderer):
         def _render_fields(self, fields):
             value = fields["value"]
@@ -183,12 +205,16 @@ class PythonCodeGen(CodeGenerator):
 
     class Range(Renderer):
         template = "p_range({from_}, {to}, {step})"
+
     class IdDecl(Renderer):
-        template = "{identifier}"
+        template = "{name}"
     class IdAssign(Renderer):
         template = "{value}.value"
+
     class VarDecl(Renderer):
         template = "{left::, :} = p_declare(({right::, :},), ({type::, :},))"
+    class TypeDecl(Renderer):
+        template = "{name::, :} = {value::, :} # typedef"
     class Assign(Renderer):
         template = "{left::, :%s.value} = p_assign(({right::, :},))"
 
@@ -239,7 +265,7 @@ class PythonCodeGen(CodeGenerator):
         def _render_fields(self, fields):
             value = fields["value"]
             code = ast.Def(
-                identifier = model.Identifier(identifier = "__main"),
+                identifier = model.Identifier(name = "__main"),
                 body = ast.Body(*value)
             )
 

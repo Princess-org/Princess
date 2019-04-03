@@ -37,6 +37,11 @@ def p_string_value(v):
     else:
         return str(v)
 
+def p_struct_type(fields):
+    class StructInstance(compiler.StructT):
+        _fields_ = fields
+    return StructInstance
+
 def p_range(_from, to, step):
     _from = _from.value
     to = to.value + 1

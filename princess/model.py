@@ -121,6 +121,20 @@ class If(Statement):
     else_if = None
 
 
+class IdDecl(ModelBase):
+    name = None
+    type = None
+
+
+class IdAssign(ModelBase):
+    pass
+
+
+class IdDeclStruct(ModelBase):
+    name = None
+    type = None
+
+
 class StructBody(ModelBase):
     pass
 
@@ -340,15 +354,6 @@ class ImportModule(ModelBase):
 class Import(ModelBase):
     modules = None
     share = None
-
-
-class IdDecl(ModelBase):
-    name = None
-    type = None
-
-
-class IdAssign(ModelBase):
-    pass
 
 
 class VarDecl(Statement):

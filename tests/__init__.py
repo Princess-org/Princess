@@ -47,6 +47,12 @@ def eval(src, print_src = False):
         print(pysrc)
     return princess.compiler.eval(pysrc)
 
+def eval_globals(src, print_src = False):
+    pysrc = compile(src)
+    if print_src or config.getoption("print_src"):
+        print(pysrc)
+    return princess.compiler.eval_globals(pysrc)
+
 def eval_expr(src):
     return eval("return (%s)" % src)
 
