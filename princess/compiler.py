@@ -31,6 +31,8 @@ def is_array(t):
     return issubclass(t, Array)
 def is_function(t):
     return isinstance(t, FunctionT)
+def is_struct(t):
+    return issubclass(t, StructT)
 
 def to_signed(t):
     if t in unsigned_t:
@@ -534,6 +536,20 @@ class Compile(ASTWalker):
             node.identifier = value.identifier
             node.type = value.type
 
+        return node
+
+    def walk_MemberAccess(self, node: model.MemberAccess):
+        self.walk_children(node)
+        print(node)
+        tpe_l = node.left.type
+        tpe_r = node.right.type
+        if is_struct(tpe_l):
+            node.right.type = dict(tpe_l._fields_)[node.right.name]
+        elif is_function(tpe_r):
+            print(node.parent)
+        else:
+            assert False, "Member access on incompatible type"
+        
         return node
 
     # TODO Rewrite

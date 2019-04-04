@@ -34,3 +34,11 @@ def test_pointer_to_struct_member():
         return a.x, a.y
     """
     assert p_eq(eval(prog), (c_long(1), c_long(1)))
+
+def test_struct_as_parameter():
+    prog = """\
+        def with_struct(a: struct { i: int }) {
+            print(a.i)    
+        }
+    """
+    eval(prog)
