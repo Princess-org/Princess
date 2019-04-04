@@ -207,7 +207,7 @@ class PythonCodeGen(CodeGenerator):
         template = "p_range({from_}, {to}, {step})"
 
     class IdDecl(Renderer):
-        template = "{name}"
+        template = "{identifier}"
     class IdAssign(Renderer):
         template = "{value}.value"
 
