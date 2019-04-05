@@ -59,7 +59,7 @@ class PrincessBuffer(Buffer):
     def __init__(
         self,
         text,
-        whitespace=re.compile('[ ]+'),
+        whitespace=re.compile('[\\t ]+'),
         nameguard=None,
         comments_re=None,
         eol_comments_re=None,
@@ -82,7 +82,7 @@ class PrincessBuffer(Buffer):
 class PrincessParser(Parser):
     def __init__(
         self,
-        whitespace=re.compile('[ ]+'),
+        whitespace=re.compile('[\\t ]+'),
         nameguard=None,
         comments_re=None,
         eol_comments_re=None,
@@ -153,7 +153,7 @@ class PrincessParser(Parser):
 
     @tatsumasu()
     def _n__(self):  # noqa
-        self._pattern('[\\n]*')
+        self._pattern('[\\n\\t ]*')
 
     @tatsumasu()
     def _digit_(self):  # noqa
@@ -517,12 +517,46 @@ class PrincessParser(Parser):
                 self._identifier_()
             self._error('no available options')
 
+    @tatsumasu('StructArg')
+    def _struct_arg_named_(self):  # noqa
+        self._n__()
+        self._identifier_()
+        self.name_last_node('name')
+        self._token('=')
+        self._expression_call_()
+        self.name_last_node('value')
+        self.ast._define(
+            ['name', 'value'],
+            []
+        )
+
+    @tatsumasu('StructArg')
+    def _struct_arg_(self):  # noqa
+        self._n__()
+        self._expression_call_()
+        self.name_last_node('value')
+        self.ast._define(
+            ['value'],
+            []
+        )
+
     @tatsumasu('StructInit')
     def _struct_lit_(self):  # noqa
         self._token('{')
+
+        def sep1():
+            self._token(',')
+
+        def block1():
+            with self._choice():
+                with self._option():
+                    self._struct_arg_named_()
+                with self._option():
+                    self._struct_arg_()
+                self._error('no available options')
+        self._gather(block1, sep1)
+        self.name_last_node('@')
         self._n__()
-        with self._ifnot():
-            self._void()
         self._cut()
         self._token('}')
 
@@ -587,31 +621,6 @@ class PrincessParser(Parser):
             ['body', 'cond', 'else_', 'else_if'],
             []
         )
-
-    @tatsumasu('IdDecl')
-    def _var_iddecl_(self):  # noqa
-        self._n__()
-        self._identifier_()
-        self.name_last_node('name')
-        with self._optional():
-            self._token(':')
-            self._n__()
-            self._type_()
-            self.name_last_node('type')
-        self.ast._define(
-            ['name', 'type'],
-            []
-        )
-
-    @tatsumasu('IdAssign')
-    def _var_idassign_(self):  # noqa
-        self._n__()
-        self._token('(')
-        self._n__()
-        self._expression_()
-        self.name_last_node('@')
-        self._n__()
-        self._token(')')
 
     @tatsumasu('IdDeclStruct')
     def _struct_iddecl_(self):  # noqa
@@ -1792,6 +1801,31 @@ class PrincessParser(Parser):
             []
         )
 
+    @tatsumasu('IdDecl')
+    def _var_iddecl_(self):  # noqa
+        self._n__()
+        self._identifier_()
+        self.name_last_node('name')
+        with self._optional():
+            self._token(':')
+            self._n__()
+            self._type_()
+            self.name_last_node('type')
+        self.ast._define(
+            ['name', 'type'],
+            []
+        )
+
+    @tatsumasu('IdAssign')
+    def _var_idassign_(self):  # noqa
+        self._n__()
+        self._token('(')
+        self._n__()
+        self._expression_()
+        self.name_last_node('@')
+        self._n__()
+        self._token(')')
+
     @tatsumasu()
     def _stmt_vardecl_rhs_(self):  # noqa
         self._n__()
@@ -2493,6 +2527,12 @@ class PrincessSemantics(object):
     def value(self, ast):  # noqa
         return ast
 
+    def struct_arg_named(self, ast):  # noqa
+        return ast
+
+    def struct_arg(self, ast):  # noqa
+        return ast
+
     def struct_lit(self, ast):  # noqa
         return ast
 
@@ -2506,12 +2546,6 @@ class PrincessSemantics(object):
         return ast
 
     def stmt_struct_if(self, ast):  # noqa
-        return ast
-
-    def var_iddecl(self, ast):  # noqa
-        return ast
-
-    def var_idassign(self, ast):  # noqa
         return ast
 
     def struct_iddecl(self, ast):  # noqa
@@ -2758,6 +2792,12 @@ class PrincessSemantics(object):
         return ast
 
     def stmt_import(self, ast):  # noqa
+        return ast
+
+    def var_iddecl(self, ast):  # noqa
+        return ast
+
+    def var_idassign(self, ast):  # noqa
         return ast
 
     def stmt_vardecl_rhs(self, ast):  # noqa

@@ -39,7 +39,7 @@ class Renderer(ModelRenderer):
         pass
 
     def render_fields(self, fields):
-        if not isinstance(self.node.ast, AST):
+        if not ("value" in fields or isinstance(self.node.ast, AST)):
             fields.update(value = self.node.ast)
         return self._render_fields(fields)
 
@@ -86,6 +86,16 @@ class PythonCodeGen(CodeGenerator):
             (p_struct_type([
             {body:1::}
             ]))\
+        """
+
+    class StructArg(Renderer):
+        def _render_fields(self, fields):
+            return "{name} = {value}" if "name" in fields else "{value}" 
+    class StructInit(Renderer):
+        template = """\
+            {type}(
+            {value:1:\\n:%s,}
+            )\
         """
 
     # Operators
@@ -216,7 +226,7 @@ class PythonCodeGen(CodeGenerator):
     class TypeDecl(Renderer):
         template = "{name::, :} = {value::, :} # typedef"
     class Assign(Renderer):
-        template = "{left::, :%s.value} = p_assign(({right::, :},))"
+        template = "p_assign(({left::, :},), ({right::, :},))"
 
     class Body(Renderer):
         def _render_fields(self, fields):

@@ -1,7 +1,8 @@
 from ctypes import *
-from ctypes import _Pointer
+from ctypes import _Pointer, _SimpleCData
 from enum import Enum
 from keyword import iskeyword
+from collections import namedtuple
 from collections.abc import MutableMapping
 from itertools import chain, zip_longest
 from datetime import datetime
@@ -99,23 +100,40 @@ class Modifier(str, Enum):
     Let = "let"
     Type = "type"
 
+def _unpack_value(v):
+    if isinstance(v, _SimpleCData):
+        return v.value
+    else: return v
+
 class StructT(Structure):
     """ Dedicated structure type, don't read what follows unless enough holy water is at hand """
 
-    def __init__(self, *args):
-        super().__init__(*args)
-        base_p = cast(pointer(self), c_void_p).value
-        cls = type(self)
-
-        for name, tpe in self._fields_:
-            offset = getattr(cls, name).offset
-            value = cast(c_void_p(base_p + offset), POINTER(tpe)).contents
-            self.__dict__[name] = value
+    def __init__(self, *args, **kwargs):
+        super().__init__(
+            *(_unpack_value(v) for v in args), 
+            **{k: _unpack_value(v) for k, v in kwargs.items()}
+        )
     
     def __getattribute__(self, name):
-        values = super().__getattribute__("__dict__")
-        if name in values:
-            return values[name]
+        # print("__getattribute__", name, hex(id(self)))
+        try:
+            datatypes = super().__getattribute__("__datatypes")
+
+        except AttributeError:
+            datatypes = {}
+            # loading data types
+            base_p = cast(pointer(self), c_void_p).value
+            
+            cls = type(self)
+            for n, tpe in super().__getattribute__("_fields_"):
+                offset = getattr(cls, n).offset
+                value = cast(c_void_p(base_p + offset), POINTER(tpe)).contents
+                datatypes[n] = value
+
+            super().__setattr__("__datatypes", datatypes)
+
+        if name in datatypes:
+            return datatypes[name]
 
         return super().__getattribute__(name)
 
@@ -241,11 +259,10 @@ class Scope:
     def create_function(self, name, arg_t = None, ret_t = None, typecheck_macro = None, identifier = None):
         return self.create_variable(modifier = Modifier.Const, name = name, tpe = FunctionT(arg_t, ret_t, typecheck_macro), identifier = identifier)
 
-    def create_temporary(self, tpe):
+    def create_anonymous(self):
         name = "__tmp" + str(self.tmpcount)
-        v = self.create_variable(Modifier.Var, name, tpe)
         self.tmpcount += 1
-        return model.Identifier(identifier = v.identifier, type = v.type)
+        return name
 
 class ASTWalker(NodeWalker):
     def __init__(self, scope = None):
@@ -342,11 +359,22 @@ class Compile(ASTWalker):
         return node
 
     def walk_Call(self, node: model.Call):
-        self.walk_children(node)
-
+        self.walk_child(node, node.left)
         assert is_function(node.left.type), "Can only call functions"
+        arg_t = node.left.type.arg_t
+
+        for i, arg in enumerate(node.args):
+            v = arg.value
+            if isinstance(v, model.StructInit):
+                # type inference for struct literal from argument type
+                v.type = getattr(arg_t, arg.name.name) if arg.name else arg_t[i]
+            
+        self.walk_child(node, node.args)
+        
         funct = node.left.type
         node.type = funct.ret_t
+
+        # TODO typecheck arguments
 
         if funct.typecheck_macro:
             t = funct.typecheck_macro(self.scope, *node.args)
@@ -460,14 +488,48 @@ class Compile(ASTWalker):
 
         assert len(node.name) == len(node.value) == 1, "Parallel type assignment not implemented" # TODO
 
-        name = node.name[0].name
+        name = node.name[0]
         tpe = self.scope.type_lookup(node.value[0])
-        self.scope.create_type(name, tpe)
+        t = self.scope.create_type(name.name, tpe)
+        name.identifier = t.identifier
 
         return node
 
+    def __infer_struct_types(self, node):
+        if not node.right: return
+
+        i = 0
+        def walk_right(r):
+            nonlocal i
+            if isinstance(r, model.StructInit):
+                r.type = node.left[i].type
+            r = self.walk(r)
+            i += len(r.type.ret_t) if is_function(r.type) else 1
+            return r
+
+        node.right[:] = [walk_right(r) for r in node.right]
+
     def walk_VarDecl(self, node: model.VarDecl):
-        self.walk_children(node)
+        self.walk_child(node, node.left, node.keyword, node.share)
+
+        anon_types = ()
+        for l in node.left:
+            if isinstance(l.type, model.Struct):
+                # anonymous struct
+                name = self.scope.create_anonymous()
+                anon_t = self.walk(
+                    ast.TypeDecl(
+                        name = [ast.Identifier(name)],
+                        value = [l.type]
+                    )
+                )
+
+                anon_types += (anon_t,)
+                l.type = self.scope.type_lookup(anon_t.name[0])
+            else:
+                l.type = self.scope.type_lookup(l.type)
+
+        self.__infer_struct_types(node)
 
         export = node.share & ast.Share.Export
         modifier = Modifier(node.keyword)
@@ -487,7 +549,7 @@ class Compile(ASTWalker):
         for l, r in zip_longest(node.left, types_r):
             if isinstance(l, model.IdDecl):
                 name = get_name(l.name)
-                tpe = self.scope.type_lookup(l.type)
+                tpe = l.type
 
                 if r is not None:
                     tpe = typecheck(tpe, r)
@@ -509,10 +571,11 @@ class Compile(ASTWalker):
 
         node.type = types_r_casted
 
-        return node
+        return anon_types + (node,)
 
     def walk_Assign(self, node: model.Assign):
-        self.walk_children(node)
+        self.walk_child(node, node.left)
+        self.__infer_struct_types(node)
 
         assert isinstance(node.parent, (model.Body, model.Program)), "Nested assignments disallowed" # TODO
 
@@ -540,13 +603,14 @@ class Compile(ASTWalker):
 
     def walk_MemberAccess(self, node: model.MemberAccess):
         self.walk_children(node)
-        print(node)
+
         tpe_l = node.left.type
         tpe_r = node.right.type
+
         if is_struct(tpe_l):
-            node.right.type = dict(tpe_l._fields_)[node.right.name]
+            node.type = dict(tpe_l._fields_)[node.right.name]
         elif is_function(tpe_r):
-            print(node.parent)
+            assert False, "Universal call syntax not implemented"
         else:
             assert False, "Member access on incompatible type"
         
@@ -556,10 +620,12 @@ class Compile(ASTWalker):
     def walk_Def(self, node: model.Def):
         self.walk_child(node, node.args, node.returns, node.name)
 
+        Arguments = namedtuple("Arguments", (arg.name.name for arg in node.args or []))
+
         # TODO Check return arguments
         f = self.scope.create_function(
             name = get_name(node.name), 
-            arg_t = tuple(self.scope.type_lookup(arg.type) for arg in node.args or []),
+            arg_t = Arguments(*(self.scope.type_lookup(arg.type) for arg in node.args or [])),
             ret_t = tuple(self.scope.type_lookup(r) for r in node.returns or [])
         )
         node.identifier = f.identifier # TODO Maybe redundant

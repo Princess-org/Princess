@@ -17,6 +17,8 @@ libc.malloc.argtypes = [c_size_t]
 libc.malloc.restype = c_void_p
 libc.free.argtypes = [c_void_p]
 libc.free.restype = None
+libc.memcpy.argtypes = [c_void_p, c_void_p, c_size_t]
+libc.memcpy.restype = None
 
 class Environment:
     def __init__(self):
@@ -38,9 +40,9 @@ def p_string_value(v):
         return str(v)
 
 def p_struct_type(fields):
-    class StructInstance(compiler.StructT):
+    class StructType(compiler.StructT):
         _fields_ = fields
-    return StructInstance
+    return StructType
 
 def p_range(_from, to, step):
     _from = _from.value
@@ -69,6 +71,13 @@ def p_cast(_from, to):
 def p_copy(v, tpe):
     if compiler.is_pointer(tpe):
         return cast(v, tpe)
+    elif compiler.is_struct(tpe):
+        if v:
+            copy = tpe()
+            assert sizeof(v) == sizeof(copy) # Sanity check
+            libc.memcpy(cast(pointer(copy), c_void_p), cast(pointer(v), c_void_p), sizeof(v))
+            return copy
+        return tpe()
     else:
         return tpe(v.value) if v else tpe()
 
@@ -84,11 +93,13 @@ def p_declare(values, types):
     else:
         return p_copy(values, types) if types else values.value
 
-def p_assign(values):
-    if isinstance(values, tuple):
-        return p_return(tuple(v.value for v in values))
-    else:
-        return values.value
+def p_assign(left, values):
+    for l, v in zip(left, values):
+        if isinstance(l, Structure):
+            assert sizeof(l) == sizeof(v) # Sanity check
+            libc.memcpy(cast(pointer(l), c_void_p), cast(pointer(v), c_void_p), sizeof(v))
+        else:
+            l.value = v.value
 
 def p_eq(l, r):
     if isinstance(l, tuple):

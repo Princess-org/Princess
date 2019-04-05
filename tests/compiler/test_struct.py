@@ -16,6 +16,24 @@ def test_struct_basic():
     """
     assert p_eq(eval(prog), (c_long(20), c_long(30)))
 
+def test_struct_initializer():
+    prog = """\
+        type S = struct { v: int; v2: double }
+        let s: S = {20, -2.5}
+        return s.v, s.v2
+    """
+    assert p_eq(eval(prog), (c_long(20), c_double(-2.5)))
+
+def test_struct_pointer():
+    prog = """\
+        let a: struct { v: int } = {1}
+        let b = *a
+        a = {5 + a.v}
+
+        return (@b).v
+    """
+    assert p_eq(eval(prog), (c_long(6)))
+
 def test_pointer_to_struct_member():
     prog = """\
         type Point = struct {
@@ -35,10 +53,39 @@ def test_pointer_to_struct_member():
     """
     assert p_eq(eval(prog), (c_long(1), c_long(1)))
 
-def test_struct_as_parameter():
+def test_nested_struct():
     prog = """\
-        def with_struct(a: struct { i: int }) {
-            print(a.i)    
+        // Using a builtin name
+        type Structure = struct {
+            a: int
+            b: struct {
+                c: int
+                d: int
+            }
         }
+        var s: Structure
+        s.b.c = 20
+        return s.b.c
     """
-    eval(prog)
+    assert p_eq(eval(prog), c_long(20))
+
+def test_struct_as_parameter():
+    # TODO anonymous struct as function parameter
+    prog = """\
+        type T = struct { i: int }
+        def with_struct(a: T) {
+            return a.i   
+        }
+
+        return with_struct({1})
+    """
+    assert p_eq(eval(prog), c_long(1))
+
+def test_struct_reassignment():
+    prog = """\
+        type T = struct { v: int }
+        var t: T = {0}
+        t = {5}
+        return t.v
+    """
+    assert p_eq(eval(prog), c_long(5))

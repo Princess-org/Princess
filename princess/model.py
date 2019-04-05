@@ -97,6 +97,11 @@ class Array(Literal):
     pass
 
 
+class StructArg(ModelBase):
+    name = None
+    value = None
+
+
 class StructInit(ModelBase):
     pass
 
@@ -119,15 +124,6 @@ class If(Statement):
     cond = None
     else_ = None
     else_if = None
-
-
-class IdDecl(ModelBase):
-    name = None
-    type = None
-
-
-class IdAssign(ModelBase):
-    pass
 
 
 class IdDeclStruct(ModelBase):
@@ -354,6 +350,15 @@ class ImportModule(ModelBase):
 class Import(ModelBase):
     modules = None
     share = None
+
+
+class IdDecl(ModelBase):
+    name = None
+    type = None
+
+
+class IdAssign(ModelBase):
+    pass
 
 
 class VarDecl(Statement):

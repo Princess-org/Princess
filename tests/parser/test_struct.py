@@ -103,6 +103,35 @@ def test_struct_if():
         )
     )
 
+def test_struct_literal():
+    """ struct literal inside call and assignment """
+    assert (parse("call({1, foo = 2})") == Program(
+        Call(
+            args = [CallArg(
+                value = StructInit(
+                    StructArg(value = Integer(1)),
+                    StructArg(
+                        name = Identifier("foo"),
+                        value = Integer(2)
+                    )
+                )
+            )],
+            left = Identifier("call")
+        )))
+
+    assert (parse("a = {1, foo = 2}") == Program(
+        Assign(
+            left = [Identifier("a")],
+            right = [StructInit(
+                 StructArg(value = Integer(1)),
+                StructArg(
+                    name = Identifier("foo"),
+                    value = Integer(2)
+                )
+            )]
+        )
+    ))
+
 def test_typedef():
     assert parse("""\
         type empty = struct {}
@@ -112,9 +141,3 @@ def test_typedef():
             value = [Struct(body = StructBody(None))]
         )
     )
-
-def test_typedef_bug():
-    parse("""\
-        type a = struct {}
-        a
-    """)
