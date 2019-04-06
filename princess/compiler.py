@@ -14,6 +14,9 @@ from tatsu.ast import AST
 from princess import model, ast, env
 from princess.node import Node
 
+class CompileError(Exception):
+    pass
+
 # Literal types
 class INT_T(c_long): pass
 class FLOAT_T(c_double): pass
@@ -269,6 +272,14 @@ class ASTWalker(NodeWalker):
         self.scope = scope # type: Scope
         self.function_stack = []
         self.current_function = None
+
+    def walk(self, node, *args, **kwargs):
+        try:
+            return super().walk(node, *args, **kwargs)
+        except AssertionError as e: # FIXME Use proper exceptions here
+            info = node.parseinfo
+            lexer = info.buffer
+            raise CompileError(lexer.format_error(str(e), info))
 
     def enter_scope(self, node):
         self.scope = self.scope.enter_scope(node)

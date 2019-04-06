@@ -2,6 +2,7 @@ from ctypes import *
 from tests import eval_expr, eval, skip
 from pytest import raises
 from princess.env import p_eq
+from princess.compiler import CompileError
 
 def test_let_simple():
     prog = """\
@@ -64,7 +65,7 @@ def test_types():
 def test_declare_no_assign():
     eval("var a: int")
 
-    with raises(AssertionError, match = "Couldn't infer type for var"):
+    with raises(CompileError, match = "Couldn't infer type for var"):
         eval("var a")
-    with raises(AssertionError, match = "Unbalanced assignment for let"):
+    with raises(CompileError, match = "Unbalanced assignment for let"):
         eval("let b: int")

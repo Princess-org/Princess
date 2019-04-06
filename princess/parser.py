@@ -88,7 +88,7 @@ class PrincessParser(Parser):
         eol_comments_re=None,
         ignorecase=None,
         left_recursion=True,
-        parseinfo=False,
+        parseinfo=True,
         keywords=None,
         namechars='_',
         buffer_class=PrincessBuffer,
@@ -475,11 +475,12 @@ class PrincessParser(Parser):
     def _array_element_(self):  # noqa
         self._expression_()
         self.name_last_node('@')
+        self._n__()
 
     @tatsumasu('Array')
     def _array_lit_(self):  # noqa
         self._token('[')
-        self._cut()
+        self._n__()
 
         def sep1():
             self._token(',')
@@ -488,6 +489,7 @@ class PrincessParser(Parser):
             self._array_element_()
         self._gather(block1, sep1)
         self.name_last_node('@')
+        self._cut()
         self._token(']')
 
     @tatsumasu()
@@ -972,9 +974,11 @@ class PrincessParser(Parser):
         self._expr_10_()
         self.name_last_node('left')
         self._token('[')
-        self._cut()
+        self._n__()
         self._expression_()
         self.name_last_node('right')
+        self._n__()
+        self._cut()
         self._token(']')
         self.ast._define(
             ['left', 'right'],
