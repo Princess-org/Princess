@@ -557,10 +557,44 @@ class PrincessParser(Parser):
                     self._struct_arg_()
                 self._error('no available options')
         self._gather(block1, sep1)
-        self.name_last_node('@')
+        self.name_last_node('args')
         self._n__()
         self._cut()
         self._token('}')
+        self.ast._define(
+            ['args'],
+            []
+        )
+
+    @tatsumasu('StructInit')
+    def _struct_lit_typed_(self):  # noqa
+        self._token('{')
+
+        def sep1():
+            self._token(',')
+
+        def block1():
+            with self._choice():
+                with self._option():
+                    self._struct_arg_named_()
+                with self._option():
+                    self._struct_arg_()
+                self._error('no available options')
+        self._gather(block1, sep1)
+        self.name_last_node('args')
+        self._n__()
+        self._cut()
+        self._token('}')
+
+        with self._optional():
+            self._token('!')
+            self._cut()
+            self._type_()
+            self.name_last_node('type')
+        self.ast._define(
+            ['args', 'type'],
+            []
+        )
 
     @tatsumasu('StructuralT')
     def _type_structural_(self):  # noqa
@@ -1452,7 +1486,7 @@ class PrincessParser(Parser):
         with self._group():
             with self._choice():
                 with self._option():
-                    self._struct_lit_()
+                    self._struct_lit_typed_()
                 with self._option():
                     self._expr_1_()
                 self._error('no available options')
@@ -1754,7 +1788,7 @@ class PrincessParser(Parser):
     def _expression_call_(self):  # noqa
         with self._choice():
             with self._option():
-                self._struct_lit_()
+                self._struct_lit_typed_()
             with self._option():
                 self._expr_0c_()
             self._error('no available options')
@@ -1836,7 +1870,7 @@ class PrincessParser(Parser):
         with self._group():
             with self._choice():
                 with self._option():
-                    self._struct_lit_()
+                    self._struct_lit_typed_()
                 with self._option():
                     self._expression_()
                 self._error('no available options')
@@ -2538,6 +2572,9 @@ class PrincessSemantics(object):
         return ast
 
     def struct_lit(self, ast):  # noqa
+        return ast
+
+    def struct_lit_typed(self, ast):  # noqa
         return ast
 
     def type_structural(self, ast):  # noqa

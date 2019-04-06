@@ -26,8 +26,7 @@ Break = Break()
 Null = Null()
 
 __value_types(String, Char, Integer, Float, Boolean, Goto, Unsigned, Word, IdAssign)
-__list_types(Array, Body, Identifier, Compare, Program, StructBody, StructInit, Return)
-# scoped_t = [If, Else, ElseIf, For, While, Do, Def] # TODO
+__list_types(Array, Body, Identifier, Compare, Program, StructBody, Return)
 
 Do = (lambda *args: model.Do(ast = Body(*args)))
 

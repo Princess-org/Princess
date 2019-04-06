@@ -33,7 +33,7 @@ def test_comments():
     assert lex(ip) == op
 
 
-@skip # Figure out how to test this properly
+@skip # TODO: Figure out how to test this properly
 def test_error_messages():
     prog = """
         a: int = 5

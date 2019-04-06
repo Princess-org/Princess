@@ -24,6 +24,16 @@ def test_struct_initializer():
     """
     assert p_eq(eval(prog), (c_long(20), c_double(-2.5)))
 
+def test_struct_initializer_cast():
+    prog = """\
+        type S = struct { v: int }
+        let s = {1} !S
+        s = {1 + s.v} !S
+        let b = ({5}!S).v
+        return s.v, b
+    """
+    assert p_eq(eval(prog), (c_long(2), c_long(5)))
+
 def test_struct_pointer():
     prog = """\
         let a: struct { v: int } = {1}

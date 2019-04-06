@@ -94,7 +94,7 @@ class PythonCodeGen(CodeGenerator):
     class StructInit(Renderer):
         template = """\
             {type}(
-            {value:1:\\n:%s,}
+            {args:1:\\n:%s,}
             )\
         """
 

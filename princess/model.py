@@ -103,7 +103,7 @@ class StructArg(ModelBase):
 
 
 class StructInit(ModelBase):
-    pass
+    args = None
 
 
 class StructuralT(ModelBase):

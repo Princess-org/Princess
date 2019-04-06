@@ -109,11 +109,13 @@ def test_struct_literal():
         Call(
             args = [CallArg(
                 value = StructInit(
-                    StructArg(value = Integer(1)),
-                    StructArg(
-                        name = Identifier("foo"),
-                        value = Integer(2)
-                    )
+                    args = [
+                        StructArg(value = Integer(1)),
+                        StructArg(
+                            name = Identifier("foo"),
+                            value = Integer(2)
+                        )
+                    ]
                 )
             )],
             left = Identifier("call")
@@ -123,11 +125,13 @@ def test_struct_literal():
         Assign(
             left = [Identifier("a")],
             right = [StructInit(
-                 StructArg(value = Integer(1)),
-                StructArg(
-                    name = Identifier("foo"),
-                    value = Integer(2)
-                )
+                args = [
+                    StructArg(value = Integer(1)),
+                    StructArg(
+                        name = Identifier("foo"),
+                        value = Integer(2)
+                    )
+                ]
             )]
         )
     ))

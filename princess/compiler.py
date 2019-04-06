@@ -342,6 +342,14 @@ class Compile(ASTWalker):
         node.type = None
         return node
 
+    def walk_StructInit(self, node: model.StructInit):
+        self.walk_children(node)
+
+        if node.type and not isinstance(node.type, type):
+            node.type = self.scope.type_lookup(node.type)
+            
+        return node
+
     def walk_Array(self, node: model.Array):
         self.walk_children(node)
 
@@ -376,7 +384,7 @@ class Compile(ASTWalker):
 
         for i, arg in enumerate(node.args):
             v = arg.value
-            if isinstance(v, model.StructInit):
+            if isinstance(v, model.StructInit) and not v.type:
                 # type inference for struct literal from argument type
                 v.type = getattr(arg_t, arg.name.name) if arg.name else arg_t[i]
             
@@ -399,8 +407,9 @@ class Compile(ASTWalker):
         # Simplify cast if casting a literal
         tpe = self.scope.type_lookup(node.right)
 
-        if isinstance(node.left, (model.Integer, model.Float)):
+        if isinstance(node.left, (model.Integer, model.Float, model.StructInit)):
             node = node.left
+            
         node.type = tpe
         return node
 
@@ -512,7 +521,7 @@ class Compile(ASTWalker):
         i = 0
         def walk_right(r):
             nonlocal i
-            if isinstance(r, model.StructInit):
+            if isinstance(r, model.StructInit) and not r.type:
                 r.type = node.left[i].type
             r = self.walk(r)
             i += len(r.type.ret_t) if is_function(r.type) else 1
