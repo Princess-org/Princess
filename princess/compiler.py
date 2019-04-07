@@ -213,7 +213,7 @@ class Scope:
             return POINTER(self.type_lookup(t.type))
         elif isinstance(t, model.Struct):
             fields = [
-                (field.name.name, self.type_lookup(field.type)) for field in t.body.ast # TODO inference
+                (field.name.name, self.type_lookup(field.type)) for field in filter(None, t.body.ast) # TODO inference
             ] 
             return env.p_struct_type(fields)
         
@@ -476,9 +476,29 @@ class Compile(ASTWalker):
 
     def walk_Ptr(self, node: model.Ptr):
         self.walk_children(node)
+        
+        if isinstance(node.right, model.Identifier) and node.right.modifier == Modifier.Type:
+            return self.walk(ast.PtrT(type = node.right))
 
         node.type = POINTER(node.right.type)
         return node
+
+    def walk_SizeOf(self, node: model.SizeOf):
+        self.walk_children(node)
+        
+        if isinstance(node.ast, model.Type):
+            tpe = self.scope.type_lookup(node.ast)
+        elif isinstance(node.ast, model.Identifier):
+            if node.ast.modifier == Modifier.Type:
+                tpe = self.scope.type_lookup(node.ast)
+            else: tpe = node.ast.type
+        else:
+            tpe = node.ast.type
+
+        size = ast.Integer(sizeof(tpe))
+        size.type = c_size_t   
+        
+        return size
 
     def walk_Not(self, node: model.Not):
         self.walk_children(node)

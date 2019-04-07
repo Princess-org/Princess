@@ -1,5 +1,5 @@
 from ctypes import *
-from tests import eval_expr, eval
+from tests import eval_expr, eval, skip
 from princess.env import p_eq
 
 def test_arithmetic():
@@ -31,3 +31,25 @@ def test_sign_conv():
 def test_array_access():
     assert p_eq(eval_expr("[1, 2, 3, 4][1]"), c_long(2))
     assert p_eq(eval_expr("[1, 1.5, -3][2]"), c_double(-3))
+
+def test_size_of():
+    assert p_eq(eval_expr("size_of int"),           c_size_t(sizeof(c_long)))  
+    assert p_eq(eval_expr("size_of *int"),          c_size_t(sizeof(POINTER(c_long))))
+    assert p_eq(eval_expr("size_of type struct { }"), c_size_t(0)) # TODO This should be 1, insert dummy field
+    assert p_eq(eval_expr("size_of 1 + 1"),         c_size_t(sizeof(c_long)))
+    assert p_eq(eval_expr("size_of (1)"),           c_size_t(sizeof(c_long)))
+
+@skip
+def test_size_of_complex():
+    prog = """\
+        type T = struct {
+            a: int
+            b: byte
+        }
+        var arr: [5 T]
+
+        return size_of T, size_of arr[0], size_of arr
+    """
+
+    size_of_t = sizeof(c_long) + sizeof(c_byte)
+    assert p_eq(eval(prog), (c_size_t(size_of_t), c_size_t(size_of_t), c_size_t(5 * size_of_t)))

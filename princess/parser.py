@@ -1576,7 +1576,7 @@ class PrincessParser(Parser):
         self._token('size_of')
         self._n__()
         self._cut()
-        self._expression_()
+        self._expression_no_assign_()
         self.name_last_node('@')
 
     @tatsumasu('Range')
@@ -1812,7 +1812,7 @@ class PrincessParser(Parser):
             self._error('no available options')
 
     @tatsumasu()
-    def _expr_0c_(self):  # noqa
+    def _expression_no_assign_(self):  # noqa
         with self._choice():
             with self._option():
                 self._expr_rangec_()
@@ -1826,7 +1826,7 @@ class PrincessParser(Parser):
             with self._option():
                 self._struct_lit_typed_()
             with self._option():
-                self._expr_0c_()
+                self._expression_no_assign_()
             self._error('no available options')
 
     @tatsumasu('Share')
@@ -2135,7 +2135,7 @@ class PrincessParser(Parser):
     @tatsumasu()
     def _ret_arg_(self):  # noqa
         self._n__()
-        self._expression_()
+        self._expression_no_assign_()
         self.name_last_node('@')
 
     @tatsumasu('Return')
@@ -2865,7 +2865,7 @@ class PrincessSemantics(object):
     def expr_1c(self, ast):  # noqa
         return ast
 
-    def expr_0c(self, ast):  # noqa
+    def expression_no_assign(self, ast):  # noqa
         return ast
 
     def expression_call(self, ast):  # noqa
