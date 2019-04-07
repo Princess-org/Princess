@@ -332,6 +332,10 @@ class Do(Expression):
     pass
 
 
+class SizeOf(Expression):
+    pass
+
+
 class Range(Expression):
     from_ = None
     step = None

@@ -45,6 +45,7 @@ KEYWORDS = {
     'null',
     'or',
     'return',
+    'size_of',
     'struct',
     'true',
     'type',
@@ -908,7 +909,7 @@ class PrincessParser(Parser):
         self._token(')')
 
     @tatsumasu()
-    def _type_2_(self):  # noqa
+    def _type_3_(self):  # noqa
         with self._choice():
             with self._option():
                 self._token('(')
@@ -918,10 +919,21 @@ class PrincessParser(Parser):
             with self._option():
                 self._type_word_()
             with self._option():
-                self._expr_10_()
+                self._identifier_()
             self._error('no available options')
 
     @tatsumasu()
+    @leftrec
+    def _type_2_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._expr_type_call_()
+            with self._option():
+                self._type_3_()
+            self._error('no available options')
+
+    @tatsumasu()
+    @nomemo
     def _type_1_(self):  # noqa
         with self._choice():
             with self._option():
@@ -994,6 +1006,18 @@ class PrincessParser(Parser):
     @nomemo
     def _expr_call_(self):  # noqa
         self._expr_10_()
+        self.name_last_node('left')
+        self._call_args_()
+        self.name_last_node('args')
+        self.ast._define(
+            ['args', 'left'],
+            []
+        )
+
+    @tatsumasu('Call')
+    @nomemo
+    def _expr_type_call_(self):  # noqa
+        self._type_2_()
         self.name_last_node('left')
         self._call_args_()
         self.name_last_node('args')
@@ -1547,6 +1571,14 @@ class PrincessParser(Parser):
         self._code_body_()
         self.name_last_node('@')
 
+    @tatsumasu('SizeOf')
+    def _expr_size_of_(self):  # noqa
+        self._token('size_of')
+        self._n__()
+        self._cut()
+        self._expression_()
+        self.name_last_node('@')
+
     @tatsumasu('Range')
     @nomemo
     def _expr_range_(self):  # noqa
@@ -1740,6 +1772,8 @@ class PrincessParser(Parser):
             with self._option():
                 self._expr_do_()
             with self._option():
+                self._expr_size_of_()
+            with self._option():
                 self._expr_assign_op_()
             with self._option():
                 self._expr_assign_()
@@ -1769,6 +1803,8 @@ class PrincessParser(Parser):
         with self._choice():
             with self._option():
                 self._expr_do_()
+            with self._option():
+                self._expr_size_of_()
             with self._option():
                 self._expr_if_()
             with self._option():
@@ -2634,6 +2670,9 @@ class PrincessSemantics(object):
     def type_word(self, ast):  # noqa
         return ast
 
+    def type_3(self, ast):  # noqa
+        return ast
+
     def type_2(self, ast):  # noqa
         return ast
 
@@ -2653,6 +2692,9 @@ class PrincessSemantics(object):
         return ast
 
     def expr_call(self, ast):  # noqa
+        return ast
+
+    def expr_type_call(self, ast):  # noqa
         return ast
 
     def expr_array_index(self, ast):  # noqa
@@ -2770,6 +2812,9 @@ class PrincessSemantics(object):
         return ast
 
     def expr_do(self, ast):  # noqa
+        return ast
+
+    def expr_size_of(self, ast):  # noqa
         return ast
 
     def expr_range(self, ast):  # noqa
