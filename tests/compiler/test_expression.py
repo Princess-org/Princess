@@ -35,12 +35,14 @@ def test_array_access():
 def test_size_of():
     assert p_eq(eval_expr("size_of int"),           c_size_t(sizeof(c_long)))  
     assert p_eq(eval_expr("size_of *int"),          c_size_t(sizeof(POINTER(c_long))))
-    assert p_eq(eval_expr("size_of type struct { }"), c_size_t(0)) # TODO This should be 1, insert dummy field
+    assert p_eq(eval_expr("size_of type struct { }"), c_size_t(0)) # TODO This should be 1, insert dummy field, not sure why type is required here
     assert p_eq(eval_expr("size_of 1 + 1"),         c_size_t(sizeof(c_long)))
     assert p_eq(eval_expr("size_of (1)"),           c_size_t(sizeof(c_long)))
 
-@skip
 def test_size_of_complex():
+    class T(Structure):
+        _fields_ = [("a", c_long), ("b", c_byte)]
+    
     prog = """\
         type T = struct {
             a: int
@@ -50,6 +52,7 @@ def test_size_of_complex():
 
         return size_of T, size_of arr[0], size_of arr
     """
-
-    size_of_t = sizeof(c_long) + sizeof(c_byte)
+    
+    size_of_t = sizeof(T)
+    print(size_of_t)
     assert p_eq(eval(prog), (c_size_t(size_of_t), c_size_t(size_of_t), c_size_t(5 * size_of_t)))

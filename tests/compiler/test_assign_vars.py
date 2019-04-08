@@ -65,7 +65,7 @@ def test_types():
 def test_declare_no_assign():
     eval("var a: int")
 
-    with raises(CompileError, match = "Couldn't infer type for var"):
+    with raises(CompileError, match = "Couldn't infer type for var") as e:
         eval("var a")
-    with raises(CompileError, match = "Unbalanced assignment for let"):
+    with raises(CompileError, match = "Unbalanced assignment for let") as e:
         eval("let b: int")

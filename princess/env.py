@@ -44,6 +44,11 @@ def p_struct_type(fields):
         _fields_ = fields
     return StructType
 
+def p_union_type(fields):
+    class UnionType(compiler.UnionT):
+        _fields_ =  fields
+    return UnionType
+
 def p_range(_from, to, step):
     _from = _from.value
     to = to.value + 1

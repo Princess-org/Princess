@@ -14,8 +14,16 @@ from tatsu.ast import AST
 from princess import model, ast, env
 from princess.node import Node
 
-class CompileError(Exception):
-    pass
+def error(s, node = None):
+    raise CompileAssert(s, node)
+def assert_error(cond, s, node = None):
+    if not cond: raise CompileAssert(s, node)
+
+class CompileAssert(Exception):
+    def __init__(self, message, node):
+        super().__init__(message)
+        self.node = node
+class CompileError(Exception): pass
 
 # Literal types
 class INT_T(c_long): pass
@@ -36,7 +44,7 @@ def is_array(t):
 def is_function(t):
     return isinstance(t, FunctionT)
 def is_struct(t):
-    return issubclass(t, StructT)
+    return issubclass(t, RecordT)
 
 def to_signed(t):
     if t in unsigned_t:
@@ -65,7 +73,7 @@ def common_type(a, b, sign_convert = False):
     elif a in int_t and b in float_t:
         result = b
     else: # Sanity check TODO: Raise proper exception
-        assert False, "Incompatible types %s %s" % (a, b)
+        error("Incompatible types %s %s" % (a, b))
 
     return result
 
@@ -73,7 +81,7 @@ def get_name(ident: model.Identifier):
     if hasattr(ident, "name"):
         return ident.name
     
-    assert len(ident.ast) == 1, "scope resolution (::) not implemented"
+    assert_error(len(ident.ast) == 1, "scope resolution (::) not implemented")
     return ident.ast[0]
 
 
@@ -89,7 +97,7 @@ def typecheck(t, r):
         r = t
     # FIXME Ensure size limit, float <> int !!
 
-    assert t is r, "incompatible types"
+    assert_error(t is r, "incompatible types: %s and %s" % (t, r))
 
     return r
 
@@ -108,7 +116,7 @@ def _unpack_value(v):
         return v.value
     else: return v
 
-class StructT(Structure):
+class RecordT:
     """ Dedicated structure type, don't read what follows unless enough holy water is at hand """
 
     def __init__(self, *args, **kwargs):
@@ -116,6 +124,13 @@ class StructT(Structure):
             *(_unpack_value(v) for v in args), 
             **{k: _unpack_value(v) for k, v in kwargs.items()}
         )
+
+    @classmethod
+    def get_argument_type(cls, name_or_id):
+        if isinstance(name_or_id, int):
+            return cls._fields_[name_or_id][1]
+        else:
+            return next(filter(lambda f: f[0] == name_or_id, cls._fields_))[1]
     
     def __getattribute__(self, name):
         # print("__getattribute__", name, hex(id(self)))
@@ -140,6 +155,9 @@ class StructT(Structure):
 
         return super().__getattribute__(name)
 
+class UnionT(Union, RecordT): pass
+class StructT(Structure, RecordT): pass
+    
 class FunctionT:
     """ Dedicated function type """
 
@@ -215,14 +233,25 @@ class Scope:
             fields = [
                 (field.name.name, self.type_lookup(field.type)) for field in filter(None, t.body.ast) # TODO inference
             ] 
-            return env.p_struct_type(fields)
+            if "#union" in t.pragma:
+                return env.p_union_type(fields) 
+            else: return env.p_struct_type(fields)
+        elif isinstance(t, model.ArrayT):
+            assert_error(t.n, "Dynamic arrays not implemented")
+            n = t.n.value
+            tpe = self.type_lookup(t.type)
+            return tpe * n
         
-        assert False, "Type not implemented" # TODO Arrays, etc
+        error("Type not implemented")
 
 
     def get_const_value(self, v):
         if isinstance(v, model.Identifier):
-            value = self[v.name]
+            try:
+                value = self[v.name]
+            except KeyError:
+                error("Unknown identifier", v)
+
             assert (value.modifier == Modifier.Const 
                 or value.modifier == Modifier.Type)
             v = value.value
@@ -241,7 +270,7 @@ class Scope:
         return self.parent
 
     def create_variable(self, modifier: Modifier, name: str, tpe, export = False, value = None, identifier = None):
-        assert name not in self.dir, "Redeclaration of %s" % name
+        assert_error(name not in self.dir, "Redeclaration of %s" % name)
         
         v = Value(
             modifier = modifier,
@@ -274,10 +303,12 @@ class ASTWalker(NodeWalker):
         self.current_function = None
 
     def walk(self, node, *args, **kwargs):
+        old_node = node
         try:
             return super().walk(node, *args, **kwargs)
-        except AssertionError as e: # FIXME Use proper exceptions here
-            info = node.parseinfo
+        except CompileAssert as e:
+            node = e.node or node
+            info = node.parseinfo or old_node.parseinfo
             lexer = info.buffer
             raise CompileError(lexer.format_error(str(e), info))
 
@@ -347,6 +378,21 @@ class Compile(ASTWalker):
 
         if node.type and not isinstance(node.type, type):
             node.type = self.scope.type_lookup(node.type)
+
+        # Infer types for arguments TODO: Also do this for calls
+        assert node.type is not None
+        
+        at_named_args = False
+        for i, arg in enumerate(node.args):
+            if arg.name:
+                at_named_args = True
+            else: assert_error(not at_named_args, "No positional arguments allowed after named parameters")
+
+            if at_named_args:
+                tpe = node.type.get_argument_type(arg.name.name)
+            else: tpe = node.type.get_argument_type(i)
+
+            arg.value.type = typecheck(tpe, arg.value.type)
             
         return node
 
@@ -371,7 +417,7 @@ class Compile(ASTWalker):
     def walk_ArrayIndex(self, node: model.ArrayIndex):
         self.walk_children(node)
 
-        assert is_array(node.left.type), "Can only index arrays"
+        assert_error(is_array(node.left.type), "Can only index arrays")
         node.array_type = node.left.type
         node.type = node.left.type._type_
 
@@ -379,7 +425,7 @@ class Compile(ASTWalker):
 
     def walk_Call(self, node: model.Call):
         self.walk_child(node, node.left)
-        assert is_function(node.left.type), "Can only call functions"
+        assert_error(is_function(node.left.type), "Can only call functions")
         arg_t = node.left.type.arg_t
 
         for i, arg in enumerate(node.args):
@@ -402,14 +448,18 @@ class Compile(ASTWalker):
         return node
 
     def walk_Cast(self, node: model.Cast):
-        self.walk_children(node)
+        self.walk_child(node, node.right)
 
         # Simplify cast if casting a literal
         tpe = self.scope.type_lookup(node.right)
 
         if isinstance(node.left, (model.Integer, model.Float, model.StructInit)):
-            node = node.left
-            
+            node.left.type = tpe
+            if isinstance(node.left, model.StructInit):
+                return self.walk(node.left)
+            return node.left
+
+        self.walk_child(node, node.left)
         node.type = tpe
         return node
 
@@ -450,7 +500,7 @@ class Compile(ASTWalker):
 
             return node # No conversion
         elif isinstance(node, (model.And, model.Or)):
-            assert node.right.type is node.left.type is c_bool, "incompatible type"
+            assert_error(node.right.type is node.left.type is c_bool, "incompatible type")
             node.type = c_bool
         else:
             # Arithmetic
@@ -504,7 +554,7 @@ class Compile(ASTWalker):
         self.walk_children(node)
 
         node.type = c_bool
-        assert node.right.type is c_bool, "'not' on incompatible type"
+        assert_error(node.right.type is c_bool, "'not' on incompatible type")
         return node
 
     def walk_Compare(self, node: model.Compare):
@@ -520,13 +570,13 @@ class Compile(ASTWalker):
             if isinstance(l, model.IdDecl):
                 v = self.scope.create_variable(modifier = node.keyword, name = get_name(l.name), tpe = c_long)
                 l.identifier = v.identifier
-        assert len(node.right) == 1 and isinstance(node.right[0], model.Range), "For loop only supports iterating over a range" 
+        assert_error(len(node.right) == 1 and isinstance(node.right[0], model.Range), "For loop only supports iterating over a range" )
         return node
 
     def walk_TypeDecl(self, node: model.TypeDecl):
         self.walk_children(node)
 
-        assert len(node.name) == len(node.value) == 1, "Parallel type assignment not implemented" # TODO
+        assert_error(len(node.name) == len(node.value) == 1, "Parallel type assignment not implemented") # TODO
 
         name = node.name[0]
         tpe = self.scope.type_lookup(node.value[0])
@@ -573,7 +623,7 @@ class Compile(ASTWalker):
 
         export = node.share & ast.Share.Export
         modifier = Modifier(node.keyword)
-        assert modifier is not Modifier.Const, "const not implemented"
+        assert_error(modifier is not Modifier.Const, "const not implemented")
 
         if node.right is None: 
             node.right = []
@@ -581,9 +631,9 @@ class Compile(ASTWalker):
         types_r = flatten_type(r.type for r in node.right)
 
         if modifier is Modifier.Let:
-            assert len(types_r) == len(node.left), "Unbalanced assignment for let"
+            assert_error(len(types_r) == len(node.left), "Unbalanced assignment for let")
         else:
-            assert len(types_r) <= len(node.left), "Nothing to assign to"
+            assert_error(len(types_r) <= len(node.left), "Nothing to assign to")
 
         types_r_casted = ()
         for l, r in zip_longest(node.left, types_r):
@@ -597,12 +647,12 @@ class Compile(ASTWalker):
                 types_r_casted += (tpe,)
 
                 if modifier is Modifier.Var:
-                    assert tpe is not None, "Couldn't infer type for var"
+                    assert_error(tpe is not None, "Couldn't infer type for var")
 
                 v = self.scope.create_variable(modifier, name, tpe, export) # Add value to scope
                 l.identifier = v.identifier
             else:
-                assert r is not None, "Need to assign value"
+                assert_error(r is not None, "Need to assign value")
                 typecheck(l.type, r)
                 types_r_casted += (None,) # None means assignment
 
@@ -617,12 +667,12 @@ class Compile(ASTWalker):
         self.walk_child(node, node.left)
         self.__infer_struct_types(node)
 
-        assert isinstance(node.parent, (model.Body, model.Program)), "Nested assignments disallowed" # TODO
+        assert_error(isinstance(node.parent, (model.Body, model.Program)), "Nested assignments disallowed" ) # TODO 
 
         types_r = flatten_type(r.type for r in node.right)
         types_l = tuple(l.type for l in node.left)
 
-        assert len(types_r) == len(types_l), "Unbalanced assignment"
+        assert_error(len(types_r) == len(types_l), "Unbalanced assignment")
         for l, r in zip(types_l, types_r):
             typecheck(l, r)
 
@@ -650,9 +700,9 @@ class Compile(ASTWalker):
         if is_struct(tpe_l):
             node.type = dict(tpe_l._fields_)[node.right.name]
         elif is_function(tpe_r):
-            assert False, "Universal call syntax not implemented"
+            error("Universal call syntax not implemented")
         else:
-            assert False, "Member access on incompatible type"
+            error("Member access on incompatible type")
         
         return node
 

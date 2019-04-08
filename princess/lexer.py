@@ -9,7 +9,7 @@ PRE_REGEX = re.compile(
       | (?P<quote_d>  (?<!\\)[\']) 
       | (?P<comment_start>  /\* ) 
       | (?P<comment_end>    \*/ ) 
-      | (?P<comment_eol> //[^\n$]*)(\n|$)
+      | (?P<comment_eol> //[^\n$]*)(?=\n|$)
       | (?P<whitespace>   [\t ]+)
       | (?P<newline>  \n[\t\n ]*)
       | (?P<oparen>         \(  )

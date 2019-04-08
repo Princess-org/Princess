@@ -13,6 +13,7 @@ long = ctypes.c_longlong
 ubyte = ctypes.c_ubyte
 ushort = ctypes.c_ushort
 uint = ctypes.c_ulong
+ulong = ctypes.c_ulonglong
     
 float = ctypes.c_float
 double = ctypes.c_double

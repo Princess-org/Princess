@@ -1,5 +1,5 @@
 from ctypes import *
-from tests import eval_expr, eval, eval_globals
+from tests import eval_expr, eval, eval_globals, skip
 from princess.env import p_eq
 
 def test_struct_basic():
@@ -18,11 +18,11 @@ def test_struct_basic():
 
 def test_struct_initializer():
     prog = """\
-        type S = struct { v: int; v2: double }
-        let s: S = {20, -2.5}
+        type S = struct { v: int; v2: float }
+        let s: S = {20, v2 = -2.5}
         return s.v, s.v2
     """
-    assert p_eq(eval(prog), (c_long(20), c_double(-2.5)))
+    assert p_eq(eval(prog), (c_long(20), c_float(-2.5)))
 
 def test_struct_initializer_cast():
     prog = """\
@@ -63,6 +63,7 @@ def test_pointer_to_struct_member():
     """
     assert p_eq(eval(prog), (c_long(1), c_long(1)))
 
+@skip("not implemented")
 def test_nested_struct():
     prog = """\
         // Using a builtin name
@@ -73,8 +74,7 @@ def test_nested_struct():
                 d: int
             }
         }
-        var s: Structure
-        s.b.c = 20
+        var s: Structure = {0, {0, 20}}
         return s.b.c
     """
     assert p_eq(eval(prog), c_long(20))
@@ -99,3 +99,16 @@ def test_struct_reassignment():
         return t.v
     """
     assert p_eq(eval(prog), c_long(5))
+
+def test_union():
+    prog = """\
+        type U = struct #union {
+            i: uint
+            s: ushort
+            b: ubyte
+        }
+
+        let u: U = { i = 0xAABBCCDD }
+        return u.i, u.s, u.b
+    """
+    assert p_eq(eval(prog), (c_ulong(0xAABBCCDD), c_ushort(0xCCDD), c_ubyte(0xDD)))

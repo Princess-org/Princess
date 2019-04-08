@@ -474,7 +474,7 @@ class PrincessParser(Parser):
 
     @tatsumasu()
     def _array_element_(self):  # noqa
-        self._expression_()
+        self._expression_call_()
         self.name_last_node('@')
         self._n__()
 
@@ -729,14 +729,26 @@ class PrincessParser(Parser):
         self._n__()
         self._token('}')
 
+    @tatsumasu()
+    def _struct_pragmas_(self):  # noqa
+        self._token('#union')
+        self.name_last_node('@')
+        self._n__()
+
     @tatsumasu('Struct')
     def _type_struct_(self):  # noqa
         self._token('struct')
         self._n__()
+
+        def block1():
+            self._struct_pragmas_()
+        self._closure(block1)
+        self.name_last_node('pragma')
+        self._n__()
         self._struct_body_()
         self.name_last_node('body')
         self.ast._define(
-            ['body'],
+            ['body', 'pragma'],
             []
         )
 
@@ -2635,6 +2647,9 @@ class PrincessSemantics(object):
         return ast
 
     def struct_body(self, ast):  # noqa
+        return ast
+
+    def struct_pragmas(self, ast):  # noqa
         return ast
 
     def type_struct(self, ast):  # noqa

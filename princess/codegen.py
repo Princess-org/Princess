@@ -6,7 +6,7 @@ from tatsu.codegen import DelegatingRenderingFormatter, ModelRenderer, CodeGener
 from tatsu.model import AST
 
 from princess import model, ast
-from princess.compiler import int_t, INT_T, FLOAT_T, is_pointer, StructT
+from princess.compiler import int_t, INT_T, FLOAT_T, is_pointer, is_struct, is_array, StructT
 
 def unpack_literal(node):
     """ turns wrapped literal into value, like c_int(5) -> 5 """
@@ -25,7 +25,9 @@ class Formatter(DelegatingRenderingFormatter):
         elif isinstance(item, type):
             if is_pointer(item):
                 return "POINTER(%s)" % self.render(item._type_)
-            elif issubclass(item, StructT):
+            elif is_array(item):
+                return "%s * %s" % (self.render(item._type_), item._length_)
+            elif is_struct(item):
                 return item._identifier.identifier
 
             return item.__name__ # TODO use actual type names, reverse lookup in builtins?
@@ -82,8 +84,13 @@ class PythonCodeGen(CodeGenerator):
             {value::\\n:%s,}
         """
     class Struct(Renderer):
+        def _render_fields(self, fields):
+            if "#union" in fields["pragma"]:
+                fields.update(kind = "p_union_type")
+            else:
+                fields.update(kind = "p_struct_type")
         template = """\
-            (p_struct_type([
+            ({kind}([
             {body:1::}
             ]))\
         """

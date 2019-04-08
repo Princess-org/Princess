@@ -3,7 +3,7 @@ import colorama
 
 from colorama import ansi
 from princess import parse, model, ast
-from princess.compiler import eval, compile
+from princess.compiler import eval, compile, CompileError
 from tatsu.exceptions import FailedParse
 
 args = {}
@@ -61,7 +61,7 @@ def do_eval(src):
 
     except FailedParse as e:
         print(ansi.Fore.RED, "Parse Error: " + str(e), ansi.Fore.RESET, file = sys.stderr)
-    except AssertionError as e:
+    except CompileError as e:
         print(ansi.Fore.RED, "Compile Error: " + (str(e) or "???"), ansi.Fore.RESET, file = sys.stderr)
 
 def main():

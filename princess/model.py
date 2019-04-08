@@ -137,6 +137,7 @@ class StructBody(ModelBase):
 
 class Struct(Type):
     body = None
+    pragma = None
 
 
 class PtrT(Type):
