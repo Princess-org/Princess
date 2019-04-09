@@ -28,18 +28,20 @@ uint16 = ctypes.c_uint16
 uint32 = ctypes.c_uint32
 uint64 = ctypes.c_uint64
 
+_void = ctypes.c_void_p
+
 # functions
 def print(*args):
     builtins.print(*(env.p_string_value(arg) for arg in args))
 
-def allocate(_type_or_num, value = None):
-    tpe = ctypes.c_void_p
+def allocate(type_or_num, value = None):
+    tpe = _void
 
-    if isinstance(_type_or_num, type):
-        tpe = ctypes.POINTER(_type_or_num)
+    if isinstance(type_or_num, type):
+        tpe = ctypes.POINTER(type_or_num)
         size = ctypes.sizeof(tpe)
     else:
-        size = _type_or_num.value
+        size = type_or_num.value
     
     if value:
         ptr = ctypes.cast(env.libc.malloc(ctypes.c_size_t(size)), tpe)
@@ -49,25 +51,25 @@ def allocate(_type_or_num, value = None):
 
     return ptr
 
-def _allocate_typecheck(scope, _type_or_num, value = None):
-    _type_or_num = _type_or_num.value
+def _allocate_typecheck(scope, type_or_num, value = None):
+    type_or_num = type_or_num.value
 
-    if isinstance(_type_or_num, model.Identifier):
-        if _type_or_num.modifier == compiler.Modifier.Type:
-            tpe = scope.get_const_value(_type_or_num)
+    if isinstance(type_or_num, model.Identifier):
+        if type_or_num.modifier == compiler.Modifier.Type:
+            tpe = scope.get_const_value(type_or_num)
             return ctypes.POINTER(tpe)
         else:
             assert False, "TODO"
-            return ctypes.c_void_p
+            return _void
     else:
-        if isinstance(_type_or_num, model.Integer):
-            return ctypes.c_void_p
+        if isinstance(type_or_num, model.Integer):
+            return _void
         
-        tpe = scope.type_lookup(_type_or_num)
+        tpe = scope.type_lookup(type_or_num)
         return ctypes.POINTER(tpe)
 
 allocate.typecheck_macro = _allocate_typecheck
 
-def free(v):
+def free(v: _void):
     env.libc.free(v)
     v.contents = type(v)()

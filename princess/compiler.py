@@ -1,3 +1,5 @@
+import typing, inspect
+
 from ctypes import *
 from ctypes import _Pointer, _SimpleCData
 from enum import Enum
@@ -18,6 +20,13 @@ def error(s, node = None):
     raise CompileAssert(s, node)
 def assert_error(cond, s, node = None):
     if not cond: raise CompileAssert(s, node)
+class context:
+    def __init__(self, node):
+        self.node = node
+    def __enter__(self): pass
+    def __exit__(self, exc_type, exc_value, traceback):
+        if exc_type is CompileAssert:
+            exc_value.node = self.node
 
 class CompileAssert(Exception):
     def __init__(self, message, node):
@@ -93,9 +102,11 @@ def typecheck(t, r):
         else: return r 
 
     # Implicit conversion
-    if r in (INT_T, FLOAT_T):
+    if r in (INT_T, FLOAT_T):   # FIXME Don't convert literals to literally any type!
         r = t
     # FIXME Ensure size limit, float <> int !!
+    if t is c_void_p and is_pointer(r):
+        r = t
 
     assert_error(t is r, "incompatible types: %s and %s" % (t, r))
 
@@ -115,6 +126,11 @@ def _unpack_value(v):
     if isinstance(v, _SimpleCData):
         return v.value
     else: return v
+
+class Varargs:
+    """ Varargs, tpe may be None """
+    def __init__(self, tpe = None):
+        self.type = tpe
 
 class RecordT:
     """ Dedicated structure type, don't read what follows unless enough holy water is at hand """
@@ -165,6 +181,14 @@ class FunctionT:
         self.arg_t = arg_t
         self.ret_t = ret_t
         self.typecheck_macro = typecheck_macro
+
+    def get_argument_type(self, name_or_id):
+        if isinstance(name_or_id, int):
+            at = name_or_id
+            if at >= (len(self.arg_t) - 1) and isinstance(self.arg_t[-1], Varargs):
+                return self.arg_t[-1].type
+            else: return self.arg_t[at]
+        else: return getattr(self.arg_t, name_or_id)
 
 class Value:
     def __init__(self, modifier: Modifier, name: str, tpe, export = False, scope = None, identifier = None, value = None):
@@ -372,27 +396,46 @@ class Compile(ASTWalker):
     def walk_Null(self, node: model.Null):
         node.type = None
         return node
-
-    def walk_StructInit(self, node: model.StructInit):
-        self.walk_children(node)
-
-        if node.type and not isinstance(node.type, type):
-            node.type = self.scope.type_lookup(node.type)
-
-        # Infer types for arguments TODO: Also do this for calls
-        assert node.type is not None
         
+    def _typecheck_args(self, ftype, args):
+        """ typecheck arguments for struct literals and function calls """
+
         at_named_args = False
-        for i, arg in enumerate(node.args):
+        for i, arg in enumerate(args):
             if arg.name:
                 at_named_args = True
             else: assert_error(not at_named_args, "No positional arguments allowed after named parameters")
-
+            
             if at_named_args:
-                tpe = node.type.get_argument_type(arg.name.name)
-            else: tpe = node.type.get_argument_type(i)
+                try: tpe = ftype.get_argument_type(arg.name.name)
+                except TypeError: error("Unknown argument", arg.name)
+            else: 
+                try: tpe = ftype.get_argument_type(i)
+                except TypeError: error("Unknown argument", arg)
 
-            arg.value.type = typecheck(tpe, arg.value.type)
+            with context(arg):
+                arg.value.type = typecheck(tpe, arg.value.type)
+
+    def _infer_struct_types_call(self, ftype, args):
+        for i, arg in enumerate(args):
+            v = arg.value
+            if isinstance(v, model.StructInit) and not v.type:
+                # type inference for struct literal from argument type
+                if arg.name:
+                    try: v.type = ftype.get_argument_type(arg.name.name)
+                    except TypeError: error("Unknown argument", arg.name)
+                else:
+                    try: v.type = ftype.get_argument_type(i)
+                    except TypeError: error("Unknown argument", arg)
+
+    def walk_StructInit(self, node: model.StructInit):
+        if node.type and not isinstance(node.type, type):
+            node.type = self.scope.type_lookup(node.type)
+        assert node.type is not None
+
+        self._infer_struct_types_call(node.type, node.args)
+        self.walk_children(node)
+        self._typecheck_args(node.type, node.args)
             
         return node
 
@@ -426,15 +469,10 @@ class Compile(ASTWalker):
     def walk_Call(self, node: model.Call):
         self.walk_child(node, node.left)
         assert_error(is_function(node.left.type), "Can only call functions")
-        arg_t = node.left.type.arg_t
-
-        for i, arg in enumerate(node.args):
-            v = arg.value
-            if isinstance(v, model.StructInit) and not v.type:
-                # type inference for struct literal from argument type
-                v.type = getattr(arg_t, arg.name.name) if arg.name else arg_t[i]
-            
+        
+        self._infer_struct_types_call(node.left.type, node.args)
         self.walk_child(node, node.args)
+        self._typecheck_args(node.left.type, node.args)
         
         funct = node.left.type
         node.type = funct.ret_t
@@ -585,14 +623,15 @@ class Compile(ASTWalker):
 
         return node
 
-    def __infer_struct_types(self, node):
+    def _infer_struct_types_assign(self, node):
+         # infer struct types
         if not node.right: return
-
         i = 0
         def walk_right(r):
             nonlocal i
             if isinstance(r, model.StructInit) and not r.type:
                 r.type = node.left[i].type
+            else: self.walk(r.type)
             r = self.walk(r)
             i += len(r.type.ret_t) if is_function(r.type) else 1
             return r
@@ -607,9 +646,11 @@ class Compile(ASTWalker):
             if isinstance(l.type, model.Struct):
                 # anonymous struct
                 name = self.scope.create_anonymous()
+                identifier = self.walk(ast.Identifier(name))
+
                 anon_t = self.walk(
                     ast.TypeDecl(
-                        name = [ast.Identifier(name)],
+                        name = [identifier],
                         value = [l.type]
                     )
                 )
@@ -619,7 +660,7 @@ class Compile(ASTWalker):
             else:
                 l.type = self.scope.type_lookup(l.type)
 
-        self.__infer_struct_types(node)
+        self._infer_struct_types_assign(node)
 
         export = node.share & ast.Share.Export
         modifier = Modifier(node.keyword)
@@ -665,7 +706,7 @@ class Compile(ASTWalker):
 
     def walk_Assign(self, node: model.Assign):
         self.walk_child(node, node.left)
-        self.__infer_struct_types(node)
+        self._infer_struct_types_assign(node)
 
         assert_error(isinstance(node.parent, (model.Body, model.Program)), "Nested assignments disallowed" ) # TODO 
 
@@ -748,7 +789,24 @@ for k in dir(pbuiltins):
     if isinstance(v, type):
         builtins.create_type(k, v)
     elif callable(v):
-        builtins.create_function(k, getattr(v, "arg_t", None), getattr(v, "ret_t", None), getattr(v, "typecheck_macro", None))
+        arg_t = None
+        ret_t = None
+
+        argspec = inspect.getfullargspec(v)
+        varg = argspec.varargs
+        print(argspec)
+        types = argspec.annotations
+        types.update({name: None for name in argspec.args if name not in types})
+        if varg: types[varg] = Varargs(types.get(varg, None))
+
+        if "return" in types:
+            ret_t = types["return"]
+            del types["return"] # delete to keep it from getting into the argument types
+        if len(types) > 0:
+            arg_t = namedtuple('MyNamedTuple', types.keys())(**types)
+        
+        
+        builtins.create_function(k, arg_t, ret_t, getattr(v, "typecheck_macro", None))
 
 def compile(ast):
     global_scope = Scope(builtins)
@@ -756,10 +814,9 @@ def compile(ast):
     src = PythonCodeGen().render(ast)
     return src
 
-def eval(pysrc):
-    return eval_globals(pysrc)["__env"].result
+def eval(pysrc, globals = {}):
+    return eval_globals(pysrc, globals)["__env"].result
 
-def eval_globals(pysrc):
-    globals = {}
+def eval_globals(pysrc, globals = {}):
     exec(pysrc, globals)
     return globals

@@ -22,3 +22,13 @@ def test_args():
     """
 
     assert p_eq(eval(prog), c_long(30))
+
+def test_args_type_infer():
+    prog = """\
+        def ret_byte(a: byte) -> byte { return a }
+        def ret_float(a: float) -> float { return a }
+        
+        return ret_byte(20), ret_float(20)
+    """
+
+    assert p_eq(eval(prog), (c_byte(20), c_float(20)))
