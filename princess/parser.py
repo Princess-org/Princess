@@ -30,6 +30,7 @@ KEYWORDS = {
     'continue',
     'def',
     'else',
+    'enum',
     'export',
     'false',
     'for',
@@ -752,6 +753,145 @@ class PrincessParser(Parser):
             []
         )
 
+    @tatsumasu('Else')
+    def _stmt_enum_else_(self):  # noqa
+        self._token('else')
+        self._n__()
+        self._cut()
+        self._enum_body_()
+        self.name_last_node('body')
+        self.ast._define(
+            ['body'],
+            []
+        )
+
+    @tatsumasu('ElseIf')
+    def _stmt_enum_else_if_(self):  # noqa
+        self._token('else')
+        self._n__()
+        self._token('if')
+        self._n__()
+        self._cut()
+        self._expression_()
+        self.name_last_node('cond')
+        self._n__()
+        self._enum_body_()
+        self.name_last_node('body')
+        self.ast._define(
+            ['body', 'cond'],
+            []
+        )
+
+    @tatsumasu('If')
+    def _stmt_enum_if_(self):  # noqa
+        self._token('#if')
+        self._n__()
+        self._cut()
+        self._expression_()
+        self.name_last_node('cond')
+        self._n__()
+        self._enum_body_()
+        self.name_last_node('body')
+
+        def block3():
+            self._stmt_enum_else_if_()
+        self._closure(block3)
+        self.name_last_node('else_if')
+        with self._optional():
+            self._n__()
+            self._stmt_enum_else_()
+            self.name_last_node('else_')
+        self.ast._define(
+            ['body', 'cond', 'else_', 'else_if'],
+            []
+        )
+
+    @tatsumasu('IdDeclEnum')
+    def _enum_iddecl_(self):  # noqa
+        self._n__()
+        self._identifier_()
+        self.name_last_node('name')
+        with self._optional():
+            self._token('=')
+            self._n__()
+            self._expression_()
+            self.name_last_node('value')
+        self.ast._define(
+            ['name', 'value'],
+            []
+        )
+
+    @tatsumasu()
+    def _enum_def_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._void()
+                self.name_last_node('@')
+                self._t_term_()
+            with self._option():
+                self._enum_def_noterm_()
+                self.name_last_node('@')
+                self._t_term_()
+            self._error('no available options')
+
+    @tatsumasu()
+    def _enum_def_noterm_(self):  # noqa
+        with self._choice():
+            with self._option():
+                self._token('(')
+                with self._group():
+                    with self._choice():
+                        with self._option():
+                            self._void()
+                            self.name_last_node('@')
+                            with self._if():
+                                self._token(')')
+                        with self._option():
+                            self._enum_def_noterm_()
+                            self.name_last_node('@')
+                        self._error('no available options')
+                self._token(')')
+            with self._option():
+                with self._group():
+                    with self._choice():
+                        with self._option():
+                            self._stmt_enum_if_()
+                        with self._option():
+                            self._enum_iddecl_()
+                        self._error('no available options')
+                self.name_last_node('@')
+            self._error('no available options')
+
+    @tatsumasu('EnumBody')
+    def _enum_body_(self):  # noqa
+        self._token('{')
+        self._n__()
+
+        def block1():
+            self._enum_def_()
+        self._closure(block1)
+        self.name_last_node('@')
+        self._n__()
+        self._token('}')
+
+    @tatsumasu('TEnum')
+    def _type_enum_(self):  # noqa
+        self._token('enum')
+        self._n__()
+        with self._optional():
+            self._token(':')
+            self._n__()
+            self._type_()
+            self.name_last_node('type')
+            self._n__()
+        self._n__()
+        self._enum_body_()
+        self.name_last_node('body')
+        self.ast._define(
+            ['body', 'type'],
+            []
+        )
+
     @tatsumasu('PtrT')
     def _type_ptr_(self):  # noqa
         self._token('*')
@@ -950,6 +1090,8 @@ class PrincessParser(Parser):
         with self._choice():
             with self._option():
                 self._type_struct_()
+            with self._option():
+                self._type_enum_()
             with self._option():
                 self._type_unsigned_()
             with self._option():
@@ -2653,6 +2795,30 @@ class PrincessSemantics(object):
         return ast
 
     def type_struct(self, ast):  # noqa
+        return ast
+
+    def stmt_enum_else(self, ast):  # noqa
+        return ast
+
+    def stmt_enum_else_if(self, ast):  # noqa
+        return ast
+
+    def stmt_enum_if(self, ast):  # noqa
+        return ast
+
+    def enum_iddecl(self, ast):  # noqa
+        return ast
+
+    def enum_def(self, ast):  # noqa
+        return ast
+
+    def enum_def_noterm(self, ast):  # noqa
+        return ast
+
+    def enum_body(self, ast):  # noqa
+        return ast
+
+    def type_enum(self, ast):  # noqa
         return ast
 
     def type_ptr(self, ast):  # noqa

@@ -140,6 +140,20 @@ class Struct(Type):
     pragma = None
 
 
+class IdDeclEnum(ModelBase):
+    name = None
+    value = None
+
+
+class EnumBody(ModelBase):
+    pass
+
+
+class TEnum(Type):
+    body = None
+    type = None
+
+
 class PtrT(Type):
     keyword = None
     type = None
