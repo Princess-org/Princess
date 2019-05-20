@@ -194,6 +194,7 @@ def test_for_simple():
                 right = [Range(from_ = Integer(1), to = Integer(20))]
             ),
             body = Body(
+                None, # Empty line (Comment)
                 ast("print(\"Hello World\")")
             )
         ),

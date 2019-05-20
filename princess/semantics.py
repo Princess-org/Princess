@@ -2,7 +2,7 @@ from functools import reduce
 from tatsu.ast import AST
 from enum import Enum
 
-from princess.model import PrincessModelBuilderSemantics
+from princess.lexer import LexerSemantics
 
 def decode_escape_seq(ast):
     def hex(a, b): 
@@ -37,7 +37,7 @@ class Share(int, Enum):
     Export = 2
     Both = 3
 
-class Semantics(PrincessModelBuilderSemantics):
+class Semantics(LexerSemantics):
     def __init__(self):
         types = list(filter(lambda t: 
             isinstance(t, type) and issubclass(t, Enum), 

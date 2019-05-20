@@ -1,170 +1,72 @@
 import re
 from collections import namedtuple
 
+from tatsu.infos import ParseInfo
 from tatsu.buffering import Buffer
-from .parser import PrincessBuffer
+from tatsu.semantics import ModelBuilderSemantics
 
-PRE_REGEX = re.compile(
-    r"""(?P<quote_s>  (?<!\\)[\"]) 
-      | (?P<quote_d>  (?<!\\)[\']) 
-      | (?P<comment_start>  /\* ) 
-      | (?P<comment_end>    \*/ ) 
-      | (?P<comment_eol> //[^\n$]*)(?=\n|$)
-      | (?P<whitespace>   [\t ]+)
-      | (?P<newline>  \n[\t\n ]*)
-      | (?P<oparen>         \(  )
-      | (?P<cparen>         \)  )
-      | (?P<osquare>        \[  )
-      | (?P<csquare>        \]  )
-      | (?P<obrace>         \{  )
-      | (?P<cbrace>         \}  )
-    """, re.VERBOSE
-)
+from princess.model import PrincessModelBuilderSemantics
+from princess.parser import PrincessBuffer
 
-NO = 0
-SINGLE = 1
-DOUBLE = 2
+class LexerSemantics(PrincessModelBuilderSemantics):
+    _nesting = 0
 
-PAREN = 1
-SQUARE = 2
-BRACE = 3
+    def t_oparen(self, ast):
+        self._nesting += 1
+        return ast
 
-# TODO Better error messages
-
-class LineCache(namedtuple("LineCache", ["line", "start", "length", "offset"])): 
-    pass
+    def t_cparen(self, ast):
+        self._nesting -= 1
+        return ast
 
 class Lexer(PrincessBuffer):
-    text = ""
-    src_text = "" # Non processed
-    src_line_cache = []
+    def __init__(self, *args, _semantics, **kwargs):
+        self.semantics = _semantics
+        super().__init__(*args, **kwargs)
     
-    def _preprocess(self, *args, **kwargs):
-        self.src_text = self.text
-        self.src_line_cache = []
-
-        offset = 0
-        line = 0
-        line_diff = 0 # This tracks the difference between the source text and the preprocessed text
-        line_offset = 0
-        line_length = self.src_text.find("\n")
-        if line_length < 0: 
-            line_length = len(self.src_text)
-
-        bracket_stack = [BRACE]
-        comment_stack = 0
-        in_str = NO
-        output = ["\n"]
-
-        def append(text, src_txt = None):   # Prevent repeated whitespace
-            nonlocal output, offset, line, line_diff, line_offset, line_length
-            if not src_txt:
-                src_txt = text
-
-            last = output[-1]
-            if not in_str:
-                # No newline after space or repeated new lines
-                if (text == " " or text == "\n") and last == "\n": 
-                    text = ""
-                # No single space after single space
-                if text == " " and last == " ": 
-                    text = ""
-
-            pos_line = LineCache(line, line_offset, line_length, line_diff) 
-            for _ in text:
-                self.src_line_cache.append(pos_line)
-            output += text
-
-            # Calculate source position
-            lineskip = src_txt.count("\n")
-            if lineskip > 0:
-                line_offset = offset + src_txt.rfind("\n") + 1
-                line_length = self.src_text.find("\n", line_offset) - line_offset
-                if line_length < 0: 
-                    line_length = len(self.src_text) - line_offset
-
-            line += lineskip
-            line_diff += len(src_txt) - len(text)
-            offset += len(src_txt)
-
-        pos = 0
-        for match in re.finditer(PRE_REGEX, self.src_text):
-            text = match.group()
-            src_txt = text
-
-            last_txt = self.src_text[pos:match.start()]
-            if comment_stack == 0:
-                append(last_txt) # Add text inbetween
+    def eat_comments(self):
+        depth = 0
+        comments = []
+        while self.matchre(r"\/\*"):
+            start = self.pos - 2
+            depth += 1
+            while depth > 0:
+                c = self.next()
+                if c == "*" and self.peek(0) == "/":
+                    depth -= 1
+                    self.next()
+                elif c == "/" and self.peek(0) == "*":
+                    depth += 1
+                    self.next()
+                elif c is None: return # TODO failed parse
             else:
-                append("", last_txt) # Skip if we're inside a comment
-
-            if comment_stack == 0:
-                if match.group("quote_s"):
-                    if in_str == SINGLE: in_str = NO
-                    else: in_str = SINGLE
-                elif match.group("quote_d"):
-                    if in_str == DOUBLE: in_str = NO
-                    else: in_str = DOUBLE
-                elif not in_str:
-                    if match.group("oparen"):
-                        bracket_stack += [PAREN]
-                    elif match.group("osquare"):
-                        bracket_stack += [SQUARE]
-                    elif match.group("obrace"):
-                        bracket_stack += [BRACE]
-                    elif match.group("cparen"):
-                        assert len(bracket_stack) > 1 and bracket_stack[-1] == PAREN
-                        bracket_stack.pop()
-                    elif match.group("csquare"):
-                        assert len(bracket_stack) > 1 and bracket_stack[-1] == SQUARE
-                        bracket_stack.pop()
-                    elif match.group("cbrace"):
-                        assert len(bracket_stack) > 1 and bracket_stack[-1] == BRACE
-                        bracket_stack.pop()
-                    
-            if not in_str:
-                if match.group("whitespace"):
-                        text = " "
-                elif match.group("newline"):
-                    if bracket_stack[-1] != BRACE:
-                        text = " "      # Strip newline inside parens
-                    else: text = "\n"   # Collapse to single newline
-                elif match.group("comment_start"):
-                    text = " "
-                    comment_stack += 1
-                elif match.group("comment_end"):
-                    text = ""
-                    comment_stack -= 1
-                elif match.group("comment_eol"):
-                    text = ""
-
-            append(text, src_txt)
-            pos = match.end()
-
-        append(self.src_text[pos:len(self.src_text)])
-
-        self.text = ''.join(output[1:])
-        # print("In total I stripped", len(self.src_text) - len(self.text), "characters")
+                end = self.pos
+                comments += self.text[start:end]
         
-        assert len(self.text) == len(self.src_line_cache), "Invalid line cache!"
-        
-        # for i, c in enumerate(self.text):
-        #     lc = self.src_line_cache[i]
-        #     print("%s (line = %s; offset = %s; length = %s)" % (repr(c), lc.line, lc.offset, lc.length))
-        #     print(self.src_text[lc.start:(lc.start + lc.length)])
-        #     print(" " * ((lc.offset + i) - lc.start) + "^")
+        if comments:
+            self._index_comments(comments, lambda x: x.inline)
 
-        super()._preprocess(*args, **kwargs)
+    def eat_eol_comments(self):
+        if self.matchre(r"\/\/"):
+            start = self.pos
+            self.skip_to_eol()
+            self.next()
+            end = self.pos
+            self._index_comments([self.text[start:end]], lambda x: x.eol)
 
-    def format_error(self, error, lineinfo):
-        lca = self.src_line_cache[lineinfo.pos]
-        lcb = self.src_line_cache[lineinfo.endpos - 1]
+    def eat_whitespace(self):
+        if self.semantics._nesting > 0:
+            self.matchre(r"[\n\t ]+")
+        else:
+            self.matchre(r"[\t ]+")
+
+    def format_error(self, error, info: ParseInfo):
+        line = info.text_lines()[0] # TODO Errors might span multiple lines
        
-        error += "\n"
-        error += (self.filename or "??? ") + ":" + str(lca.line) + "\n"
-        error += self.src_text[lca.start:(lca.start + lca.length)] + "\n"
-        error += " " * ((lca.offset + lineinfo.pos) - lca.start) + "^"
-        if lca.line == lcb.line:
-            error += ((lcb.offset + lineinfo.endpos) - (lca.offset + lineinfo.pos) - 1) * "~"
+        error += "\n"        
+        error += (self.filename or "??? ") + ":" + str(info.line) + "\n"
+        error += line
+        error += " " * (info.endpos - info.pos + 1) + "^"
+        error += (info.endpos - info.pos - 1) * "~"
 
         return error

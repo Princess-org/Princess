@@ -61,7 +61,7 @@ class PrincessBuffer(Buffer):
     def __init__(
         self,
         text,
-        whitespace=re.compile('[\\t ]+'),
+        whitespace=None,
         nameguard=None,
         comments_re=None,
         eol_comments_re=None,
@@ -84,7 +84,7 @@ class PrincessBuffer(Buffer):
 class PrincessParser(Parser):
     def __init__(
         self,
-        whitespace=re.compile('[\\t ]+'),
+        whitespace=None,
         nameguard=None,
         comments_re=None,
         eol_comments_re=None,
@@ -156,6 +156,14 @@ class PrincessParser(Parser):
     @tatsumasu()
     def _n__(self):  # noqa
         self._pattern('[\\n\\t ]*')
+
+    @tatsumasu()
+    def _t_oparen_(self):  # noqa
+        self._token('(')
+
+    @tatsumasu()
+    def _t_cparen_(self):  # noqa
+        self._token(')')
 
     @tatsumasu()
     def _digit_(self):  # noqa
@@ -692,7 +700,7 @@ class PrincessParser(Parser):
     def _struct_def_noterm_(self):  # noqa
         with self._choice():
             with self._option():
-                self._token('(')
+                self._t_oparen_()
                 with self._group():
                     with self._choice():
                         with self._option():
@@ -704,7 +712,7 @@ class PrincessParser(Parser):
                             self._struct_def_noterm_()
                             self.name_last_node('@')
                         self._error('no available options')
-                self._token(')')
+                self._t_cparen_()
             with self._option():
                 with self._group():
                     with self._choice():
@@ -838,7 +846,7 @@ class PrincessParser(Parser):
     def _enum_def_noterm_(self):  # noqa
         with self._choice():
             with self._option():
-                self._token('(')
+                self._t_oparen_()
                 with self._group():
                     with self._choice():
                         with self._option():
@@ -850,7 +858,7 @@ class PrincessParser(Parser):
                             self._enum_def_noterm_()
                             self.name_last_node('@')
                         self._error('no available options')
-                self._token(')')
+                self._t_cparen_()
             with self._option():
                 with self._group():
                     with self._choice():
@@ -1008,7 +1016,7 @@ class PrincessParser(Parser):
         with self._choice():
             with self._option():
                 with self._group():
-                    self._token('(')
+                    self._t_oparen_()
                     self._cut()
 
                     def sep1():
@@ -1018,7 +1026,7 @@ class PrincessParser(Parser):
                         self._type_list_elem_()
                     self._gather(block1, sep1)
                     self.name_last_node('@')
-                    self._token(')')
+                    self._t_cparen_()
             with self._option():
                 self._type_()
                 self.add_last_node_to_name('@')
@@ -1055,19 +1063,19 @@ class PrincessParser(Parser):
     @tatsumasu('Word')
     def _type_word_(self):  # noqa
         self._token('word')
-        self._token('(')
+        self._t_oparen_()
         self._t_int_literal_()
         self.name_last_node('@')
-        self._token(')')
+        self._t_cparen_()
 
     @tatsumasu()
     def _type_3_(self):  # noqa
         with self._choice():
             with self._option():
-                self._token('(')
+                self._t_oparen_()
                 self._type_()
                 self.name_last_node('@')
-                self._token(')')
+                self._t_cparen_()
             with self._option():
                 self._type_word_()
             with self._option():
@@ -1139,7 +1147,7 @@ class PrincessParser(Parser):
 
     @tatsumasu()
     def _call_args_(self):  # noqa
-        self._token('(')
+        self._t_oparen_()
 
         def sep1():
             self._token(',')
@@ -1154,7 +1162,7 @@ class PrincessParser(Parser):
         self._gather(block1, sep1)
         self.name_last_node('@')
         self._cut()
-        self._token(')')
+        self._t_cparen_()
 
     @tatsumasu('Call')
     @nomemo
@@ -1778,11 +1786,11 @@ class PrincessParser(Parser):
     def _expr_11_(self):  # noqa
         with self._choice():
             with self._option():
-                self._token('(')
+                self._t_oparen_()
                 self._cut()
                 self._expression_()
                 self.name_last_node('@')
-                self._token(')')
+                self._t_cparen_()
             with self._option():
                 self._value_()
             self._error('no available options')
@@ -2047,12 +2055,12 @@ class PrincessParser(Parser):
     @tatsumasu('IdAssign')
     def _var_idassign_(self):  # noqa
         self._n__()
-        self._token('(')
+        self._t_oparen_()
         self._n__()
         self._expression_()
         self.name_last_node('@')
         self._n__()
-        self._token(')')
+        self._t_cparen_()
 
     @tatsumasu()
     def _stmt_vardecl_rhs_(self):  # noqa
@@ -2540,7 +2548,7 @@ class PrincessParser(Parser):
         self._identifier_()
         self.name_last_node('name')
         with self._optional():
-            self._token('(')
+            self._t_oparen_()
             self._cut()
 
             def sep3():
@@ -2550,7 +2558,7 @@ class PrincessParser(Parser):
                 self._def_arg_()
             self._gather(block3, sep3)
             self.name_last_node('args')
-            self._token(')')
+            self._t_cparen_()
         with self._optional():
             self._token('->')
 
@@ -2636,7 +2644,7 @@ class PrincessParser(Parser):
     def _statement_noterm_(self):  # noqa
         with self._choice():
             with self._option():
-                self._token('(')
+                self._t_oparen_()
                 with self._group():
                     with self._choice():
                         with self._option():
@@ -2648,7 +2656,7 @@ class PrincessParser(Parser):
                             self._statement_noterm_()
                             self.name_last_node('@')
                         self._error('no available options')
-                self._token(')')
+                self._t_cparen_()
             with self._option():
                 self._stmt_()
                 self.name_last_node('@')
@@ -2669,6 +2677,12 @@ class PrincessSemantics(object):
         return ast
 
     def n_(self, ast):  # noqa
+        return ast
+
+    def t_oparen(self, ast):  # noqa
+        return ast
+
+    def t_cparen(self, ast):  # noqa
         return ast
 
     def digit(self, ast):  # noqa
