@@ -639,6 +639,7 @@ class Compile(ASTWalker):
         if isinstance(node.value[0], model.TEnum):
             ns = self.scope.enter_namespace(name.name)
             value = self.scope.type_lookup(node.value[0].type)()
+            value.value = -1
             for nme in node.value[0].body.ast:
                 if nme.value:
                     value = self.scope.type_lookup(node.value[0].type)(nme.value.value)

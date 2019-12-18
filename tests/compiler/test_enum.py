@@ -9,7 +9,7 @@ def test_enum_simple():
         }
         return Enum::BAR, Enum::BAZ
     """
-    assert p_eq(eval(prog), (c_long(1), c_long(2)))
+    assert p_eq(eval(prog), (c_long(0), c_long(1)))
 
 def test_enum_complex():
     prog = """
