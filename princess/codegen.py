@@ -4,6 +4,7 @@ from datetime import datetime
 
 from tatsu.codegen import DelegatingRenderingFormatter, ModelRenderer, CodeGenerator
 from tatsu.model import AST
+from princess.ast import Share
 
 from princess import model, ast
 from princess.compiler import int_t, INT_T, FLOAT_T, is_pointer, is_struct, is_array, StructT
@@ -229,6 +230,10 @@ class PythonCodeGen(CodeGenerator):
         template = "{value}.value"
 
     class VarDecl(Renderer):
+        def _render_fields(self, fields):
+            if fields["share"] == Share.Export:
+                return "global {left::, :}\n{left::, :} = p_declare(({right::, :},), ({type::, :},))"
+            else: fields["export"] = ""
         template = "{left::, :} = p_declare(({right::, :},), ({type::, :},))"
     class TypeDecl(Renderer):
         template = "{name::, :} = {value::, :} # typedef"

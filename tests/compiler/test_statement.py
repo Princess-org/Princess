@@ -60,3 +60,10 @@ def test_while_loop():
         return b
     """
     assert p_eq(eval(prog), c_long(10))
+
+def test_export():
+    prog = """
+        export var a, b = 20, 21
+        return a
+    """
+    assert p_eq(eval(prog), c_long(20))
