@@ -235,6 +235,13 @@ class PythonCodeGen(CodeGenerator):
     class Assign(Renderer):
         template = "p_assign(({left::, :},), ({right::, :},))"
 
+    class TEnum(Renderer):
+        def _render_fields(self, fields):
+            text = "PEnum()\n"
+            for name in fields["namespace"].dir:
+                text += fields["name"] +  "." + name + " = " + self.formatter.render(fields["namespace"][name].value) + "\n"
+            return text
+
     class Body(Renderer):
         def _render_fields(self, fields):
             body = fields["value"]

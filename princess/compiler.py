@@ -90,8 +90,11 @@ def get_name(ident: model.Identifier):
     if hasattr(ident, "name"):
         return ident.name
     
-    assert_error(len(ident.ast) == 1, "scope resolution (::) not implemented")
-    return ident.ast[0]
+    if len(ident.ast) == 1:
+        return ident.ast[0]
+    elif len(ident.ast) == 2:
+        return ident.ast[0] + "." + ident.ast[1]
+    error("Scope resolution :: not implemented")
 
 
 def typecheck(t, r):
@@ -281,6 +284,14 @@ class Scope:
             v = value.value
 
         return v
+    
+    def enter_namespace(self, namespace):
+        if namespace in self.dir:
+            return self.dir[namespace]
+        else:
+            ns = Namespace(self)
+            self.dir[namespace] = ns
+            return ns
 
     def enter_scope(self, node):
         if node in self.children:
@@ -319,6 +330,10 @@ class Scope:
         name = "__tmp" + str(self.tmpcount)
         self.tmpcount += 1
         return name
+
+class Namespace(Scope):
+    def exit_namespace(self):
+        return self.parent
 
 class ASTWalker(NodeWalker):
     def __init__(self, scope = None):
@@ -437,6 +452,10 @@ class Compile(ASTWalker):
         self.walk_children(node)
         self._typecheck_args(node.type, node.args)
             
+        return node
+
+    def walk_TEnum(self, node: model.TEnum):
+        self.walk_children(node)
         return node
 
     def walk_Array(self, node: model.Array):
@@ -617,9 +636,26 @@ class Compile(ASTWalker):
         assert_error(len(node.name) == len(node.value) == 1, "Parallel type assignment not implemented") # TODO
 
         name = node.name[0]
-        tpe = self.scope.type_lookup(node.value[0])
-        t = self.scope.create_type(name.name, tpe)
-        name.identifier = t.identifier
+        if isinstance(node.value[0], model.TEnum):
+            ns = self.scope.enter_namespace(name.name)
+            value = self.scope.type_lookup(node.value[0].type)()
+            for nme in node.value[0].body.ast:
+                if nme.value:
+                    value = self.scope.type_lookup(node.value[0].type)(nme.value.value)
+                else:
+                    value = self.scope.type_lookup(node.value[0].type)(value.value)
+                    value.value += 1
+                    
+                nme = nme.name
+                ns.create_variable(modifier = Modifier.Let, name = nme.name, tpe = self.scope.type_lookup(node.value[0].type), value = value)
+                
+            node.value[0].namespace = ns
+            node.value[0].name = name.name
+            ns.exit_namespace()
+        else:
+            tpe = self.scope.type_lookup(node.value[0])
+            t = self.scope.create_type(name.name, tpe)
+            name.identifier = t.identifier
 
         return node
 
