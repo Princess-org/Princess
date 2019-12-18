@@ -284,6 +284,12 @@ class PythonCodeGen(CodeGenerator):
         def _render_fields(self, fields):
             if not "args" in fields or fields["args"] is None:
                 fields.update(args = [])
+            if fields["share"] == Share.Export:
+                return """\
+                    global {identifier}
+                    def {identifier}({args::, :}):
+                    {body:1::}\
+                    """
 
         template = """\
             def {identifier}({args::, :}):
