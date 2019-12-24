@@ -289,7 +289,7 @@ class Scope:
         if namespace in self.dir:
             return self.dir[namespace]
         else:
-            ns = Namespace(self)
+            ns = Scope(self)
             self.dir[namespace] = ns
             return ns
 
@@ -330,10 +330,6 @@ class Scope:
         name = "__tmp" + str(self.tmpcount)
         self.tmpcount += 1
         return name
-
-class Namespace(Scope):
-    def exit_namespace(self):
-        return self.parent
 
 class ASTWalker(NodeWalker):
     def __init__(self, scope = None):
@@ -652,7 +648,6 @@ class Compile(ASTWalker):
                 
             node.value[0].namespace = ns
             node.value[0].name = name.name
-            ns.exit_namespace()
         else:
             tpe = self.scope.type_lookup(node.value[0])
             t = self.scope.create_type(name.name, tpe)
