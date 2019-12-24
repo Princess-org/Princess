@@ -67,4 +67,4 @@ def test_export():
         export def test(){}
         return a
     """
-    assert p_eq(eval(prog), c_long(21))
+    assert p_eq(eval(prog), c_long(20))

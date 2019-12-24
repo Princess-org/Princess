@@ -86,15 +86,15 @@ def common_type(a, b, sign_convert = False):
 
     return result
 
-def get_name(ident: model.Identifier):
-    if hasattr(ident, "name"):
-        return ident.name
-    
-    if len(ident.ast) == 1:
-        return ident.ast[0]
-    elif len(ident.ast) == 2:
-        return ident.ast[0] + "." + ident.ast[1]
-    error("Scope resolution :: not implemented")
+#def get_name(ident: model.Identifier):
+#    if hasattr(ident, "name"):
+#        return ident.name
+#    
+#    if len(ident.ast) == 1:
+#        return ident.ast[0]
+#    elif len(ident.ast) == 2:
+#        return ident.ast[0] + "." + ident.ast[1]
+#    error("Scope resolution :: not implemented")
 
 
 def typecheck(t, r):
@@ -225,19 +225,31 @@ class Scope:
 
         return name
 
-    def __contains__(self, name):
-        if name in self.dir:
-            return True
-        elif self.parent:
-            return name in self.parent
-        return False
+    def __contains__(self, identifier):
+        if len(identifier.ast) == 1:
+            if identifier.ast[0] in self.dir:
+                return True
+            elif self.parent:
+                return identifier in self.parent
+        else:
+            namespace = getattr(self.dir, identifier.ast[0], None)
+            if isinstance(namespace, Scope):
+                return ast.Identifier(**identifier.ast[1:]) in self.dir[identifier.ast[0]]
+            else: return False
 
-    def __getitem__(self, name):
-        if name in self.dir:
-            return self.dir[name]
-        elif self.parent:
-            return self.parent[name]
-        else: raise KeyError()
+    def __getitem__(self, identifier):
+        if len(identifier.ast) == 1:
+            if identifier.ast[0] in self.dir:
+                return self.dir[identifier.ast[0]]
+            elif self.parent:
+                return self.parent[identifier]
+            else: raise KeyError()
+        else:
+            namespace = getattr(self.dir, identifier.ast[0], None)
+            if isinstance(namespace, Scope):
+                return self.dir[identifier.ast[0]][ast.Identifier(**identifier.ast[1:])]
+            else:
+                return KeyError()
 
     def __setitem__(self, name, value):
         if name in self.parent:
@@ -275,7 +287,7 @@ class Scope:
     def get_const_value(self, v):
         if isinstance(v, model.Identifier):
             try:
-                value = self[v.name]
+                value = self[v]
             except KeyError:
                 error("Unknown identifier", v)
 
@@ -305,6 +317,7 @@ class Scope:
         return self.parent
 
     def create_variable(self, modifier: Modifier, name: str, tpe, export = False, value = None, identifier = None):
+        name = ".".join(name.ast)
         assert_error(name not in self.dir, "Redeclaration of %s" % name)
         
         v = Value(
@@ -621,7 +634,7 @@ class Compile(ASTWalker):
 
         for l in node.left:
             if isinstance(l, model.IdDecl):
-                v = self.scope.create_variable(modifier = node.keyword, name = get_name(l.name), tpe = c_long)
+                v = self.scope.create_variable(modifier = node.keyword, name = l.name, tpe = c_long)
                 l.identifier = v.identifier
         assert_error(len(node.right) == 1 and isinstance(node.right[0], model.Range), "For loop only supports iterating over a range" )
         return node
@@ -644,13 +657,13 @@ class Compile(ASTWalker):
                     value.value += 1
                     
                 nme = nme.name
-                ns.create_variable(modifier = Modifier.Let, name = nme.name, tpe = self.scope.type_lookup(node.value[0].type), value = value)
+                ns.create_variable(modifier = Modifier.Let, name = nme, tpe = self.scope.type_lookup(node.value[0].type), value = value)
                 
             node.value[0].namespace = ns
             node.value[0].name = name.name
         else:
             tpe = self.scope.type_lookup(node.value[0])
-            t = self.scope.create_type(name.name, tpe)
+            t = self.scope.create_type(name, tpe)
             name.identifier = t.identifier
 
         return node
@@ -711,7 +724,7 @@ class Compile(ASTWalker):
         types_r_casted = ()
         for l, r in zip_longest(node.left, types_r):
             if isinstance(l, model.IdDecl):
-                name = get_name(l.name)
+                name = l.name
                 tpe = l.type
 
                 if r is not None:
@@ -752,11 +765,10 @@ class Compile(ASTWalker):
         return node
 
     def walk_Identifier(self, node: model.Identifier):
-        name = get_name(node)
-        node.name = name
+        node.name = ".".join(node.ast)
 
-        if name in self.scope:
-            value = self.scope[name]
+        if node in self.scope:
+            value = self.scope[node]
             
             node.modifier = value.modifier  # scope resolution for render
             node.identifier = value.identifier
@@ -787,7 +799,7 @@ class Compile(ASTWalker):
 
         # TODO Check return arguments
         f = self.scope.create_function(
-            name = get_name(node.name), 
+            name = node.name, 
             arg_t = Arguments(*(self.scope.type_lookup(arg.type) for arg in node.args or [])),
             ret_t = tuple(self.scope.type_lookup(r) for r in node.returns or [])
         )
@@ -797,7 +809,7 @@ class Compile(ASTWalker):
             scope = self.scope.enter_scope(node.body)
             for arg in node.args or []:
                 # Create argument variables
-                v = scope.create_variable(Modifier.Var, get_name(arg.name), self.scope.type_lookup(arg.type))
+                v = scope.create_variable(Modifier.Var, arg.name, self.scope.type_lookup(arg.type))
                 arg.identifier = v.identifier
 
             self.enter_function(f)
@@ -819,7 +831,7 @@ for k in dir(pbuiltins):
         
     v = getattr(pbuiltins, k)
     if isinstance(v, type):
-        builtins.create_type(k, v)
+        builtins.create_type(ast.Identifier(k), v)
     elif callable(v):
         arg_t = None
         ret_t = None
@@ -838,7 +850,7 @@ for k in dir(pbuiltins):
             arg_t = namedtuple('MyNamedTuple', types.keys())(**types)
         
         
-        builtins.create_function(k, arg_t, ret_t, getattr(v, "typecheck_macro", None))
+        builtins.create_function(ast.Identifier(k), arg_t, ret_t, getattr(v, "typecheck_macro", None))
 
 def compile(ast):
     global_scope = Scope(builtins)

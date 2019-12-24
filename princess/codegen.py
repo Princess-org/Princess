@@ -244,7 +244,7 @@ class PythonCodeGen(CodeGenerator):
         def _render_fields(self, fields):
             text = "PEnum()\n"
             for name in fields["namespace"].dir:
-                text += fields["name"] +  "." + name + " = " + self.formatter.render(fields["namespace"][name].value) + "\n"
+                text += fields["name"] +  "." + name + " = " + self.formatter.render(fields["namespace"].dir[name].value) + "\n"
             return text
 
     class Body(Renderer):
