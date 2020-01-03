@@ -3,7 +3,7 @@ import colorama
 
 from colorama import ansi
 from princess import parse, model, ast
-from princess.compiler import eval_globals, compile, CompileError
+from princess.compiler import compile, CompileError, eval
 from tatsu.exceptions import FailedParse
 
 args = {}
