@@ -2135,29 +2135,33 @@ class PrincessParser(Parser):
 
     @tatsumasu('TypeDecl')
     def _stmt_typedecl_(self):  # noqa
+        with self._optional():
+            self._share_marker_()
+            self.name_last_node('share')
+            self._n__()
         self._token('type')
         self._n__()
 
-        def sep1():
+        def sep2():
             self._token(',')
 
-        def block1():
+        def block2():
             self._stmt_typedecl_lhs_()
-        self._positive_gather(block1, sep1)
+        self._positive_gather(block2, sep2)
         self.name_last_node('name')
         self._n__()
         self._token('=')
         self._n__()
 
-        def sep3():
+        def sep4():
             self._token(',')
 
-        def block3():
+        def block4():
             self._stmt_typedecl_rhs_()
-        self._positive_gather(block3, sep3)
+        self._positive_gather(block4, sep4)
         self.name_last_node('value')
         self.ast._define(
-            ['name', 'value'],
+            ['name', 'share', 'value'],
             []
         )
 

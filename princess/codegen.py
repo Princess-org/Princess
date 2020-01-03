@@ -144,6 +144,18 @@ class PythonCodeGen(CodeGenerator):
     class Deref(Renderer):
         template = "({right}.contents)"
 
+    class Import(Renderer):
+        template = "{modules::\\n:}"
+    class ImportModule(Renderer):
+        def _render_fields(self, fields):
+            if not fields["alias"]:
+                fields.update(alias = fields["name"])
+
+        template = """\
+            from {name} import *
+            import {name} as {alias}
+        """
+
     class Call(Renderer):
         def _render_fields(self, fields):
             prefix = ""
@@ -196,8 +208,11 @@ class PythonCodeGen(CodeGenerator):
             value = fields["value"]
             if any(type(v) == model.Do for v in value):
                 raise NotImplementedError("Can't use 'do' expressions in return statement")
-
-            return "return p_return(({value::, :},))"
+            
+            if fields["root"]:
+                return "__env.result = p_return(({value::, :},))"
+            else:
+                return "return p_return(({value::, :},))"
 
     class While(Renderer):
         template = """\
@@ -230,10 +245,6 @@ class PythonCodeGen(CodeGenerator):
         template = "{value}.value"
 
     class VarDecl(Renderer):
-        def _render_fields(self, fields):
-            if fields["share"] == Share.Export:
-                return "global {left::, :}\n{left::, :} = p_declare(({right::, :},), ({type::, :},))"
-            else: fields["export"] = ""
         template = "{left::, :} = p_declare(({right::, :},), ({type::, :},))"
     class TypeDecl(Renderer):
         template = "{name::, :} = {value::, :} # typedef"
@@ -284,12 +295,6 @@ class PythonCodeGen(CodeGenerator):
         def _render_fields(self, fields):
             if not "args" in fields or fields["args"] is None:
                 fields.update(args = [])
-            if fields["share"] == Share.Export:
-                return """\
-                    global {identifier}
-                    def {identifier}({args::, :}):
-                    {body:1::}\
-                    """
 
         template = """\
             def {identifier}({args::, :}):
@@ -298,13 +303,7 @@ class PythonCodeGen(CodeGenerator):
 
     class Program(Renderer): 
         def _render_fields(self, fields):
-            value = fields["value"]
-            code = ast.Def(
-                identifier = model.Identifier(name = "__main"),
-                body = ast.Body(*value)
-            )
-
-            fields.update(code = code, time = datetime.now())
+            fields.update(code = ast.Body(*fields["value"]), time = datetime.now())
 
         template = '''\
             # This file was compiled by the grace of your highness
@@ -321,6 +320,4 @@ class PythonCodeGen(CodeGenerator):
             # --- start of code ---
             {code}
             # --- end of code ---
-
-            __env.result = __main()
         '''

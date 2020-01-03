@@ -44,6 +44,7 @@ def test_variable_declaration_multiple():
 def test_type_declaration():
     assert parse("type i8 = int8") == Program(
         TypeDecl(
+            share = Share.No,
             name = [Identifier("i8")],
             value = [Identifier("int8")]
         )
@@ -52,6 +53,7 @@ def test_type_declaration():
 def test_type_declaration_multiple():
     assert parse("type i8, i16 = int8, int16") == Program(
         TypeDecl(
+            share = Share.No,
             name = [Identifier("i8"), Identifier("i16")],
             value = [Identifier("int8"), Identifier("int16")]
         )

@@ -23,6 +23,7 @@ libc.memcpy.restype = None
 class Environment:
     def __init__(self):
         self.result = None # Return value of the program
+        self.imported = False
 
 def p_string_value(v):
     """ returns the string value of v

@@ -1,10 +1,15 @@
+import os
+
+from pathlib import Path
 from ctypes import *
 from tests import eval_expr, eval, skip
 from princess.env import p_eq
 
+
 def test_import():
+    os.chdir(Path(__file__).parent)
     prog = """\
-        import test as test
+        import test
         
         var a: int = 20
         a = test::plus_one(a)

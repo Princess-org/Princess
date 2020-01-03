@@ -141,6 +141,7 @@ def test_typedef():
         type empty = struct {}
     """) == Program(
         TypeDecl(
+            share = Share.No,
             name = [Identifier("empty")],
             value = [Struct(body = StructBody(None))]
         )

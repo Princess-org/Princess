@@ -9,11 +9,12 @@ from collections.abc import MutableMapping
 from itertools import chain, zip_longest
 from datetime import datetime
 from functools import reduce
+from pathlib import Path
 
 from tatsu.walkers import NodeWalker
 from tatsu.codegen import ModelRenderer, CodeGenerator, DelegatingRenderingFormatter
 from tatsu.ast import AST
-from princess import model, ast, env
+from princess import model, ast, env, parse
 from princess.node import Node
 
 def error(s, node = None):
@@ -85,17 +86,6 @@ def common_type(a, b, sign_convert = False):
         error("Incompatible types %s %s" % (a, b))
 
     return result
-
-#def get_name(ident: model.Identifier):
-#    if hasattr(ident, "name"):
-#        return ident.name
-#    
-#    if len(ident.ast) == 1:
-#        return ident.ast[0]
-#    elif len(ident.ast) == 2:
-#        return ident.ast[0] + "." + ident.ast[1]
-#    error("Scope resolution :: not implemented")
-
 
 def typecheck(t, r):
     """ Typechecks and casts if applicable, returning the new type """
@@ -194,11 +184,11 @@ class FunctionT:
         else: return getattr(self.arg_t, name_or_id)
 
 class Value:
-    def __init__(self, modifier: Modifier, name: str, tpe, export = False, scope = None, identifier = None, value = None):
+    def __init__(self, modifier: Modifier, name: str, tpe, share = ast.Share.No, scope = None, identifier = None, value = None):
         self.name = name    # real name, used by the source code
         self.modifier = modifier
         self.type = tpe
-        self.export = export
+        self.share = share
         self.scope = scope
         self.identifier = identifier    # python identifier
         self.value = value
@@ -232,10 +222,13 @@ class Scope:
             elif self.parent:
                 return identifier in self.parent
         else:
-            namespace = getattr(self.dir, identifier.ast[0], None)
-            if isinstance(namespace, Scope):
-                return ast.Identifier(**identifier.ast[1:]) in self.dir[identifier.ast[0]]
-            else: return False
+            try:
+                namespace = self[ast.Identifier(identifier.ast[0])]
+                if isinstance(namespace.value, Scope):
+                    return ast.Identifier(*identifier.ast[1:]) in namespace.value
+                else: return False
+            except KeyError:
+                return False
 
     def __getitem__(self, identifier):
         if len(identifier.ast) == 1:
@@ -245,9 +238,9 @@ class Scope:
                 return self.parent[identifier]
             else: raise KeyError()
         else:
-            namespace = getattr(self.dir, identifier.ast[0], None)
-            if isinstance(namespace, Scope):
-                return self.dir[identifier.ast[0]][ast.Identifier(**identifier.ast[1:])]
+            namespace = self[ast.Identifier(identifier.ast[0])]
+            if isinstance(namespace.value, Scope):
+                return namespace.value[ast.Identifier(*identifier.ast[1:])]
             else:
                 return KeyError()
 
@@ -297,12 +290,12 @@ class Scope:
 
         return v
     
-    def enter_namespace(self, namespace):
+    def enter_namespace(self, namespace: str, share = ast.Share.No):
         if namespace in self.dir:
             return self.dir[namespace]
         else:
             ns = Scope(self)
-            self.dir[namespace] = ns
+            self.create_variable(Modifier.Const, ast.Identifier(namespace), None, share, value = ns)
             return ns
 
     def enter_scope(self, node):
@@ -316,7 +309,7 @@ class Scope:
     def exit_scope(self):
         return self.parent
 
-    def create_variable(self, modifier: Modifier, name: str, tpe, export = False, value = None, identifier = None):
+    def create_variable(self, modifier: Modifier, name: model.Identifier, tpe, share = ast.Share.No, value = None, identifier = None):
         name = ".".join(name.ast)
         assert_error(name not in self.dir, "Redeclaration of %s" % name)
         
@@ -324,7 +317,7 @@ class Scope:
             modifier = modifier,
             name = name,
             tpe = tpe,
-            export = export,
+            share = share,
             identifier = identifier or self.python_identifier(name),
             scope = self,
             value = value
@@ -334,10 +327,10 @@ class Scope:
 
         return v
 
-    def create_type(self, name, value, identifier = None):
-        return self.create_variable(modifier = Modifier.Type, name = name, tpe = None, value = value, identifier = identifier)
-    def create_function(self, name, arg_t = None, ret_t = None, typecheck_macro = None, identifier = None):
-        return self.create_variable(modifier = Modifier.Const, name = name, tpe = FunctionT(arg_t, ret_t, typecheck_macro), identifier = identifier)
+    def create_type(self, name, value, share = ast.Share.No, identifier = None):
+        return self.create_variable(modifier = Modifier.Type, name = name, tpe = None, share = share, value = value, identifier = identifier)
+    def create_function(self, name, arg_t = None, ret_t = None, typecheck_macro = None, share = ast.Share.No, identifier = None):
+        return self.create_variable(modifier = Modifier.Const, name = name, tpe = FunctionT(arg_t, ret_t, typecheck_macro), share = share, identifier = identifier)
 
     def create_anonymous(self):
         name = "__tmp" + str(self.tmpcount)
@@ -345,10 +338,11 @@ class Scope:
         return name
 
 class ASTWalker(NodeWalker):
-    def __init__(self, scope = None):
+    def __init__(self, scope):
         self.scope = scope # type: Scope
         self.function_stack = []
         self.current_function = None
+        self._walker_cache = {} # Tatsu walkaround FIXME
 
     def walk(self, node, *args, **kwargs):
         old_node = node
@@ -381,7 +375,11 @@ class ASTWalker(NodeWalker):
         self.function_stack.append(f)
         self.current_function = f
     def exit_function(self):
-        self.current_function = self.function_stack.pop()
+        if len(self.function_stack) == 1: # TODO Kinda fishy
+            self.function_stack.pop()
+            self.current_function = None
+        else:
+            self.current_function = self.function_stack.pop()
 
     def walk_children(self, node):
         if isinstance(node, list):
@@ -420,7 +418,19 @@ class Compile(ASTWalker):
     def walk_Null(self, node: model.Null):
         node.type = None
         return node
-        
+
+    def walk_Import(self, node: model.Import):
+        self.walk_children(node)
+        for module in node.modules:
+            name = module.name.ast[0]
+            alias = (module.alias or module.name).ast[0]
+            scope = compile_module(name)
+            exports = {name:var for name, var in scope.dir.items() if var.share & ast.Share.Export}
+            ns = self.scope.enter_namespace(alias)
+            ns.dir.update(exports)
+            self.scope.dir.update(exports)
+        return node
+
     def _typecheck_args(self, ftype, args):
         """ typecheck arguments for struct literals and function calls """
 
@@ -645,25 +655,26 @@ class Compile(ASTWalker):
         assert_error(len(node.name) == len(node.value) == 1, "Parallel type assignment not implemented") # TODO
 
         name = node.name[0]
-        if isinstance(node.value[0], model.TEnum):
+        val = node.value[0]
+        if isinstance(val, model.TEnum):
             ns = self.scope.enter_namespace(name.name)
-            value = self.scope.type_lookup(node.value[0].type)()
+            value = self.scope.type_lookup(val.type)()
             value.value = -1
-            for nme in node.value[0].body.ast:
+            for nme in val.body.ast:
                 if nme.value:
-                    value = self.scope.type_lookup(node.value[0].type)(nme.value.value)
+                    value = self.scope.type_lookup(val.type)(nme.value.value)
                 else:
-                    value = self.scope.type_lookup(node.value[0].type)(value.value)
+                    value = self.scope.type_lookup(val.type)(value.value)
                     value.value += 1
                     
                 nme = nme.name
-                ns.create_variable(modifier = Modifier.Let, name = nme, tpe = self.scope.type_lookup(node.value[0].type), value = value)
+                ns.create_variable(modifier = Modifier.Let, name = nme, tpe = self.scope.type_lookup(val.type), value = value)
                 
-            node.value[0].namespace = ns
-            node.value[0].name = name.name
+            val.namespace = ns
+            val.name = name.name
         else:
-            tpe = self.scope.type_lookup(node.value[0])
-            t = self.scope.create_type(name, tpe)
+            tpe = self.scope.type_lookup(val)
+            t = self.scope.create_type(name, tpe, node.share)
             name.identifier = t.identifier
 
         return node
@@ -707,7 +718,7 @@ class Compile(ASTWalker):
 
         self._infer_struct_types_assign(node)
 
-        export = node.share & ast.Share.Export
+        share = node.share
         modifier = Modifier(node.keyword)
         assert_error(modifier is not Modifier.Const, "const not implemented")
 
@@ -735,7 +746,7 @@ class Compile(ASTWalker):
                 if modifier is Modifier.Var:
                     assert_error(tpe is not None, "Couldn't infer type for var")
 
-                v = self.scope.create_variable(modifier, name, tpe, export) # Add value to scope
+                v = self.scope.create_variable(modifier, name, tpe, share) # Add value to scope
                 l.identifier = v.identifier
             else:
                 assert_error(r is not None, "Need to assign value")
@@ -772,6 +783,8 @@ class Compile(ASTWalker):
             
             node.modifier = value.modifier  # scope resolution for render
             node.identifier = value.identifier
+            if len(node.ast) > 1:
+                node.identifier = ".".join(node.ast[:-1]) + "." + node.identifier
             node.type = value.type
 
         return node
@@ -801,7 +814,8 @@ class Compile(ASTWalker):
         f = self.scope.create_function(
             name = node.name, 
             arg_t = Arguments(*(self.scope.type_lookup(arg.type) for arg in node.args or [])),
-            ret_t = tuple(self.scope.type_lookup(r) for r in node.returns or [])
+            ret_t = tuple(self.scope.type_lookup(r) for r in node.returns or []),
+            share = node.share
         )
         node.identifier = f.identifier # TODO Maybe redundant
 
@@ -820,6 +834,7 @@ class Compile(ASTWalker):
     
     def walk_Return(self, node: model.Return):
         self.walk_children(node)
+        node.root = self.current_function == None
         return node
 
 from princess import pbuiltins
@@ -838,7 +853,6 @@ for k in dir(pbuiltins):
 
         argspec = inspect.getfullargspec(v)
         varg = argspec.varargs
-        print(argspec)
         types = argspec.annotations
         types.update({name: None for name in argspec.args if name not in types})
         if varg: types[varg] = Varargs(types.get(varg, None))
@@ -847,16 +861,31 @@ for k in dir(pbuiltins):
             ret_t = types["return"]
             del types["return"] # delete to keep it from getting into the argument types
         if len(types) > 0:
-            arg_t = namedtuple('MyNamedTuple', types.keys())(**types)
-        
+            arg_t = namedtuple("ArgumentTypes", types.keys())(**types)
         
         builtins.create_function(ast.Identifier(k), arg_t, ret_t, getattr(v, "typecheck_macro", None))
 
-def compile(ast):
-    global_scope = Scope(builtins)
-    ast = Compile(global_scope).walk(ast)
+def compile(ast, scope = None):
+    scope = scope or Scope(builtins)
+    ast = Compile(scope).walk(ast)
     src = PythonCodeGen().render(ast)
     return src
+
+_modules = {} # compiled modules
+
+def compile_module(module) -> Scope:
+    if module in _modules: 
+        return _modules[module]
+
+    scope = Scope(builtins)
+    with open(module + ".pr") as file:
+        ast = parse("\n".join(file.readlines()))
+        pysrc = compile(ast, scope)
+        with open(module + ".py", "w") as pyfile:
+            pyfile.writelines(pysrc)
+
+    _modules[module] = scope
+    return scope
 
 def eval(pysrc, globals = {}):
     return eval_globals(pysrc, globals)["__env"].result

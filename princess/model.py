@@ -389,6 +389,7 @@ class VarDecl(Statement):
 
 class TypeDecl(Statement):
     name = None
+    share = None
     value = None
 
 

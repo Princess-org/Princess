@@ -24,6 +24,7 @@ def test_typed():
         }
     """) == Program(
         TypeDecl(
+            share = Share.No,
             name = [Identifier("Enum")],
             value = [TEnum(
                 type = Identifier("long"),
