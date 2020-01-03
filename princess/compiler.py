@@ -294,7 +294,7 @@ class Scope:
         if namespace in self.dir:
             return self.dir[namespace]
         else:
-            ns = Scope(self)
+            ns = Scope(None) # TODO Temporary fix
             self.create_variable(Modifier.Const, ast.Identifier(namespace), None, share, value = ns)
             return ns
 

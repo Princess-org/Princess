@@ -152,8 +152,8 @@ class PythonCodeGen(CodeGenerator):
                 fields.update(alias = fields["name"])
 
         template = """\
-            from {name} import *
-            import {name} as {alias}
+            from .{name} import *
+            from . import {name} as {alias}
         """
 
     class Call(Renderer):
