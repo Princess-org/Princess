@@ -2,8 +2,9 @@ import builtins, ctypes
 from princess import env, compiler, model
 
 # types
-char = ctypes.c_byte
+char = ctypes.c_wchar
 bool = ctypes.c_bool
+string = ctypes.c_wchar_p
 
 byte = ctypes.c_byte
 short = ctypes.c_short

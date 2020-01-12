@@ -99,6 +99,12 @@ def p_range(_from, to, step):
     for x in range(_from, to, step):
         yield c_long(x)
 
+def p_call(fun, *args):
+    if args:
+        return fun(*(p_copy(v, type(v)) for v in args))
+    else:
+        return fun()
+
 def p_cast(_from, to):
     if isinstance(to, tuple):
         return tuple(p_cast(f, t) for f, t in zip(_from, to))
@@ -110,9 +116,11 @@ def p_cast(_from, to):
         else: return to(_from.value)
 
 def p_copy(v, tpe):
+    if isinstance(v, type):
+        return v
     if compiler.is_pointer(tpe):
         return cast(v, tpe)
-    elif compiler.is_struct(tpe):
+    elif compiler.is_array(tpe) or compiler.is_struct(tpe):
         if v:
             copy = tpe()
             assert sizeof(v) == sizeof(copy) # Sanity check
@@ -136,7 +144,8 @@ def p_declare(values, types):
 
 def p_assign(left, values):
     for l, v in zip(left, values):
-        if isinstance(l, Structure):
+        tpe = type(l)
+        if compiler.is_struct(tpe) or compiler.is_array(tpe):
             assert sizeof(l) == sizeof(v) # Sanity check
             libc.memcpy(cast(pointer(l), c_void_p), cast(pointer(v), c_void_p), sizeof(v))
         else:

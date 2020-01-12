@@ -9,6 +9,8 @@ def test_string_literal():
     # Escape sequences get mangled but this should be equivalent
     assert (p_string_value(eval_expr("\" \\a\\b\\f\\n\\t\\v\\'\\\"\\\\\\0 \""))
         == " \a\b\f\n\t\v\'\"\\\0 ")
+    
+    assert p_eq(eval_expr("\"test\"[0]"), c_wchar('t'))
 
 def test_char_literal():
     assert p_eq(eval_expr("'界'"), c_wchar('界'))
@@ -27,3 +29,4 @@ def test_null():
 
 def test_array():
     assert p_eq(eval_expr("[1, 2, 3, 4]"), (c_long * 4)(1, 2, 3, 4))
+    assert p_eq(eval_expr("[1, 2, 3, 4][0]"), c_long(1))

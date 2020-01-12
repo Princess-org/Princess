@@ -83,11 +83,23 @@ def test_struct_as_parameter():
     # TODO anonymous struct as function parameter
     prog = """\
         type T = struct { i: int }
-        def with_struct(a: T) {
+        def with_struct(a: T) -> int {
             return a.i   
         }
 
         return with_struct({1})
+    """
+    assert p_eq(eval(prog), c_long(1))
+
+def test_struct_passing():
+    prog = """\
+        type T = struct { i: int }
+        def call(a: T) {
+            a.i = 20
+        }
+        var a: T = {1}
+        call(a)
+        return a.i
     """
     assert p_eq(eval(prog), c_long(1))
 

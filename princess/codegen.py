@@ -165,7 +165,7 @@ class PythonCodeGen(CodeGenerator):
 
             fields.update(prefix = prefix)
 
-        template = "{prefix}{left}({args::, :})"
+        template = "{prefix}p_call({left}, {args::, :})"
     class CallArg(Renderer):
         def _render_fields(self, fields):
             if "identifier" in fields:

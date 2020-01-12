@@ -375,11 +375,12 @@ class ASTWalker(NodeWalker):
         self.function_stack.append(f)
         self.current_function = f
     def exit_function(self):
-        if len(self.function_stack) == 1: # TODO Kinda fishy
+        if len(self.function_stack) == 1:
             self.function_stack.pop()
             self.current_function = None
         else:
-            self.current_function = self.function_stack.pop()
+            self.function_stack.pop()
+            self.current_function = self.function_stack[-1]
 
     def walk_children(self, node):
         if isinstance(node, list):
@@ -405,7 +406,7 @@ class Compile(ASTWalker):
         return node
     def walk_String(self, node: model.String):
         node.value = node.ast
-        node.type = c_wchar * len(node.ast)
+        node.type = c_wchar * (len(node.ast) + 1)
         return node
     def walk_Char(self, node: model.Char):
         node.value = node.ast
@@ -784,7 +785,7 @@ class Compile(ASTWalker):
             node.modifier = value.modifier  # scope resolution for render
             node.identifier = value.identifier
             if len(node.ast) > 1:
-                node.identifier = ".".join(node.ast[:-1]) + "." + node.identifier
+                node.identifier = ".".join(node.ast[:-1]) + "." + node.identifier # TODO Rewrite
             node.type = value.type
 
         return node
