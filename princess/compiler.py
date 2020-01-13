@@ -623,7 +623,7 @@ class Compile(ASTWalker):
             tpe = node.ast.type
 
         size = ast.Integer(sizeof(tpe))
-        size.type = c_size_t   
+        size.type = INT_T # TODO
         
         return size
 

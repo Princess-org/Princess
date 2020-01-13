@@ -75,5 +75,5 @@ def free(v):
 def concat(dest, *args):
     dest = ctypes.cast(dest, ctypes.c_wchar_p)
     for arg in args:
-        ret = env.libc.wcscat(dest, arg)
+        ret = env.libc.wcscat(dest, env.p_string_value(arg))
     return ret
