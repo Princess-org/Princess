@@ -24,7 +24,11 @@ class Formatter(DelegatingRenderingFormatter):
         elif item is FLOAT_T:
             return "double"
         elif isinstance(item, type):
-            if is_pointer(item):
+            if item is ctypes.c_void_p:
+                return "c_void_p"
+            elif item is ctypes.c_wchar_p:
+                return "c_wchar_p"
+            elif is_pointer(item):
                 return "POINTER(%s)" % self.render(item._type_)
             elif is_array(item):
                 return "%s * %s" % (self.render(item._type_), item._length_)

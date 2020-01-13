@@ -16,6 +16,17 @@ def test_string():
         let a = "Hello"
         let b = "World"
         var c: [12 char]
+        concat(*c, a, " ", b)
+        return c
+    """
+    assert p_string_value(eval(prog)) == "Hello World"
+
+def test_string_malloc():
+    prog = """
+        let a = "Hello"
+        let b = "World"
+        var c = allocate((size_of char) * 12) !string
+        concat(c, a, " ", b)
         return c
     """
     assert p_string_value(eval(prog)) == "Hello World"

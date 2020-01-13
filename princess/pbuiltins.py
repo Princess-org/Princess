@@ -63,14 +63,17 @@ def _allocate_typecheck(scope, type_or_num, value = None):
             assert False, "TODO"
             return _void
     else:
-        if isinstance(type_or_num, model.Integer):
-            return _void
-        
-        tpe = scope.type_lookup(type_or_num)
-        return ctypes.POINTER(tpe)
+        return _void
 
 allocate.typecheck_macro = _allocate_typecheck
 
-def free(v: _void):
+def free(v):
+    v = ctypes.cast(v, _void)
     env.libc.free(v)
     v.contents = type(v)()
+
+def concat(dest, *args):
+    dest = ctypes.cast(dest, ctypes.c_wchar_p)
+    for arg in args:
+        ret = env.libc.wcscat(dest, arg)
+    return ret

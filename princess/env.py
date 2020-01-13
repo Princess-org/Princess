@@ -19,11 +19,12 @@ libc.free.argtypes = [c_void_p]
 libc.free.restype = None
 libc.memcpy.argtypes = [c_void_p, c_void_p, c_size_t]
 libc.memcpy.restype = None
+libc.wcscat.argtypes = [c_wchar_p, c_wchar_p]
+libc.wcscat.restype = c_wchar_p
 
 class Environment:
     def __init__(self):
         self.result = None # Return value of the program
-        self.imported = False
 
 def p_string_value(v):
     """ returns the string value of v

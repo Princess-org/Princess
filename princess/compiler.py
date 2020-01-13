@@ -48,7 +48,7 @@ primitive_t = int_t | float_t | set([c_bool, c_wchar])
 def is_reserved(name):
     return iskeyword(name) or hasattr(env, name)
 def is_pointer(t):
-    return t is c_void_p or issubclass(t, _Pointer)
+    return t is c_void_p or t is c_wchar_p or issubclass(t, _Pointer)
 def is_array(t):
     return issubclass(t, Array)
 def is_function(t):
