@@ -499,9 +499,13 @@ class Compile(ASTWalker):
     def walk_ArrayIndex(self, node: model.ArrayIndex):
         self.walk_children(node)
 
-        assert_error(is_array(node.left.type), "Can only index arrays")
+        assert_error(is_array(node.left.type) or is_pointer(node.left.type), "Can only index arrays")
         node.array_type = node.left.type
-        node.type = node.left.type._type_
+        
+        if node.left.type is c_wchar_p:
+            node.type = c_wchar
+        else:
+            node.type = node.left.type._type_
 
         return node
 
@@ -607,7 +611,10 @@ class Compile(ASTWalker):
         if isinstance(node.right, model.Identifier) and node.right.modifier == Modifier.Type:
             return self.walk(ast.PtrT(type = node.right))
 
-        node.type = POINTER(node.right.type)
+        if is_array(node.right.type) and node.right.type._type_ is c_wchar:
+            node.type = c_wchar_p # TODO Make sure to get string
+        else:
+            node.type = POINTER(node.right.type)
         return node
 
     def walk_SizeOf(self, node: model.SizeOf):

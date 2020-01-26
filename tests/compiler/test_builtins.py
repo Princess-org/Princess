@@ -11,7 +11,7 @@ def test_print(capfd):
     eval(prog)
     assert capfd.readouterr().out == "70 foobar\n"
 
-def test_string():
+def test_concat():
     prog = """
         let a = "Hello"
         let b = "World"
@@ -21,7 +21,7 @@ def test_string():
     """
     assert p_string_value(eval(prog)) == "Hello World"
 
-def test_string_malloc():
+def test_concat_malloc():
     prog = """
         let a = "Hello"
         let b = "World"
@@ -30,3 +30,11 @@ def test_string_malloc():
         return c
     """
     assert p_string_value(eval(prog)) == "Hello World"
+
+def test_string():
+    prog = """
+        let a = "Hello"
+        let b = *a
+        return b[0]
+    """
+    assert p_eq(eval(prog), c_wchar("H"))

@@ -54,5 +54,4 @@ def test_size_of_complex():
     """
     
     size_of_t = sizeof(T)
-    print(size_of_t)
     assert p_eq(eval(prog), (c_size_t(size_of_t), c_size_t(size_of_t), c_size_t(5 * size_of_t)))

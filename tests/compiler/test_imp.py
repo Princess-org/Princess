@@ -1,6 +1,6 @@
 # This file was compiled by the grace of your highness
 # ~ Princess Vi Nightfall ~
-# on 2020-01-15 12:44:38.587926
+# on 2020-01-26 15:52:44.763629
 #
 # Bow to the princess!
 
@@ -10,9 +10,9 @@ from princess.pbuiltins import *
 __env = Environment()
 
 # --- start of code ---
-def plus_one(_46a):
-    return p_return(((c_long(_46a.value + p_cast(int(1), c_long).value)),))
-def plus(_47a, _47b):
-    return p_return(((c_long(_47a.value + _47b.value)),))
+def plus_one(_51a):
+    return p_return(((c_long(_51a.value + p_cast(int(1), c_long).value)),))
+def plus(_52a, _52b):
+    return p_return(((c_long(_52a.value + _52b.value)),))
 foo = p_declare((int(20),), (c_long,))
 # --- end of code ---

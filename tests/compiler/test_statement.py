@@ -64,7 +64,7 @@ def test_while_loop():
 def test_export():
     prog = """
         export var a, b = 20, 21
-        export def test(){}
+        export def test() { }
         return a
     """
     assert p_eq(eval(prog), c_long(20))

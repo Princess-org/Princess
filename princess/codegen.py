@@ -181,12 +181,16 @@ class PythonCodeGen(CodeGenerator):
         def _render_fields(self, fields):            
             right = fields["right"]
             array_type = fields["array_type"]
+            
+            template = ""
+            if array_type is ctypes.c_wchar_p:
+                template = ".value"
 
             if isinstance(right, model.Literal):
                 fields.update(right = right.value)
-                template = "({left}[{right}])"
+                template = "({left}%s[{right}])" % template
             else:
-                template = "({left}[{right}.value])"
+                template = "({left}%s[{right}.value])" % template
 
             if not isinstance(array_type, tuple):
                 template = "({type}%s)" % template
