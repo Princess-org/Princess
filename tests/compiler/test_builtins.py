@@ -1,6 +1,5 @@
 from ctypes import *
 from tests import eval_expr, eval
-from princess.env import p_eq, p_string_value
 
 def test_print(capfd):
     prog = """\

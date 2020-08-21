@@ -1,6 +1,5 @@
 from ctypes import *
 from tests import eval_expr, eval, skip
-from princess.env import p_eq
 
 def test_arithmetic():
     assert p_eq(eval_expr("1 + 2 - 1"), c_long(2))

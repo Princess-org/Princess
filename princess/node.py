@@ -35,40 +35,6 @@ def ast_repr(value, indents = " ", indent = 0):
         return repr(value)
 
 class Node(tatsu.model.Node):
-    type = None
-
-    def _count_keys(self):
-        return len(list(filter(lambda k: not k.startswith("_"), vars(self).keys())))
-
-    def children_list(self, vars_sort_key = None):
-        children = super().children_list(vars_sort_key)
-        if isinstance(self.ast, list):
-            children += self.ast
-        return children
-    
-    def children_set(self):
-        children = super().children_set()
-        if isinstance(self.ast, list):
-            children += set(self.ast)
-        return children
-
-    children = children_list
-
-    def map(self, fun, include = lambda node: True):
-        if isinstance(self.ast, list): # Node ( a, b, ..., n )
-            mapped = [fun(v) for v in self.ast]
-            mapped = reduce(lambda a, b: a + (list(b) if isinstance(b, tuple) else [b]), mapped, [])
-            self._ast = mapped
-        elif self._ast is not None: # Node ( child )
-            self._ast = fun(self.ast)
-
-        for key in filter(lambda k: not k.startswith("_"), vars(self).keys()):
-            n = getattr(self, key)
-            if not include(n): continue
-    
-            r = fun(n)
-            setattr(self, key, r)
-
     def __eq__(self, other):
         if self is other: return True
         if type(self) != type(other): return False

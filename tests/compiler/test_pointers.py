@@ -1,7 +1,6 @@
 from ctypes import *
 from tests import eval_expr, eval, skip
 from pytest import raises
-from princess.env import p_eq
 
 def test_pointer_basic():
     prog = """\

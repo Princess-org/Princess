@@ -1,6 +1,5 @@
 from ctypes import *
 from tests import eval_expr, eval
-from princess.env import p_string_value, p_eq
 
 def test_string_literal():
     assert (p_string_value(eval_expr("\"  0123 A a Ä   こんにちは世界 \""))

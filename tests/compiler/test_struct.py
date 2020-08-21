@@ -1,6 +1,5 @@
 from ctypes import *
 from tests import eval_expr, eval, skip
-from princess.env import p_eq
 
 def test_struct_basic():
     prog = """\
