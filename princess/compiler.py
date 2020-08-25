@@ -1,3 +1,5 @@
+import subprocess, sys, os
+from ctypes import cdll
 from princess import ast, model
 from princess.node import Node
 from princess.codegen import CCodeGen
@@ -34,11 +36,20 @@ class AstWalker(NodeWalker):
 
     def walk_child(self, node, *children):
         assert isinstance(node, Node)
-        node.map(self.walk, lambda n: n in children) 
+        node.map(self.walk, lambda n: n in children)
+
+    def walk_default(self, node: model.Program):
+        self.walk_children(node)
+        return node
 
 class Compiler(AstWalker):
     def __init__(self):
         self._walker_cache = {} # Tatsu walkaround FIXME
+
+    def walk_Def(self, node: model.Def):
+        node.type = "void"
+        node.identifier = "".join(node.name.ast)
+        return node
 
     def walk_Program(self, node: model.Program):
         code = []
@@ -68,7 +79,8 @@ class Compiler(AstWalker):
         )
         code.append(main_function)
 
-        return ast.Program(*self.walk_children(code))
+        self.walk_children(code)
+        return ast.Program(*code)
 
                 
 def compile(p_ast):
@@ -78,5 +90,17 @@ def compile(p_ast):
     
 
 def eval(csrc, filename):
+    if not os.path.exists("bin"):
+        os.mkdir("bin")
+
+    os.chdir("bin")
+
     with open(filename + ".c", "w") as fp:
         fp.write(csrc)
+
+    subprocess.Popen(
+        ["gcc", "-shared", "-o", filename + ".so", "-fPIC", filename + ".c"], 
+    )
+
+    lib = cdll.LoadLibrary(os.getcwd() + "/" + filename + ".so")
+    return lib.main()

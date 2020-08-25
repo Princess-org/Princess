@@ -1,6 +1,10 @@
 from ctypes import *
 from tests import eval_expr, eval
 
+def test_empty_program():
+    prog = ""
+    eval(prog)
+
 def test_if_statement():
     prog = """\
         if 1 > 2 {

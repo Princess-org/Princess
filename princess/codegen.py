@@ -14,14 +14,26 @@ class Renderer(ModelRenderer):
 
 class CCodeGen(CodeGenerator):
 
-    class Body(Renderer):
-        def _render_fields(self, fields):
-            body = fields["value"]
-            if len(body) == 1 and body[0] == None:
-                fields.update(value = "pass")
+    def __init__(self):
+        super().__init__(modules = [CCodeGen])
 
+    class Body(Renderer):
         template = """\
             {value::\\n:}\
+        """
+
+
+    class DefArg(Renderer):
+        template = "{identifier}"
+    class Def(Renderer):
+        def _render_fields(self, fields):
+            if not "args" in fields or fields["args"] is None:
+                fields.update(args = [])
+
+        template = """\
+            {type} {identifier}({args::, :}) {{
+            {body:1::}
+            }}\
         """
     
     class Program(Renderer): 
