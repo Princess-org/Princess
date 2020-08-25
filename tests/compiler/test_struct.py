@@ -13,7 +13,7 @@ def test_struct_basic():
 
         return a.x, a.y
     """
-    assert p_eq(eval(prog), (c_long(20), c_long(30)))
+    assert eval(prog) == (c_long(20), c_long(30))
 
 def test_struct_initializer():
     prog = """\
@@ -21,7 +21,7 @@ def test_struct_initializer():
         let s: S = {20, v2 = -2.5}
         return s.v, s.v2
     """
-    assert p_eq(eval(prog), (c_long(20), c_float(-2.5)))
+    assert eval(prog) == (c_long(20), c_float(-2.5))
 
 def test_struct_initializer_cast():
     prog = """\
@@ -31,7 +31,7 @@ def test_struct_initializer_cast():
         let b = ({5}!S).v
         return s.v, b
     """
-    assert p_eq(eval(prog), (c_long(2), c_long(5)))
+    assert eval(prog) == (c_long(2), c_long(5))
 
 def test_struct_pointer():
     prog = """\
@@ -41,7 +41,7 @@ def test_struct_pointer():
 
         return (@b).v
     """
-    assert p_eq(eval(prog), (c_long(6)))
+    assert eval(prog) == (c_long(6))
 
 def test_pointer_to_struct_member():
     prog = """\
@@ -60,7 +60,7 @@ def test_pointer_to_struct_member():
 
         return a.x, a.y
     """
-    assert p_eq(eval(prog), (c_long(1), c_long(1)))
+    assert eval(prog) == (c_long(1), c_long(1))
 
 @skip("not implemented")
 def test_nested_struct():
@@ -76,7 +76,7 @@ def test_nested_struct():
         var s: Structure = {0, {0, 20}}
         return s.b.c
     """
-    assert p_eq(eval(prog), c_long(20))
+    assert eval(prog) == c_long(20)
 
 def test_struct_as_parameter():
     # TODO anonymous struct as function parameter
@@ -88,7 +88,7 @@ def test_struct_as_parameter():
 
         return with_struct({1})
     """
-    assert p_eq(eval(prog), c_long(1))
+    assert eval(prog) == c_long(1)
 
 def test_struct_passing():
     prog = """\
@@ -100,7 +100,7 @@ def test_struct_passing():
         call(a)
         return a.i
     """
-    assert p_eq(eval(prog), c_long(1))
+    assert eval(prog) == c_long(1)
 
 def test_struct_reassignment():
     prog = """\
@@ -109,7 +109,7 @@ def test_struct_reassignment():
         t = {5}
         return t.v
     """
-    assert p_eq(eval(prog), c_long(5))
+    assert eval(prog) == c_long(5)
 
 def test_union():
     prog = """\
@@ -122,4 +122,4 @@ def test_union():
         let u: U = { i = 0xAABBCCDD }
         return u.i, u.s, u.b
     """
-    assert p_eq(eval(prog), (c_ulong(0xAABBCCDD), c_ushort(0xCCDD), c_ubyte(0xDD)))
+    assert eval(prog) == (c_ulong(0xAABBCCDD), c_ushort(0xCCDD), c_ubyte(0xDD))

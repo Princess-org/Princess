@@ -1,4 +1,4 @@
-import tatsu, princess, io, logging, re, pytest
+import tatsu, princess, io, logging, re, pytest, os
 import princess.compiler
 
 skip = pytest.mark.skip
@@ -41,14 +41,17 @@ def parse(text, **kwargs):
 def compile(src):
     return princess.compiler.compile(parse(src))
 
+def test_filename():
+    return os.environ.get('PYTEST_CURRENT_TEST').split(':')[-1].split(' ')[0]
+
 def eval(src, print_src = False):
     csrc = compile(src)
     if print_src or config.getoption("print_src"):
         print(csrc)
-    return princess.compiler.eval(csrc)
+    return princess.compiler.eval(csrc, test_filename())
 
 def eval_expr(src):
-    return eval("return (%s)" % src)
+    return eval("return (%s)" % src, test_filename())
 
 def _dump_traceback(arg):
     if not isinstance(arg, princess.ast.Node): return

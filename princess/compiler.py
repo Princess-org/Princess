@@ -77,5 +77,6 @@ def compile(p_ast):
     return csrc
     
 
-def eval(csrc):
-    pass
+def eval(csrc, filename):
+    with open(filename + ".c", "w") as fp:
+        fp.write(csrc)

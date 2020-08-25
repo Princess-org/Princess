@@ -18,7 +18,7 @@ def test_concat():
         concat(*c, a, " ", b)
         return c
     """
-    assert p_string_value(eval(prog)) == "Hello World"
+    assert eval(prog) == "Hello World"
 
 def test_concat_malloc():
     prog = """
@@ -28,7 +28,7 @@ def test_concat_malloc():
         concat(c, a, " ", b)
         return c
     """
-    assert p_string_value(eval(prog)) == "Hello World"
+    assert eval(prog) == "Hello World"
 
 def test_string():
     prog = """
@@ -36,4 +36,4 @@ def test_string():
         let b = *a
         return b[0]
     """
-    assert p_eq(eval(prog), c_wchar("H"))
+    assert eval(prog) == c_wchar("H")

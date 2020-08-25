@@ -9,7 +9,7 @@ def test_simple_function():
 
         return test_function()
     """
-    assert p_eq(eval(prog), c_long(42))
+    assert eval(prog) == c_long(42)
 
 def test_args():
     prog = """\
@@ -20,7 +20,7 @@ def test_args():
         return add(10, 20)
     """
 
-    assert p_eq(eval(prog), c_long(30))
+    assert eval(prog) == c_long(30)
 
 def test_args_type_infer():
     prog = """\
@@ -30,4 +30,4 @@ def test_args_type_infer():
         return ret_byte(20), ret_float(20)
     """
 
-    assert p_eq(eval(prog), (c_byte(20), c_float(20)))
+    assert eval(prog) == (c_byte(20), c_float(20))
