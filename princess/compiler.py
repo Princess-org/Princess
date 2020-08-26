@@ -1,6 +1,6 @@
 import subprocess, sys, os
 from ctypes import cdll
-from princess import ast, model
+from princess import ast, model, types
 from princess.node import Node
 from princess.codegen import CCodeGen
 from tatsu.model import NodeWalker 
@@ -98,9 +98,12 @@ def eval(csrc, filename):
     with open(filename + ".c", "w") as fp:
         fp.write(csrc)
 
-    subprocess.Popen(
-        ["gcc", "-shared", "-o", filename + ".so", "-fPIC", filename + ".c"], 
+    p = subprocess.Popen(
+        ["gcc", "-I" + os.getcwd() + "/..", "-shared", "-o", filename + ".so", "-fPIC", filename + ".c"], 
     )
+    status = p.wait()
+    if status:
+        raise CompileError("CCC Compilation failed")
 
     lib = cdll.LoadLibrary(os.getcwd() + "/" + filename + ".so")
     return lib.main()

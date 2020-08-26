@@ -42,7 +42,7 @@ def compile(src):
     return princess.compiler.compile(parse(src))
 
 def test_filename():
-    return os.environ.get('PYTEST_CURRENT_TEST').split(':')[-1].split(' ')[0]
+    return os.environ.get("PYTEST_CURRENT_TEST").split("/")[-1].replace(".py::", "_").split(" ")[0]
 
 def eval(src, print_src = False):
     csrc = compile(src)

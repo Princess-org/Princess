@@ -44,6 +44,6 @@ class CCodeGen(CodeGenerator):
             /* This file was compiled by the grace
                of your highness Princess Vic Nightfall
             */
-            #include <stdio.h>
+            #include "princess.h"
             {code}
         """
