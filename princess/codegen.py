@@ -1,7 +1,14 @@
-from princess import ast, model
+from princess import ast, model, types
 
-from tatsu.codegen import ModelRenderer, CodeGenerator
+from tatsu.codegen import ModelRenderer, CodeGenerator, DelegatingRenderingFormatter
 from tatsu.ast import AST
+
+class Formatter(DelegatingRenderingFormatter):
+    def render(self, item, join='', **fields):
+        if types.is_type(item):
+            return item.to_typestring("")
+
+        return super().render(item, join = join, **fields)
 
 class Renderer(ModelRenderer):
     def _render_fields(self, fields):
@@ -16,6 +23,7 @@ class CCodeGen(CodeGenerator):
 
     def __init__(self):
         super().__init__(modules = [CCodeGen])
+        self.formatter = Formatter(self)
 
     class Body(Renderer):
         template = """\
@@ -31,7 +39,7 @@ class CCodeGen(CodeGenerator):
                 fields.update(args = [])
 
         template = """\
-            {type} {identifier}({args::, :}) {{
+            {returns} {identifier}({args::, :}) {{
             {body:1::}
             }}\
         """

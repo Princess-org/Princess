@@ -1,4 +1,4 @@
-import subprocess, sys, os
+import subprocess, sys, os, uuid
 from ctypes import cdll
 from princess import ast, model, types
 from princess.node import Node
@@ -16,6 +16,16 @@ class CompileAssert(Exception):
         self.node = node
 class CompileError(Exception): pass
 
+def create_unique_identifier():
+    return ast.Identifier("_" + str(uuid.uuid4())[:8])
+
+class Scope:
+    def __init__(self, parent = None):
+        self.parent = parent
+        self.dict = {}
+
+    def type_lookup(self, node):
+        pass
 
 class AstWalker(NodeWalker):
     def walk(self, node, *args, **kwargs):
@@ -30,7 +40,13 @@ class AstWalker(NodeWalker):
 
     def walk_children(self, node):
         if isinstance(node, list):
+            def flatten(iterable):  # Allows returing tuples from walk
+                for el in iterable:
+                    if isinstance(el, tuple): yield from el
+                    else: yield el
+
             node[:] = [self.walk(e) for e in iter(node)]
+            node[:] = flatten(node)
         elif isinstance(node, Node):
             node.map(self.walk)
 
@@ -38,18 +54,59 @@ class AstWalker(NodeWalker):
         assert isinstance(node, Node)
         node.map(self.walk, lambda n: n in children)
 
-    def walk_default(self, node: model.Program):
+    def walk_default(self, node):
         self.walk_children(node)
         return node
 
 class Compiler(AstWalker):
     def __init__(self):
         self._walker_cache = {} # Tatsu walkaround FIXME
+        self.function_stack = []
+        self.scope = Scope()
+
+    def enter_function(self, function):
+        self.function_stack.append(function)
+    
+    def exit_function(self):
+        self.function_stack.pop()
+
+    @property
+    def current_function(self):
+        return self.function_stack[-1]
 
     def walk_Def(self, node: model.Def):
-        node.type = "void"
-        node.identifier = "".join(node.name.ast)
-        return node
+        self.walk_child(node, node.args, node.returns)
+
+        node.identifier = "_".join(node.name.ast)
+        if node.identifier != "main":
+            node.identifier = create_unique_identifier() + "_" + node.identifier
+
+        function = types.Function(
+            tuple(self.scope.type_lookup(n) for n in node.returns) 
+                if node.returns else types.void, 
+            tuple(self.scope.type_lookup(n.type) for n in node.args or []))
+
+        self.enter_function(function)
+        self.walk_child(node, node.body)
+        self.exit_function()
+
+        if isinstance(function.return_t, tuple):
+            identifier = create_unique_identifier()
+            struct = ast.TypeDecl(
+                share = ast.Share.No,
+                name = [identifier],
+                value = [ast.Struct(
+                    *[ast.IdDeclStruct(name = "_" + str(n), type = node.returns[n])
+                        for n in range(len(node.returns))]
+                )]
+            )
+            node.returns = identifier
+            struct = self.walk(struct)
+            return (struct, node)
+        else:
+            node.returns = function.return_t
+    
+            return node
 
     def walk_Program(self, node: model.Program):
         code = []
@@ -103,7 +160,7 @@ def eval(csrc, filename):
     )
     status = p.wait()
     if status:
-        raise CompileError("CCC Compilation failed")
+        raise CompileError("GCC Compilation failed")
 
     lib = cdll.LoadLibrary(os.getcwd() + "/" + filename + ".so")
     return lib.main()

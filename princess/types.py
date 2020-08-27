@@ -1,12 +1,16 @@
 import builtins
 
-# Basic types
+def is_type(t): # TODO This is ugly, make use of metaclasses
+    if isinstance(t, type):
+        return issubclass(t, Type)
+    else:
+        return isinstance(t, Type)
+
 class Type:
     @classmethod
     def to_typestring(cls, identifier):
         return (cls.__name__ + 
             ((" " + identifier) if identifier else ""))
-
 
 class Pointer(Type):
     def __init__(self, base):
@@ -35,6 +39,8 @@ class Function(Type):
     def to_typestring(self, identifier):
         return (self.return_t.to_typestring("") + " (*" + identifier + ")(" + 
             ", ".join(map(lambda t: t.to_typestring(""), self.parameter_t)) + ")")
+
+# Basic types
 
 class void(Type): pass
 class bool(Type): pass

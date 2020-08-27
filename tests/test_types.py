@@ -12,7 +12,7 @@ def test_array_type():
 def test_pointer_to_array():
     assert Array(Pointer(int32)).to_typestring("foo") == "int32 *foo[]"
 
-def test_pointer_to_static_array():
+def test_static_array():
     assert Array(5, int32).to_typestring("foo") == "int32 foo[5]"
 
 def test_nested_pointer_to_array():
