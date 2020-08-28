@@ -32,13 +32,30 @@ class Array(Type):
         return self.base.to_typestring(identifier) + "[" + str(self.n or "") + "]"
 
 class Function(Type):
-    def __init__(self, return_t, parameter_t):
+    def __init__(self, return_t, parameter_t, struct_identifier = None):
         self.return_t = return_t
         self.parameter_t = parameter_t
+        self.struct_identifier = struct_identifier
 
     def to_typestring(self, identifier):
         return (self.return_t.to_typestring("") + " (*" + identifier + ")(" + 
             ", ".join(map(lambda t: t.to_typestring(""), self.parameter_t)) + ")")
+
+class Struct(Type):
+    def __init__(self, fields: dict):
+        self.fields = fields
+
+    def to_typestring(self, identifier):
+        return ("struct {\n" + ";\n".join(
+            self.fields[k].to_typestring(k) for k in self.fields) + ";\n} " + identifier)
+
+class Union(Type):
+    def __init__(self, fields: dict):
+        self.fields = fields
+
+    def to_typestring(self, identifier):
+        return ("union {\n" + ";\n".join(
+            self.fields[k].to_typestring(k) for k in self.fields) + ";\n} " + identifier)
 
 # Basic types
 

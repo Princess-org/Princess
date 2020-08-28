@@ -5,6 +5,18 @@ def test_empty_program():
     prog = ""
     eval(prog)
 
+def test_return():
+    prog = """\
+        return true
+    """
+    assert eval(prog) == True
+
+def test_return_multiple():
+    prog = """\
+        return true, 5
+    """
+    assert eval(prog) == (True, 5)
+
 def test_if_statement():
     prog = """\
         if 1 > 2 {
@@ -12,7 +24,7 @@ def test_if_statement():
         }
         return false
     """
-    assert eval(prog) == c_bool(False)
+    assert eval(prog) == False
 
 def test_if_statement_complex():
     prog = """\
@@ -22,7 +34,7 @@ def test_if_statement_complex():
             return true
         } else { }
     """
-    assert eval(prog) == c_bool(True)
+    assert eval(prog) == True
 
 def test_if_scoping():
     prog = """\
@@ -40,7 +52,7 @@ def test_if_scoping():
         }
         return a
     """
-    assert eval(prog) == c_long(42)
+    assert eval(prog) == 42
 
 def test_for_loop_range():
     prog = """\
