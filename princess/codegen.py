@@ -7,7 +7,7 @@ from tatsu.ast import AST
 class Formatter(DelegatingRenderingFormatter):
     def render(self, item, join='', **fields):
         if types.is_type(item):
-            return item.to_typestring("")
+            return types.to_typestring(item, "")
         elif isinstance(item, Enum): 
             return item.value
 
@@ -49,7 +49,8 @@ class CCodeGen(CodeGenerator):
 
     class VarDecl(Renderer):
         def _render_fields(self, fields):
-            fields.update(typestring = fields["type"].to_typestring(fields["name"]))
+            fields.update(typestring = 
+                types.to_typestring(fields["type"], fields["name"]))
             if fields["right"]:
                 return "{typestring} = {right:::}"
             else:
@@ -58,7 +59,8 @@ class CCodeGen(CodeGenerator):
         template = "{left::, :} = {right::, :}"
     class TypeDecl(Renderer):
         def _render_fields(self, fields):
-            fields.update(typestring = fields["type"].to_typestring(fields["name"]))
+            fields.update(typestring = 
+                types.to_typestring(fields["type"], fields["name"]))
         template = "typedef {typestring}"
 
     class Compare(Renderer):
@@ -98,7 +100,7 @@ class CCodeGen(CodeGenerator):
         def _render_fields(self, fields):
             tpe = fields["type"]
             name = "".join(fields["identifier"].ast)
-            fields.update(typestring = tpe.to_typestring(name))
+            fields.update(typestring = types.to_typestring(tpe, name))
             
         template = "{typestring}"
     class Def(Renderer):

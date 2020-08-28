@@ -102,11 +102,11 @@ class Scope:
             v = self.get_const_value(t)
             return v
         elif isinstance(t, model.PtrT):
-            return types.Pointer(self.type_lookup(t.type))
+            return ctypes.POINTER(self.type_lookup(t.type))
         elif isinstance(t, model.Struct):
-            fields = {}
+            fields = []
             for id_decl in t.body.ast:
-                fields[id_decl.name] = self.type_lookup(id_decl.type)
+                fields.append((id_decl.name, self.type_lookup(id_decl.type)))
             if t.pragma and "#union" in t.pragma:
                 return types.Union(fields)
             else:
@@ -115,7 +115,7 @@ class Scope:
             assert_error(t.n, "Dynamic arrays not implemented")
             n = t.n.value
             tpe = self.type_lookup(t.type)
-            return types.Array(n, tpe)
+            return tpe * n
         
         error("Type not implemented")
 
@@ -251,6 +251,7 @@ class Compiler(AstWalker):
 
         node.name = node.name[0]
         node.type = self.scope.type_lookup(node.value[0])
+        self.scope.create_type(node.name, node.type)
 
         return node
 
@@ -306,7 +307,7 @@ class Compiler(AstWalker):
         self.walk_child(node, node.body)
         self.exit_function()
 
-        if isinstance(function.return_t, tuple) and len(function.return_t) > 1:
+        if len(function.return_t) > 1:
             struct = ast.TypeDecl(
                 share = ast.Share.No,
                 name = [struct_identifier],
@@ -317,11 +318,13 @@ class Compiler(AstWalker):
                     )
                 )]
             )
-            node.returns = struct_identifier
             struct = self.walk(struct)
+            node.returns = struct_identifier
+            node.type = self.scope.type_lookup(ast.Identifier(node.returns))
             return (struct, node)
         else:
             node.returns = function.return_t[0]
+            node.type = self.scope.type_lookup(node.returns)
     
             return node
 
@@ -354,21 +357,21 @@ class Compiler(AstWalker):
 
         main_function = ast.Def(
             name = ast.Identifier("main"),
-            body = ast.Body(*main_code)
+            body = ast.Body(*main_code),
         )
         code.append(main_function)
 
         self.walk_children(code)
-        return ast.Program(*code)
+        return ast.Program(*code), main_function.type # pylint: disable=no-member
 
                 
 def compile(p_ast):
-    p_ast = Compiler().walk(p_ast)
+    p_ast, main_type = Compiler().walk(p_ast)
     csrc = CCodeGen().render(p_ast)
-    return csrc
+    return csrc, main_type
     
 
-def eval(csrc, filename):
+def eval(csrc, filename, main_type = None):
     if not os.path.exists("bin"):
         os.mkdir("bin")
 
@@ -384,7 +387,11 @@ def eval(csrc, filename):
         raise CompileError("GCC Compilation failed")
 
     lib = cdll.LoadLibrary(os.getcwd() + "/bin/" + filename + ".so")
-    return lib.main()
+    lib.main.restype = main_type
+    val = lib.main()
+    if issubclass(main_type, ctypes.Structure):
+        val = tuple(getattr(val, "_" + str(n)) for n in range(len(main_type._fields_)))
+    return val
 
 builtins = Scope()
 for n in dir(types):

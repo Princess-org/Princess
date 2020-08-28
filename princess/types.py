@@ -1,37 +1,35 @@
-import builtins
+import builtins, ctypes
 
 def is_type(t): # TODO This is ugly, make use of metaclasses
-    if isinstance(t, type):
-        return issubclass(t, Type)
-    else:
-        return isinstance(t, Type)
+    return (t is void or isinstance(t, Function) or
+        isinstance(t, type) and (
+        issubclass(t, ctypes._SimpleCData) or
+        issubclass(t, ctypes._Pointer) or
+        issubclass(t, ctypes.Array) or 
+        issubclass(t, ctypes.Structure) or
+        issubclass(t, ctypes.Union)))
 
-class Type:
-    @classmethod
-    def to_typestring(cls, identifier):
-        return (cls.__name__ + 
-            ((" " + identifier) if identifier else ""))
+def to_typestring(cls, identifier):
+    if isinstance(cls, Function):
+        return (to_typestring(cls.return_t, "") + " (*" + identifier + ")(" + 
+            ", ".join(map(lambda t: to_typestring(t, ""), cls.parameter_t)) + ")")
+    elif issubclass(cls, ctypes._SimpleCData):
+        ret = cls.__name__.split("c_")[1]
+        if identifier:
+            ret += " " + identifier
+        return ret
+    elif issubclass(cls, ctypes._Pointer):
+        return to_typestring(cls._type_, "*" + identifier)
+    elif issubclass(cls, ctypes.Array):
+        return to_typestring(cls._type_, identifier) + "[" + str(cls._length_) + "]"
+    elif issubclass(cls, ctypes.Structure):
+        return ("struct {\n" + ";\n".join(
+            to_typestring(k[1], k[0]) for k in cls._fields_) + ";\n} " + identifier) 
+    elif issubclass(cls, ctypes.Union):
+        return ("union {\n" + ";\n".join(
+            to_typestring(k[1], k[0]) for k in cls._fields_) + ";\n} " + identifier) 
 
-class Pointer(Type):
-    def __init__(self, base):
-        self.base = base
-    
-    def to_typestring(self, identifier):
-        return self.base.to_typestring("*" + identifier)
-    
-class Array(Type):
-    def __init__(self, n_or_base, base = None):
-        if isinstance(n_or_base, builtins.int):
-            self.n = n_or_base
-            self.base = base
-        else:
-            self.n = 0
-            self.base = n_or_base
-    
-    def to_typestring(self, identifier):
-        return self.base.to_typestring(identifier) + "[" + str(self.n or "") + "]"
-
-class Function(Type):
+class Function:
     def __init__(self, return_t, parameter_t, struct_identifier = None):
         self.return_t = return_t
         self.parameter_t = parameter_t
@@ -41,38 +39,33 @@ class Function(Type):
         return (self.return_t.to_typestring("") + " (*" + identifier + ")(" + 
             ", ".join(map(lambda t: t.to_typestring(""), self.parameter_t)) + ")")
 
-class Struct(Type):
-    def __init__(self, fields: dict):
-        self.fields = fields
+def Struct(fields):
+    class Struct(ctypes.Structure):
+        _fields_ = fields
+    return Struct
 
-    def to_typestring(self, identifier):
-        return ("struct {\n" + ";\n".join(
-            self.fields[k].to_typestring(k) for k in self.fields) + ";\n} " + identifier)
+def Union(fields):
+    class Union(ctypes.Union):
+        _fields = fields
+    return Union
 
-class Union(Type):
-    def __init__(self, fields: dict):
-        self.fields = fields
-
-    def to_typestring(self, identifier):
-        return ("union {\n" + ";\n".join(
-            self.fields[k].to_typestring(k) for k in self.fields) + ";\n} " + identifier)
+class void: pass
 
 # Basic types
 
-class void(Type): pass
-class bool(Type): pass
+bool = ctypes.c_bool
 
-class int8(Type): pass
-class uint8(Type): pass
-class int16(Type): pass
-class uint16(Type): pass
-class int32(Type): pass
-class uint32(Type): pass
-class int64(Type): pass
-class uint64(Type): pass
+int8 = ctypes.c_int8
+uint8 = ctypes.c_uint8
+int16 = ctypes.c_int16
+uint16 = ctypes.c_uint16
+int32 = ctypes.c_int32
+uint32 = ctypes.c_uint32
+int64 = ctypes.c_int64
+uint64 = ctypes.c_uint64
 
-class float32(Type): pass
-class float64(Type): pass
+float32 = ctypes.c_float
+float64 = ctypes.c_double
 
 char = uint8
 short = int16
@@ -83,4 +76,4 @@ long = int64
 ulong = uint64
 float = float32
 double = float64
-string = Array(uint8)
+string = ctypes.c_char_p

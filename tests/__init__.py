@@ -45,13 +45,13 @@ def test_filename():
     return os.environ.get("PYTEST_CURRENT_TEST").split("/")[-1].replace(".py::", "_").split(" ")[0]
 
 def eval(src, print_src = False):
-    csrc = compile(src)
+    csrc, main_type = compile(src)
     if print_src or config.getoption("print_src"):
         print(csrc)
-    return princess.compiler.eval(csrc, test_filename())
+    return princess.compiler.eval(csrc, test_filename(), main_type)
 
 def eval_expr(src):
-    return eval("return (%s)" % src, test_filename())
+    return eval("return (%s)" % src)
 
 def _dump_traceback(arg):
     if not isinstance(arg, princess.ast.Node): return
