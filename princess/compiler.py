@@ -146,15 +146,19 @@ class Scope:
             return ctypes.POINTER(self.type_lookup(t.type))
         elif isinstance(t, model.Struct):
             fields = []
-            for id_decl in t.body.ast:
-                fields.append((id_decl.name, self.type_lookup(id_decl.type)))
+            for id_decl in t.body.ast or []:
+                if id_decl:
+                    if isinstance(id_decl.name, model.Identifier): # TODO This is ugly
+                        name = id_decl.name.ast[-1]
+                    else: name = id_decl.name
+                    fields.append((name, self.type_lookup(id_decl.type)))
             if t.pragma and "#union" in t.pragma:
                 return types.Union(fields)
             else:
                 return types.Struct(fields)
         elif isinstance(t, model.ArrayT):
             assert_error(t.n, "Dynamic arrays not implemented")
-            n = t.n.value
+            n = t.n.ast
             tpe = self.type_lookup(t.type)
             return tpe * n
         
@@ -288,6 +292,55 @@ class Compiler(AstWalker):
 
         return node
 
+    def walk_Ptr(self, node: model.Ptr):
+        self.walk_children(node)
+        
+        if isinstance(node.right, model.Identifier) and node.right.modifier == Modifier.Type:
+            return self.walk(ast.PtrT(type = node.right))
+
+        node.type =ctypes.POINTER(node.right.type)
+        return node
+
+    def walk_Array(self, node: model.Array):
+        self.walk_children(node)
+
+        node.length = len(node.ast)
+
+        if node.ast:
+            tpe = node.ast[0].type
+            for v in node.ast[1:]:
+                tpe = common_type(tpe, v.type)
+
+            node.value_type = tpe
+            node.type = tpe * node.length
+        else:
+            node.value_type = None
+            node.type = None
+
+        return node
+
+    def walk_ArrayIndex(self, node: model.ArrayIndex):
+        self.walk_children(node)
+
+        assert_error(types.is_array(node.left.type) or types.is_pointer(node.left.type), "Can only index arrays")
+        node.array_type = node.left.type
+        
+        node.type = node.left.type._type_
+        return node
+
+    def walk_SizeOf(self, node: model.SizeOf):
+        self.walk_children(node)
+        
+        if isinstance(node.ast, model.Type):
+            tpe = self.scope.type_lookup(node.ast)
+        else:
+            tpe = node.ast
+
+        node.type = ctypes.c_size_t
+        node.value = tpe
+        return node
+        
+
     def walk_BinaryOp(self, node: model.BinaryOp):
         self.walk_children(node)
 
@@ -324,8 +377,12 @@ class Compiler(AstWalker):
     
     def walk_UnaryPreOp(self, node: model.UnaryPreOp):
         self.walk_children(node)
-
         node.type = node.right.type
+        return node
+
+    def walk_Compare(self, node: model.Compare):
+        self.walk_children(node)
+        node.type = ctypes.c_bool
         return node
 
     def walk_TypeDecl(self, node: model.TypeDecl):
@@ -335,6 +392,9 @@ class Compiler(AstWalker):
 
         node.name = node.name[0]
         node.type = self.scope.type_lookup(node.value[0])
+        if isinstance(node.name, model.Identifier):
+            node.name = node.name.ast[-1]
+        else: node.name = node.name
         self.scope.create_type(node.name, node.type)
 
         return node
@@ -356,6 +416,22 @@ class Compiler(AstWalker):
         
         node.type = tpe
         node.name = "_".join(id_decl.name.ast)
+        return node
+
+    def walk_Cast(self, node: model.Cast):
+        self.walk_child(node, node.right)
+
+        # Simplify cast if casting a literal
+        tpe = self.scope.type_lookup(node.right)
+
+        if isinstance(node.left, (model.Integer, model.Float, model.StructInit)):
+            node.left.type = tpe
+            if isinstance(node.left, model.StructInit):
+                return self.walk(node.left)
+            return node.left
+
+        self.walk_child(node, node.left)
+        node.type = tpe
         return node
 
     def walk_Call(self, node: model.Call):
@@ -443,23 +519,27 @@ class Compiler(AstWalker):
             if isinstance(n, (model.Def, model.TypeDecl)):
                 code.append(n)
             elif isinstance(n, model.VarDecl):
-                assert_error(len(n.left) == 1 >= len(n.right), "Multiple assignment not implemented")
+                if n.right:
+                    assert_error(len(n.left) == 1 >= len(n.right), "Multiple assignment not implemented")
 
-                # Type inference
-                right = self.walk(n.right[0])
-                n.left[0].type = right.type
+                    # Type inference
+                    right = self.walk(n.right[0])
+                    n.left[0].type = right.type
+                
                 var_decl = ast.VarDecl(
                     left = n.left,
                     right = [],
                     keyword = n.keyword
                 )
                 code.append(var_decl)
-                assignment = ast.Assign(
-                    left = [n.name if isinstance(n, model.IdDecl) 
-                            else n.ast for n in n.left],
-                    right = n.right
-                )
-                main_code.append(assignment)
+
+                if n.right:
+                    assignment = ast.Assign(
+                        left = [n.name if isinstance(n, model.IdDecl) 
+                                else n.ast for n in n.left],
+                        right = n.right
+                    )
+                    main_code.append(assignment)
             else:
                 main_code.append(n)
 

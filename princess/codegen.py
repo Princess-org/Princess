@@ -35,6 +35,8 @@ class CCodeGen(CodeGenerator):
     
     class Integer(Renderer):
         template = "{value}"
+    class Float(Renderer):
+        template = "{value}"
 
     class Identifier(Renderer):
         def _render_fields(self, fields):
@@ -79,6 +81,20 @@ class CCodeGen(CodeGenerator):
         template = "(&{right})"
     class Deref(Renderer):
         template = "(*{right})"
+
+    class SizeOf(Renderer):
+        def _render_fields(self, fields):
+            if types.is_type(fields["value"]):
+                fields.update(value = types.to_typestring(fields["value"], ""))
+        template = "(sizeof({value}))"
+    
+    class Cast(Renderer):
+        template = "(({type}){left})"
+    
+    class ArrayIndex(Renderer):
+        template = "({left}[{right}])"
+    class Array(Renderer):
+        template = "(({type}){{ {value::, :} }})"
 
     class CallArg(Renderer):
         template = "{value}"

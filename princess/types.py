@@ -15,8 +15,13 @@ def is_function(t):
 def is_pointer(t):
     return isinstance(t, type) and issubclass(t, ctypes._Pointer)
 
+def is_array(t):
+    return isinstance(t, type) and issubclass(t, ctypes.Array)
+
 def to_typestring(cls, identifier):
-    if isinstance(cls, Function):
+    if cls is void:
+        return "void"
+    elif isinstance(cls, Function):
         return (to_typestring(cls.return_t, "") + " (*" + identifier + ")(" + 
             ", ".join(map(lambda t: to_typestring(t, ""), cls.parameter_t)) + ")")
     elif issubclass(cls, ctypes._SimpleCData):
@@ -29,11 +34,11 @@ def to_typestring(cls, identifier):
     elif issubclass(cls, ctypes.Array):
         return to_typestring(cls._type_, identifier) + "[" + str(cls._length_) + "]"
     elif issubclass(cls, ctypes.Structure):
-        return ("struct {\n" + ";\n".join(
-            to_typestring(k[1], k[0]) for k in cls._fields_) + ";\n} " + identifier) 
+        return ("struct {" + "; ".join(
+            to_typestring(k[1], k[0]) for k in cls._fields_) + ";} " + identifier) 
     elif issubclass(cls, ctypes.Union):
-        return ("union {\n" + ";\n".join(
-            to_typestring(k[1], k[0]) for k in cls._fields_) + ";\n} " + identifier) 
+        return ("union {" + "; ".join(
+            to_typestring(k[1], k[0]) for k in cls._fields_) + ";} " + identifier) 
 
 class Function:
     def __init__(self, return_t, parameter_t, struct_identifier = None):
@@ -73,7 +78,8 @@ uint64 = ctypes.c_uint64
 float32 = ctypes.c_float
 float64 = ctypes.c_double
 
-byte = uint8
+byte = int8
+ubyte = uint8
 char = uint8
 short = int16
 ushort = uint16
