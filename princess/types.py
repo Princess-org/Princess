@@ -1,6 +1,6 @@
 import builtins, ctypes
 
-def is_type(t): # TODO This is ugly, make use of metaclasses
+def is_type(t):
     return (t is void or isinstance(t, Function) or
         isinstance(t, type) and (
         issubclass(t, ctypes._SimpleCData) or
@@ -8,6 +8,9 @@ def is_type(t): # TODO This is ugly, make use of metaclasses
         issubclass(t, ctypes.Array) or 
         issubclass(t, ctypes.Structure) or
         issubclass(t, ctypes.Union)))
+
+def is_function(t):
+    return isinstance(t, Function)
 
 def to_typestring(cls, identifier):
     if isinstance(cls, Function):
@@ -67,6 +70,7 @@ uint64 = ctypes.c_uint64
 float32 = ctypes.c_float
 float64 = ctypes.c_double
 
+byte = uint8
 char = uint8
 short = int16
 ushort = uint16

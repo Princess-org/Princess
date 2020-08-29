@@ -47,6 +47,11 @@ class CCodeGen(CodeGenerator):
             {value::\\n:%s;}\
         """
 
+    class CallArg(Renderer):
+        template = "{value}"
+    class Call(Renderer):
+        template = "{left}({args::, :})"
+
     class VarDecl(Renderer):
         def _render_fields(self, fields):
             fields.update(typestring = 
@@ -99,7 +104,7 @@ class CCodeGen(CodeGenerator):
     class DefArg(Renderer):
         def _render_fields(self, fields):
             tpe = fields["type"]
-            name = "".join(fields["identifier"].ast)
+            name = fields["identifier"]
             fields.update(typestring = types.to_typestring(tpe, name))
             
         template = "{typestring}"

@@ -120,6 +120,9 @@ class Scope:
         error("Type not implemented")
 
     def create_variable(self, modifier: Modifier, name, tpe, share = ast.Share.No, value = None, identifier = None):
+        assert_error(isinstance(name, str), "Illegal declaration")
+        if identifier: 
+            assert_error(isinstance(identifier, str), "Illegal declaration")
         assert_error(name not in self.dict, "Redeclaration of %s" % name)
         
         v = Value(
@@ -274,6 +277,15 @@ class Compiler(AstWalker):
         node.name = "_".join(id_decl.name.ast)
         return node
 
+    def walk_Call(self, node: model.Call):
+        self.walk_children(node)
+        assert_error(types.is_function(node.left.type), "Can only call functions")
+                
+        funct = node.left.type
+        node.type = funct.return_t[0]
+
+        return node
+
     def walk_Return(self, node: model.Return):
         self.walk_children(node)
 
@@ -283,6 +295,12 @@ class Compiler(AstWalker):
         if len(function.return_t) > 1:
             node.struct_identifier = function.struct_identifier
         
+        return node
+
+    def walk_DefArg(self, node: model.DefArg):
+        self.walk_children(node)
+        node.type = self.scope.type_lookup(node.type)
+        node.identifier = node.name.ast[-1]
         return node
 
     def walk_Def(self, node: model.Def):
@@ -303,9 +321,18 @@ class Compiler(AstWalker):
         
         self.scope.create_function(name, function, ast.Share.No, node.identifier)
 
-        self.enter_function(function)
-        self.walk_child(node, node.body)
-        self.exit_function()
+        if node.body:
+            self.enter_scope()
+            for arg in node.args or []:
+                # Create argument variables
+                v = self.scope.create_variable(Modifier.Var, arg.name.ast[-1], self.scope.type_lookup(arg.type))
+                arg.identifier = v.identifier
+
+            self.enter_function(function)
+            self.walk_child(node, node.body)
+            self.exit_function()
+            
+            self.exit_scope()
 
         if len(function.return_t) > 1:
             struct = ast.TypeDecl(
@@ -371,7 +398,7 @@ def compile(p_ast):
     return csrc, main_type
     
 
-def eval(csrc, filename, main_type = None):
+def eval(csrc, filename, main_type):
     if not os.path.exists("bin"):
         os.mkdir("bin")
 
@@ -390,6 +417,7 @@ def eval(csrc, filename, main_type = None):
     lib.main.restype = main_type
     val = lib.main()
     if issubclass(main_type, ctypes.Structure):
+        print(main_type, len(main_type._fields_))
         val = tuple(getattr(val, "_" + str(n)) for n in range(len(main_type._fields_)))
     return val
 

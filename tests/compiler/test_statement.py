@@ -1,4 +1,3 @@
-from ctypes import *
 from tests import eval_expr, eval
 
 def test_empty_program():
@@ -62,7 +61,7 @@ def test_for_loop_range():
         }
         return a
     """
-    assert eval(prog) == c_long(20)
+    assert eval(prog) == 20
 
 def test_while_loop():
     prog = """\
@@ -74,7 +73,7 @@ def test_while_loop():
         }
         return b
     """
-    assert eval(prog) == c_long(10)
+    assert eval(prog) == 10
 
 def test_export():
     prog = """
@@ -82,4 +81,4 @@ def test_export():
         export def test() { }
         return a
     """
-    assert eval(prog) == c_long(20)
+    assert eval(prog) == 20
