@@ -47,6 +47,39 @@ class CCodeGen(CodeGenerator):
             {value::\\n:%s;}\
         """
 
+    # Operators
+    # TODO Directly unwrap primitive values -> performance
+    class UMinus(Renderer):
+        template = "(-{right})"
+    class Invert(Renderer):
+        template = "(~{right})"
+    class Add(Renderer):
+        template = "({left} + {right})"
+    class Sub(Renderer):
+        template = "({left} - {right})"
+    class Mul(Renderer):
+        template = "({left} * {right})"
+    class Div(Renderer):
+        template = "({left} / {right})"
+    class Mod(Renderer):
+        template = "({left} % {right})"
+    class BAnd(Renderer):
+        template = "({left} & {right})"
+    class BOr(Renderer):
+        template = "({left} | {right})"
+    class Xor(Renderer):
+        template = "({left} ^ {right})"
+    class And(Renderer):
+        template = "({left} && {right})"
+    class Or(Renderer):
+        template = "({left} || {right})"
+    class Not(Renderer):
+        template = "(!{right})"
+    class Ptr(Renderer):
+        template = "(&{right})"
+    class Deref(Renderer):
+        template = "(*{right})"
+
     class CallArg(Renderer):
         template = "{value}"
     class Call(Renderer):

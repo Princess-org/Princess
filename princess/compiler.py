@@ -1,5 +1,6 @@
 import subprocess, sys, os, uuid
 import ctypes
+from pathlib import Path
 from enum import Enum
 from ctypes import cdll
 from princess import ast, model, types
@@ -26,6 +27,46 @@ class Modifier(str, Enum):
     Var = "var"
     Let = "let"
     Type = "type"
+
+unsigned_t = set([ctypes.c_uint8, ctypes.c_uint16, 
+    ctypes.c_uint32, ctypes.c_uint64])
+signed_t = set([ctypes.c_int8, ctypes.c_int16, ctypes.c_int32, ctypes.c_int64])
+float_t = set([ctypes.c_double, ctypes.c_float])
+int_t = unsigned_t | signed_t
+
+def to_signed(t):
+    if t in unsigned_t:
+        return {ctypes.c_uint8: ctypes.c_int8, 
+            ctypes.c_uint16: ctypes.c_int16, 
+            ctypes.c_uint32: ctypes.c_int32, 
+            ctypes.c_uint64: ctypes.c_int64}[t]
+    return t
+
+def cast_to(a, node, b):
+    """ wraps node in a cast to b if a != b """
+    if a is b:
+        return node
+    return ast.Cast(left = node, type = b)
+
+def common_type(a, b, sign_convert = False):
+    """ Finds the common type of a and b, implicit up conversion """
+    if a == b: return a
+    elif a in int_t and b in int_t:
+        # integer <-> integer conversion
+        result = b if ctypes.sizeof(a) < ctypes.sizeof(b) else a
+        # check sign, unsigned -> signed if signs differ
+        if sign_convert and (a in unsigned_t) != (b in unsigned_t):
+            result = to_signed(result)
+    elif a in float_t and b in float_t:
+        result = b if ctypes.sizeof(a) < ctypes.sizeof(b) else a
+    elif a in float_t and b in int_t:
+        result = a
+    elif a in int_t and b in float_t:
+        result = b
+    else: # Sanity check TODO: Raise proper exception
+        error("Incompatible types %s %s" % (a, b))
+
+    return result
 
 class Value:
     def __init__(self, modifier: Modifier, name: str, tpe, 
@@ -247,6 +288,46 @@ class Compiler(AstWalker):
 
         return node
 
+    def walk_BinaryOp(self, node: model.BinaryOp):
+        self.walk_children(node)
+
+        l = node.left.type
+        r = node.right.type
+
+        if isinstance(node, (model.Shl, model.Shr)):
+            # Shift operators
+            assert l in int_t and r in int_t
+            node.type = l
+
+            return node # No conversion
+        elif isinstance(node, (model.BAnd, model.BOr, model.Xor)):
+            # Bitwise, only works on ints
+            assert l in int_t and r in int_t
+            node.type = common_type(l, r, sign_convert = False)
+        elif isinstance(node, (model.PAdd, model.PSub)):
+            # TODO pointer - pointer
+            assert types.is_pointer(l) and r in int_t
+            node.type = l
+
+            return node # No conversion
+        elif isinstance(node, (model.And, model.Or)):
+            assert_error(node.right.type is node.left.type is ctypes.c_bool, "incompatible type")
+            node.type = ctypes.c_bool
+        else:
+            # Arithmetic
+            node.type = common_type(l, r, sign_convert = True)
+
+        node.left = cast_to(l, node.left, node.type)
+        node.right = cast_to(r, node.right, node.type)
+
+        return node
+    
+    def walk_UnaryPreOp(self, node: model.UnaryPreOp):
+        self.walk_children(node)
+
+        node.type = node.right.type
+        return node
+
     def walk_TypeDecl(self, node: model.TypeDecl):
         self.walk_children(node)
         assert_error(len(node.name) == len(node.value) == 1,
@@ -402,20 +483,27 @@ def eval(csrc, filename, main_type):
     if not os.path.exists("bin"):
         os.mkdir("bin")
 
-    with open("bin/" + filename + ".c", "w") as fp:
+    basepath = Path("bin").absolute()
+    cfile = basepath / (filename + ".c")
+    cfile.parent.mkdir(exist_ok = True)
+    libfile = basepath / (filename + ".so")
+
+    with open(cfile, "w") as fp:
         fp.write(csrc)
 
     p = subprocess.Popen(
         ["gcc", "-I" + os.getcwd(), "-shared", "-o", 
-        "bin/" + filename + ".so", "-fPIC", "bin/" + filename + ".c"], 
+        libfile, "-fPIC", cfile], 
     )
     status = p.wait()
     if status:
         raise CompileError("GCC Compilation failed")
 
-    lib = cdll.LoadLibrary(os.getcwd() + "/bin/" + filename + ".so")
+    lib = cdll.LoadLibrary(libfile.absolute())
     lib.main.restype = main_type
     val = lib.main()
+    del lib
+    
     if issubclass(main_type, ctypes.Structure):
         print(main_type, len(main_type._fields_))
         val = tuple(getattr(val, "_" + str(n)) for n in range(len(main_type._fields_)))

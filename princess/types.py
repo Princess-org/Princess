@@ -12,6 +12,9 @@ def is_type(t):
 def is_function(t):
     return isinstance(t, Function)
 
+def is_pointer(t):
+    return isinstance(t, type) and issubclass(t, ctypes._Pointer)
+
 def to_typestring(cls, identifier):
     if isinstance(cls, Function):
         return (to_typestring(cls.return_t, "") + " (*" + identifier + ")(" + 

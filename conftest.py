@@ -1,7 +1,8 @@
-import pytest
+import pytest, tests
 import os, tatsu, subprocess, sys, shutil, importlib
 
 from datetime import datetime
+
 
 # Arguments
 def pytest_addoption(parser):
@@ -69,3 +70,8 @@ def pytest_assertrepr_compare(config, op, left, right):
         ret.insert(0, '')
 
     return ret or None
+
+@pytest.fixture(autouse = True)
+def library_fixture():
+    tests.LIB_COUNT = 0
+    yield
