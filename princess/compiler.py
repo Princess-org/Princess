@@ -144,7 +144,7 @@ class Scope:
             v.name = t.ast[-1]
             return v
         elif isinstance(t, model.PtrT):
-            return types.Pointer(self.type_lookup(t.type))
+            return types.PointerT(self.type_lookup(t.type))
         elif isinstance(t, model.Struct):
             fields = []
             for id_decl in t.body.ast or []:
@@ -157,11 +157,11 @@ class Scope:
                 return types.Union(fields)
             else:
                 return types.Struct(fields)
-        elif isinstance(t, model.ArrayT):
+        elif isinstance(t, model.Array):
             assert_error(t.n, "Dynamic arrays not implemented")
             n = t.n.ast
             tpe = self.type_lookup(t.type)
-            return types.Array(tpe, n)
+            return types.ArrayT(tpe, n)
         
         print(t)
         error("Type not implemented")
@@ -270,7 +270,7 @@ class Compiler(AstWalker):
         node.type = types.double
         return node
     def walk_String(self, node: model.String):
-        node.type = types.string
+        node.type = types.ArrayT(types.char, len(node.ast))
         return node
     def walk_Char(self, node: model.Char):
         node.type = types.char
@@ -301,14 +301,16 @@ class Compiler(AstWalker):
         if isinstance(node.right, model.Identifier) and node.right.modifier == Modifier.Type:
             return self.walk(ast.PtrT(type = node.right))
 
-        node.type = types.Pointer(node.right.type)
+        node.type = types.PointerT(node.right.type)
         return node
     
     def walk_Deref(self, node: model.Deref):
         self.walk_children(node)
 
-        assert types.is_pointer(node.right.type)
-        node.type = node.right.type.type
+        tpe = node.right.type
+        assert_error(types.is_pointer(tpe), "Must be a pointer type")
+
+        node.type = tpe.type
         return node
 
     def walk_Array(self, node: model.Array):
@@ -322,7 +324,7 @@ class Compiler(AstWalker):
                 tpe = common_type(tpe, v.type)
 
             node.value_type = tpe
-            node.type = types.Array(tpe, node.length)
+            node.type = types.ArrayT(tpe, node.length)
         else:
             node.value_type = None
             node.type = None
@@ -488,7 +490,7 @@ class Compiler(AstWalker):
 
         struct_identifier = create_unique_identifier()
 
-        function = types.Function(
+        function = types.FunctionT(
             tuple(self.scope.type_lookup(n) for n in node.returns) 
                 if node.returns else (types.void,), 
             tuple(self.scope.type_lookup(n.type) for n in node.args or []),
@@ -615,3 +617,5 @@ for n in dir(types):
     v = getattr(types, n)
     if isinstance(v, types.Type):
         builtins.create_type(n, v)
+
+builtins.create_function("allocate", types.FunctionT())

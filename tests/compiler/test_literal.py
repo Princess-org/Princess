@@ -8,11 +8,11 @@ def test_string_literal():
     #assert (eval_expr("\" \\a\\b\\f\\n\\t\\v\\'\\\"\\\\\\0 \"")
     #    == " \a\b\f\n\t\v\'\"\\\0 ") TODO Not implemented, see to_c_string in codegen
     
-    assert eval_expr("\"test\"[0]") == 't'.encode()
+    assert eval_expr("\"test\"[0]") == b't'
 
 def test_char_literal():
     #assert eval_expr("'界'") == '界'
-    assert eval_expr("'\\a'") == '\x07'.encode()
+    assert eval_expr("'\\a'") == b'\x07'
 
 def test_int_literal():
     assert eval_expr("123") == 123

@@ -1,4 +1,3 @@
-from ctypes import *
 from tests import eval_expr, eval
 
 def test_print(capfd):

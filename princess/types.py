@@ -4,13 +4,13 @@ def is_type(t):
     return isinstance(t, Type)
 
 def is_function(t):
-    return isinstance(t, Function)
+    return isinstance(t, FunctionT)
 
 def is_pointer(t):
-    return isinstance(t, Pointer)
+    return isinstance(t, PointerT)
 
 def is_array(t):
-    return isinstance(t, Array)
+    return isinstance(t, ArrayT)
 
 def is_struct(t):
     return isinstance(t, (Struct, Union))
@@ -48,7 +48,7 @@ class Type:
     def __str__(self):
         return self.to_typestring("")
 
-class Pointer(Type):
+class PointerT(Type):
     def __init__(self, tpe, name = None):
         self.type = tpe
         super().__init__(None, name = name)
@@ -60,7 +60,7 @@ class Pointer(Type):
     def _to_typestring(self, identifier):
         return self.type.to_typestring("*" + identifier)
 
-class Array(Type):
+class ArrayT(Type):
     def __init__(self, tpe, n, name = None):
         self.type = tpe
         self.n = n
@@ -112,9 +112,14 @@ class Union(Type):
     def _to_typestring(self, identifier):
         return ("union {" + "; ".join(
             f[1].to_typestring(f[0]) for f in self.fields) + ";} " + identifier) 
-    
-class Function(Type):
-    def __init__(self, return_t, parameter_t, struct_identifier = None, name = None):
+
+void = Type(None, "void")
+void_p = Type(ctypes.c_void_p, "void*")
+size_t = Type(ctypes.c_size_t, "size_t")
+
+
+class FunctionT(Type):
+    def __init__(self, return_t = (void,), parameter_t = (), struct_identifier = None, name = None):
         self.return_t = return_t
         self.parameter_t = parameter_t
         self.struct_identifier = struct_identifier
@@ -123,10 +128,6 @@ class Function(Type):
     def _to_typestring(self, identifier):
         return (self.return_t.to_typestring("") + " (*" + identifier + ")(" + 
             ", ".join(map(lambda t: t.to_typestring(""), self.parameter_t)) + ")")
-
-void = Type(None, "void")
-void_p = Type(ctypes.c_void_p, "void*")
-size_t = Type(ctypes.c_size_t, "size_t")
 
 # Basic types
 
