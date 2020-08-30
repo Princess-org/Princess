@@ -1,4 +1,3 @@
-from ctypes import *
 from tests import eval_expr, eval, skip
 from pytest import raises
 
@@ -10,7 +9,7 @@ def test_pointer_basic():
         a = a + 10
         return a, @b
     """
-    assert eval(prog) == (c_long(30), c_long(30))
+    assert eval(prog) == (30, 30)
 
 def test_pointer_to_pointer():
     prog = """\
@@ -19,7 +18,7 @@ def test_pointer_to_pointer():
         var c = *b
         return @@c
     """
-    assert eval(prog) == c_long(10)
+    assert eval(prog) == 10
 
 def test_pass_pointer_to_function():
     prog = """\
@@ -31,7 +30,7 @@ def test_pass_pointer_to_function():
         inc_by_one(*a)
         return a
     """
-    assert eval(prog) == c_long(21)
+    assert eval(prog) == 21
 
 def test_malloc_free():
     prog = """\
@@ -41,6 +40,6 @@ def test_malloc_free():
         free(a)
         return b
     """
-    assert eval(prog) == c_long(20)
+    assert eval(prog) == 20
     
 

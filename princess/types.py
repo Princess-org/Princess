@@ -1,92 +1,158 @@
 import builtins, ctypes
 
 def is_type(t):
-    return (t is void or isinstance(t, Function) or
-        isinstance(t, type) and (
-        issubclass(t, ctypes._SimpleCData) or
-        issubclass(t, ctypes._Pointer) or
-        issubclass(t, ctypes.Array) or 
-        issubclass(t, ctypes.Structure) or
-        issubclass(t, ctypes.Union)))
+    return isinstance(t, Type)
 
 def is_function(t):
     return isinstance(t, Function)
 
 def is_pointer(t):
-    return isinstance(t, type) and issubclass(t, ctypes._Pointer)
+    return isinstance(t, Pointer)
 
 def is_array(t):
-    return isinstance(t, type) and issubclass(t, ctypes.Array)
+    return isinstance(t, Array)
 
-def to_typestring(cls, identifier):
-    if cls is void:
-        return "void"
-    elif isinstance(cls, Function):
-        return (to_typestring(cls.return_t, "") + " (*" + identifier + ")(" + 
-            ", ".join(map(lambda t: to_typestring(t, ""), cls.parameter_t)) + ")")
-    elif issubclass(cls, ctypes._SimpleCData):
-        ret = cls.__name__.split("c_")[1]
+def is_struct(t):
+    return isinstance(t, (Struct, Union))
+
+class Type:
+    def __init__(self, c_type, name = None):
+        self._c_type = c_type
+        self.name = name
+    
+    @property
+    def c_type(self):
+        return self._c_type
+
+    def _to_typestring(self, identifier):
+        res = self.c_type.__name__.split("c_")[1]
         if identifier:
-            ret += " " + identifier
-        return ret
-    elif issubclass(cls, ctypes._Pointer):
-        return to_typestring(cls._type_, "*" + identifier)
-    elif issubclass(cls, ctypes.Array):
-        return to_typestring(cls._type_, identifier) + "[" + str(cls._length_) + "]"
-    elif issubclass(cls, ctypes.Structure):
-        return ("struct {" + "; ".join(
-            to_typestring(k[1], k[0]) for k in cls._fields_) + ";} " + identifier) 
-    elif issubclass(cls, ctypes.Union):
-        return ("union {" + "; ".join(
-            to_typestring(k[1], k[0]) for k in cls._fields_) + ";} " + identifier) 
+            res = res + " " + identifier
+        return res
 
-class Function:
-    def __init__(self, return_t, parameter_t, struct_identifier = None):
+    def to_typestring(self, identifier, named = True):
+        if named and self.name:
+            res = self.name
+            if identifier:
+                res = res + " " + identifier
+        else:
+            res = self._to_typestring(identifier)
+        return res
+
+    def __hash__(self):
+        return hash(self.c_type)
+    
+    def __eq__(self, value):
+        return self.c_type == value.c_type
+
+    def __str__(self):
+        return self.to_typestring("")
+
+class Pointer(Type):
+    def __init__(self, tpe, name = None):
+        self.type = tpe
+        super().__init__(None, name = name)
+    
+    @property
+    def c_type(self):
+        return ctypes.POINTER(self.type.c_type)
+    
+    def _to_typestring(self, identifier):
+        return self.type.to_typestring("*" + identifier)
+
+class Array(Type):
+    def __init__(self, tpe, n, name = None):
+        self.type = tpe
+        self.n = n
+        super().__init__(None, name = name)
+
+    @property
+    def c_type(self):
+        return self.type.c_type * self.n
+    
+    def _to_typestring(self, identifier):
+        return self.type.to_typestring(identifier) + "[" + str(self.n) + "]" 
+
+class Struct(Type):
+    def __init__(self, fields, name = None):
+        self.fields = fields
+        self.cache = None
+        super().__init__(None, name = name)
+
+    @property
+    def c_type(self):
+        if self.cache:
+            return self.cache
+        class Struct(ctypes.Structure):
+            _fields_ = [(f[0], f[1].c_type) for f in self.fields]
+        
+        self.cache = Struct
+        return self.cache
+    
+    def _to_typestring(self, identifier):
+        return ("struct {" + "; ".join(
+            f[1].to_typestring(f[0]) for f in self.fields) + ";} " + identifier) 
+    
+class Union(Type):
+    def __init__(self, fields, name = None):
+        self.fields = fields
+        self.cache = None
+        super().__init__(None, name = name)
+    
+    @property
+    def c_type(self):
+        if self.cache:
+            return self.cache
+        class Struct(ctypes.Union):
+            _fields_ = [(f[0], f[1].c_type) for f in self.fields]
+        
+        self.cache = Struct
+        return self.cache
+
+    def _to_typestring(self, identifier):
+        return ("union {" + "; ".join(
+            f[1].to_typestring(f[0]) for f in self.fields) + ";} " + identifier) 
+    
+class Function(Type):
+    def __init__(self, return_t, parameter_t, struct_identifier = None, name = None):
         self.return_t = return_t
         self.parameter_t = parameter_t
         self.struct_identifier = struct_identifier
+        super().__init__(None, name = name)
 
-    def to_typestring(self, identifier):
+    def _to_typestring(self, identifier):
         return (self.return_t.to_typestring("") + " (*" + identifier + ")(" + 
             ", ".join(map(lambda t: t.to_typestring(""), self.parameter_t)) + ")")
 
-def Struct(fields):
-    class Struct(ctypes.Structure):
-        _fields_ = fields
-    return Struct
-
-def Union(fields):
-    class Union(ctypes.Union):
-        _fields = fields
-    return Union
-
-class void: pass
+void = Type(None, "void")
+void_p = Type(ctypes.c_void_p, "void*")
+size_t = Type(ctypes.c_size_t, "size_t")
 
 # Basic types
 
-bool = ctypes.c_bool
+bool = Type(ctypes.c_bool, "bool")
 
-int8 = ctypes.c_int8
-uint8 = ctypes.c_uint8
-int16 = ctypes.c_int16
-uint16 = ctypes.c_uint16
-int32 = ctypes.c_int32
-uint32 = ctypes.c_uint32
-int64 = ctypes.c_int64
-uint64 = ctypes.c_uint64
+int8 = Type(ctypes.c_int8, "int8")
+uint8 = Type(ctypes.c_uint8, "uint8")
+int16 = Type(ctypes.c_int16, "int16")
+uint16 = Type(ctypes.c_uint16, "uint16")
+int32 = Type(ctypes.c_int32, "int32")
+uint32 = Type(ctypes.c_uint32, "uint32")
+int64 = Type(ctypes.c_int64, "int64")
+uint64 = Type(ctypes.c_uint64, "uint64")
 
-float32 = ctypes.c_float
-float64 = ctypes.c_double
+float32 = Type(ctypes.c_float, "float32")
+float64 = Type(ctypes.c_double, "float64")
 
-byte = int8
-ubyte = uint8
-char = uint8
-short = int16
-ushort = uint16
-int = int32
-uint = uint32
-long = int64
-ulong = uint64
-float = float32
-double = float64
-string = ctypes.c_char_p
+byte = Type(ctypes.c_byte, "byte")
+ubyte = Type(ctypes.c_ubyte, "ubyte")
+char = Type(ctypes.c_char, "char")
+short = Type(ctypes.c_short, "short")
+ushort = Type(ctypes.c_ushort, "ushort")
+int = Type(ctypes.c_int, "int")
+uint = Type(ctypes.c_uint, "uint")
+long = Type(ctypes.c_long, "long")
+ulong = Type(ctypes.c_ulong, "ulong")
+float = Type(ctypes.c_float, "float")
+double = Type(ctypes.c_double, "double")
+string = Type(ctypes.c_char_p, "char*")

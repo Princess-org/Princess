@@ -8,7 +8,7 @@ def test_print(capfd):
         print(a + b, "foobar")
     """
     eval(prog)
-    assert capfd.readouterr().out == "70 foobar\n"
+    assert capfd.readouterr().out == b"70 foobar\n"
 
 def test_concat():
     prog = """
@@ -18,7 +18,7 @@ def test_concat():
         concat(*c, a, " ", b)
         return c
     """
-    assert eval(prog) == "Hello World"
+    assert eval(prog) == b"Hello World"
 
 def test_concat_malloc():
     prog = """
@@ -28,7 +28,7 @@ def test_concat_malloc():
         concat(c, a, " ", b)
         return c
     """
-    assert eval(prog) == "Hello World"
+    assert eval(prog) == b"Hello World"
 
 def test_string():
     prog = """
@@ -36,4 +36,4 @@ def test_string():
         let b = *a
         return b[0]
     """
-    assert eval(prog) == c_wchar("H")
+    assert eval(prog) == b"H"

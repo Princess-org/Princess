@@ -1,13 +1,19 @@
 from princess import ast, model, types
 
+import json
 from enum import Enum
 from tatsu.codegen import ModelRenderer, CodeGenerator, DelegatingRenderingFormatter
 from tatsu.ast import AST
 
+def to_c_string(s: str):
+    return json.dumps(s) # TODO Check conformance with C literals
+def to_c_char(s: str):
+    return "'" + s.encode("unicode_escape").decode("utf-8") + "'"
+
 class Formatter(DelegatingRenderingFormatter):
     def render(self, item, join='', **fields):
         if types.is_type(item):
-            return types.to_typestring(item, "")
+            return item.to_typestring( "")
         elif isinstance(item, Enum): 
             return item.value
 
@@ -31,12 +37,22 @@ class CCodeGen(CodeGenerator):
     class Boolean(Renderer):
         def _render_fields(self, fields):
             fields.update(value = ("true" if fields["value"] else "false"))
-        template = "{value}"
-    
+        template = "{value}"   
     class Integer(Renderer):
         template = "{value}"
     class Float(Renderer):
         template = "{value}"
+    class String(Renderer):
+        def _render_fields(self, fields):
+            fields.update(value = to_c_string(fields["value"]))
+        template = "{value}"
+    class Char(Renderer):
+        def _render_fields(self, fields):
+            fields.update(value = to_c_char(fields["value"]))
+        template = "{value}"
+    class Null(Renderer):
+        template = "NULL"
+    
 
     class Identifier(Renderer):
         def _render_fields(self, fields):
@@ -85,7 +101,7 @@ class CCodeGen(CodeGenerator):
     class SizeOf(Renderer):
         def _render_fields(self, fields):
             if types.is_type(fields["value"]):
-                fields.update(value = types.to_typestring(fields["value"], ""))
+                fields.update(value = fields["value"].to_typestring(""))
         template = "(sizeof({value}))"
     
     class Cast(Renderer):
@@ -104,7 +120,7 @@ class CCodeGen(CodeGenerator):
     class VarDecl(Renderer):
         def _render_fields(self, fields):
             fields.update(typestring = 
-                types.to_typestring(fields["type"], fields["name"]))
+                fields["type"].to_typestring(fields["name"]))
             if fields["right"]:
                 return "{typestring} = {right:::}"
             else:
@@ -114,7 +130,7 @@ class CCodeGen(CodeGenerator):
     class TypeDecl(Renderer):
         def _render_fields(self, fields):
             fields.update(typestring = 
-                types.to_typestring(fields["type"], fields["name"]))
+                fields["type"].to_typestring(fields["name"], named = False))
         template = "typedef {typestring}"
 
     class Compare(Renderer):
@@ -154,7 +170,7 @@ class CCodeGen(CodeGenerator):
         def _render_fields(self, fields):
             tpe = fields["type"]
             name = fields["identifier"]
-            fields.update(typestring = types.to_typestring(tpe, name))
+            fields.update(typestring = tpe.to_typestring(name))
             
         template = "{typestring}"
     class Def(Renderer):

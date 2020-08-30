@@ -28,18 +28,18 @@ class Modifier(str, Enum):
     Let = "let"
     Type = "type"
 
-unsigned_t = set([ctypes.c_uint8, ctypes.c_uint16, 
-    ctypes.c_uint32, ctypes.c_uint64])
-signed_t = set([ctypes.c_int8, ctypes.c_int16, ctypes.c_int32, ctypes.c_int64])
-float_t = set([ctypes.c_double, ctypes.c_float])
+unsigned_t = set([types.uint8, types.uint16, 
+    types.uint32, types.uint64])
+signed_t = set([types.int8, types.int16, types.int32, types.int64])
+float_t = set([types.double, types.float])
 int_t = unsigned_t | signed_t
 
 def to_signed(t):
     if t in unsigned_t:
-        return {ctypes.c_uint8: ctypes.c_int8, 
-            ctypes.c_uint16: ctypes.c_int16, 
-            ctypes.c_uint32: ctypes.c_int32, 
-            ctypes.c_uint64: ctypes.c_int64}[t]
+        return {types.uint8: types.int8, 
+            types.uint16: types.int16, 
+            types.uint32: types.int32, 
+            types.uint64: types.int64}[t]
     return t
 
 def cast_to(a, node, b):
@@ -53,12 +53,12 @@ def common_type(a, b, sign_convert = False):
     if a == b: return a
     elif a in int_t and b in int_t:
         # integer <-> integer conversion
-        result = b if ctypes.sizeof(a) < ctypes.sizeof(b) else a
+        result = b if ctypes.sizeof(a.c_type) < ctypes.sizeof(b.c_type) else a
         # check sign, unsigned -> signed if signs differ
         if sign_convert and (a in unsigned_t) != (b in unsigned_t):
             result = to_signed(result)
     elif a in float_t and b in float_t:
-        result = b if ctypes.sizeof(a) < ctypes.sizeof(b) else a
+        result = b if ctypes.sizeof(a.c_type) < ctypes.sizeof(b.c_type) else a
     elif a in float_t and b in int_t:
         result = a
     elif a in int_t and b in float_t:
@@ -141,9 +141,10 @@ class Scope:
             return t
         elif isinstance(t, model.Identifier):
             v = self.get_const_value(t)
+            v.name = t.ast[-1]
             return v
         elif isinstance(t, model.PtrT):
-            return ctypes.POINTER(self.type_lookup(t.type))
+            return types.Pointer(self.type_lookup(t.type))
         elif isinstance(t, model.Struct):
             fields = []
             for id_decl in t.body.ast or []:
@@ -160,8 +161,9 @@ class Scope:
             assert_error(t.n, "Dynamic arrays not implemented")
             n = t.n.ast
             tpe = self.type_lookup(t.type)
-            return tpe * n
+            return types.Array(tpe, n)
         
+        print(t)
         error("Type not implemented")
 
     def create_variable(self, modifier: Modifier, name, tpe, share = ast.Share.No, value = None, identifier = None):
@@ -277,11 +279,12 @@ class Compiler(AstWalker):
         node.type = types.bool
         return node
     def walk_Null(self, node: model.Null):
-        node.type = None
+        node.type = types.void_p
         return node
 
     def walk_Identifier(self, node: model.Identifier):
         node.name = "_".join(node.ast)
+        #print(node.name, self.scope.dict)
 
         if node in self.scope:
             value = self.scope[node]
@@ -298,7 +301,14 @@ class Compiler(AstWalker):
         if isinstance(node.right, model.Identifier) and node.right.modifier == Modifier.Type:
             return self.walk(ast.PtrT(type = node.right))
 
-        node.type =ctypes.POINTER(node.right.type)
+        node.type = types.Pointer(node.right.type)
+        return node
+    
+    def walk_Deref(self, node: model.Deref):
+        self.walk_children(node)
+
+        assert types.is_pointer(node.right.type)
+        node.type = node.right.type.type
         return node
 
     def walk_Array(self, node: model.Array):
@@ -312,7 +322,7 @@ class Compiler(AstWalker):
                 tpe = common_type(tpe, v.type)
 
             node.value_type = tpe
-            node.type = tpe * node.length
+            node.type = types.Array(tpe, node.length)
         else:
             node.value_type = None
             node.type = None
@@ -322,10 +332,16 @@ class Compiler(AstWalker):
     def walk_ArrayIndex(self, node: model.ArrayIndex):
         self.walk_children(node)
 
-        assert_error(types.is_array(node.left.type) or types.is_pointer(node.left.type), "Can only index arrays")
-        node.array_type = node.left.type
-        
-        node.type = node.left.type._type_
+        t = node.left.type
+        assert_error(types.is_array(t) or 
+            types.is_pointer(t) or 
+            t is types.string, "Can only index arrays")
+
+        node.array_type = t
+        if t is types.string:
+            node.type = types.char
+        else:
+            node.type = t.type
         return node
 
     def walk_SizeOf(self, node: model.SizeOf):
@@ -336,7 +352,7 @@ class Compiler(AstWalker):
         else:
             tpe = node.ast
 
-        node.type = ctypes.c_size_t
+        node.type = types.size_t
         node.value = tpe
         return node
         
@@ -364,8 +380,8 @@ class Compiler(AstWalker):
 
             return node # No conversion
         elif isinstance(node, (model.And, model.Or)):
-            assert_error(node.right.type is node.left.type is ctypes.c_bool, "incompatible type")
-            node.type = ctypes.c_bool
+            assert_error(node.right.type is node.left.type is types.bool, "incompatible type")
+            node.type = types.bool
         else:
             # Arithmetic
             node.type = common_type(l, r, sign_convert = True)
@@ -382,7 +398,7 @@ class Compiler(AstWalker):
 
     def walk_Compare(self, node: model.Compare):
         self.walk_children(node)
-        node.type = ctypes.c_bool
+        node.type = types.bool
         return node
 
     def walk_TypeDecl(self, node: model.TypeDecl):
@@ -408,7 +424,9 @@ class Compiler(AstWalker):
         modifier = Modifier(node.keyword)
         id_decl = node.left[0]
 
-        if id_decl.type:
+        if hasattr(node, "type") and node.type:
+            tpe = node.type # for already walked declarations
+        elif id_decl.type:
             tpe = self.scope.type_lookup(id_decl.type)
         else:
             tpe = node.right[0].type # Type inference
@@ -472,10 +490,10 @@ class Compiler(AstWalker):
 
         function = types.Function(
             tuple(self.scope.type_lookup(n) for n in node.returns) 
-                if node.returns else types.void, 
+                if node.returns else (types.void,), 
             tuple(self.scope.type_lookup(n.type) for n in node.args or []),
             struct_identifier)
-        
+            
         self.scope.create_function(name, function, ast.Share.No, node.identifier)
 
         if node.body:
@@ -515,21 +533,22 @@ class Compiler(AstWalker):
     def walk_Program(self, node: model.Program):
         code = []
         main_code = []
+
+        self.enter_scope()
         for n in node.ast:
             if isinstance(n, (model.Def, model.TypeDecl)):
                 code.append(n)
             elif isinstance(n, model.VarDecl):
                 if n.right:
                     assert_error(len(n.left) == 1 >= len(n.right), "Multiple assignment not implemented")
-
-                    # Type inference
-                    right = self.walk(n.right[0])
-                    n.left[0].type = right.type
+                    n = self.walk(n)
                 
+                tpe = n.type if hasattr(n, "type") else None
                 var_decl = ast.VarDecl(
                     left = n.left,
                     right = [],
-                    keyword = n.keyword
+                    keyword = n.keyword,
+                    type = tpe
                 )
                 code.append(var_decl)
 
@@ -542,6 +561,7 @@ class Compiler(AstWalker):
                     main_code.append(assignment)
             else:
                 main_code.append(n)
+        self.exit_scope()
 
         main_function = ast.Def(
             name = ast.Identifier("main"),
@@ -580,17 +600,18 @@ def eval(csrc, filename, main_type):
         raise CompileError("GCC Compilation failed")
 
     lib = cdll.LoadLibrary(libfile.absolute())
+    main_type = main_type.c_type
+
     lib.main.restype = main_type
     val = lib.main()
     del lib
     
-    if issubclass(main_type, ctypes.Structure):
-        print(main_type, len(main_type._fields_))
+    if main_type and issubclass(main_type, ctypes.Structure):
         val = tuple(getattr(val, "_" + str(n)) for n in range(len(main_type._fields_)))
     return val
 
 builtins = Scope()
 for n in dir(types):
     v = getattr(types, n)
-    if n.islower() and isinstance(v, type):
+    if isinstance(v, types.Type):
         builtins.create_type(n, v)
