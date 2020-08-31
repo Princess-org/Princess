@@ -32,7 +32,7 @@ unsigned_t = set([types.uint8, types.uint16,
     types.uint32, types.uint64])
 signed_t = set([types.int8, types.int16, types.int32, types.int64])
 float_t = set([types.double, types.float])
-int_t = unsigned_t | signed_t
+int_t = unsigned_t | signed_t | set([types.size_t])
 
 def to_signed(t):
     if t in unsigned_t:
@@ -157,13 +157,12 @@ class Scope:
                 return types.Union(fields)
             else:
                 return types.Struct(fields)
-        elif isinstance(t, model.Array):
+        elif isinstance(t, model.ArrayT):
             assert_error(t.n, "Dynamic arrays not implemented")
             n = t.n.ast
             tpe = self.type_lookup(t.type)
             return types.ArrayT(tpe, n)
         
-        print(t)
         error("Type not implemented")
 
     def create_variable(self, modifier: Modifier, name, tpe, share = ast.Share.No, value = None, identifier = None):
@@ -284,7 +283,6 @@ class Compiler(AstWalker):
 
     def walk_Identifier(self, node: model.Identifier):
         node.name = "_".join(node.ast)
-        #print(node.name, self.scope.dict)
 
         if node in self.scope:
             value = self.scope[node]
@@ -294,6 +292,23 @@ class Compiler(AstWalker):
             node.type = value.type
 
         return node
+    
+    def walk_MemberAccess(self, node: model.MemberAccess):
+        self.walk_children(node)
+        print(node)
+
+        tpe_l = node.left.type
+        tpe_r = node.right.type
+
+        if types.is_struct(tpe_l):
+            node.type = dict(tpe_l.fields)[node.right.name]
+        elif types.is_function(tpe_r):
+            error("Universal call syntax not implemented")
+        else:
+            error("Member access on incompatible type")
+        
+        return node
+
 
     def walk_Ptr(self, node: model.Ptr):
         self.walk_children(node)
@@ -418,10 +433,9 @@ class Compiler(AstWalker):
         return node
 
     def walk_VarDecl(self, node: model.VarDecl):
-        self.walk_children(node)
-    
+        self.walk_children(node)    
         assert_error(len(node.left) == 1 >= len(node.right), 
-            "Multiple assignment not implemented")
+            "Parallel assignment not implemented")
 
         modifier = Modifier(node.keyword)
         id_decl = node.left[0]
@@ -432,6 +446,7 @@ class Compiler(AstWalker):
             tpe = self.scope.type_lookup(id_decl.type)
         else:
             tpe = node.right[0].type # Type inference
+        
         self.scope.create_variable(modifier, id_decl.name.name, tpe)
         
         node.type = tpe
@@ -456,10 +471,12 @@ class Compiler(AstWalker):
 
     def walk_Call(self, node: model.Call):
         self.walk_children(node)
-        assert_error(types.is_function(node.left.type), "Can only call functions")
-                
-        funct = node.left.type
-        node.type = funct.return_t[0]
+        tpe = node.left.type
+        assert_error(types.is_function(tpe), "Can only call functions")
+        
+        if tpe.macro:
+            node = tpe.macro(tpe, node, self)
+        node.type = tpe.return_t[0]
 
         return node
 
@@ -618,4 +635,18 @@ for n in dir(types):
     if isinstance(v, types.Type):
         builtins.create_type(n, v)
 
-builtins.create_function("allocate", types.FunctionT())
+def allocate(function, node, compiler: Compiler):
+    arg = node.args[0].value
+    if arg.type in int_t:
+        function.return_t = (types.void_p,)
+    elif arg.modifier == Modifier.Type:
+        function.return_t = (types.PointerT(compiler.scope.type_lookup(arg)),)
+        node.args[0].value = ast.SizeOf(arg)
+        node.args = compiler.walk(node.args)
+
+    node.left = ast.Identifier("malloc")
+    node.left.type = types.FunctionT(return_t = (types.void_p,), parameter_t = (types.size_t, ))
+    return node
+
+builtins.create_function("allocate", types.FunctionT(macro = allocate))
+builtins.create_function("free", types.FunctionT(parameter_t = (types.void_p,)))

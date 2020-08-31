@@ -119,14 +119,15 @@ size_t = Type(ctypes.c_size_t, "size_t")
 
 
 class FunctionT(Type):
-    def __init__(self, return_t = (void,), parameter_t = (), struct_identifier = None, name = None):
+    def __init__(self, return_t = (void,), parameter_t = (), struct_identifier = None, macro = None, name = None):
         self.return_t = return_t
         self.parameter_t = parameter_t
+        self.macro = macro
         self.struct_identifier = struct_identifier
         super().__init__(None, name = name)
 
     def _to_typestring(self, identifier):
-        return (self.return_t.to_typestring("") + " (*" + identifier + ")(" + 
+        return (self.return_t[0].to_typestring("") + " (*" + identifier + ")(" + 
             ", ".join(map(lambda t: t.to_typestring(""), self.parameter_t)) + ")")
 
 # Basic types

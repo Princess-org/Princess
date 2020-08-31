@@ -1,5 +1,6 @@
-from tests import eval_expr, eval
+from tests import eval_expr, eval, skip
 
+@skip("Not implemented")
 def test_string_literal():
     assert (eval_expr("\"  0123 A a Ä   こんにちは世界 \"")
         == "  0123 A a Ä   こんにちは世界 ".encode())
