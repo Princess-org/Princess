@@ -8,7 +8,8 @@ def test_struct_basic():
         }
 
         var a: Point
-        a.x, a.y = 20, 30
+        a.x = 20
+        a.y = 30
 
         return a.x, a.y
     """
@@ -34,7 +35,8 @@ def test_struct_initializer_cast():
 
 def test_struct_pointer():
     prog = """\
-        let a: struct { v: int } = {1}
+        type T = struct { v: int }
+        let a: T = {1}
         let b = *a
         a = {5 + a.v}
 

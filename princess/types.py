@@ -43,7 +43,9 @@ class Type:
         return hash(self.c_type)
     
     def __eq__(self, value):
-        return self.c_type == value.c_type
+        if is_type(value):
+            return self.c_type == value.c_type
+        return False
 
     def __str__(self):
         return self.to_typestring("")

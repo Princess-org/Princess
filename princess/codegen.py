@@ -107,6 +107,9 @@ class CCodeGen(CodeGenerator):
     class Cast(Renderer):
         template = "(({type}){left})"
     
+    class MemberAccess(Renderer):
+        template = "({left}.{right})"
+        
     class ArrayIndex(Renderer):
         template = "({left}[{right}])"
     class Array(Renderer):
@@ -130,7 +133,7 @@ class CCodeGen(CodeGenerator):
     class TypeDecl(Renderer):
         def _render_fields(self, fields):
             fields.update(typestring = 
-                fields["type"].to_typestring(fields["name"], named = False))
+                fields["type"].to_typestring(fields["typename"], named = False))
         template = "typedef {typestring}"
 
     class Compare(Renderer):
@@ -183,6 +186,12 @@ class CCodeGen(CodeGenerator):
             {body:1::}
             }}\
         """
+
+    class StructArg(Renderer):
+        def _render_fields(self, fields):
+            return ".{name} = {value}" if "name" in fields else "{value}" 
+    class StructInit(Renderer):
+        template = "(({type}){{ {args::, :} }})"
     
     class Program(Renderer): 
         def _render_fields(self, fields):

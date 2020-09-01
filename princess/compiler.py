@@ -295,10 +295,9 @@ class Compiler(AstWalker):
     
     def walk_MemberAccess(self, node: model.MemberAccess):
         self.walk_children(node)
-        print(node)
 
         tpe_l = node.left.type
-        tpe_r = node.right.type
+        tpe_r = getattr(node.right, "type", None)
 
         if types.is_struct(tpe_l):
             node.type = dict(tpe_l.fields)[node.right.name]
@@ -308,7 +307,20 @@ class Compiler(AstWalker):
             error("Member access on incompatible type")
         
         return node
+    
+    def walk_Assign(self, node: model.Assign):
+        assert_error(len(node.left) == len(node.right) == 1,
+            "Parallel assignment not implemented")
+        
+        self.walk_child(node, node.left)
+        
+        tpe = node.left[0].type
+        if  types.is_struct(tpe) and isinstance(node.right[0], model.StructInit):
+            node.right[0].type = tpe
+        
+        self.walk_child(node, node.right)
 
+        return node
 
     def walk_Ptr(self, node: model.Ptr):
         self.walk_children(node)
@@ -421,19 +433,16 @@ class Compiler(AstWalker):
     def walk_TypeDecl(self, node: model.TypeDecl):
         self.walk_children(node)
         assert_error(len(node.name) == len(node.value) == 1,
-            "Multiple type assignments not implemented")
+            "Parallel type assignments not implemented")
 
-        node.name = node.name[0]
         node.type = self.scope.type_lookup(node.value[0])
-        if isinstance(node.name, model.Identifier):
-            node.name = node.name.ast[-1]
-        else: node.name = node.name
-        self.scope.create_type(node.name, node.type)
+        node.typename = node.name[0].ast[-1]
+        self.scope.create_type(node.typename, node.type)
 
         return node
 
     def walk_VarDecl(self, node: model.VarDecl):
-        self.walk_children(node)    
+        self.walk_child(node, node.left)    
         assert_error(len(node.left) == 1 >= len(node.right), 
             "Parallel assignment not implemented")
 
@@ -442,9 +451,16 @@ class Compiler(AstWalker):
 
         if hasattr(node, "type") and node.type:
             tpe = node.type # for already walked declarations
+            self.walk_child(node, node.right)
         elif id_decl.type:
             tpe = self.scope.type_lookup(id_decl.type)
+
+            if (len(node.right) == 1 and types.is_struct(tpe) 
+                and isinstance(node.right[0], model.StructInit)):
+                node.right[0].type = tpe
+            self.walk_child(node, node.right)
         else:
+            self.walk_child(node, node.right)
             tpe = node.right[0].type # Type inference
         
         self.scope.create_variable(modifier, id_decl.name.name, tpe)
@@ -470,13 +486,21 @@ class Compiler(AstWalker):
         return node
 
     def walk_Call(self, node: model.Call):
-        self.walk_children(node)
+        self.walk_child(node, node.left)
         tpe = node.left.type
         assert_error(types.is_function(tpe), "Can only call functions")
         
+        for i in range(len(node.args)):
+            n = node.args[i].value
+            if isinstance(n, model.StructInit):
+                n.type = tpe.parameter_t[i]
+
+
+        self.walk_child(node, node.args)
         if tpe.macro:
             node = tpe.macro(tpe, node, self)
         node.type = tpe.return_t[0]
+        node.left.type = tpe
 
         return node
 
@@ -489,6 +513,15 @@ class Compiler(AstWalker):
         if len(function.return_t) > 1:
             node.struct_identifier = function.struct_identifier
         
+        return node
+
+    def walk_StructInit(self, node: model.StructInit):
+        self.walk_children(node)
+
+        if node.type and not types.is_type(node.type):
+            node.type = self.scope.type_lookup(node.type)
+        assert_error(node.type is not None, "Unknown struct type")
+
         return node
 
     def walk_DefArg(self, node: model.DefArg):
@@ -531,7 +564,7 @@ class Compiler(AstWalker):
         if len(function.return_t) > 1:
             struct = ast.TypeDecl(
                 share = ast.Share.No,
-                name = [struct_identifier],
+                name = [ast.Identifier(struct_identifier)],
                 value = [ast.Struct(
                     body = ast.StructBody(
                         *[ast.IdDeclStruct(name = "_" + str(n), type = function.return_t[n])
@@ -555,11 +588,14 @@ class Compiler(AstWalker):
 
         self.enter_scope()
         for n in node.ast:
-            if isinstance(n, (model.Def, model.TypeDecl)):
+            if isinstance(n, model.Def):
+                code.append(n)  # TODO Walking this shouldn't have an impact
+            elif isinstance(n, model.TypeDecl):
+                n = self.walk(n)
                 code.append(n)
             elif isinstance(n, model.VarDecl):
                 if n.right:
-                    assert_error(len(n.left) == 1 >= len(n.right), "Multiple assignment not implemented")
+                    assert_error(len(n.left) == 1 >= len(n.right), "Parallel assignment not implemented")
                     n = self.walk(n)
                 
                 tpe = n.type if hasattr(n, "type") else None
@@ -639,14 +675,44 @@ def allocate(function, node, compiler: Compiler):
     arg = node.args[0].value
     if arg.type in int_t:
         function.return_t = (types.void_p,)
+        function.parameter_t = (types.size_t,)
     elif arg.modifier == Modifier.Type:
         function.return_t = (types.PointerT(compiler.scope.type_lookup(arg)),)
         node.args[0].value = ast.SizeOf(arg)
         node.args = compiler.walk(node.args)
 
-    node.left = ast.Identifier("malloc")
-    node.left.type = types.FunctionT(return_t = (types.void_p,), parameter_t = (types.size_t, ))
+    node.left = compiler.walk(ast.Identifier("malloc"))
+    return node
+
+def to_c_format_specifier(tpe):
+    if types.is_array(tpe) and tpe.type is types.char:
+        return "%s"
+    elif types.is_pointer(tpe):
+        return "%p"
+    else:
+        return {
+            types.size_t: "%zu",
+            types.byte: "%hhd",
+            types.ubyte: "%hhu",
+            types.char: "%c",
+            types.short: "%hd",
+            types.ushort: "%hu",
+            types.int: "%d",
+            types.uint: "%u",
+            types.long: "%ld",
+            types.ulong: "%lu",
+            types.float: "%f",
+            types.double: "%f"
+        }[tpe]
+
+def _print(function, node, compiler: Compiler):
+    node.args[:] = [ast.String(" ".join(to_c_format_specifier(
+        compiler.scope.type_lookup(a.value.type)) for a in node.args) + "\n")] + node.args
+
+
+    node.left = compiler.walk(ast.Identifier("printf"))
     return node
 
 builtins.create_function("allocate", types.FunctionT(macro = allocate))
 builtins.create_function("free", types.FunctionT(parameter_t = (types.void_p,)))
+builtins.create_function("print", types.FunctionT(return_t = (types.int,), macro = _print))
