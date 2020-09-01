@@ -46,6 +46,7 @@ def cast_to(a, node, b):
     """ wraps node in a cast to b if a != b """
     if a is b:
         return node
+    
     return ast.Cast(left = node, type = b)
 
 def common_type(a, b, sign_convert = False):
@@ -320,7 +321,24 @@ class Compiler(AstWalker):
         
         self.walk_child(node, node.right)
 
-        return node
+        tpe2 = node.right[0].type
+        if types.is_array(tpe) and types.is_array(tpe2):
+            call = ast.Call(
+                left = ast.Identifier("memcpy"),
+                args = [
+                    ast.CallArg(value = node.left[0]),
+                    ast.CallArg(value = node.right[0]),
+                    ast.CallArg(value = ast.Integer(tpe.n))
+                ]
+            )
+            call.left.type = types.FunctionT(
+                return_t = (types.void_p,), 
+                parameter_t = (types.void_p, types.void_p, types.size_t)
+            )
+            call = self.walk(call)
+            return call
+        else:
+            return node
 
     def walk_Ptr(self, node: model.Ptr):
         self.walk_children(node)
@@ -391,7 +409,7 @@ class Compiler(AstWalker):
 
         l = node.left.type
         r = node.right.type
-
+        
         if isinstance(node, (model.Shl, model.Shr)):
             # Shift operators
             assert l in int_t and r in int_t
@@ -473,7 +491,10 @@ class Compiler(AstWalker):
         self.walk_child(node, node.right)
 
         # Simplify cast if casting a literal
-        tpe = self.scope.type_lookup(node.right)
+        if hasattr(node, "type"):
+            tpe = node.type
+        else:
+            tpe = self.scope.type_lookup(node.right)
 
         if isinstance(node.left, (model.Integer, model.Float, model.StructInit)):
             node.left.type = tpe
@@ -482,7 +503,7 @@ class Compiler(AstWalker):
             return node.left
 
         self.walk_child(node, node.left)
-        node.type = tpe
+        node.type = tpe # TODO rewrite cast_to
         return node
 
     def walk_Call(self, node: model.Call):
@@ -578,6 +599,8 @@ class Compiler(AstWalker):
             return (struct, node)
         else:
             node.returns = function.return_t[0]
+            if types.is_array(node.returns): # Decay array to pointer
+                node.returns = types.PointerT(node.returns.type)
             node.type = self.scope.type_lookup(node.returns)
     
             return node
@@ -655,7 +678,11 @@ def eval(csrc, filename, main_type):
         raise CompileError("GCC Compilation failed")
 
     lib = cdll.LoadLibrary(libfile.absolute())
-    main_type = main_type.c_type
+
+    if types.is_pointer(main_type) and main_type.type is types.char:
+        main_type = ctypes.c_char_p
+    else:
+        main_type = main_type.c_type
 
     lib.main.restype = main_type
     val = lib.main()
@@ -706,13 +733,21 @@ def to_c_format_specifier(tpe):
         }[tpe]
 
 def _print(function, node, compiler: Compiler):
-    node.args[:] = [ast.String(" ".join(to_c_format_specifier(
-        compiler.scope.type_lookup(a.value.type)) for a in node.args) + "\n")] + node.args
+    node.args[:] = [ast.String("".join(to_c_format_specifier(
+        compiler.scope.type_lookup(a.value.type)) for a in node.args))] + node.args
 
 
     node.left = compiler.walk(ast.Identifier("printf"))
     return node
 
+def concat(function, node, compiler: Compiler):
+    node.args[:] = [node.args[0]] + [ast.String("".join(to_c_format_specifier(
+        compiler.scope.type_lookup(a.value.type)) for a in node.args[1:]))] + node.args[1:]
+
+    node.left = compiler.walk(ast.Identifier("sprintf"))
+    return node
+
 builtins.create_function("allocate", types.FunctionT(macro = allocate))
 builtins.create_function("free", types.FunctionT(parameter_t = (types.void_p,)))
 builtins.create_function("print", types.FunctionT(return_t = (types.int,), macro = _print))
+builtins.create_function("concat", types.FunctionT(return_t = (types.int,), macro = concat))

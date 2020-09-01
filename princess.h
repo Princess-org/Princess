@@ -20,3 +20,4 @@ typedef unsigned short  ushort;
 typedef unsigned long   ulong;
 typedef float   float32;
 typedef double  float64;
+typedef char* string;
