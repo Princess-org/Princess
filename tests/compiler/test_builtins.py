@@ -29,6 +29,24 @@ def test_concat_malloc():
     """
     assert eval(prog) == b"Hello World"
 
+def test_file_io_binary():
+    prog = """\
+        let fp = open("tests/compiler/test_builtins", "wb+")
+        write(fp, "This is a test")
+        let a = 10
+        write(fp, *a)
+
+        rewind(fp)
+        
+        var c: [15 char]
+        read(fp, c)
+        var b: int
+        read(fp, *b)
+        close(fp)
+        return b, c
+    """
+    assert eval(prog) == (10, b"This is a test")
+
 def test_string():
     prog = """\
         let a = "Hello"

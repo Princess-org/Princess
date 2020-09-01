@@ -270,7 +270,7 @@ class Compiler(AstWalker):
         node.type = types.double
         return node
     def walk_String(self, node: model.String):
-        node.type = types.ArrayT(types.char, len(node.ast))
+        node.type = types.ArrayT(types.char, len(node.ast) + 1)
         return node
     def walk_Char(self, node: model.Char):
         node.type = types.char
@@ -314,21 +314,33 @@ class Compiler(AstWalker):
             "Parallel assignment not implemented")
         
         self.walk_child(node, node.left)
+
+        left = node.left[0]
+        right = node.right[0]
+
+        if isinstance(left, model.Identifier) and not hasattr(node, "first_assign"):
+            value = self.scope[left]
+            assert_error(value.modifier is Modifier.Var, "Can't assign let or const")
         
-        tpe = node.left[0].type
+        tpe = left.type
         if  types.is_struct(tpe) and isinstance(node.right[0], model.StructInit):
-            node.right[0].type = tpe
+            right.type = tpe
         
         self.walk_child(node, node.right)
 
-        tpe2 = node.right[0].type
-        if types.is_array(tpe) and types.is_array(tpe2):
+        tpe2 = right.type
+        if (types.is_array(tpe) or types.is_pointer(tpe)) and types.is_array(tpe2):
+            if types.is_array(tpe):
+                n = tpe.n
+            else:
+                n = tpe2.n
+
             call = ast.Call(
                 left = ast.Identifier("memcpy"),
                 args = [
-                    ast.CallArg(value = node.left[0]),
-                    ast.CallArg(value = node.right[0]),
-                    ast.CallArg(value = ast.Integer(tpe.n))
+                    ast.CallArg(node.left[0]),
+                    ast.CallArg(node.right[0]),
+                    ast.CallArg(ast.Integer(n))
                 ]
             )
             call.left.type = types.FunctionT(
@@ -582,6 +594,9 @@ class Compiler(AstWalker):
             
             self.exit_scope()
 
+        function.return_t = [
+            types.PointerT(i.type) if types.is_array(i) else i for i in function.return_t] # pylint: disable=no-member
+
         if len(function.return_t) > 1:
             struct = ast.TypeDecl(
                 share = ast.Share.No,
@@ -599,8 +614,6 @@ class Compiler(AstWalker):
             return (struct, node)
         else:
             node.returns = function.return_t[0]
-            if types.is_array(node.returns): # Decay array to pointer
-                node.returns = types.PointerT(node.returns.type)
             node.type = self.scope.type_lookup(node.returns)
     
             return node
@@ -634,7 +647,8 @@ class Compiler(AstWalker):
                     assignment = ast.Assign(
                         left = [n.name if isinstance(n, model.IdDecl) 
                                 else n.ast for n in n.left],
-                        right = n.right
+                        right = n.right,
+                        first_assign = True
                     )
                     main_code.append(assignment)
             else:
@@ -678,11 +692,7 @@ def eval(csrc, filename, main_type):
         raise CompileError("GCC Compilation failed")
 
     lib = cdll.LoadLibrary(libfile.absolute())
-
-    if types.is_pointer(main_type) and main_type.type is types.char:
-        main_type = ctypes.c_char_p
-    else:
-        main_type = main_type.c_type
+    main_type = main_type.c_type
 
     lib.main.restype = main_type
     val = lib.main()
@@ -698,15 +708,21 @@ for n in dir(types):
     if isinstance(v, types.Type):
         builtins.create_type(n, v)
 
-def allocate(function, node, compiler: Compiler):
+def _allocate(function, node, compiler: Compiler):
     arg = node.args[0].value
     if arg.type in int_t:
         function.return_t = (types.void_p,)
         function.parameter_t = (types.size_t,)
-    elif arg.modifier == Modifier.Type:
+    else:
         function.return_t = (types.PointerT(compiler.scope.type_lookup(arg)),)
-        node.args[0].value = ast.SizeOf(arg)
-        node.args = compiler.walk(node.args)
+        if len(node.args) == 2:
+            n = node.args[1].value
+            assert_error(n.type in int_t, "Invalid argument")
+            node.args[:] = [ast.CallArg(ast.Mul(left = ast.SizeOf(arg), right = n))]
+        else:
+            node.args[0].value = ast.SizeOf(arg)
+
+        node.args[:] = compiler.walk(node.args)
 
     node.left = compiler.walk(ast.Identifier("malloc"))
     return node
@@ -733,21 +749,58 @@ def to_c_format_specifier(tpe):
         }[tpe]
 
 def _print(function, node, compiler: Compiler):
-    node.args[:] = [ast.String("".join(to_c_format_specifier(
-        compiler.scope.type_lookup(a.value.type)) for a in node.args))] + node.args
-
+    node.args[:] = [ast.CallArg(ast.String("".join(to_c_format_specifier(
+        compiler.scope.type_lookup(a.value.type)) for a in node.args)))] + node.args
 
     node.left = compiler.walk(ast.Identifier("printf"))
     return node
 
-def concat(function, node, compiler: Compiler):
-    node.args[:] = [node.args[0]] + [ast.String("".join(to_c_format_specifier(
-        compiler.scope.type_lookup(a.value.type)) for a in node.args[1:]))] + node.args[1:]
+def _concat(function, node, compiler: Compiler):
+    node.args[:] = [node.args[0]] + [ast.CallArg(ast.String("".join(to_c_format_specifier(
+        compiler.scope.type_lookup(a.value.type)) for a in node.args[1:])))] + node.args[1:]
 
     node.left = compiler.walk(ast.Identifier("sprintf"))
     return node
 
-builtins.create_function("allocate", types.FunctionT(macro = allocate))
+def _open(function, node, compiler: Compiler):
+    node.left = compiler.walk(ast.Identifier("fopen"))
+    return node
+
+def _close(function, node, compiler: Compiler):
+    node.left = compiler.walk(ast.Identifier("fclose"))
+    return node
+
+def read_write(function, node, compiler: Compiler):
+    buffer = node.args[1].value
+    if len(node.args) == 3:
+        size = node.args[2].value
+    else:
+        if types.is_array(buffer.type):
+            size = ast.Integer(buffer.type.n)
+        else:
+            assert_error(types.is_pointer(buffer.type), "Illegal argument")
+            size = ast.Integer(1)
+    node.args[:] = [node.args[1], ast.CallArg(ast.SizeOf(buffer.type.type)), ast.CallArg(size), node.args[0]]
+
+    node.args[:] = compiler.walk(node.args)
+    return node
+
+def _write(function, node, compiler: Compiler):
+    node = read_write(function, node, compiler)
+    node.left = compiler.walk(ast.Identifier("fwrite"))
+    return node
+
+def _read(function, node, compiler: Compiler):
+    node = read_write(function, node, compiler)
+    node.left = compiler.walk(ast.Identifier("fread"))
+    return node
+
+builtins.create_function("allocate", types.FunctionT(macro = _allocate))
 builtins.create_function("free", types.FunctionT(parameter_t = (types.void_p,)))
 builtins.create_function("print", types.FunctionT(return_t = (types.int,), macro = _print))
-builtins.create_function("concat", types.FunctionT(return_t = (types.int,), macro = concat))
+builtins.create_function("concat", types.FunctionT(return_t = (types.int,), macro = _concat))
+builtins.create_function("open", types.FunctionT(return_t = (types.FILE_T,), parameter_t = (types.string, types.string), macro = _open))
+builtins.create_function("close", types.FunctionT(return_t = (types.void,), parameter_t = (types.FILE_T,), macro = _close))
+builtins.create_function("write", types.FunctionT(return_t = (types.void,), parameter_t = (types.FILE_T, types.void_p, types.size_t), macro = _write))
+builtins.create_function("read", types.FunctionT(return_t = (types.void,), parameter_t = (types.FILE_T, types.void_p, types.size_t), macro = _read))
+builtins.create_function("rewind", types.FunctionT(return_t = (types.void,), parameter_t = (types.void_p,)))

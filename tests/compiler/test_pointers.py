@@ -34,12 +34,20 @@ def test_pass_pointer_to_function():
 
 def test_malloc_free():
     prog = """\
-        let a = allocate(int)
+        var a = allocate(int)
         @a = 20
         let b = @a
         free(a)
         return b
     """
     assert eval(prog) == 20
+
+def test_malloc_free_array():
+    prog = """\
+        var a = allocate(char, 100)
+        a = "Free from System"
+        return a
+    """
+    assert eval(prog) == b"Free from System"
     
 

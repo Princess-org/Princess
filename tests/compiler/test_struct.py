@@ -26,7 +26,7 @@ def test_struct_initializer():
 def test_struct_initializer_cast():
     prog = """\
         type S = struct { v: int }
-        let s = {1} !S
+        var s = {1} !S
         s = {1 + s.v} !S
         let b = ({5}!S).v
         return s.v, b
@@ -36,7 +36,7 @@ def test_struct_initializer_cast():
 def test_struct_pointer():
     prog = """\
         type T = struct { v: int }
-        let a: T = {1}
+        var a: T = {1}
         let b = *a
         a = {5 + a.v}
 

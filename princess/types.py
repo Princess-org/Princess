@@ -57,10 +57,13 @@ class PointerT(Type):
     
     @property
     def c_type(self):
-        return ctypes.POINTER(self.type.c_type)
+        if self.type.c_type is ctypes.c_char:
+            return ctypes.c_char_p
+        else: return ctypes.POINTER(self.type.c_type)
     
     def _to_typestring(self, identifier):
-        return self.type.to_typestring("*" + identifier)
+        tpe = self.type or void
+        return tpe.to_typestring("*" + identifier)
 
 class ArrayT(Type):
     def __init__(self, tpe, n, name = None):
@@ -133,6 +136,8 @@ class FunctionT(Type):
             ", ".join(map(lambda t: t.to_typestring(""), self.parameter_t)) + ")")
 
 # Basic types
+
+FILE_T = Type(None, "FILE*")
 
 bool = Type(ctypes.c_bool, "bool")
 
