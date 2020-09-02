@@ -31,7 +31,7 @@ def test_args_type_infer():
 
     assert eval(prog) == (20, 20)
 
-Tedef test_recursion():
+def test_recursion():
     prog = """\
         def factorial(n: int) -> int {
             if n > 1 {
