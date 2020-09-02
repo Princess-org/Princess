@@ -30,3 +30,16 @@ def test_args_type_infer():
     """
 
     assert eval(prog) == (20, 20)
+
+Tedef test_recursion():
+    prog = """\
+        def factorial(n: int) -> int {
+            if n > 1 {
+                return n * factorial(n - 1)
+            }
+            return 1
+        }
+        return factorial(5)
+    """
+
+    assert eval(prog) == 120
