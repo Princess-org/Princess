@@ -494,10 +494,15 @@ class Compiler(AstWalker):
             tpe = node.right[0].type # Type inference
         
         name = id_decl.name.name
-        self.scope.create_variable(modifier, name, tpe)
+        if node.share is ast.Share.Export:
+            identifier = name
+        else:
+            identifier = create_unique_identifier() + "_" + name
+        self.scope.create_variable(modifier, name, tpe, identifier = identifier)
         
         node.type = tpe
-        node.name = "_".join(id_decl.name.ast)
+        node.name = name
+        node.identifier = identifier
         return node
 
     def walk_Cast(self, node: model.Cast):

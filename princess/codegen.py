@@ -1,4 +1,4 @@
-from princess import ast, model, types
+from princess import ast, model, types, compiler
 
 import json
 from enum import Enum
@@ -123,7 +123,7 @@ class CCodeGen(CodeGenerator):
     class VarDecl(Renderer):
         def _render_fields(self, fields):
             fields.update(typestring = 
-                fields["type"].to_typestring(fields["name"]))
+                fields["type"].to_typestring(fields["identifier"]))
             if fields["right"]:
                 return "{typestring} = {right:::}"
             else:
@@ -199,12 +199,17 @@ class CCodeGen(CodeGenerator):
     
     class Program(Renderer): 
         def _render_fields(self, fields):
-            fields.update(code = ast.Body(*fields["value"]))
+            fields.update(
+                file = compiler.create_unique_identifier(),
+                code = ast.Body(*fields["value"]))
 
         template = """\
             /* This file was compiled by the grace
                of your highness Princess Vic Nightfall
             */
             #include "princess.h"
+            #ifndef {file}
+            #define {file}
             {code}
+            #endif
         """
