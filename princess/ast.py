@@ -25,7 +25,7 @@ Continue = Continue()
 Break = Break()
 Null = Null()
 
-__value_types(String, Char, Integer, Float, Boolean, Goto, Unsigned, Word, IdAssign, SizeOf, CallArg)
+__value_types(String, Char, Integer, Float, Boolean, Goto, Unsigned, Word, IdAssign, SizeOf)
 __list_types(Array, Body, Identifier, Compare, Program, StructBody, EnumBody, Return)
 
 Do = (lambda *args: model.Do(ast = Body(*args)))

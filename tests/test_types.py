@@ -14,10 +14,10 @@ def test_pointer_to_array():
 
 
 def test_pointer_to_fuction():
-    assert (types.FunctionT(types.int, (types.bool, types.bool)).to_typestring("foo") 
+    assert (types.FunctionT((types.int,), (types.bool, types.bool)).to_typestring("foo") 
         == "int (*foo)(bool, bool)")
 
 def test_nested_types():
-    assert (types.FunctionT(types.int, 
-        (types.FunctionT(types.int, (types.PointerT(types.bool), types.bool)), types.int)).to_typestring("foo")
+    assert (types.FunctionT((types.int,),
+        (types.FunctionT((types.int,), (types.PointerT(types.bool), types.bool)), types.int)).to_typestring("foo")
         == "int (*foo)(int (*)(bool *, bool), int)")

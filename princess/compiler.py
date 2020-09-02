@@ -421,9 +421,9 @@ class Compiler(AstWalker):
             call = ast.Call(
                 left = ast.Identifier("memcpy"),
                 args = [
-                    ast.CallArg(node.left[0]),
-                    ast.CallArg(node.right[0]),
-                    ast.CallArg(ast.Mul(left = ast.SizeOf(tpe.type), right = ast.Integer(n)))
+                    ast.CallArg(value = node.left[0]),
+                    ast.CallArg(value = node.right[0]),
+                    ast.CallArg(value = ast.Mul(left = ast.SizeOf(tpe.type), right = ast.Integer(n)))
                 ]
             )
             call.left.type = types.FunctionT(
@@ -552,9 +552,10 @@ class Compiler(AstWalker):
         name = node.name[0].ast[-1]
         if hasattr(node, "typename"):
             typename = node.typename
-        elif node.share is ast.Share.No:
+        elif node.share is ast.Share.Export or len(self.function_stack) > 0:
+            typename = name
+        else:
             typename = create_unique_identifier() + "_" + name
-        else: typename = name
 
         if isinstance(val, model.TEnum):
             tpe = val.type or types.int
@@ -606,7 +607,7 @@ class Compiler(AstWalker):
             tpe = node.right[0].type # Type inference
         
         name = id_decl.name.name
-        if node.share is ast.Share.Export:
+        if node.share is ast.Share.Export or len(self.function_stack) > 0:
             identifier = name
         else:
             identifier = create_unique_identifier() + "_" + name
@@ -847,7 +848,7 @@ def _allocate(function, node, compiler: Compiler):
         if len(node.args) == 2:
             n = node.args[1].value
             assert_error(n.type in int_t, "Invalid argument")
-            node.args[:] = [ast.CallArg(ast.Mul(left = ast.SizeOf(arg), right = n))]
+            node.args[:] = [ast.CallArg(value = ast.Mul(left = ast.SizeOf(arg), right = n))]
         else:
             node.args[0].value = ast.SizeOf(arg)
 
@@ -878,14 +879,14 @@ def to_c_format_specifier(tpe):
 # TODO Do proper paremeter and return types
 
 def _print(function, node, compiler: Compiler):
-    node.args[:] = [ast.CallArg(ast.String("".join(to_c_format_specifier(
+    node.args[:] = [ast.CallArg(value = ast.String("".join(to_c_format_specifier(
         compiler.scope.type_lookup(a.value.type)) for a in node.args)))] + node.args
 
     node.left = ast.Identifier("printf")
     return node
 
 def _concat(function, node, compiler: Compiler):
-    node.args[:] = [node.args[0]] + [ast.CallArg(ast.String("".join(to_c_format_specifier(
+    node.args[:] = [node.args[0]] + [ast.CallArg(value = ast.String("".join(to_c_format_specifier(
         compiler.scope.type_lookup(a.value.type)) for a in node.args[1:])))] + node.args[1:]
 
     node.left = ast.Identifier("sprintf")
@@ -909,7 +910,7 @@ def read_write(function, node, compiler: Compiler):
         else:
             assert_error(types.is_pointer(buffer.type), "Illegal argument")
             size = ast.Integer(1)
-    node.args[:] = [node.args[1], ast.CallArg(ast.SizeOf(buffer.type.type)), ast.CallArg(size), node.args[0]]
+    node.args[:] = [node.args[1], ast.CallArg(value = ast.SizeOf(buffer.type.type)), ast.CallArg(value = size), node.args[0]]
     return node
 
 def _write(function, node, compiler: Compiler):
@@ -923,7 +924,7 @@ def _read(function, node, compiler: Compiler):
     return node
 
 def _write_string(function, node, compiler: Compiler):
-    node.args[:] = [node.args[0]] + [ast.CallArg(ast.String("".join(to_c_format_specifier(
+    node.args[:] = [node.args[0]] + [ast.CallArg(value = ast.String("".join(to_c_format_specifier(
         compiler.scope.type_lookup(a.value.type)) for a in node.args[1:])))] + node.args[1:]
 
     node.left = ast.Identifier("fprintf")
@@ -935,13 +936,13 @@ def _read_line(function, node, compiler: Compiler):
         size = ast.Integer(buffer.type.n)
     if len(node.args) == 3:
         size = node.args[2].value
-    node.args[:] = [node.args[1], ast.CallArg(size), node.args[0]]
+    node.args[:] = [node.args[1], ast.CallArg(value = size), node.args[0]]
 
     node.left = ast.Identifier("fgets")
     return node
 
 def _scan(function, node, compiler: Compiler):
-    node.args[:] = [node.args[0]] + [ast.CallArg(ast.String("".join(to_c_format_specifier(
+    node.args[:] = [node.args[0]] + [ast.CallArg(value = ast.String("".join(to_c_format_specifier(
         compiler.scope.type_lookup(a.value.type.type)) for a in node.args[1:])))] + node.args[1:]
     
     node.left = ast.Identifier("fscanf")
@@ -952,7 +953,7 @@ def _flush(function, node, compiler: Compiler):
     return node
 
 def _seek(function, node, compiler: Compiler):
-    node.args.append(ast.CallArg(ast.Identifier("SEEK_SET")))
+    node.args.append(ast.CallArg(value = ast.Identifier("SEEK_SET")))
     node.left = ast.Identifier("fseek")
     return node
 
