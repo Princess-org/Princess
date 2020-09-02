@@ -802,12 +802,9 @@ def compile(p_ast):
     
 
 def eval(csrc, filename, main_type):
-    if not os.path.exists("bin"):
-        os.mkdir("bin")
-
     basepath = Path("bin").absolute()
     cfile = basepath / (filename + ".c")
-    cfile.parent.mkdir(exist_ok = True)
+    cfile.parent.mkdir(parents = True, exist_ok = True)
     libfile = basepath / (filename + ".so")
 
     with open(cfile, "w") as fp:
