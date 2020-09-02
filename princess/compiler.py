@@ -805,20 +805,24 @@ def eval(csrc, filename, main_type):
     basepath = Path("bin").absolute()
     cfile = basepath / (filename + ".c")
     cfile.parent.mkdir(parents = True, exist_ok = True)
-    libfile = basepath / (filename + ".so")
+
+    if os.name == "nt":
+        libfile = basepath / (filename + ".dll")
+    else:
+        libfile = basepath / (filename + ".so")
 
     with open(cfile, "w") as fp:
         fp.write(csrc)
 
     p = subprocess.Popen(
         ["gcc", "-I" + os.getcwd(), "-shared", "-o", 
-        libfile, "-fPIC", cfile], 
+        str(libfile), "-fPIC", str(cfile)], 
     )
     status = p.wait()
     if status:
         raise CompileError("GCC Compilation failed")
 
-    lib = cdll.LoadLibrary(libfile.absolute())
+    lib = cdll.LoadLibrary(str(libfile.absolute()))
     main_type = main_type.c_type
 
     lib.main.restype = main_type

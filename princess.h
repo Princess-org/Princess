@@ -13,9 +13,11 @@
 #include <string.h>
 #include <stdlib.h>
 
+#if !defined(_WIN32)
 extern FILE *stdout;
 extern FILE *stderr;
 extern FILE *stdin;
+#endif
 
 typedef uint8_t     uint8;
 typedef int8_t      int8;
