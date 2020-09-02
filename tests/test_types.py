@@ -13,7 +13,7 @@ def test_pointer_to_array():
     assert types.PointerT(types.ArrayT(types.int, 10)).to_typestring("foo") == "int *foo[10]"
 
 
-def test_pointer_to_fucttion():
+def test_pointer_to_fuction():
     assert (types.FunctionT(types.int, (types.bool, types.bool)).to_typestring("foo") 
         == "int (*foo)(bool, bool)")
 

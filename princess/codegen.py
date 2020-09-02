@@ -180,9 +180,13 @@ class CCodeGen(CodeGenerator):
         def _render_fields(self, fields):
             if not "args" in fields or fields["args"] is None:
                 fields.update(args = [])
+            if "share" in fields and fields["share"] == ast.Share.Export:
+                fields.update(dllexport = "DLL_EXPORT")
+            else:
+                fields.update(dllexport = "")
 
         template = """\
-            {returns} {identifier}({args::, :}) {{
+            {dllexport} {returns} {identifier}({args::, :}) {{
             {body:1::}
             }}\
         """

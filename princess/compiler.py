@@ -1,5 +1,5 @@
 import subprocess, sys, os, uuid
-import ctypes
+import ctypes, copy
 from pathlib import Path
 from enum import Enum
 from ctypes import cdll
@@ -472,7 +472,7 @@ class Compiler(AstWalker):
         return node
 
     def walk_VarDecl(self, node: model.VarDecl):
-        self.walk_child(node, node.left)    
+        self.walk_child(node, node.left)
         assert_error(len(node.left) == 1 >= len(node.right), 
             "Parallel assignment not implemented")
 
@@ -493,7 +493,8 @@ class Compiler(AstWalker):
             self.walk_child(node, node.right)
             tpe = node.right[0].type # Type inference
         
-        self.scope.create_variable(modifier, id_decl.name.name, tpe)
+        name = id_decl.name.name
+        self.scope.create_variable(modifier, name, tpe)
         
         node.type = tpe
         node.name = "_".join(id_decl.name.ast)
@@ -518,9 +519,13 @@ class Compiler(AstWalker):
         node.type = tpe # TODO rewrite cast_to
         return node
 
+    #def walk_CallArg(self, node: model.CallArg):
+    #    node.value = node.ast
+    #    return node
+
     def walk_Call(self, node: model.Call):
         self.walk_child(node, node.left)
-        tpe = node.left.type
+        tpe = copy.deepcopy(node.left.type)
         assert_error(types.is_function(tpe), "Can only call functions")
         
         for i in range(len(node.args)):
@@ -532,6 +537,10 @@ class Compiler(AstWalker):
         self.walk_child(node, node.args)
         if tpe.macro:
             node = tpe.macro(tpe, node, self)
+            # In case the macro changed something
+            self.walk_child(node, node.left, node.args)
+            # This is so that we don't run the same code again
+            tpe.macro = None
         node.type = tpe.return_t[0]
         node.left.type = tpe
 
@@ -594,7 +603,7 @@ class Compiler(AstWalker):
             
             self.exit_scope()
 
-        function.return_t = [
+        function.return_t = [   # decay arrays to pointers
             types.PointerT(i.type) if types.is_array(i) else i for i in function.return_t] # pylint: disable=no-member
 
         if len(function.return_t) > 1:
@@ -658,6 +667,7 @@ class Compiler(AstWalker):
         main_function = ast.Def(
             name = ast.Identifier("main"),
             body = ast.Body(*main_code),
+            share = ast.Share.Export
         )
         code.append(main_function)
 
@@ -710,7 +720,7 @@ for n in dir(types):
 
 def _allocate(function, node, compiler: Compiler):
     arg = node.args[0].value
-    if arg.type in int_t:
+    if compiler.scope.type_lookup(arg.type) in int_t:
         function.return_t = (types.void_p,)
         function.parameter_t = (types.size_t,)
     else:
@@ -722,9 +732,7 @@ def _allocate(function, node, compiler: Compiler):
         else:
             node.args[0].value = ast.SizeOf(arg)
 
-        node.args[:] = compiler.walk(node.args)
-
-    node.left = compiler.walk(ast.Identifier("malloc"))
+    node.left = ast.Identifier("malloc")
     return node
 
 def to_c_format_specifier(tpe):
@@ -748,26 +756,28 @@ def to_c_format_specifier(tpe):
             types.double: "%f"
         }[tpe]
 
+# TODO Do proper paremeter and return types
+
 def _print(function, node, compiler: Compiler):
     node.args[:] = [ast.CallArg(ast.String("".join(to_c_format_specifier(
         compiler.scope.type_lookup(a.value.type)) for a in node.args)))] + node.args
 
-    node.left = compiler.walk(ast.Identifier("printf"))
+    node.left = ast.Identifier("printf")
     return node
 
 def _concat(function, node, compiler: Compiler):
     node.args[:] = [node.args[0]] + [ast.CallArg(ast.String("".join(to_c_format_specifier(
         compiler.scope.type_lookup(a.value.type)) for a in node.args[1:])))] + node.args[1:]
 
-    node.left = compiler.walk(ast.Identifier("sprintf"))
+    node.left = ast.Identifier("sprintf")
     return node
 
 def _open(function, node, compiler: Compiler):
-    node.left = compiler.walk(ast.Identifier("fopen"))
+    node.left = ast.Identifier("fopen")
     return node
 
 def _close(function, node, compiler: Compiler):
-    node.left = compiler.walk(ast.Identifier("fclose"))
+    node.left = ast.Identifier("fclose")
     return node
 
 def read_write(function, node, compiler: Compiler):
@@ -781,26 +791,68 @@ def read_write(function, node, compiler: Compiler):
             assert_error(types.is_pointer(buffer.type), "Illegal argument")
             size = ast.Integer(1)
     node.args[:] = [node.args[1], ast.CallArg(ast.SizeOf(buffer.type.type)), ast.CallArg(size), node.args[0]]
-
-    node.args[:] = compiler.walk(node.args)
     return node
 
 def _write(function, node, compiler: Compiler):
     node = read_write(function, node, compiler)
-    node.left = compiler.walk(ast.Identifier("fwrite"))
+    node.left = ast.Identifier("fwrite")
     return node
 
 def _read(function, node, compiler: Compiler):
     node = read_write(function, node, compiler)
-    node.left = compiler.walk(ast.Identifier("fread"))
+    node.left = ast.Identifier("fread")
+    return node
+
+def _write_string(function, node, compiler: Compiler):
+    node.args[:] = [node.args[0]] + [ast.CallArg(ast.String("".join(to_c_format_specifier(
+        compiler.scope.type_lookup(a.value.type)) for a in node.args[1:])))] + node.args[1:]
+
+    node.left = ast.Identifier("fprintf")
+    return node
+
+def _read_line(function, node, compiler: Compiler):
+    buffer = node.args[1].value
+    if types.is_array(buffer.type):
+        size = ast.Integer(buffer.type.n)
+    if len(node.args) == 3:
+        size = node.args[2].value
+    node.args[:] = [node.args[1], ast.CallArg(size), node.args[0]]
+
+    node.left = ast.Identifier("fgets")
+    return node
+
+def _scan(function, node, compiler: Compiler):
+    node.args[:] = [node.args[0]] + [ast.CallArg(ast.String("".join(to_c_format_specifier(
+        compiler.scope.type_lookup(a.value.type.type)) for a in node.args[1:])))] + node.args[1:]
+    
+    node.left = ast.Identifier("fscanf")
+    return node
+
+def _flush(function, node, compiler: Compiler):
+    node.left = ast.Identifier("fflush")
+    return node
+
+def _seek(function, node, compiler: Compiler):
+    node.args.append(ast.CallArg(ast.Identifier("SEEK_SET")))
+    node.left = ast.Identifier("fseek")
     return node
 
 builtins.create_function("allocate", types.FunctionT(macro = _allocate))
 builtins.create_function("free", types.FunctionT(parameter_t = (types.void_p,)))
 builtins.create_function("print", types.FunctionT(return_t = (types.int,), macro = _print))
+#builtins.create_function("print_format", types.FunctionT(return_t = (types.int,)))
 builtins.create_function("concat", types.FunctionT(return_t = (types.int,), macro = _concat))
 builtins.create_function("open", types.FunctionT(return_t = (types.FILE_T,), parameter_t = (types.string, types.string), macro = _open))
 builtins.create_function("close", types.FunctionT(return_t = (types.void,), parameter_t = (types.FILE_T,), macro = _close))
 builtins.create_function("write", types.FunctionT(return_t = (types.void,), parameter_t = (types.FILE_T, types.void_p, types.size_t), macro = _write))
 builtins.create_function("read", types.FunctionT(return_t = (types.void,), parameter_t = (types.FILE_T, types.void_p, types.size_t), macro = _read))
 builtins.create_function("rewind", types.FunctionT(return_t = (types.void,), parameter_t = (types.void_p,)))
+builtins.create_function("write_string", types.FunctionT(return_t = (types.void,), macro = _write_string))
+builtins.create_function("read_line", types.FunctionT(return_t = (types.string,), macro = _read_line))
+builtins.create_function("scan", types.FunctionT(return_t = (types.int,), macro = _scan))
+builtins.create_function("flush", types.FunctionT(return_t = (types.void,), parameter_t = (types.FILE_T,), macro = _flush))
+builtins.create_function("seek", types.FunctionT(return_t = (types.void,), parameter_t = (types.FILE_T, types.long, types.int), macro = _seek))
+
+builtins.create_variable(Modifier.Let, "stdout", types.FILE_T)
+builtins.create_variable(Modifier.Let, "stderr", types.FILE_T)
+builtins.create_variable(Modifier.Let, "stdin", types.FILE_T)

@@ -31,7 +31,8 @@ def test_concat_malloc():
 
 def test_file_io_binary():
     prog = """\
-        let fp = open("tests/compiler/test_builtins", "wb+")
+        let fp = open("bin/test_file_io_binary", "wb+")
+
         write(fp, "This is a test")
         let a = 10
         write(fp, *a)
@@ -42,10 +43,29 @@ def test_file_io_binary():
         read(fp, c)
         var b: int
         read(fp, *b)
+
         close(fp)
         return b, c
     """
     assert eval(prog) == (10, b"This is a test")
+
+def test_file_io_text():
+    prog = """\
+        let fp = open("bin/test_file_io_text", "w+")
+
+        write_string(fp, "This is a test\n", 10)
+
+        seek(fp, 0) // Same as rewind
+
+        var buffer: [20 char]
+        read_line(fp, buffer)
+        var num: int
+        scan(fp, *num)
+
+        close(fp)
+        return num, buffer
+    """
+    assert eval(prog) == (10, b"This is a test\n")
 
 def test_string():
     prog = """\

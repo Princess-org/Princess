@@ -1,8 +1,21 @@
+#ifndef PRINCESS_H
+#define PRINCESS_H
+
+#if defined(_WIN32)
+#define DLL_EXPORT __declspec(dllexport)
+#else
+#define DLL_EXPORT
+#endif
+
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
 #include <stdlib.h>
+
+extern FILE *stdout;
+extern FILE *stderr;
+extern FILE *stdin;
 
 typedef uint8_t     uint8;
 typedef int8_t      int8;
@@ -21,3 +34,5 @@ typedef unsigned long   ulong;
 typedef float   float32;
 typedef double  float64;
 typedef char* string;
+
+#endif

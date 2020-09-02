@@ -8,7 +8,7 @@ def test_enum_simple():
         }
         return Enum::BAR, Enum::BAZ
     """
-    assert eval(prog) == (c_long(0), c_long(1))
+    assert eval(prog) == (0, 1)
 
 def test_enum_complex():
     prog = """
@@ -17,4 +17,4 @@ def test_enum_complex():
         }
         return Enum::FOO, Enum::BAR
     """
-    assert eval(prog) == (c_longlong(20), c_longlong(21))
+    assert eval(prog) == (20, 21)
