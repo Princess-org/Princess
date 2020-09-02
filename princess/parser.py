@@ -279,7 +279,7 @@ class PrincessParser(Parser):
 
     @tatsumasu('Integer')
     def _t_hex_literal_(self):  # noqa
-        self._token('0x')
+        self._pattern('0x')
         self._cut()
         self._constant(16)
         self.name_last_node('base')
@@ -295,7 +295,7 @@ class PrincessParser(Parser):
 
     @tatsumasu('Integer')
     def _t_oct_literal_(self):  # noqa
-        self._token('0o')
+        self._pattern('0o')
         self._cut()
         self._constant(8)
         self.name_last_node('base')
@@ -311,7 +311,7 @@ class PrincessParser(Parser):
 
     @tatsumasu('Integer')
     def _t_bin_literal_(self):  # noqa
-        self._token('0b')
+        self._pattern('0b')
         self._cut()
         self._constant(2)
         self.name_last_node('base')
