@@ -1,33 +1,17 @@
-import typing, inspect
-
-from ctypes import *
-from ctypes import _Pointer, _SimpleCData
-from enum import Enum
-from keyword import iskeyword
-from collections import namedtuple
-from collections.abc import MutableMapping
-from itertools import chain, zip_longest
-from datetime import datetime
-from functools import reduce
+import subprocess, sys, os, uuid
+import ctypes, copy
 from pathlib import Path
-
-from tatsu.walkers import NodeWalker
-from tatsu.codegen import ModelRenderer, CodeGenerator, DelegatingRenderingFormatter
-from tatsu.ast import AST
-from princess import model, ast, env, parse
+from enum import Enum
+from ctypes import cdll
+from princess import ast, model, types
 from princess.node import Node
+from princess.codegen import CCodeGen
+from tatsu.model import NodeWalker 
 
 def error(s, node = None):
     raise CompileAssert(s, node)
 def assert_error(cond, s, node = None):
     if not cond: raise CompileAssert(s, node)
-class context:
-    def __init__(self, node):
-        self.node = node
-    def __enter__(self): pass
-    def __exit__(self, exc_type, exc_value, traceback):
-        if exc_type is CompileAssert:
-            exc_value.node = self.node
 
 class CompileAssert(Exception):
     def __init__(self, message, node):
@@ -35,36 +19,34 @@ class CompileAssert(Exception):
         self.node = node
 class CompileError(Exception): pass
 
-# Literal types
-class INT_T(c_long): pass
-class FLOAT_T(c_double): pass
+def create_unique_identifier():
+    return "_" + str(uuid.uuid4())[:8]
 
-unsigned_t = set([c_uint8, c_uint16, c_uint32, c_uint64])
-signed_t = set([c_int8, c_int16, c_int32, c_int64, INT_T])
-float_t = set([c_double, c_float, FLOAT_T])
-int_t = unsigned_t | signed_t
-primitive_t = int_t | float_t | set([c_bool, c_wchar])
+class Modifier(str, Enum):
+    Const = "const"
+    Var = "var"
+    Let = "let"
+    Type = "type"
 
-def is_reserved(name):
-    return iskeyword(name) or hasattr(env, name)
-def is_pointer(t):
-    return t is c_void_p or t is c_wchar_p or issubclass(t, _Pointer)
-def is_array(t):
-    return issubclass(t, Array)
-def is_function(t):
-    return isinstance(t, FunctionT)
-def is_struct(t):
-    return issubclass(t, RecordT)
+unsigned_t = set([types.uint8, types.uint16, 
+    types.uint32, types.uint64])
+signed_t = set([types.int8, types.int16, types.int32, types.int64])
+float_t = set([types.double, types.float])
+int_t = unsigned_t | signed_t | set([types.size_t])
 
 def to_signed(t):
     if t in unsigned_t:
-        return {c_uint8: c_int8, c_uint16: c_int16, c_uint32: c_int32, c_uint64: c_int64}[t]
+        return {types.uint8: types.int8, 
+            types.uint16: types.int16, 
+            types.uint32: types.int32, 
+            types.uint64: types.int64}[t]
     return t
 
 def cast_to(a, node, b):
     """ wraps node in a cast to b if a != b """
     if a is b:
         return node
+    
     return ast.Cast(left = node, type = b)
 
 def common_type(a, b, sign_convert = False):
@@ -72,12 +54,12 @@ def common_type(a, b, sign_convert = False):
     if a == b: return a
     elif a in int_t and b in int_t:
         # integer <-> integer conversion
-        result = b if sizeof(a) < sizeof(b) else a
+        result = b if ctypes.sizeof(a.c_type) < ctypes.sizeof(b.c_type) else a
         # check sign, unsigned -> signed if signs differ
         if sign_convert and (a in unsigned_t) != (b in unsigned_t):
             result = to_signed(result)
     elif a in float_t and b in float_t:
-        result = b if sizeof(a) < sizeof(b) else a
+        result = b if ctypes.sizeof(a.c_type) < ctypes.sizeof(b.c_type) else a
     elif a in float_t and b in int_t:
         result = a
     elif a in int_t and b in float_t:
@@ -87,137 +69,25 @@ def common_type(a, b, sign_convert = False):
 
     return result
 
-def typecheck(t, r):
-    """ Typechecks and casts if applicable, returning the new type """
-    if t is None: # infer type
-        if r is INT_T: return c_long
-        elif r is FLOAT_T: return c_double
-        else: return r 
-
-    # Implicit conversion
-    if r in (INT_T, FLOAT_T):   # FIXME Don't convert literals to literally any type!
-        r = t
-    # FIXME Ensure size limit, float <> int !!
-    if t is c_void_p and is_pointer(r):
-        r = t
-
-    assert_error(t is r, "incompatible types: %s and %s" % (t, r))
-
-    return r
-
-def flatten_type(types):
-    """ extracts type tuples into a single type tuple """
-    return reduce(lambda a, b: a + b if isinstance(b, tuple) else a + (b,), types, ())
-
-class Modifier(str, Enum):
-    Const = "const"
-    Var = "var"
-    Let = "let"
-    Type = "type"
-
-def _unpack_value(v):
-    if isinstance(v, _SimpleCData):
-        return v.value
-    else: return v
-
-class Varargs:
-    """ Varargs, tpe may be None """
-    def __init__(self, tpe = None):
-        self.type = tpe
-
-class RecordT:
-    """ Dedicated structure type, don't read what follows unless enough holy water is at hand """
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(
-            *(_unpack_value(v) for v in args), 
-            **{k: _unpack_value(v) for k, v in kwargs.items()}
-        )
-
-    @classmethod
-    def get_argument_type(cls, name_or_id):
-        if isinstance(name_or_id, int):
-            return cls._fields_[name_or_id][1]
-        else:
-            return next(filter(lambda f: f[0] == name_or_id, cls._fields_))[1]
-    
-    def __getattribute__(self, name):
-        # print("__getattribute__", name, hex(id(self)))
-        try:
-            datatypes = super().__getattribute__("__datatypes")
-
-        except AttributeError:
-            datatypes = {}
-            # loading data types
-            base_p = cast(pointer(self), c_void_p).value
-            
-            cls = type(self)
-            for n, tpe in super().__getattribute__("_fields_"):
-                offset = getattr(cls, n).offset
-                value = cast(c_void_p(base_p + offset), POINTER(tpe)).contents
-                datatypes[n] = value
-
-            super().__setattr__("__datatypes", datatypes)
-
-        if name in datatypes:
-            return datatypes[name]
-
-        return super().__getattribute__(name)
-
-class UnionT(Union, RecordT): pass
-class StructT(Structure, RecordT): pass
-    
-class FunctionT:
-    """ Dedicated function type """
-
-    def __init__(self, arg_t: tuple, ret_t: tuple, typecheck_macro = None):
-        self.arg_t = arg_t
-        self.ret_t = ret_t
-        self.typecheck_macro = typecheck_macro
-
-    def get_argument_type(self, name_or_id):
-        if isinstance(name_or_id, int):
-            at = name_or_id
-            if at >= (len(self.arg_t) - 1) and isinstance(self.arg_t[-1], Varargs):
-                return self.arg_t[-1].type
-            else: return self.arg_t[at]
-        else: return getattr(self.arg_t, name_or_id)
-
 class Value:
-    def __init__(self, modifier: Modifier, name: str, tpe, share = ast.Share.No, scope = None, identifier = None, value = None):
+    def __init__(self, modifier: Modifier, name: str, tpe, 
+        share = ast.Share.No, identifier = None, value = None):
+
         self.name = name    # real name, used by the source code
         self.modifier = modifier
         self.type = tpe
         self.share = share
-        self.scope = scope
-        self.identifier = identifier    # python identifier
+        self.identifier = identifier or name   # C identifier
         self.value = value
 
 class Scope:
-    _scope_id = 0
-
-    """ Scope information """
-    def __init__(self, parent):
-        self.id = Scope._scope_id
+    def __init__(self, parent = None):
         self.parent = parent
-        self.children = {} # mapping Node -> Scope, to allow scope information to be preserved over multiple compilation passes
-        self.dir = {}
-        self.tmpcount = 0
-        
-        Scope._scope_id += 1
-        
-    def python_identifier(self, name):
-        if not self.parent or self.parent is builtins: # builtin or top level
-            if is_reserved(name):
-                name += "_"
-        else:
-            name = "_" + str(self.id) + name
-
-        return name
+        self.dict = {}
 
     def __contains__(self, identifier):
         if len(identifier.ast) == 1:
-            if identifier.ast[0] in self.dir:
+            if identifier.ast[0] in self.dict:
                 return True
             elif self.parent:
                 return identifier in self.parent
@@ -232,8 +102,8 @@ class Scope:
 
     def __getitem__(self, identifier):
         if len(identifier.ast) == 1:
-            if identifier.ast[0] in self.dir:
-                return self.dir[identifier.ast[0]]
+            if identifier.ast[0] in self.dict:
+                return self.dict[identifier.ast[0]]
             elif self.parent:
                 return self.parent[identifier]
             else: raise KeyError()
@@ -242,7 +112,7 @@ class Scope:
             if isinstance(namespace.value, Scope):
                 return namespace.value[ast.Identifier(*identifier.ast[1:])]
             else:
-                return KeyError()
+                raise KeyError()
 
     def __setitem__(self, name, value):
         if name in self.parent:
@@ -250,100 +120,113 @@ class Scope:
             return
 
         assert isinstance(value, Value)
-        self.dir[name] = value
+        self.dict[name] = value
+
+    def enter_namespace(self, namespace: str, share = ast.Share.No):
+        if namespace in self.dict:
+            return self.dict[namespace]
+        else:
+            ns = Scope(self)
+            self.create_variable(Modifier.Const, namespace, None, share, value = ns)
+            return ns
+
+    def get_const_value(self, v: model.Identifier):
+        assert isinstance(v, model.Identifier)
+        try:
+            value = self[v]
+        except KeyError:
+            error("Unknown identifier", v)
+
+        assert (value.modifier == Modifier.Const 
+            or value.modifier == Modifier.Type)
+        v = value.value
+
+        return v
 
     def type_lookup(self, t):
         if t is None:
             return None
+        elif types.is_type(t): # TODO This shouldnt be needed
+            return t
         elif isinstance(t, model.Identifier):
             v = self.get_const_value(t)
-            v._identifier = t # Reverse lookup for codegen, needed for custom types
+            if hasattr(t, "identifier"):
+                v.name = t.identifier
+            else:
+                v.name = t.ast[-1]
             return v
         elif isinstance(t, model.PtrT):
-            return POINTER(self.type_lookup(t.type))
+            return types.PointerT(self.type_lookup(t.type))
         elif isinstance(t, model.Struct):
-            fields = [
-                (field.name.name, self.type_lookup(field.type)) for field in filter(None, t.body.ast) # TODO inference
-            ] 
-            if "#union" in t.pragma:
-                return env.p_union_type(fields) 
-            else: return env.p_struct_type(fields)
+            fields = []
+            for id_decl in t.body.ast or []:
+                if id_decl:
+                    name = id_decl.name.ast[-1]
+                    fields.append((name, self.type_lookup(id_decl.type)))
+            if t.pragma and "#union" in t.pragma:
+                return types.Union(fields)
+            else:
+                return types.Struct(fields)
         elif isinstance(t, model.ArrayT):
             assert_error(t.n, "Dynamic arrays not implemented")
-            n = t.n.value
+            n = t.n.ast
             tpe = self.type_lookup(t.type)
-            return tpe * n
+            return types.ArrayT(tpe, n)
+        elif isinstance(t, model.TEnum):
+            tpe = types.int
+            if t.type:
+                tpe = self.type_lookup(t.type)
+            fields = []
+            value = 0
+            for id_decl in t.body.ast or []:
+                if id_decl:
+                    name = id_decl.name.identifier
+                    if id_decl.value:
+                        value = id_decl.value.ast
+                    fields.append((name, value))
+                    value += 1
+
+            return types.Enum(tpe, fields)
         
         error("Type not implemented")
 
-
-    def get_const_value(self, v):
-        if isinstance(v, model.Identifier):
-            try:
-                value = self[v]
-            except KeyError:
-                error("Unknown identifier", v)
-
-            assert (value.modifier == Modifier.Const 
-                or value.modifier == Modifier.Type)
-            v = value.value
-
-        return v
-    
-    def enter_namespace(self, namespace: str, share = ast.Share.No):
-        if namespace in self.dir:
-            return self.dir[namespace]
-        else:
-            ns = Scope(None) # TODO Temporary fix
-            self.create_variable(Modifier.Const, ast.Identifier(namespace), None, share, value = ns)
-            return ns
-
-    def enter_scope(self, node):
-        if node in self.children:
-            return self.children[node]
-
-        child = Scope(self)
-        self.children[node] = child
-        return child
-    
-    def exit_scope(self):
-        return self.parent
-
-    def create_variable(self, modifier: Modifier, name: model.Identifier, tpe, share = ast.Share.No, value = None, identifier = None):
-        name = ".".join(name.ast)
-        assert_error(name not in self.dir, "Redeclaration of %s" % name)
+    def create_variable(self, modifier: Modifier, name: str, tpe, share = ast.Share.No, value = None, identifier: str = None):
+        # print(name, identifier)
+        assert_error(isinstance(name, str), "Illegal declaration")
+        if identifier: 
+            assert_error(isinstance(identifier, str), "Illegal declaration")
+        assert_error(name not in self.dict, "Redeclaration of %s" % name)
         
         v = Value(
             modifier = modifier,
             name = name,
             tpe = tpe,
             share = share,
-            identifier = identifier or self.python_identifier(name),
-            scope = self,
+            identifier = identifier,
             value = value
         )
 
-        self.dir[name] = v
+        self.dict[name] = v
 
         return v
 
     def create_type(self, name, value, share = ast.Share.No, identifier = None):
-        return self.create_variable(modifier = Modifier.Type, name = name, tpe = None, share = share, value = value, identifier = identifier)
-    def create_function(self, name, arg_t = None, ret_t = None, typecheck_macro = None, share = ast.Share.No, identifier = None):
-        return self.create_variable(modifier = Modifier.Const, name = name, tpe = FunctionT(arg_t, ret_t, typecheck_macro), share = share, identifier = identifier)
+        return self.create_variable(modifier = Modifier.Type, name = name, 
+            tpe = None, share = share, value = value, identifier = identifier)
 
-    def create_anonymous(self):
-        name = "__tmp" + str(self.tmpcount)
-        self.tmpcount += 1
-        return name
+    def create_function(self, name, tpe, share = ast.Share.No, identifier = None):
+        return self.create_variable(modifier = Modifier.Const, name = name, 
+            tpe = tpe, share = share, identifier = identifier)
 
-class ASTWalker(NodeWalker):
-    def __init__(self, scope):
-        self.scope = scope # type: Scope
-        self.function_stack = []
-        self.current_function = None
-        self._walker_cache = {} # Tatsu walkaround FIXME
+    def enter_scope(self):
+        child = Scope(self)
+        return child
+    
+    def exit_scope(self):
+        return self.parent
 
+
+class AstWalker(NodeWalker):
     def walk(self, node, *args, **kwargs):
         old_node = node
         try:
@@ -351,131 +234,223 @@ class ASTWalker(NodeWalker):
         except CompileAssert as e:
             node = e.node or node
             info = node.parseinfo or old_node.parseinfo
-            lexer = info.buffer
-            raise CompileError(lexer.format_error(str(e), info))
-
-    def enter_scope(self, node):
-        self.scope = self.scope.enter_scope(node)
-    def exit_scope(self):
-        self.scope = self.scope.exit_scope()
-    
-    def walk_default(self, node: model.Program):
-        self.walk_children(node)
-        return node
-
-    def walk_Body(self, node: model.Body):
-        self.enter_scope(node)
-        self.walk_children(node)
-        self.exit_scope()
-
-        return node
-
-    # TODO Make this part of Scope?
-    def enter_function(self, f: Value):
-        self.function_stack.append(f)
-        self.current_function = f
-    def exit_function(self):
-        if len(self.function_stack) == 1:
-            self.function_stack.pop()
-            self.current_function = None
-        else:
-            self.function_stack.pop()
-            self.current_function = self.function_stack[-1]
+            if info:
+                lexer = info.buffer
+                raise CompileError(lexer.format_error(str(e), info))
+            else: raise CompileError(str(e))
 
     def walk_children(self, node):
         if isinstance(node, list):
+            def flatten(iterable):  # Allows returing tuples from walk
+                for el in iterable:
+                    if isinstance(el, tuple): yield from el
+                    else: yield el
+
             node[:] = [self.walk(e) for e in iter(node)]
+            node[:] = flatten(node)
         elif isinstance(node, Node):
             node.map(self.walk)
 
     def walk_child(self, node, *children):
         assert isinstance(node, Node)
-        node.map(self.walk, lambda n: n in children)   
+        node.map(self.walk, lambda n: n in children)
 
-class Compile(ASTWalker):
-    """ Typechecking and compiling """
+    def walk_default(self, node):
+        self.walk_children(node)
+        return node
+
+class Compiler(AstWalker):
+    def __init__(self):
+        self._walker_cache = {} # Tatsu walkaround FIXME
+        self.function_stack = []
+        self.scope = Scope(builtins)
+
+    def enter_function(self, function):
+        self.function_stack.append(function)
+    def exit_function(self):
+        self.function_stack.pop()
+
+    def enter_scope(self):
+        self.scope = self.scope.enter_scope()
+    def exit_scope(self):
+        self.scope = self.scope.exit_scope()
+
+    @property
+    def current_function(self):
+        return self.function_stack[-1]
+    
+    def walk_Body(self, node: model.Body):
+        self.enter_scope()
+        self.walk_children(node)
+        self.exit_scope()
+
+        return node
 
     # Literals
+    
     def walk_Integer(self, node: model.Integer):
-        node.value = node.ast
-        node.type = INT_T
+        node.type = types.int
         return node
     def walk_Float(self, node: model.Float):
-        node.value = node.ast
-        node.type = FLOAT_T
+        node.type = types.double
         return node
     def walk_String(self, node: model.String):
-        node.value = node.ast
-        node.type = c_wchar * (len(node.ast) + 1)
+        node.type = types.ArrayT(types.char, len(node.ast) + 1)
         return node
     def walk_Char(self, node: model.Char):
-        node.value = node.ast
-        node.type = c_wchar
+        node.type = types.char
         return node
     def walk_Boolean(self, node: model.Boolean):
-        node.value = node.ast
-        node.type = c_bool
+        node.type = types.bool
         return node
     def walk_Null(self, node: model.Null):
-        node.type = None
+        node.type = types.void_p
         return node
 
-    def walk_Import(self, node: model.Import):
-        self.walk_children(node)
-        for module in node.modules:
-            name = module.name.ast[0]
-            alias = (module.alias or module.name).ast[0]
-            scope = compile_module(name)
-            exports = {name:var for name, var in scope.dir.items() if var.share & ast.Share.Export}
-            ns = self.scope.enter_namespace(alias)
-            ns.dir.update(exports)
-            self.scope.dir.update(exports)
-        return node
+    def walk_Identifier(self, node: model.Identifier):
+        node.name = "_".join(node.ast)
 
-    def _typecheck_args(self, ftype, args):
-        """ typecheck arguments for struct literals and function calls """
-
-        at_named_args = False
-        for i, arg in enumerate(args):
-            if arg.name:
-                at_named_args = True
-            else: assert_error(not at_named_args, "No positional arguments allowed after named parameters")
+        if node in self.scope:
+            value = self.scope[node]
             
-            if at_named_args:
-                try: tpe = ftype.get_argument_type(arg.name.name)
-                except TypeError: error("Unknown argument", arg.name)
-            else: 
-                try: tpe = ftype.get_argument_type(i)
-                except TypeError: error("Unknown argument", arg)
+            node.modifier = value.modifier
+            node.identifier = value.identifier
+            node.type = value.type
 
-            with context(arg):
-                arg.value.type = typecheck(tpe, arg.value.type)
-
-    def _infer_struct_types_call(self, ftype, args):
-        for i, arg in enumerate(args):
-            v = arg.value
-            if isinstance(v, model.StructInit) and not v.type:
-                # type inference for struct literal from argument type
-                if arg.name:
-                    try: v.type = ftype.get_argument_type(arg.name.name)
-                    except TypeError: error("Unknown argument", arg.name)
-                else:
-                    try: v.type = ftype.get_argument_type(i)
-                    except TypeError: error("Unknown argument", arg)
-
-    def walk_StructInit(self, node: model.StructInit):
-        if node.type and not isinstance(node.type, type):
-            node.type = self.scope.type_lookup(node.type)
-        assert node.type is not None
-
-        self._infer_struct_types_call(node.type, node.args)
-        self.walk_children(node)
-        self._typecheck_args(node.type, node.args)
-            
         return node
 
-    def walk_TEnum(self, node: model.TEnum):
+    def walk_For(self, node: model.For):
+        self.walk_child(node, node.iterator)
+        in_stmt = node.iterator
+
+        range_ = in_stmt.right[0]
+        identifier = in_stmt.left[0].name
+
+        self.enter_scope()
+        if isinstance(range_, model.Range):
+            var_decl = ast.VarDecl(
+                keyword = in_stmt.keyword,
+                left = in_stmt.left,
+                right = [range_.from_]
+            )
+            node.init_expr = var_decl
+            node.test_expr = ast.Compare(identifier, ast.CompareOp("<="), range_.to)
+            if range_.step:
+                step = range_.step
+            elif range_.from_.ast > range_.to.ast:
+                step = ast.Integer(-1)
+            else:
+                step = ast.Integer(1)
+            node.update_expr = ast.AssignAndOp(
+                left = identifier,
+                op = ast.AssignOp("+="),
+                right = step
+            )
+        else:
+            array = range_
+            identifier2 = ast.Identifier("iter")
+            var_decl = ast.VarDecl(
+                keyword = Modifier.Var,
+                left = [ast.IdDecl(name = identifier2)],
+                right = [ast.Integer(0)]
+            )
+            node.init_expr = var_decl
+            node.body.ast.insert(0, ast.VarDecl(
+                keyword = in_stmt.keyword,
+                left = [ast.IdDecl(name = identifier)],
+                right = [ast.ArrayIndex(left = array, right = identifier2)]
+            ))
+
+            tpe = self.scope.type_lookup(array.type)
+            assert_error(types.is_array(tpe), "Invalid iterator")
+            node.test_expr = ast.Compare(identifier2, ast.CompareOp("<"), ast.Integer(tpe.n))
+            node.update_expr = ast.AssignAndOp(
+                left = identifier2,
+                op = ast.AssignOp("+="),
+                right = ast.Integer(1)
+            )
+
+    
+        self.walk_child(node, node.init_expr, node.test_expr, node.update_expr)
+        
+        self.walk_child(node, node.body)
+        self.exit_scope() 
+        return node
+    
+    def walk_MemberAccess(self, node: model.MemberAccess):
         self.walk_children(node)
+
+        tpe_l = node.left.type
+        tpe_r = getattr(node.right, "type", None)
+
+        if types.is_struct(tpe_l):
+            node.type = dict(tpe_l.fields)[node.right.name]
+        elif types.is_function(tpe_r):
+            error("Universal call syntax not implemented")
+        else:
+            error("Member access on incompatible type")
+        
+        return node
+    
+    def walk_Assign(self, node: model.Assign):
+        assert_error(len(node.left) == len(node.right) == 1,
+            "Parallel assignment not implemented")
+        
+        self.walk_child(node, node.left)
+
+        left = node.left[0]
+        right = node.right[0]
+
+        if isinstance(left, model.Identifier) and not hasattr(node, "first_assign"):
+            value = self.scope[left]
+            assert_error(value.modifier is Modifier.Var, "Can't assign let or const")
+        
+        tpe = left.type
+        if  types.is_struct(tpe) and isinstance(node.right[0], model.StructInit):
+            right.type = tpe
+        
+        self.walk_child(node, node.right)
+
+        tpe2 = right.type
+        if (types.is_array(tpe) or types.is_pointer(tpe)) and types.is_array(tpe2):
+            if types.is_array(tpe):
+                n = tpe.n
+            else:
+                n = tpe2.n
+
+            call = ast.Call(
+                left = ast.Identifier("memcpy"),
+                args = [
+                    ast.CallArg(value = node.left[0]),
+                    ast.CallArg(value = node.right[0]),
+                    ast.CallArg(value = ast.Mul(left = ast.SizeOf(tpe.type), right = ast.Integer(n)))
+                ]
+            )
+            call.left.type = types.FunctionT(
+                return_t = (types.void_p,), 
+                parameter_t = (types.void_p, types.void_p, types.size_t)
+            )
+            call = self.walk(call)
+            return call
+        else:
+            return node
+
+    def walk_Ptr(self, node: model.Ptr):
+        self.walk_children(node)
+        
+        if isinstance(node.right, model.Identifier) and node.right.modifier == Modifier.Type:
+            return self.walk(ast.PtrT(type = node.right))
+
+        node.type = types.PointerT(node.right.type)
+        return node
+    
+    def walk_Deref(self, node: model.Deref):
+        self.walk_children(node)
+
+        tpe = node.right.type
+        assert_error(types.is_pointer(tpe), "Must be a pointer type")
+
+        node.type = tpe.type
         return node
 
     def walk_Array(self, node: model.Array):
@@ -489,7 +464,7 @@ class Compile(ASTWalker):
                 tpe = common_type(tpe, v.type)
 
             node.value_type = tpe
-            node.type = tpe * node.length
+            node.type = types.ArrayT(tpe, node.length)
         else:
             node.value_type = None
             node.type = None
@@ -499,71 +474,37 @@ class Compile(ASTWalker):
     def walk_ArrayIndex(self, node: model.ArrayIndex):
         self.walk_children(node)
 
-        assert_error(is_array(node.left.type) or is_pointer(node.left.type), "Can only index arrays")
-        node.array_type = node.left.type
-        
-        if node.left.type is c_wchar_p:
-            node.type = c_wchar
+        t = node.left.type
+        assert_error(types.is_array(t) or 
+            types.is_pointer(t) or 
+            t is types.string, "Can only index arrays")
+
+        node.array_type = t
+        if t is types.string:
+            node.type = types.char
         else:
-            node.type = node.left.type._type_
-
+            node.type = t.type
         return node
 
-    def walk_Call(self, node: model.Call):
-        self.walk_child(node, node.left)
-        assert_error(is_function(node.left.type), "Can only call functions")
+    def walk_SizeOf(self, node: model.SizeOf):
+        self.walk_children(node)
         
-        self._infer_struct_types_call(node.left.type, node.args)
-        self.walk_child(node, node.args)
-        self._typecheck_args(node.left.type, node.args)
-        
-        funct = node.left.type
-        node.type = funct.ret_t
-
-        # TODO typecheck arguments
-
-        if funct.typecheck_macro:
-            t = funct.typecheck_macro(self.scope, *node.args)
-            node.type = t if isinstance(t, tuple) else (t,)
-
-        return node
-
-    def walk_Cast(self, node: model.Cast):
-        self.walk_child(node, node.right)
-
-        # Simplify cast if casting a literal
-        tpe = self.scope.type_lookup(node.right)
-
-        if isinstance(node.left, (model.Integer, model.Float, model.StructInit)):
-            node.left.type = tpe
-            if isinstance(node.left, model.StructInit):
-                return self.walk(node.left)
-            return node.left
-
-        self.walk_child(node, node.left)
-        node.type = tpe
-        return node
-
-    def walk_UMinus(self, node: model.UMinus):
-        # UMinus(Integer(n)) -> Integer(-n)
-        right = node.right
-
-        if isinstance(right, model.Integer):
-            node = ast.Integer(-right.ast)
-        elif isinstance(right, model.Float):
-            node = ast.Float(-right.ast)
+        if isinstance(node.ast, model.Type):
+            tpe = self.scope.type_lookup(node.ast)
         else:
-            self.walk_UnaryPreOp(node)
-            return node
+            tpe = node.ast
 
-        return self.walk(node)
+        node.type = types.size_t
+        node.value = tpe
+        return node
+        
 
     def walk_BinaryOp(self, node: model.BinaryOp):
         self.walk_children(node)
 
         l = node.left.type
         r = node.right.type
-
+        
         if isinstance(node, (model.Shl, model.Shr)):
             # Shift operators
             assert l in int_t and r in int_t
@@ -576,13 +517,13 @@ class Compile(ASTWalker):
             node.type = common_type(l, r, sign_convert = False)
         elif isinstance(node, (model.PAdd, model.PSub)):
             # TODO pointer - pointer
-            assert is_pointer(l) and r in int_t
+            assert types.is_pointer(l) and r in int_t
             node.type = l
 
             return node # No conversion
         elif isinstance(node, (model.And, model.Or)):
-            assert_error(node.right.type is node.left.type is c_bool, "incompatible type")
-            node.type = c_bool
+            assert_error(node.right.type is node.left.type is types.bool, "incompatible type")
+            node.type = types.bool
         else:
             # Arithmetic
             node.type = common_type(l, r, sign_convert = True)
@@ -591,313 +532,444 @@ class Compile(ASTWalker):
         node.right = cast_to(r, node.right, node.type)
 
         return node
-
+    
     def walk_UnaryPreOp(self, node: model.UnaryPreOp):
         self.walk_children(node)
-
         node.type = node.right.type
-        return node
-    
-    def walk_Deref(self, node: model.Deref):
-        self.walk_children(node)
-
-        assert is_pointer(node.right.type)
-        node.type = node.right.type._type_
-        return node
-
-    def walk_Ptr(self, node: model.Ptr):
-        self.walk_children(node)
-        
-        if isinstance(node.right, model.Identifier) and node.right.modifier == Modifier.Type:
-            return self.walk(ast.PtrT(type = node.right))
-
-        if is_array(node.right.type) and node.right.type._type_ is c_wchar:
-            node.type = c_wchar_p # TODO Make sure to get string
-        else:
-            node.type = POINTER(node.right.type)
-        return node
-
-    def walk_SizeOf(self, node: model.SizeOf):
-        self.walk_children(node)
-        
-        if isinstance(node.ast, model.Type):
-            tpe = self.scope.type_lookup(node.ast)
-        elif isinstance(node.ast, model.Identifier):
-            if node.ast.modifier == Modifier.Type:
-                tpe = self.scope.type_lookup(node.ast)
-            else: tpe = node.ast.type
-        else:
-            tpe = node.ast.type
-
-        size = ast.Integer(sizeof(tpe))
-        size.type = c_size_t
-        
-        return size
-
-    def walk_Not(self, node: model.Not):
-        self.walk_children(node)
-
-        node.type = c_bool
-        assert_error(node.right.type is c_bool, "'not' on incompatible type")
         return node
 
     def walk_Compare(self, node: model.Compare):
         self.walk_children(node)
-
-        node.type = c_bool
-        return node
-
-    def walk_In(self, node: model.In):
-        self.walk_children(node)
-
-        for l in node.left:
-            if isinstance(l, model.IdDecl):
-                v = self.scope.create_variable(modifier = node.keyword, name = l.name, tpe = c_long)
-                l.identifier = v.identifier
-        assert_error(len(node.right) == 1 and isinstance(node.right[0], model.Range), "For loop only supports iterating over a range" )
+        node.type = types.bool
         return node
 
     def walk_TypeDecl(self, node: model.TypeDecl):
         self.walk_children(node)
+        assert_error(len(node.name) == len(node.value) == 1,
+            "Parallel type assignments not implemented")
 
-        assert_error(len(node.name) == len(node.value) == 1, "Parallel type assignment not implemented") # TODO
-
-        name = node.name[0]
         val = node.value[0]
+        name = node.name[0].ast[-1]
+        if hasattr(node, "typename"):
+            typename = node.typename
+        elif node.share is ast.Share.Export or len(self.function_stack) > 0:
+            typename = name
+        else:
+            typename = create_unique_identifier() + "_" + name
+
         if isinstance(val, model.TEnum):
-            ns = self.scope.enter_namespace(name.name)
-            value = self.scope.type_lookup(val.type)()
-            value.value = -1
+            tpe = val.type or types.int
+            ns = self.scope.enter_namespace(name)
+
+            value = -1
             for nme in val.body.ast:
                 if nme.value:
-                    value = self.scope.type_lookup(val.type)(nme.value.value)
+                    value = nme.value.ast
                 else:
-                    value = self.scope.type_lookup(val.type)(value.value)
-                    value.value += 1
-                    
-                nme = nme.name
-                ns.create_variable(modifier = Modifier.Let, name = nme, tpe = self.scope.type_lookup(val.type), value = value)
+                    value += 1
                 
-            val.namespace = ns
-            val.name = name.name
+                name = nme.name.name
+                identifier = typename + "_" + name
+                nme.name.identifier = identifier
+                ns.create_variable(
+                    modifier = Modifier.Let, name = name, tpe = self.scope.type_lookup(tpe), 
+                    value = value, identifier = identifier)
+            
+            node.type = self.scope.type_lookup(val)
+            node.typename = typename
         else:
-            tpe = self.scope.type_lookup(val)
-            t = self.scope.create_type(name, tpe, node.share)
-            name.identifier = t.identifier
+            node.type = self.scope.type_lookup(val)
+            node.typename = typename
+            self.scope.create_type(name, node.type, share = node.share, identifier = typename)
 
         return node
-
-    def _infer_struct_types_assign(self, node):
-         # infer struct types
-        if not node.right: return
-        i = 0
-        def walk_right(r):
-            nonlocal i
-            if isinstance(r, model.StructInit) and not r.type:
-                r.type = node.left[i].type
-            else: self.walk(r.type)
-            r = self.walk(r)
-            i += len(r.type.ret_t) if is_function(r.type) else 1
-            return r
-
-        node.right[:] = [walk_right(r) for r in node.right]
 
     def walk_VarDecl(self, node: model.VarDecl):
-        self.walk_child(node, node.left, node.keyword, node.share)
-
-        anon_types = ()
-        for l in node.left:
-            if isinstance(l.type, model.Struct):
-                # anonymous struct
-                name = self.scope.create_anonymous()
-                identifier = self.walk(ast.Identifier(name))
-
-                anon_t = self.walk(
-                    ast.TypeDecl(
-                        name = [identifier],
-                        value = [l.type]
-                    )
-                )
-
-                anon_types += (anon_t,)
-                l.type = self.scope.type_lookup(anon_t.name[0])
-            else:
-                l.type = self.scope.type_lookup(l.type)
-
-        self._infer_struct_types_assign(node)
-
-        share = node.share
-        modifier = Modifier(node.keyword)
-        assert_error(modifier is not Modifier.Const, "const not implemented")
-
-        if node.right is None: 
-            node.right = []
-
-        types_r = flatten_type(r.type for r in node.right)
-
-        if modifier is Modifier.Let:
-            assert_error(len(types_r) == len(node.left), "Unbalanced assignment for let")
-        else:
-            assert_error(len(types_r) <= len(node.left), "Nothing to assign to")
-
-        types_r_casted = ()
-        for l, r in zip_longest(node.left, types_r):
-            if isinstance(l, model.IdDecl):
-                name = l.name
-                tpe = l.type
-
-                if r is not None:
-                    tpe = typecheck(tpe, r)
-                
-                types_r_casted += (tpe,)
-
-                if modifier is Modifier.Var:
-                    assert_error(tpe is not None, "Couldn't infer type for var")
-
-                v = self.scope.create_variable(modifier, name, tpe, share) # Add value to scope
-                l.identifier = v.identifier
-            else:
-                assert_error(r is not None, "Need to assign value")
-                typecheck(l.type, r)
-                types_r_casted += (None,) # None means assignment
-
-        if len(types_r) < len(node.left):
-            node.right.extend([ast.Null] * (len(node.left) - len(types_r)))
-
-        node.type = types_r_casted
-
-        return anon_types + (node,)
-
-    def walk_Assign(self, node: model.Assign):
         self.walk_child(node, node.left)
-        self._infer_struct_types_assign(node)
+        assert_error(len(node.left) == 1 >= len(node.right), 
+            "Parallel assignment not implemented")
 
-        assert_error(isinstance(node.parent, (model.Body, model.Program)), "Nested assignments disallowed" ) # TODO 
+        modifier = Modifier(node.keyword)
+        id_decl = node.left[0]
 
-        types_r = flatten_type(r.type for r in node.right)
-        types_l = tuple(l.type for l in node.left)
+        if hasattr(node, "type") and node.type:
+            tpe = node.type # for already walked declarations
+            self.walk_child(node, node.right)
+        elif id_decl.type:
+            tpe = self.scope.type_lookup(id_decl.type)
 
-        assert_error(len(types_r) == len(types_l), "Unbalanced assignment")
-        for l, r in zip(types_l, types_r):
-            typecheck(l, r)
-
-        return node
-
-    def walk_Identifier(self, node: model.Identifier):
-        node.name = ".".join(node.ast)
-
-        if node in self.scope:
-            value = self.scope[node]
-            
-            node.modifier = value.modifier  # scope resolution for render
-            node.identifier = value.identifier
-            if len(node.ast) > 1:
-                node.identifier = ".".join(node.ast[:-1]) + "." + node.identifier # TODO Rewrite
-            node.type = value.type
-
-        return node
-
-    def walk_MemberAccess(self, node: model.MemberAccess):
-        self.walk_children(node)
-
-        tpe_l = node.left.type
-        tpe_r = node.right.type
-
-        if is_struct(tpe_l):
-            node.type = dict(tpe_l._fields_)[node.right.name]
-        elif is_function(tpe_r):
-            error("Universal call syntax not implemented")
+            if (len(node.right) == 1 and types.is_struct(tpe) 
+                and isinstance(node.right[0], model.StructInit)):
+                node.right[0].type = tpe
+            self.walk_child(node, node.right)
         else:
-            error("Member access on incompatible type")
+            self.walk_child(node, node.right)
+            tpe = node.right[0].type # Type inference
         
+        name = id_decl.name.name
+        if node.share is ast.Share.Export or len(self.function_stack) > 0:
+            identifier = name
+        else:
+            identifier = create_unique_identifier() + "_" + name
+        self.scope.create_variable(modifier, name, tpe, identifier = identifier)
+        
+        node.type = tpe
+        node.name = name
+        node.identifier = identifier
         return node
 
-    # TODO Rewrite
-    def walk_Def(self, node: model.Def):
-        self.walk_child(node, node.args, node.returns, node.name)
+    def walk_Cast(self, node: model.Cast):
+        self.walk_child(node, node.right)
 
-        Arguments = namedtuple("Arguments", (arg.name.name for arg in node.args or []))
+        # Simplify cast if casting a literal
+        if hasattr(node, "type"):
+            tpe = node.type
+        else:
+            tpe = self.scope.type_lookup(node.right)
 
-        # TODO Check return arguments
-        f = self.scope.create_function(
-            name = node.name, 
-            arg_t = Arguments(*(self.scope.type_lookup(arg.type) for arg in node.args or [])),
-            ret_t = tuple(self.scope.type_lookup(r) for r in node.returns or []),
-            share = node.share
-        )
-        node.identifier = f.identifier # TODO Maybe redundant
+        if isinstance(node.left, (model.Integer, model.Float, model.StructInit)):
+            node.left.type = tpe
+            if isinstance(node.left, model.StructInit):
+                return self.walk(node.left)
+            return node.left
 
-        if node.body:
-            scope = self.scope.enter_scope(node.body)
-            for arg in node.args or []:
-                # Create argument variables
-                v = scope.create_variable(Modifier.Var, arg.name, self.scope.type_lookup(arg.type))
-                arg.identifier = v.identifier
+        self.walk_child(node, node.left)
+        node.type = tpe # TODO rewrite cast_to
+        return node
 
-            self.enter_function(f)
-            self.walk_child(node, node.body)
-            self.exit_function()
+    #def walk_CallArg(self, node: model.CallArg):
+    #    node.value = node.ast
+    #    return node
+
+    def walk_Call(self, node: model.Call):
+        self.walk_child(node, node.left)
+        tpe = copy.deepcopy(node.left.type)
+        assert_error(types.is_function(tpe), "Can only call functions")
+        
+        for i in range(len(node.args)):
+            n = node.args[i].value
+            if isinstance(n, model.StructInit):
+                n.type = tpe.parameter_t[i]
+
+
+        self.walk_child(node, node.args)
+        if tpe.macro:
+            node = tpe.macro(tpe, node, self)
+            # In case the macro changed something
+            self.walk_child(node, node.left, node.args)
+            # This is so that we don't run the same code again
+            tpe.macro = None
+        node.type = tpe.return_t[0]
+        node.left.type = tpe
 
         return node
-    
+
     def walk_Return(self, node: model.Return):
         self.walk_children(node)
-        node.root = self.current_function == None
+
+        function = self.current_function
+        function.return_t = tuple(self.scope.type_lookup(n.type) for n in node.ast)
+
+        if len(function.return_t) > 1:
+            node.struct_identifier = function.struct_identifier
+        
         return node
 
-from princess import pbuiltins
-from princess.codegen import PythonCodeGen
+    def walk_StructInit(self, node: model.StructInit):
+        self.walk_children(node)
 
-builtins = Scope(None)
-for k in dir(pbuiltins):
-    if k.startswith("_"): continue
-        
-    v = getattr(pbuiltins, k)
-    if isinstance(v, type):
-        builtins.create_type(ast.Identifier(k), v)
-    elif callable(v):
-        arg_t = None
-        ret_t = None
+        if node.type and not types.is_type(node.type):
+            node.type = self.scope.type_lookup(node.type)
+        assert_error(node.type is not None, "Unknown struct type")
 
-        argspec = inspect.getfullargspec(v)
-        varg = argspec.varargs
-        types = argspec.annotations
-        types.update({name: None for name in argspec.args if name not in types})
-        if varg: types[varg] = Varargs(types.get(varg, None))
+        return node
 
-        if "return" in types:
-            ret_t = types["return"]
-            del types["return"] # delete to keep it from getting into the argument types
-        if len(types) > 0:
-            arg_t = namedtuple("ArgumentTypes", types.keys())(**types)
-        
-        builtins.create_function(ast.Identifier(k), arg_t, ret_t, getattr(v, "typecheck_macro", None))
+    def walk_DefArg(self, node: model.DefArg):
+        self.walk_children(node)
+        node.type = self.scope.type_lookup(node.type)
+        node.identifier = node.name.ast[-1]
+        return node
 
-def compile(ast, scope = None):
-    scope = scope or Scope(builtins)
-    ast = Compile(scope).walk(ast)
-    src = PythonCodeGen().render(ast)
-    return src
+    def walk_Def(self, node: model.Def):
+        self.walk_child(node, node.args, node.returns)
 
-_modules = {} # compiled modules
+        name = node.name.ast[-1]
+        node.identifier = "_".join(node.name.ast)
+        if node.identifier != "main" and node.share is ast.Share.No:
+            node.identifier = create_unique_identifier() + "_" + node.identifier
 
-def compile_module(module) -> Scope:
-    if module in _modules: 
-        return _modules[module]
+        struct_identifier = create_unique_identifier()
 
-    scope = Scope(builtins)
-    with open(module + ".pr") as file:
-        ast = parse("\n".join(file.readlines()))
-        pysrc = compile(ast, scope)
-        with open(module + ".py", "w") as pyfile:
-            pyfile.writelines(pysrc)
+        function = types.FunctionT(
+            tuple(self.scope.type_lookup(n) for n in node.returns) 
+                if node.returns else (types.void,), 
+            tuple(self.scope.type_lookup(n.type) for n in node.args or []),
+            struct_identifier)
+            
+        self.scope.create_function(name, function, ast.Share.No, node.identifier)
 
-    _modules[module] = scope
-    return scope
+        if node.body:
+            self.enter_scope()
+            for arg in node.args or []:
+                # Create argument variables
+                v = self.scope.create_variable(Modifier.Var, arg.name.ast[-1], self.scope.type_lookup(arg.type))
+                arg.identifier = v.identifier
 
-def eval(pysrc, globals = {}):
-    return eval_globals(pysrc, globals)["__env"].result
+            self.enter_function(function)
+            self.walk_child(node, node.body)
+            self.exit_function()
+            
+            self.exit_scope()
 
-def eval_globals(pysrc, globals = {}):
-    exec(pysrc, globals)
-    return globals
+        function.return_t = [   # decay arrays to pointers
+            types.PointerT(i.type) if types.is_array(i) else i for i in function.return_t] # pylint: disable=no-member
+
+        if len(function.return_t) > 1:
+            struct = ast.TypeDecl(
+                share = ast.Share.No,
+                name = [ast.Identifier(struct_identifier)],
+                typename = struct_identifier,
+                value = [ast.Struct(
+                    body = ast.StructBody(
+                        *[ast.IdDeclStruct(name = ast.Identifier("_" + str(n)), type = function.return_t[n])
+                        for n in range(len(function.return_t))]
+                    )
+                )]
+            )
+            struct = self.walk(struct)
+            node.returns = struct_identifier
+            node.type = self.scope.type_lookup(ast.Identifier(node.returns))
+            return (struct, node)
+        else:
+            node.returns = function.return_t[0]
+            node.type = self.scope.type_lookup(node.returns)
+    
+            return node
+
+    def walk_Program(self, node: model.Program):
+        code = []
+        main_code = []
+
+        self.enter_scope()
+        for n in node.ast:
+            if isinstance(n, model.Def):
+                code.append(n)  # TODO Walking this shouldn't have an impact
+            elif isinstance(n, model.TypeDecl):
+                n = self.walk(n)
+                code.append(n)
+            elif isinstance(n, model.VarDecl):
+                if n.right:
+                    assert_error(len(n.left) == 1 >= len(n.right), "Parallel assignment not implemented")
+                    n = self.walk(n)
+                
+                tpe = n.type if hasattr(n, "type") else None
+                var_decl = ast.VarDecl(
+                    left = n.left,
+                    right = [],
+                    keyword = n.keyword,
+                    type = tpe,
+                    share = n.share
+                )
+                code.append(var_decl)
+
+                if n.right:
+                    assignment = ast.Assign(
+                        left = [n.name if isinstance(n, model.IdDecl) 
+                                else n.ast for n in n.left],
+                        right = n.right,
+                        first_assign = True
+                    )
+                    main_code.append(assignment)
+            else:
+                main_code.append(n)
+        self.exit_scope()
+
+        main_function = ast.Def(
+            name = ast.Identifier("main"),
+            body = ast.Body(*main_code),
+            share = ast.Share.Export
+        )
+        code.append(main_function)
+
+        self.walk_children(code)
+        return ast.Program(*code), main_function.type # pylint: disable=no-member
+
+                
+def compile(p_ast):
+    p_ast, main_type = Compiler().walk(p_ast)
+    csrc = CCodeGen().render(p_ast)
+    return csrc, main_type
+    
+
+def eval(csrc, filename, main_type):
+    basepath = Path("bin").absolute()
+    cfile = basepath / (filename + ".c")
+    cfile.parent.mkdir(parents = True, exist_ok = True)
+    libfile = basepath / (filename + ".so")
+
+    with open(cfile, "w") as fp:
+        fp.write(csrc)
+
+    p = subprocess.Popen(
+        ["gcc", "-I" + os.getcwd(), "-shared", "-o", 
+        libfile, "-fPIC", cfile], 
+    )
+    status = p.wait()
+    if status:
+        raise CompileError("GCC Compilation failed")
+
+    lib = cdll.LoadLibrary(libfile.absolute())
+    main_type = main_type.c_type
+
+    lib.main.restype = main_type
+    val = lib.main()
+    del lib
+    
+    if main_type and issubclass(main_type, ctypes.Structure):
+        val = tuple(getattr(val, "_" + str(n)) for n in range(len(main_type._fields_)))
+    return val
+
+builtins = Scope()
+for n in dir(types):
+    v = getattr(types, n)
+    if isinstance(v, types.Type):
+        builtins.create_type(n, v)
+
+def _allocate(function, node, compiler: Compiler):
+    arg = node.args[0].value
+    if compiler.scope.type_lookup(arg.type) in int_t:
+        function.return_t = (types.void_p,)
+        function.parameter_t = (types.size_t,)
+    else:
+        function.return_t = (types.PointerT(compiler.scope.type_lookup(arg)),)
+        if len(node.args) == 2:
+            n = node.args[1].value
+            assert_error(n.type in int_t, "Invalid argument")
+            node.args[:] = [ast.CallArg(value = ast.Mul(left = ast.SizeOf(arg), right = n))]
+        else:
+            node.args[0].value = ast.SizeOf(arg)
+
+    node.left = ast.Identifier("malloc")
+    return node
+
+def to_c_format_specifier(tpe):
+    if types.is_array(tpe) and tpe.type is types.char:
+        return "%s"
+    elif types.is_pointer(tpe):
+        return "%p"
+    else:
+        return {
+            types.size_t: "%zu",
+            types.byte: "%hhd",
+            types.ubyte: "%hhu",
+            types.char: "%c",
+            types.short: "%hd",
+            types.ushort: "%hu",
+            types.int: "%d",
+            types.uint: "%u",
+            types.long: "%ld",
+            types.ulong: "%lu",
+            types.float: "%f",
+            types.double: "%f"
+        }[tpe]
+
+# TODO Do proper paremeter and return types
+
+def _print(function, node, compiler: Compiler):
+    node.args[:] = [ast.CallArg(value = ast.String("".join(to_c_format_specifier(
+        compiler.scope.type_lookup(a.value.type)) for a in node.args)))] + node.args
+
+    node.left = ast.Identifier("printf")
+    return node
+
+def _concat(function, node, compiler: Compiler):
+    node.args[:] = [node.args[0]] + [ast.CallArg(value = ast.String("".join(to_c_format_specifier(
+        compiler.scope.type_lookup(a.value.type)) for a in node.args[1:])))] + node.args[1:]
+
+    node.left = ast.Identifier("sprintf")
+    return node
+
+def _open(function, node, compiler: Compiler):
+    node.left = ast.Identifier("fopen")
+    return node
+
+def _close(function, node, compiler: Compiler):
+    node.left = ast.Identifier("fclose")
+    return node
+
+def read_write(function, node, compiler: Compiler):
+    buffer = node.args[1].value
+    if len(node.args) == 3:
+        size = node.args[2].value
+    else:
+        if types.is_array(buffer.type):
+            size = ast.Integer(buffer.type.n)
+        else:
+            assert_error(types.is_pointer(buffer.type), "Illegal argument")
+            size = ast.Integer(1)
+    node.args[:] = [node.args[1], ast.CallArg(value = ast.SizeOf(buffer.type.type)), ast.CallArg(value = size), node.args[0]]
+    return node
+
+def _write(function, node, compiler: Compiler):
+    node = read_write(function, node, compiler)
+    node.left = ast.Identifier("fwrite")
+    return node
+
+def _read(function, node, compiler: Compiler):
+    node = read_write(function, node, compiler)
+    node.left = ast.Identifier("fread")
+    return node
+
+def _write_string(function, node, compiler: Compiler):
+    node.args[:] = [node.args[0]] + [ast.CallArg(value = ast.String("".join(to_c_format_specifier(
+        compiler.scope.type_lookup(a.value.type)) for a in node.args[1:])))] + node.args[1:]
+
+    node.left = ast.Identifier("fprintf")
+    return node
+
+def _read_line(function, node, compiler: Compiler):
+    buffer = node.args[1].value
+    if types.is_array(buffer.type):
+        size = ast.Integer(buffer.type.n)
+    if len(node.args) == 3:
+        size = node.args[2].value
+    node.args[:] = [node.args[1], ast.CallArg(value = size), node.args[0]]
+
+    node.left = ast.Identifier("fgets")
+    return node
+
+def _scan(function, node, compiler: Compiler):
+    node.args[:] = [node.args[0]] + [ast.CallArg(value = ast.String("".join(to_c_format_specifier(
+        compiler.scope.type_lookup(a.value.type.type)) for a in node.args[1:])))] + node.args[1:]
+    
+    node.left = ast.Identifier("fscanf")
+    return node
+
+def _flush(function, node, compiler: Compiler):
+    node.left = ast.Identifier("fflush")
+    return node
+
+def _seek(function, node, compiler: Compiler):
+    node.args.append(ast.CallArg(value = ast.Identifier("SEEK_SET")))
+    node.left = ast.Identifier("fseek")
+    return node
+
+builtins.create_function("allocate", types.FunctionT(macro = _allocate))
+builtins.create_function("free", types.FunctionT(parameter_t = (types.void_p,)))
+builtins.create_function("print", types.FunctionT(return_t = (types.int,), macro = _print))
+#builtins.create_function("print_format", types.FunctionT(return_t = (types.int,)))
+builtins.create_function("concat", types.FunctionT(return_t = (types.int,), macro = _concat))
+builtins.create_function("open", types.FunctionT(return_t = (types.FILE_T,), parameter_t = (types.string, types.string), macro = _open))
+builtins.create_function("close", types.FunctionT(return_t = (types.void,), parameter_t = (types.FILE_T,), macro = _close))
+builtins.create_function("write", types.FunctionT(return_t = (types.void,), parameter_t = (types.FILE_T, types.void_p, types.size_t), macro = _write))
+builtins.create_function("read", types.FunctionT(return_t = (types.void,), parameter_t = (types.FILE_T, types.void_p, types.size_t), macro = _read))
+builtins.create_function("rewind", types.FunctionT(return_t = (types.void,), parameter_t = (types.void_p,)))
+builtins.create_function("write_string", types.FunctionT(return_t = (types.void,), macro = _write_string))
+builtins.create_function("read_line", types.FunctionT(return_t = (types.string,), macro = _read_line))
+builtins.create_function("scan", types.FunctionT(return_t = (types.int,), macro = _scan))
+builtins.create_function("flush", types.FunctionT(return_t = (types.void,), parameter_t = (types.FILE_T,), macro = _flush))
+builtins.create_function("seek", types.FunctionT(return_t = (types.void,), parameter_t = (types.FILE_T, types.long, types.int), macro = _seek))
+
+builtins.create_variable(Modifier.Let, "stdout", types.FILE_T)
+builtins.create_variable(Modifier.Let, "stderr", types.FILE_T)
+builtins.create_variable(Modifier.Let, "stdin", types.FILE_T)

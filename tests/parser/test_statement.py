@@ -290,3 +290,10 @@ def test_import_export():
             alias = Identifier("mem")
         )]
     ))
+
+def test_return_statement():
+    assert parse("""\
+        return foo, bar    
+    """) == Program(
+        Return(Identifier("foo"), Identifier("bar"))
+    )

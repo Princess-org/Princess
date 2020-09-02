@@ -1,7 +1,5 @@
-from ctypes import *
 from tests import eval_expr, eval, skip
 from pytest import raises
-from princess.env import p_eq
 
 def test_pointer_basic():
     prog = """\
@@ -11,7 +9,7 @@ def test_pointer_basic():
         a = a + 10
         return a, @b
     """
-    assert p_eq(eval(prog), (c_long(30), c_long(30)))
+    assert eval(prog) == (30, 30)
 
 def test_pointer_to_pointer():
     prog = """\
@@ -20,7 +18,7 @@ def test_pointer_to_pointer():
         var c = *b
         return @@c
     """
-    assert p_eq(eval(prog), c_long(10))
+    assert eval(prog) == 10
 
 def test_pass_pointer_to_function():
     prog = """\
@@ -32,16 +30,24 @@ def test_pass_pointer_to_function():
         inc_by_one(*a)
         return a
     """
-    assert p_eq(eval(prog), c_long(21))
+    assert eval(prog) == 21
 
 def test_malloc_free():
     prog = """\
-        let a = allocate(int)
+        var a = allocate(int)
         @a = 20
         let b = @a
         free(a)
         return b
     """
-    assert p_eq(eval(prog), c_long(20))
+    assert eval(prog) == 20
+
+def test_malloc_free_array():
+    prog = """\
+        var a = allocate(char, 100)
+        a = "Free from System"
+        return a
+    """
+    assert eval(prog) == b"Free from System"
     
 

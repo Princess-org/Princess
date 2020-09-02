@@ -1,7 +1,8 @@
-import pytest
+import pytest, tests
 import os, tatsu, subprocess, sys, shutil, importlib
 
 from datetime import datetime
+
 
 # Arguments
 def pytest_addoption(parser):
@@ -15,7 +16,7 @@ def pytest_configure(config):
     recompile_parser()
 
     # HACK https://github.com/pytest-dev/py/issues/149#issuecomment-430606830
-    shutil.get_terminal_size = os.get_terminal_size
+    # shutil.get_terminal_size = os.get_terminal_size
 
     import tests
     tests.config = config
@@ -69,3 +70,8 @@ def pytest_assertrepr_compare(config, op, left, right):
         ret.insert(0, '')
 
     return ret or None
+
+@pytest.fixture(autouse = True)
+def library_fixture():
+    tests.LIB_COUNT = 0
+    yield

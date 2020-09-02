@@ -1,6 +1,20 @@
-from ctypes import *
 from tests import eval_expr, eval
-from princess.env import p_eq
+
+def test_empty_program():
+    prog = ""
+    eval(prog)
+
+def test_return():
+    prog = """\
+        return true
+    """
+    assert eval(prog) == True
+
+def test_return_multiple():
+    prog = """\
+        return true, 5
+    """
+    assert eval(prog) == (True, 5)
 
 def test_if_statement():
     prog = """\
@@ -9,7 +23,7 @@ def test_if_statement():
         }
         return false
     """
-    assert p_eq(eval(prog), c_bool(False))
+    assert eval(prog) == False
 
 def test_if_statement_complex():
     prog = """\
@@ -19,7 +33,7 @@ def test_if_statement_complex():
             return true
         } else { }
     """
-    assert p_eq(eval(prog), c_bool(True))
+    assert eval(prog) == True
 
 def test_if_scoping():
     prog = """\
@@ -37,7 +51,7 @@ def test_if_scoping():
         }
         return a
     """
-    assert p_eq(eval(prog), c_long(42))
+    assert eval(prog) == 42
 
 def test_for_loop_range():
     prog = """\
@@ -47,7 +61,18 @@ def test_for_loop_range():
         }
         return a
     """
-    assert p_eq(eval(prog), c_long(20))
+    assert eval(prog) == 20
+
+def test_for_loop_array():
+    prog = """\
+        var a = [1, 2, 3, 4]
+        var sum = 0
+        for var b in a {
+            sum += b
+        }
+        return sum
+    """
+    assert eval(prog) == 10
 
 def test_while_loop():
     prog = """\
@@ -59,12 +84,29 @@ def test_while_loop():
         }
         return b
     """
-    assert p_eq(eval(prog), c_long(10))
+    assert eval(prog) == 10
 
-def test_export():
-    prog = """
-        export var a, b = 20, 21
-        export def test() { }
+def test_loop():
+    prog = """\
+        var a = 0
+        loop {
+            a = a + 1
+            if a == 10 {
+                break
+            }
+            continue
+        }
         return a
     """
-    assert p_eq(eval(prog), c_long(20))
+    assert eval(prog) == 10
+
+def test_export():
+    prog = """\
+        export var a = 20
+        export var b = 21
+        export def test() {
+            return a
+        }
+        return test()
+    """
+    assert eval(prog) == 20
