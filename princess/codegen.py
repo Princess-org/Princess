@@ -65,6 +65,9 @@ class CCodeGen(CodeGenerator):
             {value::\\n:%s;}\
         """
 
+    class AssignAndOp(Renderer):
+        template = "({left} {op} {right})"
+
     # Operators
     # TODO Directly unwrap primitive values -> performance
     class UMinus(Renderer):
@@ -143,6 +146,27 @@ class CCodeGen(CodeGenerator):
                 value[i] = str(self.codegen.render(value[i]))
 
         template = "({value:: :})"
+
+    class Break(Renderer):
+        template = "break"
+    class Continue(Renderer):
+        template = "continue"
+    class While(Renderer):
+        def _render_fields(self, fields):
+            if not "cond" in fields:
+                fields.update(cond = ast.Boolean(True))
+            
+        template = """\
+            while ({cond}) {{
+            {body:1::}
+            }}
+        """
+    class For(Renderer):
+        template = """\
+            for ({init_expr};{test_expr};{update_expr}) {{
+            {body:1::}
+            }}
+        """
 
     class If(Renderer):
         template = """\

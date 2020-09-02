@@ -63,6 +63,17 @@ def test_for_loop_range():
     """
     assert eval(prog) == 20
 
+def test_for_loop_array():
+    prog = """\
+        var a = [1, 2, 3, 4]
+        var sum = 0
+        for var b in a {
+            sum += b
+        }
+        return sum
+    """
+    assert eval(prog) == 10
+
 def test_while_loop():
     prog = """\
         var a = 10
@@ -75,10 +86,27 @@ def test_while_loop():
     """
     assert eval(prog) == 10
 
-def test_export():
-    prog = """
-        export var a, b = 20, 21
-        export def test() { }
+def test_loop():
+    prog = """\
+        var a = 0
+        loop {
+            a = a + 1
+            if a == 10 {
+                break
+            }
+            continue
+        }
         return a
+    """
+    assert eval(prog) == 10
+
+def test_export():
+    prog = """\
+        export var a = 20
+        export var b = 21
+        export def test() {
+            return a
+        }
+        return test()
     """
     assert eval(prog) == 20

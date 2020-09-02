@@ -180,7 +180,7 @@ class Scope:
             value = 0
             for id_decl in t.body.ast or []:
                 if id_decl:
-                    name = id_decl.name.ast[-1]
+                    name = id_decl.name.identifier
                     if id_decl.value:
                         value = id_decl.value.ast
                     fields.append((name, value))
@@ -318,6 +318,64 @@ class Compiler(AstWalker):
             node.type = value.type
 
         return node
+
+    def walk_For(self, node: model.For):
+        self.walk_child(node, node.iterator)
+        in_stmt = node.iterator
+
+        range_ = in_stmt.right[0]
+        identifier = in_stmt.left[0].name
+
+        self.enter_scope()
+        if isinstance(range_, model.Range):
+            var_decl = ast.VarDecl(
+                keyword = in_stmt.keyword,
+                left = in_stmt.left,
+                right = [range_.from_]
+            )
+            node.init_expr = var_decl
+            node.test_expr = ast.Compare(identifier, ast.CompareOp("<="), range_.to)
+            if range_.step:
+                step = range_.step
+            elif range_.from_.ast > range_.to.ast:
+                step = ast.Integer(-1)
+            else:
+                step = ast.Integer(1)
+            node.update_expr = ast.AssignAndOp(
+                left = identifier,
+                op = ast.AssignOp("+="),
+                right = step
+            )
+        else:
+            array = range_
+            identifier2 = ast.Identifier("iter")
+            var_decl = ast.VarDecl(
+                keyword = Modifier.Var,
+                left = [ast.IdDecl(name = identifier2)],
+                right = [ast.Integer(0)]
+            )
+            node.init_expr = var_decl
+            node.body.ast.insert(0, ast.VarDecl(
+                keyword = in_stmt.keyword,
+                left = [ast.IdDecl(name = identifier)],
+                right = [ast.ArrayIndex(left = array, right = identifier2)]
+            ))
+
+            tpe = self.scope.type_lookup(array.type)
+            assert_error(types.is_array(tpe), "Invalid iterator")
+            node.test_expr = ast.Compare(identifier2, ast.CompareOp("<"), ast.Integer(tpe.n))
+            node.update_expr = ast.AssignAndOp(
+                left = identifier2,
+                op = ast.AssignOp("+="),
+                right = ast.Integer(1)
+            )
+
+    
+        self.walk_child(node, node.init_expr, node.test_expr, node.update_expr)
+        
+        self.walk_child(node, node.body)
+        self.exit_scope() 
+        return node
     
     def walk_MemberAccess(self, node: model.MemberAccess):
         self.walk_children(node)
@@ -365,7 +423,7 @@ class Compiler(AstWalker):
                 args = [
                     ast.CallArg(node.left[0]),
                     ast.CallArg(node.right[0]),
-                    ast.CallArg(ast.Integer(n))
+                    ast.CallArg(ast.Mul(left = ast.SizeOf(tpe.type), right = ast.Integer(n)))
                 ]
             )
             call.left.type = types.FunctionT(
@@ -508,9 +566,13 @@ class Compiler(AstWalker):
                     value = nme.value.ast
                 else:
                     value += 1
-                    
-                nme = nme.name.name
-                ns.create_variable(modifier = Modifier.Let, name = nme, tpe = self.scope.type_lookup(tpe), value = value)
+                
+                name = nme.name.name
+                identifier = typename + "_" + name
+                nme.name.identifier = identifier
+                ns.create_variable(
+                    modifier = Modifier.Let, name = name, tpe = self.scope.type_lookup(tpe), 
+                    value = value, identifier = identifier)
             
             node.type = self.scope.type_lookup(val)
             node.typename = typename
@@ -632,7 +694,7 @@ class Compiler(AstWalker):
 
         name = node.name.ast[-1]
         node.identifier = "_".join(node.name.ast)
-        if node.identifier != "main":
+        if node.identifier != "main" and node.share is ast.Share.No:
             node.identifier = create_unique_identifier() + "_" + node.identifier
 
         struct_identifier = create_unique_identifier()
@@ -704,7 +766,8 @@ class Compiler(AstWalker):
                     left = n.left,
                     right = [],
                     keyword = n.keyword,
-                    type = tpe
+                    type = tpe,
+                    share = n.share
                 )
                 code.append(var_decl)
 
