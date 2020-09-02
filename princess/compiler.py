@@ -122,6 +122,14 @@ class Scope:
         assert isinstance(value, Value)
         self.dict[name] = value
 
+    def enter_namespace(self, namespace: str, share = ast.Share.No):
+        if namespace in self.dict:
+            return self.dict[namespace]
+        else:
+            ns = Scope(self)
+            self.create_variable(Modifier.Const, namespace, None, share, value = ns)
+            return ns
+
     def get_const_value(self, v: model.Identifier):
         assert isinstance(v, model.Identifier)
         try:
@@ -142,7 +150,10 @@ class Scope:
             return t
         elif isinstance(t, model.Identifier):
             v = self.get_const_value(t)
-            v.name = t.ast[-1]
+            if hasattr(t, "identifier"):
+                v.name = t.identifier
+            else:
+                v.name = t.ast[-1]
             return v
         elif isinstance(t, model.PtrT):
             return types.PointerT(self.type_lookup(t.type))
@@ -150,9 +161,7 @@ class Scope:
             fields = []
             for id_decl in t.body.ast or []:
                 if id_decl:
-                    if isinstance(id_decl.name, model.Identifier): # TODO This is ugly
-                        name = id_decl.name.ast[-1]
-                    else: name = id_decl.name
+                    name = id_decl.name.ast[-1]
                     fields.append((name, self.type_lookup(id_decl.type)))
             if t.pragma and "#union" in t.pragma:
                 return types.Union(fields)
@@ -163,10 +172,26 @@ class Scope:
             n = t.n.ast
             tpe = self.type_lookup(t.type)
             return types.ArrayT(tpe, n)
+        elif isinstance(t, model.TEnum):
+            tpe = types.int
+            if t.type:
+                tpe = self.type_lookup(t.type)
+            fields = []
+            value = 0
+            for id_decl in t.body.ast or []:
+                if id_decl:
+                    name = id_decl.name.ast[-1]
+                    if id_decl.value:
+                        value = id_decl.value.ast
+                    fields.append((name, value))
+                    value += 1
+
+            return types.Enum(tpe, fields)
         
         error("Type not implemented")
 
-    def create_variable(self, modifier: Modifier, name, tpe, share = ast.Share.No, value = None, identifier = None):
+    def create_variable(self, modifier: Modifier, name: str, tpe, share = ast.Share.No, value = None, identifier: str = None):
+        # print(name, identifier)
         assert_error(isinstance(name, str), "Illegal declaration")
         if identifier: 
             assert_error(isinstance(identifier, str), "Illegal declaration")
@@ -465,9 +490,34 @@ class Compiler(AstWalker):
         assert_error(len(node.name) == len(node.value) == 1,
             "Parallel type assignments not implemented")
 
-        node.type = self.scope.type_lookup(node.value[0])
-        node.typename = node.name[0].ast[-1]
-        self.scope.create_type(node.typename, node.type)
+        val = node.value[0]
+        name = node.name[0].ast[-1]
+        if hasattr(node, "typename"):
+            typename = node.typename
+        elif node.share is ast.Share.No:
+            typename = create_unique_identifier() + "_" + name
+        else: typename = name
+
+        if isinstance(val, model.TEnum):
+            tpe = val.type or types.int
+            ns = self.scope.enter_namespace(name)
+
+            value = -1
+            for nme in val.body.ast:
+                if nme.value:
+                    value = nme.value.ast
+                else:
+                    value += 1
+                    
+                nme = nme.name.name
+                ns.create_variable(modifier = Modifier.Let, name = nme, tpe = self.scope.type_lookup(tpe), value = value)
+            
+            node.type = self.scope.type_lookup(val)
+            node.typename = typename
+        else:
+            node.type = self.scope.type_lookup(val)
+            node.typename = typename
+            self.scope.create_type(name, node.type, share = node.share, identifier = typename)
 
         return node
 
@@ -615,9 +665,10 @@ class Compiler(AstWalker):
             struct = ast.TypeDecl(
                 share = ast.Share.No,
                 name = [ast.Identifier(struct_identifier)],
+                typename = struct_identifier,
                 value = [ast.Struct(
                     body = ast.StructBody(
-                        *[ast.IdDeclStruct(name = "_" + str(n), type = function.return_t[n])
+                        *[ast.IdDeclStruct(name = ast.Identifier("_" + str(n)), type = function.return_t[n])
                         for n in range(len(function.return_t))]
                     )
                 )]

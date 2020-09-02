@@ -116,7 +116,22 @@ class Union(Type):
 
     def _to_typestring(self, identifier):
         return ("union {" + "; ".join(
-            f[1].to_typestring(f[0]) for f in self.fields) + ";} " + identifier) 
+            f[1].to_typestring(f[0]) for f in self.fields) + ";} " + identifier)
+
+class Enum(Type):
+    def __init__(self, tpe, fields, name = None):
+        self.type = tpe
+        self.fields = fields
+        super().__init__(None, name = name)
+    
+    def c_type(self):
+        return self.type.c_type
+
+    def _to_typestring(self, identifier):
+        return ("enum {" + ", ".join(
+            f[0] + " = " + str(f[1]) for f in self.fields
+        ) + "} " + identifier)
+    
 
 void = Type(None, "void")
 void_p = Type(ctypes.c_void_p, "void*")

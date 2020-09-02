@@ -1,8 +1,7 @@
-from ctypes import *
 from tests import eval_expr, eval
 
 def test_enum_simple():
-    prog = """
+    prog = """\
         type Enum = enum: int {
             BAR; BAZ;
         }
@@ -11,7 +10,7 @@ def test_enum_simple():
     assert eval(prog) == (0, 1)
 
 def test_enum_complex():
-    prog = """
+    prog = """\
         type Enum = enum: long {
             FOO = 20; BAR;
         }
