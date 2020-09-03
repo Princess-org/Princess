@@ -60,6 +60,7 @@ class Lexer(PrincessBuffer):
         else:
             self.matchre(r"[\t ]+")
 
+    # TODO Rework
     def format_error(self, error, info: ParseInfo):
         line = info.text_lines()[0] # TODO Errors might span multiple lines
        

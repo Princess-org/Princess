@@ -284,8 +284,10 @@ class Compiler(AstWalker):
 
     def prefix_name(self, share, name):
         share = share or ast.Share.No
-        if share & ast.Share.Export or len(self.function_stack) > 0:
+        if share & ast.Share.Export:
             identifier = self.filename + "_" + name
+        elif len(self.function_stack) > 0:
+            identifier = name
         else:
             identifier = create_unique_identifier() + "_" + name
         return identifier
@@ -602,8 +604,30 @@ class Compiler(AstWalker):
             node.type = self.scope.type_lookup(val)
             node.typename = typename
         else:
-            node.type = self.scope.type_lookup(val)
+            # Create dummy for self reference
+            tpe = types.Type(ctypes.c_void_p)
+            self.scope.create_type(name, tpe, share = node.share, identifier = typename)
+
+            tpe2 = self.scope.type_lookup(val)
+            tpe2.name = typename
+            print(tpe2.name)
+
+            def resolve_types(tpe2):
+                if types.is_struct(tpe2):
+                    for i in range(len(tpe2.fields)):
+                        k, v = tpe2.fields[i]
+                        if types.is_struct(v):
+                            resolve_types(v)
+                        elif types.is_pointer(v) and v.type == tpe:
+                            v = types.PointerT(tpe2)
+                        tpe2.fields[i] = (k, v)
+
+            resolve_types(tpe2)  
+
+            node.type = tpe2
             node.typename = typename
+
+            del self.scope.dict[name] # Remove dummy again
             self.scope.create_type(name, node.type, share = node.share, identifier = typename)
 
         return node
@@ -690,6 +714,7 @@ class Compiler(AstWalker):
 
         function = self.current_function
         function.return_t = tuple(self.scope.type_lookup(n.type) for n in node.ast)
+        function.return_t = function.return_t or (types.void, )
 
         if len(function.return_t) > 1:
             node.struct_identifier = function.struct_identifier
@@ -724,7 +749,7 @@ class Compiler(AstWalker):
                 if node.returns else (types.void,), 
             tuple(self.scope.type_lookup(n.type) for n in node.args or []),
             struct_identifier)
-            
+        
         self.scope.create_function(name, function, node.share, node.identifier)
 
         if node.body:
@@ -740,8 +765,8 @@ class Compiler(AstWalker):
             
             self.exit_scope()
 
-        function.return_t = [   # decay arrays to pointers
-            types.PointerT(i.type) if types.is_array(i) else i for i in function.return_t] # pylint: disable=no-member
+        function.return_t = tuple(   # decay arrays to pointers
+            types.PointerT(i.type) if types.is_array(i) else i for i in function.return_t) # pylint: disable=no-member
 
         if len(function.return_t) > 1:
             struct = ast.TypeDecl(

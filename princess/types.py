@@ -24,19 +24,25 @@ class Type:
     def c_type(self):
         return self._c_type
 
-    def _to_typestring(self, identifier):
+    def _to_typestring(self, identifier, recursive = False):
         res = self.c_type.__name__.split("c_")[1]
         if identifier:
             res = res + " " + identifier
         return res
 
-    def to_typestring(self, identifier, named = True):
+    def to_typestring(self, identifier, recursive = False, named = True):
+        print("To typestring", self.name, named, recursive)
         if named and self.name:
             res = self.name
+            if recursive: 
+                if isinstance(self, Struct):
+                    res = "struct " + res
+                elif isinstance(self, Union):
+                    res = "union " + res
             if identifier:
                 res = res + " " + identifier
         else:
-            res = self._to_typestring(identifier)
+            res = self._to_typestring(identifier, recursive)
         return res
 
     def __hash__(self):
@@ -61,9 +67,9 @@ class PointerT(Type):
             return ctypes.c_char_p
         else: return ctypes.POINTER(self.type.c_type)
     
-    def _to_typestring(self, identifier):
+    def _to_typestring(self, identifier, recursive = False):
         tpe = self.type or void
-        return tpe.to_typestring("*" + identifier)
+        return tpe.to_typestring("*" + identifier, recursive)
 
 class ArrayT(Type):
     def __init__(self, tpe, n, name = None):
@@ -75,8 +81,8 @@ class ArrayT(Type):
     def c_type(self):
         return self.type.c_type * self.n
     
-    def _to_typestring(self, identifier):
-        return self.type.to_typestring(identifier) + "[" + str(self.n) + "]" 
+    def _to_typestring(self, identifier, recursive = False):
+        return self.type.to_typestring(identifier, recursive) + "[" + str(self.n) + "]" 
 
 class Struct(Type):
     def __init__(self, fields, name = None):
@@ -94,9 +100,10 @@ class Struct(Type):
         self.cache = Struct
         return self.cache
     
-    def _to_typestring(self, identifier):
-        return ("struct {" + "; ".join(
-            f[1].to_typestring(f[0]) for f in self.fields) + ";} " + identifier) 
+    def _to_typestring(self, identifier, recursive = False):
+        print("Calling", self.name, self.fields)
+        return ("struct " + self.name + " {" + "; ".join(
+            f[1].to_typestring(f[0], recursive = True) for f in self.fields) + ";} " + identifier) 
     
 class Union(Type):
     def __init__(self, fields, name = None):
@@ -114,9 +121,9 @@ class Union(Type):
         self.cache = Struct
         return self.cache
 
-    def _to_typestring(self, identifier):
-        return ("union {" + "; ".join(
-            f[1].to_typestring(f[0]) for f in self.fields) + ";} " + identifier)
+    def _to_typestring(self, identifier, recursive = False):
+        return ("union " + self.name + " {" + "; ".join(
+            f[1].to_typestring(f[0], recursive = True) for f in self.fields) + ";} " + identifier)
 
 class Enum(Type):
     def __init__(self, tpe, fields, name = None):
@@ -127,7 +134,7 @@ class Enum(Type):
     def c_type(self):
         return self.type.c_type
 
-    def _to_typestring(self, identifier):
+    def _to_typestring(self, identifier, recursive = False):
         return ("enum {" + ", ".join(
             f[0] + " = " + str(f[1]) for f in self.fields
         ) + "} " + identifier)

@@ -110,28 +110,27 @@ def test_struct_recursive():
             next: *List
         }
 
-        def insert(list: *List, e: int) {
-            let le = allocate(List)
-            le.element = e
-            le.next = null
-
-            if list == null {
-                @list = le
-                return
-            }
-
-            var temp = list
-            while temp != null {
-                temp = (@temp).next
-            }
-            temp.next = le
+        def make_List() -> List {
+            return {0, null}!List
         }
 
-        var list: List = { 0, null }
+        def insert(list: *List, e: int) {
+            let le = allocate(List)
+            (@le).element = e
+            (@le).next = null
+
+            var temp = list
+            while (@temp).next != null {
+                temp = (@temp).next
+            }
+            (@temp).next = le
+        }
+
+        var list = make_List()
         insert(*list, 10)
         insert(*list, 20)
 
-        return (@list.next).element
+        return (@(list.next)).element
     """
     assert eval(prog) == 10
 
