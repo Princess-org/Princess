@@ -100,7 +100,8 @@ class Struct(Type):
         return self.cache
     
     def _to_typestring(self, identifier, recursive = False):
-        return ("struct " + self.name + " {" + "; ".join(
+        name = self.name or ""
+        return ("struct " + name + " {" + "; ".join(
             f[1].to_typestring(f[0], recursive = True) for f in self.fields) + ";} " + identifier) 
     
 class Union(Type):
@@ -120,7 +121,8 @@ class Union(Type):
         return self.cache
 
     def _to_typestring(self, identifier, recursive = False):
-        return ("union " + self.name + " {" + "; ".join(
+        name = self.name or ""
+        return ("union " + name + " {" + "; ".join(
             f[1].to_typestring(f[0], recursive = True) for f in self.fields) + ";} " + identifier)
 
 class Enum(Type):
