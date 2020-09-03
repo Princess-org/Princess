@@ -56,7 +56,7 @@ def test_if_scoping():
 def test_for_loop_range():
     prog = """\
         var a = 0
-        for var i in 1:20 {
+        for var i in 0:20 {
             a = a + 1
         }
         return a

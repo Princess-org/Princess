@@ -362,7 +362,7 @@ class Compiler(AstWalker):
                 right = [range_.from_]
             )
             node.init_expr = var_decl
-            node.test_expr = ast.Compare(identifier, ast.CompareOp("<="), range_.to)
+            node.test_expr = ast.Compare(identifier, ast.CompareOp("<"), range_.to)
             if range_.step:
                 step = range_.step
             elif range_.from_.ast > range_.to.ast:
@@ -610,7 +610,7 @@ class Compiler(AstWalker):
 
             tpe2 = self.scope.type_lookup(val)
             tpe2.name = typename
-            print(tpe2.name)
+            print(tpe2.name) 
 
             def resolve_types(tpe2):
                 if types.is_struct(tpe2):
