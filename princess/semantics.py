@@ -22,7 +22,7 @@ def char_to_str(ast):
 class CompareOp(str, Enum):
     LT = '<'; GT = '>'
     LEQ = '<='; GEQ = '>='
-    EQ = '=='
+    EQ = '=='; NEQ = '!='
 
 class AssignOp(str, Enum):
     Add = '+='; Sub = '-='

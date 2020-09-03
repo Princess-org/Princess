@@ -3,7 +3,7 @@ import ctypes, copy
 from pathlib import Path
 from enum import Enum
 from ctypes import cdll
-from princess import ast, model, types
+from princess import ast, model, types, parse
 from princess.node import Node
 from princess.codegen import CCodeGen
 from tatsu.model import NodeWalker 
@@ -29,10 +29,10 @@ class Modifier(str, Enum):
     Type = "type"
 
 unsigned_t = set([types.uint8, types.uint16, 
-    types.uint32, types.uint64])
+    types.uint32, types.uint64, types.size_t])
 signed_t = set([types.int8, types.int16, types.int32, types.int64])
 float_t = set([types.double, types.float])
-int_t = unsigned_t | signed_t | set([types.size_t])
+int_t = unsigned_t | signed_t
 
 def to_signed(t):
     if t in unsigned_t:
@@ -124,7 +124,7 @@ class Scope:
 
     def enter_namespace(self, namespace: str, share = ast.Share.No):
         if namespace in self.dict:
-            return self.dict[namespace]
+            return self.dict[namespace].value
         else:
             ns = Scope(self)
             self.create_variable(Modifier.Const, namespace, None, share, value = ns)
@@ -260,10 +260,13 @@ class AstWalker(NodeWalker):
         return node
 
 class Compiler(AstWalker):
-    def __init__(self):
+    def __init__(self, scope: Scope, filename, base_path, include_path):
         self._walker_cache = {} # Tatsu walkaround FIXME
+        self.base_path = base_path
+        self.include_path = include_path
+        self.filename = filename
         self.function_stack = []
-        self.scope = Scope(builtins)
+        self.scope = scope
 
     def enter_function(self, function):
         self.function_stack.append(function)
@@ -278,6 +281,14 @@ class Compiler(AstWalker):
     @property
     def current_function(self):
         return self.function_stack[-1]
+
+    def prefix_name(self, share, name):
+        share = share or ast.Share.No
+        if share & ast.Share.Export or len(self.function_stack) > 0:
+            identifier = self.filename + "_" + name
+        else:
+            identifier = create_unique_identifier() + "_" + name
+        return identifier
     
     def walk_Body(self, node: model.Body):
         self.enter_scope()
@@ -308,7 +319,8 @@ class Compiler(AstWalker):
         return node
 
     def walk_Identifier(self, node: model.Identifier):
-        node.name = "_".join(node.ast)
+        node.name = "_".join(node.ast) # TODO
+        #print(node.name, self.scope.dict)
 
         if node in self.scope:
             value = self.scope[node]
@@ -317,6 +329,20 @@ class Compiler(AstWalker):
             node.identifier = value.identifier
             node.type = value.type
 
+        return node
+
+    def walk_Import(self, node: model.Import):
+        self.walk_children(node)
+        assert_error(len(node.modules) == 1, "Use multiple import statements")
+
+        module = node.modules[0]
+        name = module.name.ast[-1]
+        alias = (module.alias or module.name).ast[-1]
+        scope = compile_module(name, self.base_path, self.include_path)
+        exports = {name:var for name, var in scope.dict.items() if var.share & ast.Share.Export}
+        ns = self.scope.enter_namespace(alias)
+        ns.dict.update(exports)
+        #print(ns.dict)
         return node
 
     def walk_For(self, node: model.For):
@@ -552,10 +578,8 @@ class Compiler(AstWalker):
         name = node.name[0].ast[-1]
         if hasattr(node, "typename"):
             typename = node.typename
-        elif node.share is ast.Share.Export or len(self.function_stack) > 0:
-            typename = name
         else:
-            typename = create_unique_identifier() + "_" + name
+            typename = self.prefix_name(node.share, name)
 
         if isinstance(val, model.TEnum):
             tpe = val.type or types.int
@@ -607,11 +631,8 @@ class Compiler(AstWalker):
             tpe = node.right[0].type # Type inference
         
         name = id_decl.name.name
-        if node.share is ast.Share.Export or len(self.function_stack) > 0:
-            identifier = name
-        else:
-            identifier = create_unique_identifier() + "_" + name
-        self.scope.create_variable(modifier, name, tpe, identifier = identifier)
+        identifier = self.prefix_name(node.share, name)
+        self.scope.create_variable(modifier, name, tpe, node.share, identifier = identifier)
         
         node.type = tpe
         node.name = name
@@ -694,9 +715,7 @@ class Compiler(AstWalker):
         self.walk_child(node, node.args, node.returns)
 
         name = node.name.ast[-1]
-        node.identifier = "_".join(node.name.ast)
-        if node.identifier != "main" and node.share is ast.Share.No:
-            node.identifier = create_unique_identifier() + "_" + node.identifier
+        node.identifier = self.prefix_name(node.share, name)
 
         struct_identifier = create_unique_identifier()
 
@@ -706,7 +725,7 @@ class Compiler(AstWalker):
             tuple(self.scope.type_lookup(n.type) for n in node.args or []),
             struct_identifier)
             
-        self.scope.create_function(name, function, ast.Share.No, node.identifier)
+        self.scope.create_function(name, function, node.share, node.identifier)
 
         if node.body:
             self.enter_scope()
@@ -737,12 +756,12 @@ class Compiler(AstWalker):
                 )]
             )
             struct = self.walk(struct)
-            node.returns = struct_identifier
-            node.type = self.scope.type_lookup(ast.Identifier(node.returns))
+            node.return_type = struct_identifier
+            node.type = self.scope.type_lookup(ast.Identifier(node.return_type))
             return (struct, node)
         else:
-            node.returns = function.return_t[0]
-            node.type = self.scope.type_lookup(node.returns)
+            node.return_type = function.return_t[0]
+            node.type = self.scope.type_lookup(node.return_type)
     
             return node
 
@@ -752,9 +771,16 @@ class Compiler(AstWalker):
 
         self.enter_scope()
         for n in node.ast:
-            if isinstance(n, model.Def):
-                code.append(n)  # TODO Walking this shouldn't have an impact
-            elif isinstance(n, model.TypeDecl):
+            if isinstance(n, model.Import):
+                module = n.modules[0]
+                name = module.name.ast[-1]
+
+                call = ast.Call(left = ast.Identifier(name, "main"), args = [])
+                if not name in _modules:
+                    main_code.append(call) 
+                    n = self.walk(n)
+                    code.append(n)
+            elif isinstance(n, (model.TypeDecl, model.Def)):
                 n = self.walk(n)
                 code.append(n)
             elif isinstance(n, model.VarDecl):
@@ -794,29 +820,61 @@ class Compiler(AstWalker):
         self.walk_children(code)
         return ast.Program(*code), main_function.type # pylint: disable=no-member
 
-                
-def compile(p_ast):
-    p_ast, main_type = Compiler().walk(p_ast)
+builtins = Scope()
+for n in dir(types):
+    v = getattr(types, n)
+    if isinstance(v, types.Type):
+        builtins.create_type(n, v)
+        
+import princess.builtins
+
+def compile(p_ast, scope = None, filename = None, base_path = Path(""), include_path = Path("")):
+    if not filename:
+        filename = create_unique_identifier()
+    if not scope:
+        scope = Scope(builtins)
+    p_ast, main_type = Compiler(scope, filename, base_path, include_path).walk(p_ast)
     csrc = CCodeGen().render(p_ast)
     return csrc, main_type
-    
 
-def eval(csrc, filename, main_type):
-    basepath = Path("bin").absolute()
-    cfile = basepath / (filename + ".c")
-    cfile.parent.mkdir(parents = True, exist_ok = True)
+_modules = {} # compiled modules
+def compile_module(module, base_path, include_path):
+    if module in _modules:
+        return _modules[module]
+
+    file_path = include_path / Path(module + ".pr")
+    with open(file_path) as fp:
+        src = fp.read()
+    p_ast = parse(src)
+    scope = Scope(builtins)
+    csrc, main_type = compile(p_ast, scope, module, base_path, include_path)
+    _modules[module] = scope
+    
+    c_file_path = base_path / (file_path.stem + ".c")
+    with open(c_file_path, "w") as fp:
+        fp.write(csrc)
+    
+    return scope
+
+
+def eval(csrc, main_fun, filename, main_type):
+    main_fun = main_fun + "_main"
+
+    base_path = Path("bin").absolute()
+    c_file = base_path / (filename + ".c")
+    c_file.parent.mkdir(parents = True, exist_ok = True)
 
     if os.name == "nt":
-        libfile = basepath / (filename + ".dll")
+        libfile = base_path / (filename + ".dll")
     else:
-        libfile = basepath / (filename + ".so")
+        libfile = base_path / (filename + ".so")
 
-    with open(cfile, "w") as fp:
+    with open(c_file, "w") as fp:
         fp.write(csrc)
 
     p = subprocess.Popen(
-        ["gcc", "-I" + os.getcwd(), "-shared", "-o", 
-        str(libfile), "-fPIC", str(cfile)], 
+        ["gcc", "-I" + os.getcwd(), "-I" + str(c_file.parent), "-shared", "-o", 
+        str(libfile), "-fPIC", str(c_file)], 
     )
     status = p.wait()
     if status:
@@ -825,155 +883,10 @@ def eval(csrc, filename, main_type):
     lib = cdll.LoadLibrary(str(libfile.absolute()))
     main_type = main_type.c_type
 
-    lib.main.restype = main_type
-    val = lib.main()
+    getattr(lib, main_fun).restype = main_type
+    val = getattr(lib, main_fun)()
     del lib
     
     if main_type and issubclass(main_type, ctypes.Structure):
         val = tuple(getattr(val, "_" + str(n)) for n in range(len(main_type._fields_)))
     return val
-
-builtins = Scope()
-for n in dir(types):
-    v = getattr(types, n)
-    if isinstance(v, types.Type):
-        builtins.create_type(n, v)
-
-def _allocate(function, node, compiler: Compiler):
-    arg = node.args[0].value
-    if compiler.scope.type_lookup(arg.type) in int_t:
-        function.return_t = (types.void_p,)
-        function.parameter_t = (types.size_t,)
-    else:
-        function.return_t = (types.PointerT(compiler.scope.type_lookup(arg)),)
-        if len(node.args) == 2:
-            n = node.args[1].value
-            assert_error(n.type in int_t, "Invalid argument")
-            node.args[:] = [ast.CallArg(value = ast.Mul(left = ast.SizeOf(arg), right = n))]
-        else:
-            node.args[0].value = ast.SizeOf(arg)
-
-    node.left = ast.Identifier("malloc")
-    return node
-
-def to_c_format_specifier(tpe):
-    if types.is_array(tpe) and tpe.type is types.char:
-        return "%s"
-    elif types.is_pointer(tpe):
-        return "%p"
-    else:
-        return {
-            types.size_t: "%zu",
-            types.byte: "%hhd",
-            types.ubyte: "%hhu",
-            types.char: "%c",
-            types.short: "%hd",
-            types.ushort: "%hu",
-            types.int: "%d",
-            types.uint: "%u",
-            types.long: "%ld",
-            types.ulong: "%lu",
-            types.float: "%f",
-            types.double: "%f"
-        }[tpe]
-
-# TODO Do proper paremeter and return types
-
-def _print(function, node, compiler: Compiler):
-    node.args[:] = [ast.CallArg(value = ast.String("".join(to_c_format_specifier(
-        compiler.scope.type_lookup(a.value.type)) for a in node.args)))] + node.args
-
-    node.left = ast.Identifier("printf")
-    return node
-
-def _concat(function, node, compiler: Compiler):
-    node.args[:] = [node.args[0]] + [ast.CallArg(value = ast.String("".join(to_c_format_specifier(
-        compiler.scope.type_lookup(a.value.type)) for a in node.args[1:])))] + node.args[1:]
-
-    node.left = ast.Identifier("sprintf")
-    return node
-
-def _open(function, node, compiler: Compiler):
-    node.left = ast.Identifier("fopen")
-    return node
-
-def _close(function, node, compiler: Compiler):
-    node.left = ast.Identifier("fclose")
-    return node
-
-def read_write(function, node, compiler: Compiler):
-    buffer = node.args[1].value
-    if len(node.args) == 3:
-        size = node.args[2].value
-    else:
-        if types.is_array(buffer.type):
-            size = ast.Integer(buffer.type.n)
-        else:
-            assert_error(types.is_pointer(buffer.type), "Illegal argument")
-            size = ast.Integer(1)
-    node.args[:] = [node.args[1], ast.CallArg(value = ast.SizeOf(buffer.type.type)), ast.CallArg(value = size), node.args[0]]
-    return node
-
-def _write(function, node, compiler: Compiler):
-    node = read_write(function, node, compiler)
-    node.left = ast.Identifier("fwrite")
-    return node
-
-def _read(function, node, compiler: Compiler):
-    node = read_write(function, node, compiler)
-    node.left = ast.Identifier("fread")
-    return node
-
-def _write_string(function, node, compiler: Compiler):
-    node.args[:] = [node.args[0]] + [ast.CallArg(value = ast.String("".join(to_c_format_specifier(
-        compiler.scope.type_lookup(a.value.type)) for a in node.args[1:])))] + node.args[1:]
-
-    node.left = ast.Identifier("fprintf")
-    return node
-
-def _read_line(function, node, compiler: Compiler):
-    buffer = node.args[1].value
-    if types.is_array(buffer.type):
-        size = ast.Integer(buffer.type.n)
-    if len(node.args) == 3:
-        size = node.args[2].value
-    node.args[:] = [node.args[1], ast.CallArg(value = size), node.args[0]]
-
-    node.left = ast.Identifier("fgets")
-    return node
-
-def _scan(function, node, compiler: Compiler):
-    node.args[:] = [node.args[0]] + [ast.CallArg(value = ast.String("".join(to_c_format_specifier(
-        compiler.scope.type_lookup(a.value.type.type)) for a in node.args[1:])))] + node.args[1:]
-    
-    node.left = ast.Identifier("fscanf")
-    return node
-
-def _flush(function, node, compiler: Compiler):
-    node.left = ast.Identifier("fflush")
-    return node
-
-def _seek(function, node, compiler: Compiler):
-    node.args.append(ast.CallArg(value = ast.Identifier("SEEK_SET")))
-    node.left = ast.Identifier("fseek")
-    return node
-
-builtins.create_function("allocate", types.FunctionT(macro = _allocate))
-builtins.create_function("free", types.FunctionT(parameter_t = (types.void_p,)))
-builtins.create_function("print", types.FunctionT(return_t = (types.int,), macro = _print))
-#builtins.create_function("print_format", types.FunctionT(return_t = (types.int,)))
-builtins.create_function("concat", types.FunctionT(return_t = (types.int,), macro = _concat))
-builtins.create_function("open", types.FunctionT(return_t = (types.FILE_T,), parameter_t = (types.string, types.string), macro = _open))
-builtins.create_function("close", types.FunctionT(return_t = (types.void,), parameter_t = (types.FILE_T,), macro = _close))
-builtins.create_function("write", types.FunctionT(return_t = (types.void,), parameter_t = (types.FILE_T, types.void_p, types.size_t), macro = _write))
-builtins.create_function("read", types.FunctionT(return_t = (types.void,), parameter_t = (types.FILE_T, types.void_p, types.size_t), macro = _read))
-builtins.create_function("rewind", types.FunctionT(return_t = (types.void,), parameter_t = (types.void_p,)))
-builtins.create_function("write_string", types.FunctionT(return_t = (types.void,), macro = _write_string))
-builtins.create_function("read_line", types.FunctionT(return_t = (types.string,), macro = _read_line))
-builtins.create_function("scan", types.FunctionT(return_t = (types.int,), macro = _scan))
-builtins.create_function("flush", types.FunctionT(return_t = (types.void,), parameter_t = (types.FILE_T,), macro = _flush))
-builtins.create_function("seek", types.FunctionT(return_t = (types.void,), parameter_t = (types.FILE_T, types.long, types.int), macro = _seek))
-
-builtins.create_variable(Modifier.Let, "stdout", types.FILE_T)
-builtins.create_variable(Modifier.Let, "stderr", types.FILE_T)
-builtins.create_variable(Modifier.Let, "stdin", types.FILE_T)

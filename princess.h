@@ -12,6 +12,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 
 #if !defined(_WIN32)
 extern FILE *stdout;

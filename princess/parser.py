@@ -1267,6 +1267,8 @@ class PrincessParser(Parser):
                 self._error('no available options')
         self.name_last_node('left')
         self._token('!')
+        with self._ifnot():
+            self._token('=')
         self._cut()
         self._type_()
         self.name_last_node('right')

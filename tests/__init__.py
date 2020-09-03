@@ -1,5 +1,6 @@
 import tatsu, princess, io, logging, re, pytest, os
 import princess.compiler
+from pathlib import Path
 
 skip = pytest.mark.skip
 skipif = pytest.mark.skipif
@@ -38,21 +39,22 @@ def parse(text, **kwargs):
 
     return parsed
 
-def compile(src):
-    return princess.compiler.compile(parse(src))
+def compile(src, filename = None, base_path = Path(""), include_path = Path("")):
+    return princess.compiler.compile(parse(src), filename = filename, base_path = base_path, include_path = include_path)
 
 LIB_COUNT = 0
 
 def test_filename():
     return os.environ.get("PYTEST_CURRENT_TEST").split("/")[-1].replace(".py::", "/").split(" ")[0]
 
-def eval(src, print_src = False):
+def eval(src, base_path = Path(""), include_path = Path(""), print_src = False):
     global LIB_COUNT
-    csrc, main_type = compile(src)
+    filename = "main"
+    csrc, main_type = compile(src, filename, base_path, include_path)
     if print_src or config.getoption("print_src"):
         print(csrc)
     res = princess.compiler.eval(
-        csrc, test_filename() + (str(LIB_COUNT) if LIB_COUNT else ""), main_type)
+        csrc, filename, test_filename() + (str(LIB_COUNT) if LIB_COUNT else ""), main_type)
         
     LIB_COUNT += 1
     return res

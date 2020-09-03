@@ -60,9 +60,17 @@ class CCodeGen(CodeGenerator):
                 fields.update(identifier = fields["name"])
         template = "{identifier}"
 
+    class ImportModule(Renderer):
+        template = "#include \"{name}.c\""
+    class Import(Renderer):
+        template = "{modules::\\n:}"
+
     class Body(Renderer):
+        def _render_fields(self, fields):
+            fields.update(statements = 
+                [self.codegen.render(f) + ("\n" if isinstance(f, model.Import) else ";\n") for f in fields["value"]])
         template = """\
-            {value::\\n:%s;}\
+            {statements}\
         """
 
     class AssignAndOp(Renderer):
@@ -210,7 +218,7 @@ class CCodeGen(CodeGenerator):
                 fields.update(dllexport = "")
 
         template = """\
-            {dllexport} {returns} {identifier}({args::, :}) {{
+            {dllexport} {return_type} {identifier}({args::, :}) {{
             {body:1::}
             }}\
         """

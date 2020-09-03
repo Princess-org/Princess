@@ -103,6 +103,38 @@ def test_struct_passing():
     """
     assert eval(prog) == 1
 
+def test_struct_recursive():
+    prog = """\
+        type List = struct {
+            element: int
+            next: *List
+        }
+
+        def insert(list: *List, e: int) {
+            let le = allocate(List)
+            le.element = e
+            le.next = null
+
+            if list == null {
+                @list = le
+                return
+            }
+
+            var temp = list
+            while temp != null {
+                temp = (@temp).next
+            }
+            temp.next = le
+        }
+
+        var list: List = { 0, null }
+        insert(*list, 10)
+        insert(*list, 20)
+
+        return (@list.next).element
+    """
+    assert eval(prog) == 10
+
 def test_struct_reassignment():
     prog = """\
         type T = struct { v: int }

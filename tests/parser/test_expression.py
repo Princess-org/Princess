@@ -79,7 +79,7 @@ class TestOperators:
         )
 
     def test_comparison(self):
-        assert parse("foo == bar > 1 + 2 < baz") == Program(
+        assert parse("foo == bar > 1 + 2 < baz != boo") == Program(
             Compare(
                 Identifier("foo"),
                 CompareOp("=="),
@@ -87,7 +87,9 @@ class TestOperators:
                 CompareOp(">"),
                 Add(left = Integer(1), right = Integer(2)),
                 CompareOp("<"),
-                Identifier("baz")
+                Identifier("baz"),
+                CompareOp("!="),
+                Identifier("boo")
             )
         )
     
