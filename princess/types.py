@@ -31,7 +31,6 @@ class Type:
         return res
 
     def to_typestring(self, identifier, recursive = False, named = True):
-        print("To typestring", self.name, named, recursive)
         if named and self.name:
             res = self.name
             if recursive: 
@@ -101,7 +100,6 @@ class Struct(Type):
         return self.cache
     
     def _to_typestring(self, identifier, recursive = False):
-        print("Calling", self.name, self.fields)
         return ("struct " + self.name + " {" + "; ".join(
             f[1].to_typestring(f[0], recursive = True) for f in self.fields) + ";} " + identifier) 
     
@@ -153,7 +151,7 @@ class FunctionT(Type):
         self.struct_identifier = struct_identifier
         super().__init__(None, name = name)
 
-    def _to_typestring(self, identifier):
+    def _to_typestring(self, identifier, recursive = False):
         return (self.return_t[0].to_typestring("") + " (*" + identifier + ")(" + 
             ", ".join(map(lambda t: t.to_typestring(""), self.parameter_t)) + ")")
 
