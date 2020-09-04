@@ -6,7 +6,6 @@ from princess import parse, model, ast
 from princess.compiler import compile, CompileError, eval
 from tatsu.exceptions import FailedParse
 
-args = {}
 
 UNBALANCED_PAREN_RE = re.compile(r"""
       (?P<string> \"(\\\"|[^\"])*\" | \'(\\\'|[^\'])*\')
@@ -41,7 +40,7 @@ def read_input():
         line += nline + "\n"
     return line.strip()
 
-def do_eval(src):
+def do_eval(src, args):
     try:
         _ast = parse(src)
         if args.ast:
@@ -67,23 +66,29 @@ def do_eval(src):
         print(ansi.Fore.RED, str(e), ansi.Fore.RESET, file = sys.stderr)
 
 def main():
-    colorama.init()
-    print("Princess REPL")
-    print("type exit to leave the prompt")
-    
-    while True:
-        try:
-            line = read_input()
-            if line == "exit": break
-            else: do_eval(line)
-        except (KeyboardInterrupt, EOFError):
-            print()
-            break
-
-if __name__ == "__main__":
     parser = argparse.ArgumentParser(description = "Princess REPL")
     parser.add_argument("--ast", "-a", action = "store_true", help = "Turns off evaluation and emits the AST")
     parser.add_argument("--src", "-s", action = "store_true", help = "Emits the source code before evaluation")
+    parser.add_argument("-c", metavar = "FILE", type = argparse.FileType("r"), help = "Compile .pr file")
+    
     args = parser.parse_args()
+    
+    colorama.init()
 
+    if args.c:
+        print(args.c)
+    else:
+        print("Princess REPL")
+        print("type exit to leave the prompt")
+
+        while True:
+            try:
+                line = read_input()
+                if line == "exit": break
+                else: do_eval(line, args)
+            except (KeyboardInterrupt, EOFError):
+                print()
+                break
+
+if __name__ == "__main__":
     main()

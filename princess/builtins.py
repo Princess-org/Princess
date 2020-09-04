@@ -116,7 +116,8 @@ def _flush(function, node, compiler: Compiler):
     return node
 
 def _seek(function, node, compiler: Compiler):
-    node.args.append(ast.CallArg(value = ast.Identifier("SEEK_SET")))
+    if len(node.args) < 3:
+        node.args.append(ast.CallArg(value = ast.Identifier("SEEK_SET")))
     node.left = ast.Identifier("fseek")
     return node
 
@@ -136,6 +137,11 @@ compiler.builtins.create_function("flush", types.FunctionT(return_t = (types.voi
 compiler.builtins.create_function("seek", types.FunctionT(return_t = (types.void,), parameter_t = (types.FILE_T, types.long, types.int), macro = _seek))
 compiler.builtins.create_function("pow", types.FunctionT(return_t = (types.double,), parameter_t = (types.double, types.double)))
 compiler.builtins.create_function("sqrt", types.FunctionT(return_t = (types.double,), parameter_t = (types.double,)))
+compiler.builtins.create_function("exit", types.FunctionT(return_t = (types.void,), parameter_t = (types.int,)))
+
+compiler.builtins.create_variable(Modifier.Let, "SEEK_SET", types.int)
+compiler.builtins.create_variable(Modifier.Let, "SEEK_CUR", types.int)
+compiler.builtins.create_variable(Modifier.Let, "SEEK_END", types.int)
 
 compiler.builtins.create_variable(Modifier.Let, "stdout", types.FILE_T)
 compiler.builtins.create_variable(Modifier.Let, "stderr", types.FILE_T)

@@ -55,7 +55,7 @@ def test_file_io_text():
 
         write_string(fp, "This is a test\n", 10)
 
-        seek(fp, 0) // Same as rewind
+        seek(fp, 0, SEEK_SET) // Same as rewind
 
         var buffer: [20 char]
         read_line(fp, buffer)
