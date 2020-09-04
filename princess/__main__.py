@@ -1,9 +1,10 @@
-import sys, re, argparse
+import sys, re, argparse, os
 import colorama
 
+from pathlib import Path
 from colorama import ansi
 from princess import parse, model, ast
-from princess.compiler import compile, CompileError, eval
+from princess.compiler import compile, CompileError, eval, compile_file
 from tatsu.exceptions import FailedParse
 
 
@@ -65,18 +66,30 @@ def do_eval(src, args):
     except Exception as e:
         print(ansi.Fore.RED, str(e), ansi.Fore.RESET, file = sys.stderr)
 
+def dir_path(path):
+    if os.path.isdir(path):
+        return Path(path).absolute()
+    else:
+        raise argparse.ArgumentTypeError(f"readable_dir:{path} is not a valid path")
+
 def main():
     parser = argparse.ArgumentParser(description = "Princess REPL")
     parser.add_argument("--ast", "-a", action = "store_true", help = "Turns off evaluation and emits the AST")
     parser.add_argument("--src", "-s", action = "store_true", help = "Emits the source code before evaluation")
     parser.add_argument("-c", metavar = "FILE", type = argparse.FileType("r"), help = "Compile .pr file")
+    parser.add_argument("-o", metavar = "DIR", type = dir_path, help = "Output directory")
     
     args = parser.parse_args()
     
     colorama.init()
 
     if args.c:
-        print(args.c)
+        if args.o:
+            out = args.o
+        else:
+            out = Path("")
+
+        compile_file(args.c.name, base_path = out)
     else:
         print("Princess REPL")
         print("type exit to leave the prompt")

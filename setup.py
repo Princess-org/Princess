@@ -7,7 +7,7 @@ setup (
     name = "Princess",
     python_requires = ">3.6.0",
     version = "0.0.1",
-    description = "Cutespam CLI",
+    description = "Princess Compiler",
     author = "Vic Nightfall",
     author_email = "vic@nightfall.moe",
     packages = find_packages(),

@@ -583,7 +583,7 @@ class Compiler(AstWalker):
             typename = node.typename
         else:
             typename = self.prefix_name(node.share, name)
-
+        
         if isinstance(val, model.TEnum):
             tpe = val.type or types.int
             ns = self.scope.enter_namespace(name)
@@ -878,6 +878,7 @@ for n in dir(types):
         
 import princess.builtins
 
+# TODO Rewrite these functions to use more sensible arguments
 def compile(p_ast, scope = None, filename = None, base_path = Path(""), include_path = Path("")):
     if not filename:
         filename = create_unique_identifier()
@@ -892,6 +893,7 @@ def compile_module(module, base_path, include_path):
     if module in _modules:
         return _modules[module]
 
+    # TODO Support multiple include directories
     file_path = include_path / Path(module + ".pr")
     with open(file_path) as fp:
         src = fp.read()
@@ -906,24 +908,56 @@ def compile_module(module, base_path, include_path):
     
     return scope
 
+def compile_file(file, base_path = Path(""), include_path = Path("")):
+    file = Path(file)
+    filename = file.stem
 
-def eval(csrc, main_fun, filename, main_type, args = []):
-    main_fun = main_fun + "_p_main"
+    include_path.mkdir(parents = True, exist_ok = True)
+    base_path.mkdir(parents = True, exist_ok = True)
 
-    base_path = Path("bin").absolute()
     c_file = base_path / (filename + ".c")
+    include_dir = Path(__file__).parent.parent
+
+    with open(file) as fp:
+        src = fp.read()
+    p_ast = parse(src)
+    csrc, _ = compile(p_ast, filename = filename, base_path = base_path, include_path = include_path)
+
+    with open(c_file, "w") as fp:
+        fp.write(csrc)
+
+    if os.name == "nt":
+        exefile = base_path / (filename + ".exe")
+    else:
+        exefile = base_path / filename
+    
+    p = subprocess.Popen(
+        ["gcc", "-I" + str(include_dir), "-o", str(exefile), str(c_file)]
+    )
+    status = p.wait()
+    if status:
+        raise CompileError("GCC Compilation failed")
+
+
+def eval(csrc, p_filename, c_filename, main_type, args = []):
+    p_filename += "_p_main"
+
+    include_dir = Path(__file__).parent.parent
+
+    base_path = (include_dir / "bin").absolute()
+    c_file = base_path / (c_filename + ".c")
     c_file.parent.mkdir(parents = True, exist_ok = True)
 
     if os.name == "nt":
-        libfile = base_path / (filename + ".dll")
+        libfile = base_path / (c_filename + ".dll")
     else:
-        libfile = base_path / (filename + ".so")
+        libfile = base_path / (c_filename + ".so")
 
     with open(c_file, "w") as fp:
         fp.write(csrc)
 
     p = subprocess.Popen(
-        ["gcc", "-I" + os.getcwd(), "-I" + str(c_file.parent), "-shared", "-o", 
+        ["gcc", "-I" + str(include_dir), "-shared", "-o", 
         str(libfile), "-fPIC", str(c_file)], 
     )
     status = p.wait()
@@ -933,8 +967,8 @@ def eval(csrc, main_fun, filename, main_type, args = []):
     lib = cdll.LoadLibrary(str(libfile.absolute()))
     main_type = main_type.c_type
 
-    getattr(lib, main_fun).restype = main_type
-    val = getattr(lib, main_fun)(len(args), (ctypes.c_char_p * len(args))(*args))
+    getattr(lib, p_filename).restype = main_type
+    val = getattr(lib, p_filename)(len(args), (ctypes.c_char_p * len(args))(*args))
     del lib
     
     if main_type and issubclass(main_type, ctypes.Structure):
