@@ -168,7 +168,7 @@ class Scope:
             else:
                 return types.Struct(fields)
         elif isinstance(t, model.ArrayT):
-            n = t.n.ast if hasattr(t, "n") else None
+            n = t.n.ast if hasattr(t, "n") and t.n is not None else None
             tpe = self.type_lookup(t.type)
             return types.ArrayT(tpe, n)
         elif isinstance(t, model.TEnum):
@@ -283,7 +283,9 @@ class Compiler(AstWalker):
 
     def prefix_name(self, share, name):
         share = share or ast.Share.No
-        if share & ast.Share.Export:
+        if name == "main":
+            identifier = name
+        elif share & ast.Share.Export:
             identifier = self.filename + "_" + name
         elif len(self.function_stack) > 0:
             identifier = name
@@ -609,7 +611,6 @@ class Compiler(AstWalker):
 
             tpe2 = self.scope.type_lookup(val)
             tpe2.name = typename
-            print(tpe2.name) 
 
             def resolve_types(tpe2):
                 if types.is_struct(tpe2):
@@ -799,7 +800,10 @@ class Compiler(AstWalker):
                 module = n.modules[0]
                 name = module.name.ast[-1]
 
-                call = ast.Call(left = ast.Identifier(name, "main"), args = [])
+                call = ast.Call(left = ast.Identifier(name, "p_main"), args = [
+                    ast.CallArg(value = ast.Identifier("args")),
+                    ast.CallArg(value = ast.Identifier("argc"))
+                ])
                 if not name in _modules:
                     main_code.append(call) 
                     n = self.walk(n)
@@ -835,11 +839,33 @@ class Compiler(AstWalker):
         self.exit_scope()
 
         main_function = ast.Def(
-            name = ast.Identifier("main"),
+            name = ast.Identifier("p_main"),
             body = ast.Body(*main_code),
-            share = ast.Share.Export
+            share = ast.Share.Export,
+            args = [
+                ast.DefArg(name = ast.Identifier("argc"), type = ast.Identifier("int")),
+                ast.DefArg(name = ast.Identifier("args"), type = ast.ArrayT(type = ast.Identifier("string")))
+            ]
         )
         code.append(main_function)
+
+        if self.filename == "main":
+            c_main = ast.Def(
+                name = ast.Identifier("main"),
+                body = ast.Body(
+                    ast.Call(left = ast.Identifier("p_main"), args = [
+                        ast.CallArg(value = ast.Identifier("argc")),
+                        ast.CallArg(value = ast.Identifier("args"))
+                    ])
+                ),
+                share = ast.Share.No,
+                args = [
+                    ast.DefArg(name = ast.Identifier("argc"), type = ast.Identifier("int")),
+                    ast.DefArg(name = ast.Identifier("args"), type = ast.ArrayT(type = ast.Identifier("string"))),
+                ],
+                returns = [ast.Identifier("int")]
+            )
+            code.append(c_main)
 
         self.walk_children(code)
         return ast.Program(*code), main_function.type # pylint: disable=no-member
@@ -871,7 +897,7 @@ def compile_module(module, base_path, include_path):
         src = fp.read()
     p_ast = parse(src)
     scope = Scope(builtins)
-    csrc, main_type = compile(p_ast, scope, module, base_path, include_path)
+    csrc, _ = compile(p_ast, scope, module, base_path, include_path)
     _modules[module] = scope
     
     c_file_path = base_path / (file_path.stem + ".c")
@@ -881,8 +907,8 @@ def compile_module(module, base_path, include_path):
     return scope
 
 
-def eval(csrc, main_fun, filename, main_type):
-    main_fun = main_fun + "_main"
+def eval(csrc, main_fun, filename, main_type, args = []):
+    main_fun = main_fun + "_p_main"
 
     base_path = Path("bin").absolute()
     c_file = base_path / (filename + ".c")
@@ -908,7 +934,7 @@ def eval(csrc, main_fun, filename, main_type):
     main_type = main_type.c_type
 
     getattr(lib, main_fun).restype = main_type
-    val = getattr(lib, main_fun)()
+    val = getattr(lib, main_fun)(len(args), (ctypes.c_char_p * len(args))(*args))
     del lib
     
     if main_type and issubclass(main_type, ctypes.Structure):

@@ -60,3 +60,10 @@ def test_recursion():
     """
 
     assert eval(prog) == 120
+
+
+def test_cli_arguments():
+    prog = """\
+        return argc, args[0], args[1]
+    """
+    assert eval(prog, args = [b"foo", b"bar"]) == (2, b"foo", b"bar")

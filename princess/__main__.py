@@ -53,11 +53,11 @@ def do_eval(src):
                 if isinstance(expr, model.Expression) and len(children) == 1:
                     _ast = ast.Program(ast.Return(expr))
 
-            pysrc = compile(_ast)
+            c_src, _ = compile(_ast, filename = "main")
             if args.src:
-                print(pysrc)
+                print(c_src)
                 print()
-            print(eval(pysrc))
+            print("TODO: Implement REPL")
 
     except FailedParse as e:
         print(ansi.Fore.RED, "Parse Error: " + str(e), ansi.Fore.RESET, file = sys.stderr)

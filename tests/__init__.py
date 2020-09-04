@@ -47,14 +47,16 @@ LIB_COUNT = 0
 def test_filename():
     return os.environ.get("PYTEST_CURRENT_TEST").split("/")[-1].replace(".py::", "/").split(" ")[0]
 
-def eval(src, base_path = Path(""), include_path = Path(""), print_src = False):
+def eval(src, base_path = Path(""), include_path = Path(""), print_src = False, args = []):
     global LIB_COUNT
     filename = "main"
     csrc, main_type = compile(src, filename, base_path, include_path)
     if print_src or config.getoption("print_src"):
         print(csrc)
     res = princess.compiler.eval(
-        csrc, filename, test_filename() + (str(LIB_COUNT) if LIB_COUNT else ""), main_type)
+        csrc, filename, test_filename() + (str(LIB_COUNT) if LIB_COUNT else ""), 
+        main_type, args
+    )
         
     LIB_COUNT += 1
     return res

@@ -140,3 +140,6 @@ compiler.builtins.create_function("sqrt", types.FunctionT(return_t = (types.doub
 compiler.builtins.create_variable(Modifier.Let, "stdout", types.FILE_T)
 compiler.builtins.create_variable(Modifier.Let, "stderr", types.FILE_T)
 compiler.builtins.create_variable(Modifier.Let, "stdin", types.FILE_T)
+
+compiler.builtins.create_variable(Modifier.Let, "args", types.ArrayT(types.string))
+compiler.builtins.create_variable(Modifier.Let, "argc", types.int)
