@@ -132,6 +132,7 @@ class Enum(Type):
         self.fields = fields
         super().__init__(None, name = name)
     
+    @property
     def c_type(self):
         return self.type.c_type
 

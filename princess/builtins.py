@@ -19,7 +19,7 @@ def _allocate(function, node, compiler: Compiler):
     return node
 
 def to_c_format_specifier(tpe):
-    if types.is_array(tpe) and tpe.type is types.char:
+    if tpe is types.string or (types.is_array(tpe) and tpe.type is types.char):
         return "%s"
     elif types.is_pointer(tpe):
         return "%p"

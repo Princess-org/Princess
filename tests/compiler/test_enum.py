@@ -17,3 +17,15 @@ def test_enum_complex():
         return Enum::FOO, Enum::BAR
     """
     assert eval(prog) == (20, 21)
+
+def test_enum_variable():
+    prog = """\
+        type Choice = enum {
+            YES; NO
+        }
+
+        var choice: Choice
+        choice = Choice::YES
+        return choice
+    """
+    assert eval(prog) == 0

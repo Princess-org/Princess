@@ -82,28 +82,22 @@ class Value:
 
 class Scope:
     def __init__(self, parent = None):
+        self.value = None
         self.parent = parent
         self.dict = {}
 
     def __contains__(self, identifier):
-        if len(identifier.ast) == 1:
-            if identifier.ast[0] in self.dict:
-                return True
-            elif self.parent:
-                return identifier in self.parent
-        else:
-            try:
-                namespace = self[ast.Identifier(identifier.ast[0])]
-                if isinstance(namespace.value, Scope):
-                    return ast.Identifier(*identifier.ast[1:]) in namespace.value
-                else: return False
-            except KeyError:
-                return False
+        try:
+            _ = self[identifier]
+            return True
+        except KeyError:
+            return False
 
     def __getitem__(self, identifier):
         if len(identifier.ast) == 1:
             if identifier.ast[0] in self.dict:
-                return self.dict[identifier.ast[0]]
+                val = self.dict[identifier.ast[0]]
+                return val
             elif self.parent:
                 return self.parent[identifier]
             else: raise KeyError()
@@ -134,6 +128,8 @@ class Scope:
         assert isinstance(v, model.Identifier)
         try:
             value = self[v]
+            if isinstance(value.value, Scope):
+                value = value.value.value
         except KeyError:
             error("Unknown identifier", v)
 
@@ -323,11 +319,12 @@ class Compiler(AstWalker):
 
     def walk_Identifier(self, node: model.Identifier):
         node.name = "_".join(node.ast) # TODO
-        #print(node.name, self.scope.dict)
 
         if node in self.scope:
             value = self.scope[node]
-            
+            if isinstance(value.value, Scope):
+                value = value.value.value
+
             node.modifier = value.modifier
             node.identifier = value.identifier
             node.type = value.type
@@ -407,15 +404,15 @@ class Compiler(AstWalker):
         return node
     
     def walk_MemberAccess(self, node: model.MemberAccess):
-        self.walk_children(node)
+        self.walk_child(node, node.left)
 
         tpe_l = node.left.type
-        tpe_r = getattr(node.right, "type", None)
 
+        node.right.name = node.right.ast[-1]
         if types.is_struct(tpe_l):
             node.type = dict(tpe_l.fields)[node.right.name]
-        elif types.is_function(tpe_r):
-            error("Universal call syntax not implemented")
+        #elif types.is_function(tpe_r):
+        #    error("Universal call syntax not implemented")
         else:
             error("Member access on incompatible type")
         
@@ -585,7 +582,7 @@ class Compiler(AstWalker):
             typename = self.prefix_name(node.share, name)
         
         if isinstance(val, model.TEnum):
-            tpe = val.type or types.int
+            tpe = self.scope.type_lookup(val.type) or types.int
             ns = self.scope.enter_namespace(name)
 
             value = -1
@@ -599,10 +596,13 @@ class Compiler(AstWalker):
                 identifier = typename + "_" + name
                 nme.name.identifier = identifier
                 ns.create_variable(
-                    modifier = Modifier.Let, name = name, tpe = self.scope.type_lookup(tpe), 
+                    modifier = Modifier.Let, name = name, tpe = tpe, 
                     value = value, identifier = identifier)
+
+            enum_type = self.scope.type_lookup(val)
+            ns.value = Value(Modifier.Type, name, None, node.share, typename, enum_type)
             
-            node.type = self.scope.type_lookup(val)
+            node.type = enum_type
             node.typename = typename
         else:
             # Create dummy for self reference
@@ -634,12 +634,13 @@ class Compiler(AstWalker):
 
     def walk_VarDecl(self, node: model.VarDecl):
         self.walk_child(node, node.left)
+
         assert_error(len(node.left) == 1 >= len(node.right), 
             "Parallel assignment not implemented")
 
         modifier = Modifier(node.keyword)
         id_decl = node.left[0]
-
+        
         if hasattr(node, "type") and node.type:
             tpe = node.type # for already walked declarations
             self.walk_child(node, node.right)
@@ -801,8 +802,8 @@ class Compiler(AstWalker):
                 name = module.name.ast[-1]
 
                 call = ast.Call(left = ast.Identifier(name, "p_main"), args = [
-                    ast.CallArg(value = ast.Identifier("args")),
-                    ast.CallArg(value = ast.Identifier("argc"))
+                    ast.CallArg(value = ast.Identifier("argc")),
+                    ast.CallArg(value = ast.Identifier("args"))
                 ])
                 if not name in _modules:
                     main_code.append(call) 
@@ -967,8 +968,9 @@ def eval(csrc, p_filename, c_filename, main_type, args = []):
     lib = cdll.LoadLibrary(str(libfile.absolute()))
     main_type = main_type.c_type
 
-    getattr(lib, p_filename).restype = main_type
-    val = getattr(lib, p_filename)(len(args), (ctypes.c_char_p * len(args))(*args))
+    function = getattr(lib, p_filename)
+    function.restype = main_type
+    val = function(len(args), (ctypes.c_char_p * len(args))(*args))
     del lib
     
     if main_type and issubclass(main_type, ctypes.Structure):
