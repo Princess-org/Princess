@@ -71,7 +71,7 @@ class PointerT(Type):
         return tpe.to_typestring("*" + identifier, recursive)
 
 class ArrayT(Type):
-    def __init__(self, tpe, n, name = None):
+    def __init__(self, tpe, n = None, name = None):
         self.type = tpe
         self.n = n
         super().__init__(None, name = name)
@@ -81,7 +81,8 @@ class ArrayT(Type):
         return self.type.c_type * self.n
     
     def _to_typestring(self, identifier, recursive = False):
-        return self.type.to_typestring(identifier, recursive) + "[" + str(self.n) + "]" 
+        s = str(self.n) if self.n else ""
+        return self.type.to_typestring(identifier, recursive) + "[" + s + "]" 
 
 class Struct(Type):
     def __init__(self, fields, name = None):

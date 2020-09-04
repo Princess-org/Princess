@@ -31,6 +31,23 @@ def test_args_type_infer():
 
     assert eval(prog) == (20, 20)
 
+def test_array_passing():
+    prog = """\
+        let array = [1, 2, 3, 4]
+
+        def first(a: [4 int]) {
+            return a[0]
+        }
+
+        def second(a: [int]) {
+            return a[1]
+        }
+
+        return first(array), second(array)
+    """
+
+    assert eval(prog) == (1, 2)
+
 def test_recursion():
     prog = """\
         def factorial(n: int) -> int {

@@ -168,8 +168,7 @@ class Scope:
             else:
                 return types.Struct(fields)
         elif isinstance(t, model.ArrayT):
-            assert_error(t.n, "Dynamic arrays not implemented")
-            n = t.n.ast
+            n = t.n.ast if hasattr(t, "n") else None
             tpe = self.type_lookup(t.type)
             return types.ArrayT(tpe, n)
         elif isinstance(t, model.TEnum):
