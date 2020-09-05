@@ -544,17 +544,18 @@ class Compiler(AstWalker):
         
         if isinstance(node, (model.Shl, model.Shr)):
             # Shift operators
-            assert l in int_t and r in int_t
+            assert_error(l in int_t and r in int_t, "Illegal argument %s %s" % (l, r))
             node.type = l
 
             return node # No conversion
         elif isinstance(node, (model.BAnd, model.BOr, model.Xor)):
             # Bitwise, only works on ints
-            assert l in int_t and r in int_t
+            assert_error(l in int_t and r in int_t, "Illegal argument %s %s" % (l, r))
             node.type = common_type(l, r, sign_convert = False)
         elif isinstance(node, (model.PAdd, model.PSub)):
             # TODO pointer - pointer
-            assert types.is_pointer(l) and r in int_t
+            assert_error((types.is_pointer(l) or l is types.string or l is types.void_p) 
+                and r in int_t,  "Illegal argument %s %s" % (l, r))
             node.type = l
 
             return node # No conversion
@@ -577,7 +578,7 @@ class Compiler(AstWalker):
 
     def walk_Compare(self, node: model.Compare):
         self.walk_children(node)
-        assert_error(len(node.ast) == 3, "Mutliple comparisions not supported")
+        assert_error(len(node.ast) == 3, "Mutliple comparisons not supported")
 
         left = node.ast[0]
         op = node.ast[1]

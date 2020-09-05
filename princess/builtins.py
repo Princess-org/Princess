@@ -19,7 +19,7 @@ def _allocate(function, node, compiler: Compiler):
     return node
 
 def to_c_format_specifier(tpe):
-    if tpe is types.string or (types.is_array(tpe) and tpe.type is types.char):
+    if types.is_string(tpe):
         return "%s"
     elif types.is_pointer(tpe):
         return "%p"
@@ -148,7 +148,9 @@ compiler.builtins.create_function("tell", types.FunctionT(return_t = (types.int,
 compiler.builtins.create_function("pow", types.FunctionT(return_t = (types.double,), parameter_t = (types.double, types.double)))
 compiler.builtins.create_function("sqrt", types.FunctionT(return_t = (types.double,), parameter_t = (types.double,)))
 compiler.builtins.create_function("exit", types.FunctionT(return_t = (types.void,), parameter_t = (types.int,)))
+compiler.builtins.create_function("starts_with", types.FunctionT(return_t = (types.bool,), parameter_t = (types.string, types.string)))
 compiler.builtins.create_function("length", types.FunctionT(return_t = (types.size_t,), macro = _length))
+compiler.builtins.create_function("assert", types.FunctionT(return_t = (types.void,), parameter_t = (types.int,)))
 
 compiler.builtins.create_variable(Modifier.Let, "SEEK_SET", types.int)
 compiler.builtins.create_variable(Modifier.Let, "SEEK_CUR", types.int)

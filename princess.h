@@ -13,6 +13,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
+#include <assert.h>
 
 #if !defined(_WIN32)
 extern FILE *stdout;
@@ -37,5 +38,9 @@ typedef unsigned long   ulong;
 typedef float   float32;
 typedef double  float64;
 typedef char* string;
+
+bool starts_with(const char *str, const char *pre) {
+    return strncmp(pre, str, strlen(pre)) == 0;
+}
 
 #endif

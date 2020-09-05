@@ -84,7 +84,11 @@ class CCodeGen(CodeGenerator):
         template = "(~{right})"
     class Add(Renderer):
         template = "({left} + {right})"
+    class PAdd(Renderer):
+        template = "({left} + {right})"
     class Sub(Renderer):
+        template = "({left} - {right})"
+    class PSub(Renderer):
         template = "({left} - {right})"
     class Mul(Renderer):
         template = "({left} * {right})"
