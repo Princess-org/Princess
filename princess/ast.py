@@ -2,6 +2,7 @@
 
 from princess import model
 from princess.model import *
+from princess.node import Node
 from princess.semantics import AssignOp, CompareOp, Share
 
 def __value_type(cst):
@@ -49,3 +50,8 @@ Def = (lambda share = Share.No, *args, **kwargs:
     model.Def(share = share, *args, **kwargs))
 DefArg = (lambda keyword = 'var', *args, **kwargs:
     model.DefArg(keyword = keyword, *args, **kwargs))
+
+
+class ArrayInitializer(Node):
+    length = None
+    value = None

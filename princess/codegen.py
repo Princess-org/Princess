@@ -1,6 +1,6 @@
 from princess import ast, model, types, compiler
 
-import json
+import json, ctypes
 from enum import Enum
 from tatsu.codegen import ModelRenderer, CodeGenerator, DelegatingRenderingFormatter
 from tatsu.ast import AST
@@ -45,7 +45,7 @@ class CCodeGen(CodeGenerator):
     class String(Renderer):
         def _render_fields(self, fields):
             fields.update(value = to_c_string(fields["value"]))
-        template = "{value}"
+        template = "((Array){{{length},{value}}})"
     class Char(Renderer):
         def _render_fields(self, fields):
             fields.update(value = to_c_char(fields["value"]))
@@ -124,11 +124,21 @@ class CCodeGen(CodeGenerator):
     
     class MemberAccess(Renderer):
         template = "({left}.{right})"
-        
+
+    class ArrayInitializer(Renderer):
+        template = "((Array){{{length}, {value}}})"
     class ArrayIndex(Renderer):
-        template = "({left}[{right}])"
+        def _render_fields(self, fields):
+            tpe = fields["array_type"]
+            if types.is_pointer(tpe):
+                return "({left}[{right}])"
+            else:
+                fields.update(array_type = types.PointerT(tpe.type))
+                return "((({array_type}){left}.value)[{right}])"
     class Array(Renderer):
-        template = "(({type}){{ {value::, :} }})"
+        def _render_fields(self, fields):
+            fields.update(type = fields["type"].to_arraystring())
+        template = "((Array){{{length}, ({type}){{ {value::, :} }}}})"
 
     class CallArg(Renderer):
         template = "{value}"

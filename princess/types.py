@@ -65,13 +65,17 @@ class PointerT(Type):
     
     @property
     def c_type(self):
-        if self.type.c_type is ctypes.c_char:
-            return ctypes.c_char_p
-        else: return ctypes.POINTER(self.type.c_type)
+        return ctypes.POINTER(self.type.c_type)
     
     def _to_typestring(self, identifier, recursive = False):
         tpe = self.type or void
         return tpe.to_typestring("*" + identifier, recursive)
+
+class Array(ctypes.Structure):
+    _fields_ = [
+        ("size", ctypes.c_size_t),
+        ("value", ctypes.c_void_p)
+    ]
 
 class ArrayT(Type):
     def __init__(self, tpe, n = None, name = None):
@@ -81,11 +85,17 @@ class ArrayT(Type):
 
     @property
     def c_type(self):
-        return self.type.c_type * self.n
+        return Array
     
     def _to_typestring(self, identifier, recursive = False):
+        res = "Array"
+        if identifier:
+            res += " " + identifier
+        return res
+    
+    def to_arraystring(self):
         s = str(self.n) if self.n else ""
-        return self.type.to_typestring(identifier, recursive) + "[" + s + "]" 
+        return self.type.to_typestring("") + "[" + s + "]" 
 
 class Struct(Type):
     def __init__(self, fields, name = None):
@@ -191,4 +201,4 @@ long = Type(ctypes.c_long, "long")
 ulong = Type(ctypes.c_ulong, "ulong")
 float = Type(ctypes.c_float, "float")
 double = Type(ctypes.c_double, "double")
-string = Type(ctypes.c_char_p, "char*")
+string = ArrayT(char)

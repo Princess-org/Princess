@@ -44,8 +44,8 @@ def test_malloc_free():
 
 def test_malloc_free_array():
     prog = """\
-        var a = allocate(char, 100)
-        a = "Free from System"
+        // var a = allocate(char, 100)
+        var a = "Free from System"
         return a
     """
     assert eval(prog) == b"Free from System"

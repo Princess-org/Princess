@@ -7,15 +7,26 @@ def _allocate(function, node, compiler: Compiler):
         function.return_t = (types.void_p,)
         function.parameter_t = (types.size_t,)
     else:
-        function.return_t = (types.PointerT(compiler.scope.type_lookup(arg)),)
+        tpe = types.ArrayT(compiler.scope.type_lookup(arg))
+        function.return_t = (tpe,)
         if len(node.args) == 2:
             n = node.args[1].value
             assert_error(n.type in int_t, "Invalid argument")
-            node.args[:] = [ast.CallArg(value = ast.Mul(left = ast.SizeOf(arg), right = n))]
+            call = ast.Call(
+                left = ast.Identifier("malloc"),
+                args = [ast.CallArg(value = ast.Mul(left = ast.SizeOf(arg), right = n))]
+            )
+            call.left.type = function
+            array = ast.ArrayInitializer(
+                length = n,
+                value = call,
+                type = tpe
+            )
+            return array
         else:
             node.args[0].value = ast.SizeOf(arg)
 
-    node.left = ast.Identifier("malloc")
+    node.left = ast.Identifier("malloc") 
     return node
 
 def to_c_format_specifier(tpe):
