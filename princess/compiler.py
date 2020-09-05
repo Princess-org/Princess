@@ -577,6 +577,26 @@ class Compiler(AstWalker):
 
     def walk_Compare(self, node: model.Compare):
         self.walk_children(node)
+        assert_error(len(node.ast) == 3, "Mutliple comparisions not supported")
+
+        left = node.ast[0]
+        op = node.ast[1]
+        right = node.ast[2]
+
+        if op == ast.CompareOp("==") or op == ast.CompareOp("!="):
+            if types.is_string(left.type) and types.is_string(right.type):
+                call = ast.Call(
+                    left = ast.Identifier("strcmp"),
+                    args = [ast.CallArg(value = left), ast.CallArg(value = right)]
+                )
+                call.left.type = types.FunctionT(return_t = (types.int,), parameter_t = (types.string, types.string))
+                node = ast.Compare(
+                    call,
+                    op,
+                    ast.Integer(0)
+                )
+                self.walk_children(node)
+
         node.type = types.bool
         return node
 
@@ -713,9 +733,10 @@ class Compiler(AstWalker):
         if tpe.macro:
             node = tpe.macro(tpe, node, self)
             # In case the macro changed something
-            self.walk_child(node, node.left, node.args)
+            self.walk_children(node)
             # This is so that we don't run the same code again
             tpe.macro = None
+        
         node.type = tpe.return_t[0]
         node.left.type = tpe
 

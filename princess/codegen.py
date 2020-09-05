@@ -177,6 +177,14 @@ class CCodeGen(CodeGenerator):
         """
 
     class Case(Renderer):
+        def _render_fields(self, fields):
+            if "value" not in fields:
+                return """\
+                    break;
+                    default:
+                    {statement}\
+                """
+
         template = """\
             break;
             case {value:::}:

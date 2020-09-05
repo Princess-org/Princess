@@ -12,6 +12,9 @@ def is_pointer(t):
 def is_array(t):
     return isinstance(t, ArrayT)
 
+def is_string(t):
+    return (is_array(t) and t.type is char) or t is string
+
 def is_struct(t):
     return isinstance(t, (Struct, Union))
 

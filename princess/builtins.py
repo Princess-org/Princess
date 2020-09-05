@@ -121,6 +121,15 @@ def _seek(function, node, compiler: Compiler):
     node.left = ast.Identifier("fseek")
     return node
 
+def _tell(function, node, compiler: Compiler):
+    node.left = ast.Identifier("ftell")
+    return node
+
+def _length(function, node, compiler: Compiler):
+    node.left = ast.Identifier("strlen")
+    return node
+
+
 compiler.builtins.create_function("allocate", types.FunctionT(macro = _allocate))
 compiler.builtins.create_function("free", types.FunctionT(parameter_t = (types.void_p,)))
 compiler.builtins.create_function("print", types.FunctionT(return_t = (types.int,), macro = _print))
@@ -135,9 +144,11 @@ compiler.builtins.create_function("read_line", types.FunctionT(return_t = (types
 compiler.builtins.create_function("scan", types.FunctionT(return_t = (types.int,), macro = _scan))
 compiler.builtins.create_function("flush", types.FunctionT(return_t = (types.void,), parameter_t = (types.FILE_T,), macro = _flush))
 compiler.builtins.create_function("seek", types.FunctionT(return_t = (types.void,), parameter_t = (types.FILE_T, types.long, types.int), macro = _seek))
+compiler.builtins.create_function("tell", types.FunctionT(return_t = (types.int,), parameter_t = (types.FILE_T,), macro = _tell))
 compiler.builtins.create_function("pow", types.FunctionT(return_t = (types.double,), parameter_t = (types.double, types.double)))
 compiler.builtins.create_function("sqrt", types.FunctionT(return_t = (types.double,), parameter_t = (types.double,)))
 compiler.builtins.create_function("exit", types.FunctionT(return_t = (types.void,), parameter_t = (types.int,)))
+compiler.builtins.create_function("length", types.FunctionT(return_t = (types.size_t,), macro = _length))
 
 compiler.builtins.create_variable(Modifier.Let, "SEEK_SET", types.int)
 compiler.builtins.create_variable(Modifier.Let, "SEEK_CUR", types.int)

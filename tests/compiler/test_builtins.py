@@ -67,10 +67,21 @@ def test_file_io_text():
     """
     assert eval(prog) == (10, b"This is a test\n")
 
-def test_string():
+def test_string_eq():
     prog = """\
-        let a = "Hello"
-        let b = a
-        return b[0]
+        let str1 = "foo"
+        let str2 = "bar"
+        let str3 = "foo"
+
+        return str1 == str2, str1 == str3
     """
-    assert eval(prog) == b"H"
+    assert eval(prog) == (False, True)
+
+def test_length():
+    prog = """\
+        let str = "Hello World" !string
+        let str2 = "Hello World"
+
+        return length(str), length(str2)
+    """
+    assert eval(prog) == (11, 11)
