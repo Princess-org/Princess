@@ -135,7 +135,9 @@ def test_static_if():
 def test_switch():
     assert parse("""\
         switch foo {
-            case 1: noop
+            case 1: 
+                foo
+                noop
             case 2, 3: noop
             case:
                 noop
@@ -144,7 +146,8 @@ def test_switch():
         Switch(
             value = Identifier("foo"),
             body = Body(
-                Case(value = [Integer(1)], statement = Identifier("noop")),
+                Case(value = [Integer(1)], statement = Identifier("foo")),
+                Identifier("noop"),
                 Case(value = [Integer(2), Integer(3)], statement = Identifier("noop")),
                 Case(statement = Identifier("noop"))
             )

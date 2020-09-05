@@ -345,6 +345,17 @@ class Compiler(AstWalker):
         #print(ns.dict)
         return node
 
+    def walk_Case(self, node: model.Case):
+        self.walk_children(node)
+        assert_error(len(node.value) == 1, "Switch statement with multiple values not implemented")
+        return node
+
+    def walk_Switch(self, node: model.Switch):
+        self.walk_children(node)
+        tpe = node.value.type
+        assert_error(tpe in int_t or tpe is types.char, "Switch statement on %s not implemented" % tpe)
+        return node
+
     def walk_For(self, node: model.For):
         self.walk_child(node, node.iterator)
         in_stmt = node.iterator

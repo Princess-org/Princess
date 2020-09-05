@@ -110,3 +110,17 @@ def test_export():
         return test()
     """
     assert eval(prog) == 20
+
+def test_switch():
+    prog = """\
+        let i = 20
+        var a = 5
+        switch i {
+        case 5:
+            return 5
+        case 20:
+            a += 5
+            return a
+        }
+    """
+    assert eval(prog) == 10

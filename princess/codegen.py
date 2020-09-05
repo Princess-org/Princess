@@ -176,6 +176,19 @@ class CCodeGen(CodeGenerator):
             }}
         """
 
+    class Case(Renderer):
+        template = """\
+            break;
+            case {value:::}:
+            {statement}\
+        """
+    class Switch(Renderer):
+        template = """\
+            switch ({value}) {{
+            {body:1::}
+            }}
+        """
+
     class If(Renderer):
         template = """\
             if ({cond}) {{
