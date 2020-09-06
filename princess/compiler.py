@@ -448,29 +448,29 @@ class Compiler(AstWalker):
         
         self.walk_child(node, node.right)
 
-        tpe2 = right.type
-        if (types.is_array(tpe) or types.is_pointer(tpe)) and types.is_array(tpe2):
-            if types.is_array(tpe):
-                n = tpe.n
-            else:
-                n = tpe2.n
-
-            call = ast.Call(
-                left = ast.Identifier("memcpy"),
-                args = [
-                    ast.CallArg(value = node.left[0]),
-                    ast.CallArg(value = node.right[0]),
-                    ast.CallArg(value = ast.Mul(left = ast.SizeOf(tpe.type), right = ast.Integer(n)))
-                ]
-            )
-            call.left.type = types.FunctionT(
-                return_t = (types.void_p,), 
-                parameter_t = (types.void_p, types.void_p, types.size_t)
-            )
-            call = self.walk(call)
-            return call
-        else:
-            return node
+        #tpe2 = right.type
+        #if (types.is_array(tpe) or types.is_pointer(tpe)) and types.is_array(tpe2):
+        #    if types.is_array(tpe):
+        #        n = tpe.n
+        #    else:
+        #        n = tpe2.n
+        #
+        #    call = ast.Call(
+        #        left = ast.Identifier("memcpy"),
+        #        args = [
+        #            ast.CallArg(value = node.left[0]),
+        #            ast.CallArg(value = node.right[0]),
+        #            ast.CallArg(value = ast.Mul(left = ast.SizeOf(tpe.type), right = ast.Integer(n)))
+        #        ]
+        #    )
+        #    call.left.type = types.FunctionT(
+        #        return_t = (types.void_p,), 
+        #        parameter_t = (types.void_p, types.void_p, types.size_t)
+        #    )
+        #    call = self.walk(call)
+        #    return call
+        #else:
+        return node
 
     def walk_Ptr(self, node: model.Ptr):
         self.walk_children(node)
@@ -721,7 +721,7 @@ class Compiler(AstWalker):
 
     def walk_Call(self, node: model.Call):
         self.walk_child(node, node.left)
-        tpe = copy.deepcopy(node.left.type)
+        tpe = copy.copy(node.left.type)
         assert_error(types.is_function(tpe), "Can only call functions")
         
         for i in range(len(node.args)):
