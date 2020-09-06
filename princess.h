@@ -45,4 +45,12 @@ typedef struct {
 
 typedef Array string;
 
+#define ARRAY($name, $type, $size) \
+    $type _##$name[$size];         \
+    Array $name = {$size, _##$name}
+
+bool starts_with(const char *pre, const char *str) {
+    return strncmp(pre, str, strlen(pre)) == 0;
+}
+
 #endif

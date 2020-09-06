@@ -306,7 +306,7 @@ class Compiler(AstWalker):
         return node
     def walk_String(self, node: model.String):
         node.type = types.ArrayT(types.char, len(node.ast) + 1)
-        node.length = len(node.ast)
+        node.length = len(node.ast) + 1
         return node
     def walk_Char(self, node: model.Char):
         node.type = types.char
@@ -597,7 +597,7 @@ class Compiler(AstWalker):
                     left = ast.Identifier("strcmp"),
                     args = [ast.CallArg(value = left), ast.CallArg(value = right)]
                 )
-                call.left.type = types.FunctionT(return_t = (types.int,), parameter_t = (types.string, types.string))
+                call.left.type = types.FunctionT(c = True, return_t = (types.int,), parameter_t = (types.string, types.string))
                 node = ast.Compare(
                     call,
                     op,
@@ -645,7 +645,7 @@ class Compiler(AstWalker):
             node.typename = typename
         else:
             # Create dummy for self reference
-            tpe = types.Type(ctypes.c_void_p)
+            tpe = types.void_p
             self.scope.create_type(name, tpe, share = node.share, identifier = typename)
 
             tpe2 = self.scope.type_lookup(val)
@@ -728,7 +728,7 @@ class Compiler(AstWalker):
 
     def walk_Call(self, node: model.Call):
         self.walk_child(node, node.left)
-        tpe = copy.deepcopy(node.left.type)
+        tpe = copy.copy(node.left.type)
         assert_error(types.is_function(tpe), "Can only call functions")
         
         for i in range(len(node.args)):
@@ -738,6 +738,7 @@ class Compiler(AstWalker):
 
 
         self.walk_child(node, node.args)
+
         if tpe.macro:
             node = tpe.macro(tpe, node, self)
             # In case the macro changed something
@@ -746,6 +747,11 @@ class Compiler(AstWalker):
             tpe.macro = None
         
         if isinstance(node, model.Call):
+            if tpe.c:
+                for arg in node.args:
+                    if types.is_array(arg.value.type):
+                        arg.value = self.walk(ast.MemberAccess(left = arg.value, right = ast.Identifier("value")))
+
             node.type = tpe.return_t[0]
             node.left.type = tpe
 

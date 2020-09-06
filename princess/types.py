@@ -13,7 +13,7 @@ def is_array(t):
     return isinstance(t, ArrayT)
 
 def is_string(t):
-    return (is_array(t) and t.type == char) or t == string
+    return (is_array(t) and t.type is char) or t is string
 
 def is_struct(t):
     return isinstance(t, (Struct, Union))
@@ -161,11 +161,12 @@ size_t = Type(ctypes.c_size_t, "size_t")
 
 
 class FunctionT(Type):
-    def __init__(self, return_t = (void,), parameter_t = (), struct_identifier = None, macro = None, name = None):
+    def __init__(self, return_t = (void,), parameter_t = (), struct_identifier = None, macro = None, c = False, name = None):
         self.return_t = return_t
         self.parameter_t = parameter_t
         self.macro = macro
         self.struct_identifier = struct_identifier
+        self.c = c
         super().__init__(None, name = name)
 
     def _to_typestring(self, identifier, recursive = False):

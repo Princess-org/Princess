@@ -147,8 +147,14 @@ class CCodeGen(CodeGenerator):
 
     class VarDecl(Renderer):
         def _render_fields(self, fields):
-            fields.update(typestring = 
-                fields["type"].to_typestring(fields["identifier"]))
+            tpe = fields["type"]
+            ident = fields["identifier"]
+            right = fields["right"]
+            if types.is_array(tpe) and not right and tpe.n:
+                fields.update(typestring =
+                    "ARRAY(%s, %s, %d)" % (ident, tpe.type.to_typestring(""), tpe.n))
+            else:
+                fields.update(typestring = tpe.to_typestring(ident))
             if fields["right"]:
                 return "{typestring} = {right:::}"
             else:
