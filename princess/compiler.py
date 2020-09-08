@@ -306,6 +306,7 @@ class Compiler(AstWalker):
         return node
     def walk_String(self, node: model.String):
         node.type = types.ArrayT(types.char, len(node.ast) + 1)
+        node.length = len(node.ast) + 1
         return node
     def walk_Char(self, node: model.Char):
         node.type = types.char
@@ -424,6 +425,14 @@ class Compiler(AstWalker):
             node.type = dict(tpe_l.fields)[node.right.name]
         #elif types.is_function(tpe_r):
         #    error("Universal call syntax not implemented")
+        elif types.is_array(tpe_l):
+            name = node.right.name
+            if name == "value":
+                node.type = types.PointerT(tpe_l.type)
+            elif name == "size":
+                node.type = types.size_t
+            else:
+                error("Illegal access")
         else:
             error("Member access on incompatible type")
         
@@ -449,18 +458,16 @@ class Compiler(AstWalker):
         self.walk_child(node, node.right)
 
         #tpe2 = right.type
-        #if (types.is_array(tpe) or types.is_pointer(tpe)) and types.is_array(tpe2):
-        #    if types.is_array(tpe):
-        #        n = tpe.n
-        #    else:
-        #        n = tpe2.n
+        #if types.is_array(tpe) and types.is_array(tpe2):
         #
         #    call = ast.Call(
         #        left = ast.Identifier("memcpy"),
         #        args = [
-        #            ast.CallArg(value = node.left[0]),
-        #            ast.CallArg(value = node.right[0]),
-        #            ast.CallArg(value = ast.Mul(left = ast.SizeOf(tpe.type), right = ast.Integer(n)))
+        #            ast.CallArg(value = ast.MemberAccess(left = left, right = ast.Identifier("value"))),
+        #            ast.CallArg(value = ast.MemberAccess(left = right, right = ast.Identifier("value"))),
+        #            ast.CallArg(value = ast.Mul(left = ast.SizeOf(tpe.type), 
+        #                right = ast.MemberAccess(left = left, right = ast.Identifier("size"))
+        #            ))
         #        ]
         #    )
         #    call.left.type = types.FunctionT(
@@ -590,7 +597,7 @@ class Compiler(AstWalker):
                     left = ast.Identifier("strcmp"),
                     args = [ast.CallArg(value = left), ast.CallArg(value = right)]
                 )
-                call.left.type = types.FunctionT(return_t = (types.int,), parameter_t = (types.string, types.string))
+                call.left.type = types.FunctionT(c = True, return_t = (types.int,), parameter_t = (types.string, types.string))
                 node = ast.Compare(
                     call,
                     op,
@@ -638,7 +645,7 @@ class Compiler(AstWalker):
             node.typename = typename
         else:
             # Create dummy for self reference
-            tpe = types.Type(ctypes.c_void_p)
+            tpe = types.void_p
             self.scope.create_type(name, tpe, share = node.share, identifier = typename)
 
             tpe2 = self.scope.type_lookup(val)
@@ -731,6 +738,7 @@ class Compiler(AstWalker):
 
 
         self.walk_child(node, node.args)
+
         if tpe.macro:
             node = tpe.macro(tpe, node, self)
             # In case the macro changed something
@@ -738,8 +746,14 @@ class Compiler(AstWalker):
             # This is so that we don't run the same code again
             tpe.macro = None
         
-        node.type = tpe.return_t[0]
-        node.left.type = tpe
+        if isinstance(node, model.Call):
+            if tpe.c:
+                for arg in node.args:
+                    if types.is_array(arg.value.type):
+                        arg.value = self.walk(ast.MemberAccess(left = arg.value, right = ast.Identifier("value")))
+
+            node.type = tpe.return_t[0]
+            node.left.type = tpe
 
         return node
 
@@ -799,8 +813,8 @@ class Compiler(AstWalker):
             
             self.exit_scope()
 
-        function.return_t = tuple(   # decay arrays to pointers
-            types.PointerT(i.type) if types.is_array(i) else i for i in function.return_t) # pylint: disable=no-member
+        #function.return_t = tuple(   # decay arrays to pointers
+        #    types.PointerT(i.type) if types.is_array(i) else i for i in function.return_t) # pylint: disable=no-member
 
         if len(function.return_t) > 1:
             struct = ast.TypeDecl(
@@ -835,7 +849,6 @@ class Compiler(AstWalker):
                 name = module.name.ast[-1]
 
                 call = ast.Call(left = ast.Identifier(name, "p_main"), args = [
-                    ast.CallArg(value = ast.Identifier("argc")),
                     ast.CallArg(value = ast.Identifier("args"))
                 ])
                 if not name in _modules:
@@ -877,32 +890,31 @@ class Compiler(AstWalker):
             body = ast.Body(*main_code),
             share = ast.Share.Export,
             args = [
-                ast.DefArg(name = ast.Identifier("argc"), type = ast.Identifier("int")),
                 ast.DefArg(name = ast.Identifier("args"), type = ast.ArrayT(type = ast.Identifier("string")))
             ]
         )
         code.append(main_function)
 
-        if self.filename == "main":
-            c_main = ast.Def(
-                name = ast.Identifier("main"),
-                body = ast.Body(
-                    ast.Call(left = ast.Identifier("p_main"), args = [
-                        ast.CallArg(value = ast.Identifier("argc")),
-                        ast.CallArg(value = ast.Identifier("args"))
-                    ])
-                ),
-                share = ast.Share.No,
-                args = [
-                    ast.DefArg(name = ast.Identifier("argc"), type = ast.Identifier("int")),
-                    ast.DefArg(name = ast.Identifier("args"), type = ast.ArrayT(type = ast.Identifier("string"))),
-                ],
-                returns = [ast.Identifier("int")]
-            )
-            code.append(c_main)
+        #if self.filename == "main":
+        #    c_main = ast.Def(
+        #        name = ast.Identifier("main"),
+        #        body = ast.Body(
+        #            ast.Call(left = ast.Identifier("p_main"), args = [
+        #                ast.CallArg(value = ast.Identifier("args"))
+        #            ])
+        #        ),
+        #        share = ast.Share.No,
+        #        args = [
+        #            ast.DefArg(name = ast.Identifier("args"), type = ast.ArrayT(type = ast.Identifier("string"))),
+        #        ],
+        #        returns = [ast.Identifier("int")]
+        #    )
+        #    code.append(c_main)
 
         self.walk_children(code)
-        return ast.Program(*code), main_function.type # pylint: disable=no-member
+        program = ast.Program(*code)
+        program.file = self.filename
+        return program, main_function.type # pylint: disable=no-member
 
 builtins = Scope()
 for n in dir(types):
@@ -999,13 +1011,34 @@ def eval(csrc, p_filename, c_filename, main_type, args = []):
         raise CompileError("GCC Compilation failed")
 
     lib = cdll.LoadLibrary(str(libfile.absolute()))
-    main_type = main_type.c_type
+    c_type = main_type.c_type
 
     function = getattr(lib, p_filename)
-    function.restype = main_type
-    val = function(len(args), (ctypes.c_char_p * len(args))(*args))
+    function.restype = c_type
+    val = function(types.Array(
+        size = len(args),
+        value = ctypes.cast((types.Array * len(args))(*[
+            types.Array(size = len(v), value = ctypes.cast(ctypes.c_char_p(v), 
+            ctypes.c_void_p)) for v in args]), ctypes.c_void_p)
+    ))
     del lib
     
-    if main_type and issubclass(main_type, ctypes.Structure):
-        val = tuple(getattr(val, "_" + str(n)) for n in range(len(main_type._fields_)))
-    return val
+    if not c_type:
+        return NotImplemented
+    elif types.is_array(main_type):
+        if main_type.type == types.char:
+            val = ctypes.cast(val.value, ctypes.c_char_p).value
+        return val
+    elif issubclass(c_type, ctypes.Structure):
+        res = []
+        for n in range(len(c_type._fields_)):
+            v = getattr(val, "_" + str(n))
+            tpe = main_type.fields[n][1]
+            if types.is_array(tpe) and tpe.type == types.char:
+                v = ctypes.cast(v.value, ctypes.c_char_p).value
+            res.append(v)
+        res = tuple(res)
+        return res
+    else:
+        return val
+ 

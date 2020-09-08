@@ -1,6 +1,6 @@
 from princess import ast, model, types, compiler
 
-import json
+import json, ctypes, textwrap
 from enum import Enum
 from tatsu.codegen import ModelRenderer, CodeGenerator, DelegatingRenderingFormatter
 from tatsu.ast import AST
@@ -45,7 +45,7 @@ class CCodeGen(CodeGenerator):
     class String(Renderer):
         def _render_fields(self, fields):
             fields.update(value = to_c_string(fields["value"]))
-        template = "{value}"
+        template = "((Array){{{length}, {value}}})"
     class Char(Renderer):
         def _render_fields(self, fields):
             fields.update(value = to_c_char(fields["value"]))
@@ -124,11 +124,21 @@ class CCodeGen(CodeGenerator):
     
     class MemberAccess(Renderer):
         template = "({left}.{right})"
-        
+
+    class ArrayInitializer(Renderer):
+        template = "((Array){{{length}, {value}}})"
     class ArrayIndex(Renderer):
-        template = "({left}[{right}])"
+        def _render_fields(self, fields):
+            tpe = fields["array_type"]
+            if types.is_pointer(tpe):
+                return "({left}[{right}])"
+            else:
+                fields.update(array_type = types.PointerT(tpe.type))
+                return "((({array_type}){left}.value)[{right}])"
     class Array(Renderer):
-        template = "(({type}){{ {value::, :} }})"
+        def _render_fields(self, fields):
+            fields.update(type = fields["type"].to_arraystring())
+        template = "((Array){{{length}, ({type}){{ {value::, :} }}}})"
 
     class CallArg(Renderer):
         template = "{value}"
@@ -137,8 +147,14 @@ class CCodeGen(CodeGenerator):
 
     class VarDecl(Renderer):
         def _render_fields(self, fields):
-            fields.update(typestring = 
-                fields["type"].to_typestring(fields["identifier"]))
+            tpe = fields["type"]
+            ident = fields["identifier"]
+            right = fields["right"]
+            if types.is_array(tpe) and not right and tpe.n:
+                fields.update(typestring =
+                    "ARRAY(%s, %s, %d)" % (ident, tpe.type.to_typestring(""), tpe.n))
+            else:
+                fields.update(typestring = tpe.to_typestring(ident))
             if fields["right"]:
                 return "{typestring} = {right:::}"
             else:
@@ -256,17 +272,30 @@ class CCodeGen(CodeGenerator):
     
     class Program(Renderer): 
         def _render_fields(self, fields):
-            fields.update(
-                file = compiler.create_unique_identifier(),
-                code = ast.Body(*fields["value"]))
+            file = fields["file"]
+            if file == "main":
+                fields.update(main = textwrap.dedent(f"""\
+                    int main(int argc, char* argv[]) {{
+                        Array *args = malloc(sizeof(Array) * argc);
+                        for (int i = 0; i < argc; i++) {{
+                            args[i] = (Array) {{ strlen(argv[i]) + 1, argv[i] }};
+                        }}
+                        Array res = {{ argc, args }};
+                        {fields["file"]}_p_main(res);
+                    }}
+                """))
+            else:
+                fields.update(main = "")
+            fields.update(code = ast.Body(*fields["value"]))
 
         template = """\
             /* This file was compiled by the grace
                of your highness Princess Vic Nightfall
             */
             #include "princess.h"
-            #ifndef {file}
-            #define {file}
+            #ifndef _{file}_H
+            #define _{file}_H
             {code}
+            {main}
             #endif
         """

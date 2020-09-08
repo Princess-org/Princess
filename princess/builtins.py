@@ -1,4 +1,4 @@
-from princess.compiler import int_t, assert_error, Modifier, Compiler
+from princess.compiler import int_t, assert_error, Modifier, Compiler, error
 from princess import types, ast, compiler
 
 def _allocate(function, node, compiler: Compiler):
@@ -7,15 +7,29 @@ def _allocate(function, node, compiler: Compiler):
         function.return_t = (types.void_p,)
         function.parameter_t = (types.size_t,)
     else:
-        function.return_t = (types.PointerT(compiler.scope.type_lookup(arg)),)
         if len(node.args) == 2:
+            tpe = types.ArrayT(compiler.scope.type_lookup(arg))
+            function.return_t = (tpe,)
+
             n = node.args[1].value
             assert_error(n.type in int_t, "Invalid argument")
-            node.args[:] = [ast.CallArg(value = ast.Mul(left = ast.SizeOf(arg), right = n))]
+            call = ast.Call(
+                left = ast.Identifier("malloc"),
+                args = [ast.CallArg(value = ast.Mul(left = ast.SizeOf(arg), right = n))]
+            )
+            call.left.type = function
+            array = ast.ArrayInitializer(
+                length = n,
+                value = call,
+                type = tpe
+            )
+            return array
         else:
+            tpe = types.PointerT(compiler.scope.type_lookup(arg))
+            function.return_t = (tpe,)
             node.args[0].value = ast.SizeOf(arg)
 
-    node.left = ast.Identifier("malloc")
+    node.left = ast.Identifier("malloc") 
     return node
 
 def to_c_format_specifier(tpe):
@@ -24,20 +38,24 @@ def to_c_format_specifier(tpe):
     elif types.is_pointer(tpe):
         return "%p"
     else:
-        return {
-            types.size_t: "%zu",
-            types.byte: "%hhd",
-            types.ubyte: "%hhu",
-            types.char: "%c",
-            types.short: "%hd",
-            types.ushort: "%hu",
-            types.int: "%d",
-            types.uint: "%u",
-            types.long: "%ld",
-            types.ulong: "%lu",
-            types.float: "%f",
-            types.double: "%f"
-        }[tpe]
+        try:
+            return {
+                types.size_t: "%zu",
+                types.byte: "%hhd",
+                types.ubyte: "%hhu",
+                types.char: "%c",
+                types.short: "%hd",
+                types.ushort: "%hu",
+                types.bool: "%d",
+                types.int: "%d",
+                types.uint: "%u",
+                types.long: "%ld",
+                types.ulong: "%lu",
+                types.float: "%f",
+                types.double: "%f"
+            }[tpe]
+        except KeyError:
+            error("Wrong type")
 
 # TODO Do proper paremeter and return types
 
@@ -126,31 +144,40 @@ def _tell(function, node, compiler: Compiler):
     return node
 
 def _length(function, node, compiler: Compiler):
-    node.left = ast.Identifier("strlen")
+    assert_error(len(node.args) == 1, "Illegal arguments")
+    arg = node.args[0].value
+    node = ast.Sub(left = ast.MemberAccess(left = arg, right = ast.Identifier("size")), right = ast.Integer(1))
+    node.type = types.size_t
     return node
 
+def _memcopy(function, node, compiler: Compiler):
+    assert_error(len(node.args) == 3, "Illegal arguments")
+    node.args[:] = [node.args[1], node.args[0], node.args[2]]
+    node.left = ast.Identifier("memcpy")
+    return node
 
-compiler.builtins.create_function("allocate", types.FunctionT(macro = _allocate))
-compiler.builtins.create_function("free", types.FunctionT(parameter_t = (types.void_p,)))
-compiler.builtins.create_function("print", types.FunctionT(return_t = (types.int,), macro = _print))
-compiler.builtins.create_function("concat", types.FunctionT(return_t = (types.int,), macro = _concat))
-compiler.builtins.create_function("open", types.FunctionT(return_t = (types.FILE_T,), parameter_t = (types.string, types.string), macro = _open))
-compiler.builtins.create_function("close", types.FunctionT(return_t = (types.void,), parameter_t = (types.FILE_T,), macro = _close))
-compiler.builtins.create_function("write", types.FunctionT(return_t = (types.void,), parameter_t = (types.FILE_T, types.void_p, types.size_t), macro = _write))
-compiler.builtins.create_function("read", types.FunctionT(return_t = (types.void,), parameter_t = (types.FILE_T, types.void_p, types.size_t), macro = _read))
-compiler.builtins.create_function("rewind", types.FunctionT(return_t = (types.void,), parameter_t = (types.void_p,)))
-compiler.builtins.create_function("write_string", types.FunctionT(return_t = (types.void,), macro = _write_string))
-compiler.builtins.create_function("read_line", types.FunctionT(return_t = (types.string,), macro = _read_line))
-compiler.builtins.create_function("scan", types.FunctionT(return_t = (types.int,), macro = _scan))
-compiler.builtins.create_function("flush", types.FunctionT(return_t = (types.void,), parameter_t = (types.FILE_T,), macro = _flush))
-compiler.builtins.create_function("seek", types.FunctionT(return_t = (types.void,), parameter_t = (types.FILE_T, types.long, types.int), macro = _seek))
-compiler.builtins.create_function("tell", types.FunctionT(return_t = (types.int,), parameter_t = (types.FILE_T,), macro = _tell))
-compiler.builtins.create_function("pow", types.FunctionT(return_t = (types.double,), parameter_t = (types.double, types.double)))
-compiler.builtins.create_function("sqrt", types.FunctionT(return_t = (types.double,), parameter_t = (types.double,)))
-compiler.builtins.create_function("exit", types.FunctionT(return_t = (types.void,), parameter_t = (types.int,)))
-compiler.builtins.create_function("starts_with", types.FunctionT(return_t = (types.bool,), parameter_t = (types.string, types.string)))
-compiler.builtins.create_function("length", types.FunctionT(return_t = (types.size_t,), macro = _length))
-compiler.builtins.create_function("assert", types.FunctionT(return_t = (types.void,), parameter_t = (types.int,)))
+compiler.builtins.create_function("allocate", types.FunctionT(c = True, macro = _allocate))
+compiler.builtins.create_function("free", types.FunctionT(c = True, parameter_t = (types.void_p,)))
+compiler.builtins.create_function("print", types.FunctionT(c = True, return_t = (types.int,), macro = _print))
+compiler.builtins.create_function("concat", types.FunctionT(c = True, return_t = (types.int,), macro = _concat))
+compiler.builtins.create_function("open", types.FunctionT(c = True, return_t = (types.FILE_T,), parameter_t = (types.string, types.string), macro = _open))
+compiler.builtins.create_function("close", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.FILE_T,), macro = _close))
+compiler.builtins.create_function("write", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.FILE_T, types.void_p, types.size_t), macro = _write))
+compiler.builtins.create_function("read", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.FILE_T, types.void_p, types.size_t), macro = _read))
+compiler.builtins.create_function("rewind", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.void_p,)))
+compiler.builtins.create_function("write_string", types.FunctionT(c = True, return_t = (types.void,), macro = _write_string))
+compiler.builtins.create_function("read_line", types.FunctionT(c = True, return_t = (types.string,), macro = _read_line))
+compiler.builtins.create_function("scan", types.FunctionT(c = True, return_t = (types.int,), macro = _scan))
+compiler.builtins.create_function("flush", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.FILE_T,), macro = _flush))
+compiler.builtins.create_function("seek", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.FILE_T, types.long, types.int), macro = _seek))
+compiler.builtins.create_function("tell", types.FunctionT(c = True, return_t = (types.int,), parameter_t = (types.FILE_T,), macro = _tell))
+compiler.builtins.create_function("pow", types.FunctionT(c = True, return_t = (types.double,), parameter_t = (types.double, types.double)))
+compiler.builtins.create_function("sqrt", types.FunctionT(c = True, return_t = (types.double,), parameter_t = (types.double,)))
+compiler.builtins.create_function("exit", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.int,)))
+compiler.builtins.create_function("starts_with", types.FunctionT(c = True, return_t = (types.bool,), parameter_t = (types.string, types.string)))
+compiler.builtins.create_function("assert", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.int,)))
+compiler.builtins.create_function("length", types.FunctionT(c = True, return_t = (types.size_t,), parameter_t = (types.string,), macro = _length))
+compiler.builtins.create_function("memcopy", types.FunctionT(c = True, return_t = (types.void_p,), parameter_t = (types.void_p, types.void_p, types.size_t), macro = _memcopy))
 
 compiler.builtins.create_variable(Modifier.Let, "SEEK_SET", types.int)
 compiler.builtins.create_variable(Modifier.Let, "SEEK_CUR", types.int)
@@ -161,4 +188,3 @@ compiler.builtins.create_variable(Modifier.Let, "stderr", types.FILE_T)
 compiler.builtins.create_variable(Modifier.Let, "stdin", types.FILE_T)
 
 compiler.builtins.create_variable(Modifier.Let, "args", types.ArrayT(types.string))
-compiler.builtins.create_variable(Modifier.Let, "argc", types.int)

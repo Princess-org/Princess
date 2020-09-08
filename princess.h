@@ -37,7 +37,17 @@ typedef unsigned short  ushort;
 typedef unsigned long   ulong;
 typedef float   float32;
 typedef double  float64;
-typedef char* string;
+
+typedef struct {
+    size_t size;
+    void *value;
+} Array;
+
+typedef Array string;
+
+#define ARRAY($name, $type, $size) \
+    $type _##$name[$size];         \
+    Array $name = {$size, _##$name}
 
 bool starts_with(const char *str, const char *pre) {
     return strncmp(pre, str, strlen(pre)) == 0;

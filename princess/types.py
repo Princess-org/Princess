@@ -13,7 +13,7 @@ def is_array(t):
     return isinstance(t, ArrayT)
 
 def is_string(t):
-    return (is_array(t) and t.type == char) or t == string
+    return (is_array(t) and t.type is char) or t is string
 
 def is_struct(t):
     return isinstance(t, (Struct, Union))
@@ -65,13 +65,17 @@ class PointerT(Type):
     
     @property
     def c_type(self):
-        if self.type.c_type is ctypes.c_char:
-            return ctypes.c_char_p
-        else: return ctypes.POINTER(self.type.c_type)
+        return ctypes.POINTER(self.type.c_type)
     
     def _to_typestring(self, identifier, recursive = False):
         tpe = self.type or void
         return tpe.to_typestring("*" + identifier, recursive)
+
+class Array(ctypes.Structure):
+    _fields_ = [
+        ("size", ctypes.c_size_t),
+        ("value", ctypes.c_void_p)
+    ]
 
 class ArrayT(Type):
     def __init__(self, tpe, n = None, name = None):
@@ -81,11 +85,17 @@ class ArrayT(Type):
 
     @property
     def c_type(self):
-        return self.type.c_type * self.n
+        return Array
     
     def _to_typestring(self, identifier, recursive = False):
+        res = "Array"
+        if identifier:
+            res += " " + identifier
+        return res
+    
+    def to_arraystring(self):
         s = str(self.n) if self.n else ""
-        return self.type.to_typestring(identifier, recursive) + "[" + s + "]" 
+        return self.type.to_typestring("") + "[" + s + "]" 
 
 class Struct(Type):
     def __init__(self, fields, name = None):
@@ -151,11 +161,12 @@ size_t = Type(ctypes.c_size_t, "size_t")
 
 
 class FunctionT(Type):
-    def __init__(self, return_t = (void,), parameter_t = (), struct_identifier = None, macro = None, name = None):
+    def __init__(self, return_t = (void,), parameter_t = (), struct_identifier = None, macro = None, c = False, name = None):
         self.return_t = return_t
         self.parameter_t = parameter_t
         self.macro = macro
         self.struct_identifier = struct_identifier
+        self.c = c
         super().__init__(None, name = name)
 
     def _to_typestring(self, identifier, recursive = False):
@@ -191,4 +202,4 @@ long = Type(ctypes.c_long, "long")
 ulong = Type(ctypes.c_ulong, "ulong")
 float = Type(ctypes.c_float, "float")
 double = Type(ctypes.c_double, "double")
-string = Type(ctypes.c_char_p, "char*")
+string = ArrayT(char)
