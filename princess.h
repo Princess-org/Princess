@@ -49,7 +49,7 @@ typedef Array string;
     $type _##$name[$size];         \
     Array $name = {$size, _##$name}
 
-bool starts_with(const char *pre, const char *str) {
+bool starts_with(const char *str, const char *pre) {
     return strncmp(pre, str, strlen(pre)) == 0;
 }
 

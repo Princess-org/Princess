@@ -895,24 +895,26 @@ class Compiler(AstWalker):
         )
         code.append(main_function)
 
-        if self.filename == "main":
-            c_main = ast.Def(
-                name = ast.Identifier("main"),
-                body = ast.Body(
-                    ast.Call(left = ast.Identifier("p_main"), args = [
-                        ast.CallArg(value = ast.Identifier("args"))
-                    ])
-                ),
-                share = ast.Share.No,
-                args = [
-                    ast.DefArg(name = ast.Identifier("args"), type = ast.ArrayT(type = ast.Identifier("string"))),
-                ],
-                returns = [ast.Identifier("int")]
-            )
-            code.append(c_main)
+        #if self.filename == "main":
+        #    c_main = ast.Def(
+        #        name = ast.Identifier("main"),
+        #        body = ast.Body(
+        #            ast.Call(left = ast.Identifier("p_main"), args = [
+        #                ast.CallArg(value = ast.Identifier("args"))
+        #            ])
+        #        ),
+        #        share = ast.Share.No,
+        #        args = [
+        #            ast.DefArg(name = ast.Identifier("args"), type = ast.ArrayT(type = ast.Identifier("string"))),
+        #        ],
+        #        returns = [ast.Identifier("int")]
+        #    )
+        #    code.append(c_main)
 
         self.walk_children(code)
-        return ast.Program(*code), main_function.type # pylint: disable=no-member
+        program = ast.Program(*code)
+        program.file = self.filename
+        return program, main_function.type # pylint: disable=no-member
 
 builtins = Scope()
 for n in dir(types):

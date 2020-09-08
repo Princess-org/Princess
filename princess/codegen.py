@@ -1,6 +1,6 @@
 from princess import ast, model, types, compiler
 
-import json, ctypes
+import json, ctypes, textwrap
 from enum import Enum
 from tatsu.codegen import ModelRenderer, CodeGenerator, DelegatingRenderingFormatter
 from tatsu.ast import AST
@@ -45,7 +45,7 @@ class CCodeGen(CodeGenerator):
     class String(Renderer):
         def _render_fields(self, fields):
             fields.update(value = to_c_string(fields["value"]))
-        template = "((Array){{{length},{value}}})"
+        template = "((Array){{{length}, {value}}})"
     class Char(Renderer):
         def _render_fields(self, fields):
             fields.update(value = to_c_char(fields["value"]))
@@ -272,17 +272,30 @@ class CCodeGen(CodeGenerator):
     
     class Program(Renderer): 
         def _render_fields(self, fields):
-            fields.update(
-                file = compiler.create_unique_identifier(),
-                code = ast.Body(*fields["value"]))
+            file = fields["file"]
+            if file == "main":
+                fields.update(main = textwrap.dedent(f"""\
+                    int main(int argc, char* argv[]) {{
+                        Array *args = malloc(sizeof(Array) * argc);
+                        for (int i = 0; i < argc; i++) {{
+                            args[i] = (Array) {{ strlen(argv[i]) + 1, argv[i] }};
+                        }}
+                        Array res = {{ argc, args }};
+                        {fields["file"]}_p_main(res);
+                    }}
+                """))
+            else:
+                fields.update(main = "")
+            fields.update(code = ast.Body(*fields["value"]))
 
         template = """\
             /* This file was compiled by the grace
                of your highness Princess Vic Nightfall
             */
             #include "princess.h"
-            #ifndef {file}
-            #define {file}
+            #ifndef _{file}_H
+            #define _{file}_H
             {code}
+            {main}
             #endif
         """

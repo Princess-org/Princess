@@ -46,6 +46,7 @@ def to_c_format_specifier(tpe):
                 types.char: "%c",
                 types.short: "%hd",
                 types.ushort: "%hu",
+                types.bool: "%d",
                 types.int: "%d",
                 types.uint: "%u",
                 types.long: "%ld",
@@ -149,6 +150,12 @@ def _length(function, node, compiler: Compiler):
     node.type = types.size_t
     return node
 
+def _memcopy(function, node, compiler: Compiler):
+    assert_error(len(node.args) == 3, "Illegal arguments")
+    node.args[:] = [node.args[1], node.args[0], node.args[2]]
+    node.left = ast.Identifier("memcpy")
+    return node
+
 compiler.builtins.create_function("allocate", types.FunctionT(c = True, macro = _allocate))
 compiler.builtins.create_function("free", types.FunctionT(c = True, parameter_t = (types.void_p,)))
 compiler.builtins.create_function("print", types.FunctionT(c = True, return_t = (types.int,), macro = _print))
@@ -170,6 +177,7 @@ compiler.builtins.create_function("exit", types.FunctionT(c = True, return_t = (
 compiler.builtins.create_function("starts_with", types.FunctionT(c = True, return_t = (types.bool,), parameter_t = (types.string, types.string)))
 compiler.builtins.create_function("assert", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.int,)))
 compiler.builtins.create_function("length", types.FunctionT(c = True, return_t = (types.size_t,), parameter_t = (types.string,), macro = _length))
+compiler.builtins.create_function("memcopy", types.FunctionT(c = True, return_t = (types.void_p,), parameter_t = (types.void_p, types.void_p, types.size_t), macro = _memcopy))
 
 compiler.builtins.create_variable(Modifier.Let, "SEEK_SET", types.int)
 compiler.builtins.create_variable(Modifier.Let, "SEEK_CUR", types.int)

@@ -7,10 +7,10 @@ def test_pointer_type():
     assert types.PointerT(types.int).to_typestring("foo") == "int *foo"
 
 def test_array_type():
-    assert types.ArrayT(types.int, 10).to_typestring("foo") == "int foo[10]"
+    assert types.ArrayT(types.int, 10).to_typestring("foo") == "Array foo"
 
 def test_pointer_to_array():
-    assert types.PointerT(types.ArrayT(types.int, 10)).to_typestring("foo") == "int *foo[10]"
+    assert types.PointerT(types.ArrayT(types.int, 10)).to_typestring("foo") == "Array *foo"
 
 
 def test_pointer_to_fuction():
