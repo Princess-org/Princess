@@ -49,6 +49,7 @@ KEYWORDS = {
     'return',
     'size_of',
     'struct',
+    'switch',
     'true',
     'type',
     'unsigned',
@@ -484,6 +485,7 @@ class PrincessParser(Parser):
 
     @tatsumasu()
     def _array_element_(self):  # noqa
+        self._n__()
         self._expression_call_()
         self.name_last_node('@')
         self._n__()

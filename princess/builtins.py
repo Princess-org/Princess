@@ -36,7 +36,9 @@ def to_c_format_specifier(tpe):
     if types.is_string(tpe):
         return "%s"
     elif types.is_pointer(tpe):
-        return "%p"
+        if tpe.type is types.char:
+            return "%s"
+        else: return "%p"
     else:
         try:
             return {

@@ -148,8 +148,9 @@ class Scope:
             v = self.get_const_value(t)
             if hasattr(t, "identifier"):
                 v.name = t.identifier
-            else:
-                v.name = t.ast[-1]
+            #else:  # TODO Figure out why this is here
+            #    print(v, t.ast[-1])
+            #    v.name = t.ast[-1]
             return v
         elif isinstance(t, model.PtrT):
             return types.PointerT(self.type_lookup(t.type))
@@ -504,8 +505,8 @@ class Compiler(AstWalker):
 
         if node.ast:
             tpe = node.ast[0].type
-            for v in node.ast[1:]:
-                tpe = common_type(tpe, v.type)
+            #for v in node.ast[1:]: TODO This should be working
+            #    tpe = common_type(tpe, v.type)
 
             node.value_type = tpe
             node.type = types.ArrayT(tpe, node.length)
