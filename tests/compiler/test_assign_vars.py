@@ -26,16 +26,6 @@ def test_assign():
     """
     assert eval(prog) == 25
 
-def test_assign_default_value():
-    prog = """\
-        def function -> int {
-            var a: int
-            return a
-        }
-        return function()
-    """
-    assert eval(prog) == 0
-
 @skip("Not implemented")
 def test_assign_multiple():
     prog = """\
