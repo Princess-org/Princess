@@ -458,27 +458,26 @@ class Compiler(AstWalker):
         
         self.walk_child(node, node.right)
 
-        #tpe2 = right.type
-        #if types.is_array(tpe) and types.is_array(tpe2):
-        #
-        #    call = ast.Call(
-        #        left = ast.Identifier("memcpy"),
-        #        args = [
-        #            ast.CallArg(value = ast.MemberAccess(left = left, right = ast.Identifier("value"))),
-        #            ast.CallArg(value = ast.MemberAccess(left = right, right = ast.Identifier("value"))),
-        #            ast.CallArg(value = ast.Mul(left = ast.SizeOf(tpe.type), 
-        #                right = ast.MemberAccess(left = left, right = ast.Identifier("size"))
-        #            ))
-        #        ]
-        #    )
-        #    call.left.type = types.FunctionT(
-        #        return_t = (types.void_p,), 
-        #        parameter_t = (types.void_p, types.void_p, types.size_t)
-        #    )
-        #    call = self.walk(call)
-        #    return call
-        #else:
-        return node
+        tpe2 = right.type
+        if types.is_array(tpe) and types.is_array(tpe2) and tpe.n == tpe2.n != None:
+            call = ast.Call(
+                left = ast.Identifier("memcpy"),
+                args = [
+                    ast.CallArg(value = ast.MemberAccess(left = left, right = ast.Identifier("value"))),
+                    ast.CallArg(value = ast.MemberAccess(left = right, right = ast.Identifier("value"))),
+                    ast.CallArg(value = ast.Mul(left = ast.SizeOf(tpe.type), 
+                        right = ast.MemberAccess(left = left, right = ast.Identifier("size"))
+                    ))
+                ]
+            )
+            call.left.type = types.FunctionT(
+                return_t = (types.void_p,), 
+                parameter_t = (types.void_p, types.void_p, types.size_t)
+            )
+            call = self.walk(call)
+            return call
+        else:
+            return node
 
     def walk_Ptr(self, node: model.Ptr):
         self.walk_children(node)
@@ -674,7 +673,9 @@ class Compiler(AstWalker):
 
     def walk_VarDecl(self, node: model.VarDecl):
         self.walk_child(node, node.left)
-
+        
+        if not node.right:
+            node.right = []
         assert_error(len(node.left) == 1 >= len(node.right), 
             "Parallel assignment not implemented")
 
@@ -979,7 +980,7 @@ def compile_file(file, base_path = Path(""), include_path = Path("")):
         exefile = base_path / filename
     
     p = subprocess.Popen(
-        ["gcc", "-I" + str(include_dir), "-o", str(exefile), str(c_file)]
+        ["gcc", "-g", "-I" + str(include_dir), "-o", str(exefile), str(c_file)]
     )
     status = p.wait()
     if status:

@@ -32,6 +32,10 @@ def _allocate(function, node, compiler: Compiler):
     node.left = ast.Identifier("malloc") 
     return node
 
+def _reallocate(function, node, compiler: Compiler):
+    node.left = ast.Identifier("realloc")
+    return node
+
 def to_c_format_specifier(tpe):
     if types.is_string(tpe):
         return "%s"
@@ -159,6 +163,7 @@ def _memcopy(function, node, compiler: Compiler):
     return node
 
 compiler.builtins.create_function("allocate", types.FunctionT(c = True, macro = _allocate))
+compiler.builtins.create_function("reallocate", types.FunctionT(c = True, return_t = (types.void_p,), parameter_t = (types.void_p, types.size_t), macro = _reallocate))
 compiler.builtins.create_function("free", types.FunctionT(c = True, parameter_t = (types.void_p,)))
 compiler.builtins.create_function("print", types.FunctionT(c = True, return_t = (types.int,), macro = _print))
 compiler.builtins.create_function("concat", types.FunctionT(c = True, return_t = (types.int,), macro = _concat))

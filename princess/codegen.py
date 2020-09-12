@@ -8,6 +8,8 @@ from tatsu.ast import AST
 def to_c_string(s: str):
     return json.dumps(s) # TODO Check conformance with C literals
 def to_c_char(s: str):
+    if s is '\'':   # TODO
+        return "'\\''"
     return "'" + s.encode("unicode_escape").decode("utf-8") + "'"
 
 class Formatter(DelegatingRenderingFormatter):
