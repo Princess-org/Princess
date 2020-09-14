@@ -65,7 +65,10 @@ class PointerT(Type):
     
     @property
     def c_type(self):
-        return ctypes.POINTER(self.type.c_type)
+        if self.type:
+            return ctypes.POINTER(self.type.c_type)
+        else:
+            return ctypes.c_void_p
     
     def _to_typestring(self, identifier, recursive = False):
         tpe = self.type or void

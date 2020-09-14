@@ -13,7 +13,8 @@ def decode_escape_seq(ast):
     elif e == 'U': return hex(1, 8)
     else: return { #abfnrtv\\'"0
         'a': '\a', 'b': '\b', 'f': '\f', 'n': '\n', 
-        'r': '\r', 't': '\t', 'v': '\v', '0': '\0'}.get(e, e)
+        'r': '\r', 't': '\t', 'v': '\v', '0': '\0',
+        '"': '"', '\'': '\'', '\\': '\\'}[e]
 
 def char_to_str(ast):
     if isinstance(ast, list): return decode_escape_seq(ast)
