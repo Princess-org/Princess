@@ -28,7 +28,7 @@ class Modifier(str, Enum):
     Let = "let"
     Type = "type"
 
-unsigned_t = set([types.uint8, types.uint16, 
+unsigned_t = set([types.char, types.uint8, types.uint16, 
     types.uint32, types.uint64, types.size_t])
 signed_t = set([types.int8, types.int16, types.int32, types.int64])
 float_t = set([types.double, types.float])
@@ -855,8 +855,9 @@ class Compiler(AstWalker):
                 ])
                 if not name in _modules:
                     main_code.append(call) 
-                    n = self.walk(n)
-                    code.append(n)
+                
+                n = self.walk(n)
+                code.append(n)
             elif isinstance(n, (model.TypeDecl, model.Def)):
                 n = self.walk(n)
                 code.append(n)
