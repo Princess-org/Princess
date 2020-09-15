@@ -162,6 +162,13 @@ def _memcopy(function, node, compiler: Compiler):
     node.left = ast.Identifier("memcpy")
     return node
 
+def _min(function, node, compiler: Compiler):
+    node.left = ast.Identifier("fmin")
+    return node
+def _max(function, node, compiler: Compiler):
+    node.left = ast.Identifier("fmax")
+    return node
+
 compiler.builtins.create_function("allocate", types.FunctionT(c = True, macro = _allocate))
 compiler.builtins.create_function("reallocate", types.FunctionT(c = True, return_t = (types.void_p,), parameter_t = (types.void_p, types.size_t), macro = _reallocate))
 compiler.builtins.create_function("free", types.FunctionT(c = True, parameter_t = (types.void_p,)))
@@ -185,6 +192,8 @@ compiler.builtins.create_function("starts_with", types.FunctionT(c = True, retur
 compiler.builtins.create_function("assert", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.int,)))
 compiler.builtins.create_function("length", types.FunctionT(c = True, return_t = (types.size_t,), parameter_t = (types.string,), macro = _length))
 compiler.builtins.create_function("memcopy", types.FunctionT(c = True, return_t = (types.void_p,), parameter_t = (types.void_p, types.void_p, types.size_t), macro = _memcopy))
+compiler.builtins.create_function("min", types.FunctionT(c = True, return_t = (types.double,), parameter_t = (types.double, types.double), macro = _min))
+compiler.builtins.create_function("max", types.FunctionT(c = True, return_t = (types.double,), parameter_t = (types.double, types.double), macro = _max))
 
 compiler.builtins.create_variable(Modifier.Let, "SEEK_SET", types.int)
 compiler.builtins.create_variable(Modifier.Let, "SEEK_CUR", types.int)

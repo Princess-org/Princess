@@ -981,7 +981,7 @@ def compile_file(file, base_path = Path(""), include_path = Path("")):
         exefile = base_path / filename
     
     p = subprocess.Popen(
-        ["gcc", "-g", "-I" + str(include_dir), "-o", str(exefile), str(c_file)]
+        ["gcc", "-g", "-I" + str(include_dir), "-o", str(exefile), str(c_file), "-lm"]
     )
     status = p.wait()
     if status:
@@ -1006,8 +1006,8 @@ def eval(csrc, p_filename, c_filename, main_type, args = []):
         fp.write(csrc)
 
     p = subprocess.Popen(
-        ["gcc", "-I" + str(include_dir), "-shared", "-o", 
-        str(libfile), "-fPIC", str(c_file)], 
+        ["gcc", "-g", "-I" + str(include_dir), "-shared", "-o", 
+        str(libfile), "-fPIC", str(c_file), "-lm"], 
     )
     status = p.wait()
     if status:
