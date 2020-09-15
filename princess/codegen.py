@@ -129,6 +129,10 @@ class CCodeGen(CodeGenerator):
         template = "({left} && {right})"
     class Or(Renderer):
         template = "({left} || {right})"
+    class Shr(Renderer):
+        template = "({left} >> {right})"
+    class Shl(Renderer):
+        template = "({left} << {right})"
     class Not(Renderer):
         template = "(!{right})"
     class Ptr(Renderer):
