@@ -1,21 +1,42 @@
 from princess import ast, model, types, compiler
 
-import json, ctypes, textwrap
+import json, ctypes, textwrap, re
 from enum import Enum
 from tatsu.codegen import ModelRenderer, CodeGenerator, DelegatingRenderingFormatter
 from tatsu.ast import AST
 
 def to_c_string(s: str):
-    return json.dumps(s) # TODO Check conformance with C literals
+    result = '"'
+
+    for c in s:
+        if ord(c) < 32 or 0x80 <= ord(c) <= 0xFF:
+            result += "\\x%02x" % ord(c)
+        elif ord(c) > 0xFFFF:
+            result += "\\U%08x" % ord(c)
+        elif ord(c) > 0xFF:
+            result += "\\u%04x" % ord(c)
+        elif "\\\"".find(c) != -1:
+            result += "\\%c" % c
+        else:
+            result += c
+
+    result += '"'
+    return result
+
 def to_c_char(s: str):
-    if s is '\'':   # TODO
+    if s == "'":
         return "'\\''"
-    return "'" + s.encode("unicode_escape").decode("utf-8") + "'"
+    elif ord(s) < 32 or 0x80 <= ord(s) <= 0xFF:
+        return "'\\x%02x'" % ord(s)
+    elif "\\\"".find(s) != -1:
+        return "'\\%c'" % s
+    else:
+        return "'%c'" % s
 
 class Formatter(DelegatingRenderingFormatter):
     def render(self, item, join='', **fields):
         if types.is_type(item):
-            return item.to_typestring( "")
+            return item.to_typestring("")
         elif isinstance(item, Enum): 
             return item.value
 
