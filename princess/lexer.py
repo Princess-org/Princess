@@ -67,7 +67,7 @@ class Lexer(PrincessBuffer):
         error += "\n"        
         error += (self.filename or "??? ") + ":" + str(info.line) + "\n"
         error += line
-        error += " " * (info.pos + 1) + "^"
-        error += (info.endpos - info.pos - 1) * "~"
+        #error += " " * (info.pos + 1) + "^"
+        #error += (info.endpos - info.pos - 1) * "~"
 
         return error
