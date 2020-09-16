@@ -232,7 +232,9 @@ class AstWalker(NodeWalker):
         except Exception as e:
             if isinstance(e, CompileAssert):
                 node = e.node   # pylint: disable=no-member
-            info = node.parseinfo or old_node.parseinfo
+            else:
+                node = old_node
+            info = node.parseinfo if node else None
             if info:
                 lexer = info.buffer
                 raise CompileError(lexer.format_error(str(e), info))
@@ -252,7 +254,7 @@ class AstWalker(NodeWalker):
 
     def walk_child(self, node, *children):
         assert isinstance(node, Node)
-        node.map(self.walk, lambda n: n in children)
+        node.map(self.walk, lambda n: n in children)    # TODO Use more efficient operator than in
 
     def walk_default(self, node):
         self.walk_children(node)
