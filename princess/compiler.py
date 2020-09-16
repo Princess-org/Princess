@@ -227,8 +227,11 @@ class AstWalker(NodeWalker):
         old_node = node
         try:
             return super().walk(node, *args, **kwargs)
-        except CompileAssert as e:
-            node = e.node or node
+        except CompileError as e:
+            raise e
+        except Exception as e:
+            if isinstance(e, CompileAssert):
+                node = e.node   # pylint: disable=no-member
             info = node.parseinfo or old_node.parseinfo
             if info:
                 lexer = info.buffer
@@ -622,7 +625,7 @@ class Compiler(AstWalker):
         
         if isinstance(val, model.TEnum):
             tpe = self.scope.type_lookup(val.type) or types.int
-            ns = self.scope.enter_namespace(name)
+            ns = self.scope.enter_namespace(name, share = node.share)
 
             value = -1
             for nme in val.body.ast:
