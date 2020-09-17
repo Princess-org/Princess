@@ -61,6 +61,30 @@ def test_recursion():
 
     assert eval(prog) == 120
 
+def test_nested_function():
+    prog = """\
+        def foo {
+            let a = 1
+            def bar -> int {
+                return a
+            }
+            return bar()
+        }
+        return foo()
+    """
+
+    assert eval(prog) == 1
+
+def test_function_address():
+    prog = """\
+        def foo -> int { return 1 }
+        def bar -> int { return 2 }
+        let fp = *bar
+
+        return fp()
+    """
+
+    assert eval(prog) == 2
 
 def test_cli_arguments():
     prog = """\

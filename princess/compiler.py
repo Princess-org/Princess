@@ -490,7 +490,10 @@ class Compiler(AstWalker):
         if isinstance(node.right, model.Identifier) and node.right.modifier == Modifier.Type:
             return self.walk(ast.PtrT(type = node.right))
 
-        node.type = types.PointerT(node.right.type)
+        if types.is_function(node.right.type):
+            node.type = node.right.type
+        else: 
+            node.type = types.PointerT(node.right.type)
         return node
     
     def walk_Deref(self, node: model.Deref):
