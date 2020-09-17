@@ -464,7 +464,7 @@ class Compiler(AstWalker):
         self.walk_child(node, node.right)
 
         tpe2 = right.type
-        if types.is_array(tpe) and types.is_array(tpe2) and tpe.n == tpe2.n and hasattr(node, "first_assign"):
+        if types.is_array(tpe) and types.is_array(tpe2) and tpe.n == tpe2.n != None and hasattr(node, "first_assign"):
             call = ast.Call(
                 left = ast.Identifier("memcpy"),
                 args = [

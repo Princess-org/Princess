@@ -9,8 +9,10 @@ def to_c_string(s: str):
     result = '"'
 
     for c in s:
-        if ord(c) < 32 or 0x80 <= ord(c) <= 0xFF:
+        if ord(c) < 32:
             result += "\\x%02x" % ord(c)
+        elif 0x80 <= ord(c) <= 0xFF:
+            result += "\\u00%02x" % ord(c)
         elif ord(c) > 0xFFFF:
             result += "\\U%08x" % ord(c)
         elif ord(c) > 0xFF:
