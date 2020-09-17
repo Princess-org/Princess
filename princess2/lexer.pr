@@ -2,7 +2,9 @@ import buffer
 import util
 
 export type TokenType = enum {
+    DOT
     COLON
+    DOUBLE_COLON
     COMMA
     SEMICOLON
     ARROW
@@ -13,8 +15,10 @@ export type TokenType = enum {
     C_BRACE
     O_SQUARE
     C_SQUARE
+    OP_CAST
+    OP_AUTOCAST
     OP_DEREF
-    OP_PTR
+    // OP_PTR
     OP_ASSIGN
     OP_ADD
     OP_SUB
@@ -47,6 +51,7 @@ export type TokenType = enum {
     OP_XOR_EQ
     OP_SHL_EQ
     OP_SHR_EQ
+    K_DO
     K_TYPE
     K_ENUM
     K_STRUCT
@@ -61,6 +66,7 @@ export type TokenType = enum {
     K_WHILE
     K_TRUE
     K_FALSE
+    K_WORD
     K_NULL
     K_SWITCH
     K_FOR
@@ -85,6 +91,7 @@ export type TokenType = enum {
     IDENTIFIER
     COMMENT
     ERROR
+    PRAGMA
 }
 
 export type Token = struct {
@@ -105,6 +112,7 @@ type Keyword = struct {
 }
 
 let KEYWORDS = [
+    {TokenType::K_DO, "do"} !Keyword,
     {TokenType::K_TYPE, "type"} !Keyword,
     {TokenType::K_ENUM, "enum"} !Keyword,
     {TokenType::K_STRUCT, "struct"} !Keyword,
@@ -118,6 +126,7 @@ let KEYWORDS = [
     {TokenType::K_WHILE, "while"} !Keyword,
     {TokenType::K_TRUE, "true"} !Keyword,
     {TokenType::K_FALSE, "false"} !Keyword,
+    {TokenType::K_WORD, "word"} !Keyword,
     {TokenType::K_NULL, "null"} !Keyword,
     {TokenType::K_SWITCH, "switch"} !Keyword,
     {TokenType::K_FOR, "for"} !Keyword,
@@ -135,6 +144,45 @@ let KEYWORDS = [
     {TokenType::K_AS, "as"} !Keyword,
     {TokenType::K_FROM, "from"} !Keyword
 ]
+
+export def free_token_list(list: *TokenList) {
+    while list != null {
+        let value = (@list).value
+        if (value.tpe == TokenType::STRING or value.tpe == TokenType::IDENTIFIER or
+            value.tpe == TokenType::ERROR or value.tpe == TokenType::COMMENT or
+            value.tpe == TokenType::PRAGMA) {
+            let str = (value.value !*string)
+            free((@str).value)
+        }
+        if value.value != null {
+            free(value.value)
+        }
+        var tmp = list
+        list = (@list).next
+        free(tmp)
+    }
+}
+
+export def print_token_list(list: *TokenList) {
+    while list != null {
+        let value = (@list).value
+        print(value.tpe, ": ")
+        if (value.tpe == TokenType::STRING or value.tpe == TokenType::IDENTIFIER or
+            value.tpe == TokenType::ERROR or value.tpe == TokenType::COMMENT or
+            value.tpe == TokenType::PRAGMA) {
+            let str = @(value.value !*string)
+            print(str)
+        } else if (value.tpe == TokenType::INTEGER) {
+            print(@(value.value !*ulong))
+        } else if (value.tpe == TokenType::CHAR) {
+            print(@(value.value !*char))
+        } else if (value.tpe == TokenType::FLOAT) {
+            print(@(value.value !*double))
+        }
+        print("\n")
+        list = (@list).next
+    }
+}
 
 def simple_token(tpe: TokenType, line: int, column: int) -> Token {
     return {
@@ -427,9 +475,6 @@ def parse_int(s: string, i: *int, line: *int, column: *int) -> Token {
             return parse_oct_int(s, i, line, column)
         } else if r == 'x' {
             return parse_hex_int(s, i, line, column)
-        } else if not (r >= '0' and r <= '9') {
-            next_char(s, i, line, column)
-            return error_token("Invalid radix", start_line, start_column)
         }
     }
 
@@ -576,6 +621,7 @@ def parse_eol_comment(s: string, i: *int, line: *int, column: *int) -> Token {
         TokenType::COMMENT, start_line, start_column, util::copy_string(str)
     } !Token
     free(str)
+    return tok
 }
 
 def parse_comment(s: string, i: *int, line: *int, column: *int) -> Token {
@@ -596,11 +642,13 @@ def parse_comment(s: string, i: *int, line: *int, column: *int) -> Token {
         if c == '/' {
             if peek_char(s, i, 1) == '*' {
                 depth += 1
+                buffer::append_char(*buf, '*')
                 next_char(s, i, line, column)
             }
         } else if c == '*' {
             if peek_char(s, i, 1) == '/' {
                 depth -= 1
+                buffer::append_char(*buf, '/')
                 next_char(s, i, line, column)
             }
         }
@@ -608,11 +656,112 @@ def parse_comment(s: string, i: *int, line: *int, column: *int) -> Token {
     }
 
     var str = buffer::to_string(*buf)
-    
     let tok = {
         TokenType::COMMENT, start_line, start_column, util::copy_string(str)
     } !Token
     free(str)
+    return tok
+}
+
+def parse_pragma(s: string, i: *int, line: *int, column: *int) -> Token {
+    let start_line = @line
+    let start_column = @column
+
+    var buf = buffer::make_buffer()
+    var c = peek_char(s, i, 0)
+    while c == '#' or is_text(c) {
+        buffer::append_char(*buf, c)
+        c = next_char(s, i, line, column)
+    }
+
+    var str = buffer::to_string(*buf)
+    let tok = {
+        TokenType::PRAGMA, start_line, start_column, util::copy_string(str)
+    } !Token
+    free(str)
+    return tok  
+}
+
+def parse_symbol(s: string, i: *int, line: *int, column: *int) -> Token {
+    let start_line = @line
+    let start_column = @column
+
+    let first = peek_char(s, i, 0)
+    let second = peek_char(s, i, 1)
+    let third = peek_char(s, i, 2)
+
+    var tt: TokenType
+    var length = 3
+
+    if first == '<' and second == '<' and third == '=' {
+        tt = TokenType::OP_SHL_EQ
+    } else if first == '>' and second == '>' and third == '=' {
+        tt = TokenType::OP_SHR_EQ
+    } else if first == '+' and second == '+' and third == '=' {
+        tt = TokenType::OP_INC_EQ
+    } else if first == '-' and second == '-' and third == '=' {
+        tt = TokenType::OP_DEC_EQ
+    } else {
+        length = 2
+        if second == '=' {
+            switch first {
+                case '+': tt = TokenType::OP_ADD_EQ
+                case '-': tt = TokenType::OP_SUB_EQ
+                case '*': tt = TokenType::OP_MUL_EQ
+                case '/': tt = TokenType::OP_DIV_EQ
+                case '%': tt = TokenType::OP_MOD_EQ
+                case '&': tt = TokenType::OP_AND_EQ
+                case '|': tt = TokenType::OP_OR_EQ
+                case '^': tt = TokenType::OP_XOR_EQ
+                case '!': tt = TokenType::OP_NEQ
+                case '>': tt = TokenType::OP_GEQ
+                case '<': tt = TokenType::OP_LEQ
+            }
+        } else if first == '!' and second == '!' {
+            tt = TokenType::OP_AUTOCAST
+        } else if first == '-' and second == '>' {
+            tt = TokenType::ARROW
+        } else if first == ':' and second == ':' {
+            tt = TokenType::DOUBLE_COLON
+        } else if first == '+' and second == '+' {
+            tt = TokenType::OP_INC
+        } else if first == '-' and second == '-' {
+            tt = TokenType::OP_DEC
+        } else if first == '<' and second == '<' {
+            tt = TokenType::OP_SHL
+        } else if first == '>' and second == '>' {
+            tt = TokenType::OP_SHR
+        } else {
+            length = 1
+            switch first {
+                case '{': tt = TokenType::O_BRACE
+                case '}': tt = TokenType::C_BRACE
+                case '[': tt = TokenType::O_SQUARE
+                case ']': tt = TokenType::C_SQUARE
+                case '+': tt = TokenType::OP_ADD
+                case '-': tt = TokenType::OP_SUB
+                case '*': tt = TokenType::OP_MUL
+                case '/': tt = TokenType::OP_DIV
+                case '%': tt = TokenType::OP_MOD
+                case '&': tt = TokenType::OP_BAND
+                case '|': tt = TokenType::OP_BOR
+                case '^': tt = TokenType::OP_BXOR
+                case '~': tt = TokenType::OP_BNOT
+                case '!': tt = TokenType::OP_CAST
+                case '@': tt = TokenType::OP_DEREF  
+                case '=': tt = TokenType::OP_ASSIGN                    
+                case ',': tt = TokenType::COMMA  
+                case ':': tt = TokenType::COLON
+            }
+        }
+    }
+
+
+    for var j in 0:length:1 {
+        next_char(s, i, line, column)
+    }
+
+    return simple_token(tt, start_line, start_column)
 }
 
 export def lex(s: string) -> *TokenList {
@@ -622,6 +771,7 @@ export def lex(s: string) -> *TokenList {
 
     var token_list = allocate(TokenList)
     var head = token_list
+    var depth = 0
 
     while i < length(s) {
         let c = peek_char(s, *i, 0)
@@ -629,6 +779,14 @@ export def lex(s: string) -> *TokenList {
         if c == ' ' or c == '\t' {
             i += 1
             continue
+        } else if c == '(' {
+            i += 1
+            depth += 1
+            token = simple_token(TokenType::O_PAREN, line, column)
+        } else if c == ')' {
+            i += 1
+            depth -= 1
+            token = simple_token(TokenType::C_PAREN, line, column)
         } else if c == '"' {
             token = parse_string(s, *i, *line, *column)
         } else if c == '\'' {
@@ -640,8 +798,10 @@ export def lex(s: string) -> *TokenList {
             if next >= '0' and next <= '9' {
                 token = parse_number(s, *i, *line, *column)
             } else {
-                token = simple_token(TokenType::COLON, line, column)
+                token = simple_token(TokenType::DOT, line, column)
             }
+        } else if c == '#' {
+            token = parse_pragma(s, *i, *line, *column)
         } else if is_text(c) {
             token = parse_identifier(s, *i, *line, *column)
         } else if c == '/' {
@@ -655,7 +815,13 @@ export def lex(s: string) -> *TokenList {
             }
         } else if c == '\n' {
             i += 1
-            token = simple_token(TokenType::NEW_LINE, line, column)
+            if depth == 0 {
+                token = simple_token(TokenType::NEW_LINE, line, column)
+            } else {
+                continue
+            }
+        } else {
+            token = parse_symbol(s, *i, *line, *column)
         }
         (@token_list).value = token
         (@token_list).next = allocate(TokenList)
