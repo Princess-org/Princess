@@ -30,6 +30,7 @@ KEYWORDS = {
     'const',
     'continue',
     'def',
+    'do',
     'else',
     'enum',
     'export',
