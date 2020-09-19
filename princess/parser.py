@@ -18,7 +18,6 @@ import sys
 from tatsu.buffering import Buffer
 from tatsu.parsing import Parser
 from tatsu.parsing import tatsumasu, leftrec, nomemo
-from tatsu.parsing import leftrec, nomemo  # noqa
 from tatsu.util import re, generic_main  # noqa
 
 
@@ -1600,6 +1599,7 @@ class PrincessParser(Parser):
         self._expr_3_()
         self.name_last_node('left')
         self._token('and')
+        self._n__()
         self._cut()
         self._expr_4_()
         self.name_last_node('right')
@@ -1614,6 +1614,7 @@ class PrincessParser(Parser):
         self._expr_2_()
         self.name_last_node('left')
         self._token('or')
+        self._n__()
         self._cut()
         self._expr_3_()
         self.name_last_node('right')
