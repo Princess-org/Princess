@@ -190,8 +190,13 @@ class CCodeGen(CodeGenerator):
         template = "{left::, :} = {right::, :}"
     class TypeDecl(Renderer):
         def _render_fields(self, fields):
-            fields.update(typestring = 
-                fields["type"].to_typestring(fields["typename"], named = False))
+            tpe = fields["type"]
+            if fields["forward_declare"]:
+                fields.update(typestring =
+                    tpe.to_typestring(fields["typename"], named = True, recursive = True))
+            else:
+                fields.update(typestring = 
+                    tpe.to_typestring(fields["typename"], named = False))
         template = "typedef {typestring}"
 
     class Compare(Renderer):

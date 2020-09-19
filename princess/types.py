@@ -15,8 +15,17 @@ def is_array(t):
 def is_string(t):
     return (is_array(t) and t.type is char) or (is_pointer(t) and t.type is char) or t is string
 
+def is_struct_or_union(t):
+    return is_struct(t) or is_union(t)
+
 def is_struct(t):
-    return isinstance(t, (Struct, Union))
+    return isinstance(t, Struct)
+
+def is_union(t):
+    return isinstance(t, Union)
+
+def is_enum(t):
+    return isinstance(t, Enum)
 
 class Type:
     def __init__(self, c_type, name = None):
@@ -37,10 +46,12 @@ class Type:
         if named and self.name:
             res = self.name
             if recursive: 
-                if isinstance(self, Struct):
+                if is_struct(self):
                     res = "struct " + res
-                elif isinstance(self, Union):
+                elif is_union(self):
                     res = "union " + res
+                elif is_enum(self):
+                    res = "enum " + res
             if identifier:
                 res = res + " " + identifier
         else:
@@ -57,6 +68,17 @@ class Type:
 
     def __str__(self):
         return self.to_typestring("")
+
+class TypeWrapper(Type):
+    def __init__(self, name = None):
+        self._base_type = None
+        super().__init__(None, name = name)
+
+    def set_base_type(self, tpe):
+        self._base_type = tpe
+        self.__class__ = type(tpe.__class__.__name__,
+            (self.__class__, tpe.__class__), {})
+        self.__dict__ = tpe.__dict__
 
 class PointerT(Type):
     def __init__(self, tpe, name = None):

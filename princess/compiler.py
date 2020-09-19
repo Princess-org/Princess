@@ -427,7 +427,7 @@ class Compiler(AstWalker):
         tpe_l = node.left.type
 
         node.right.name = node.right.ast[-1]
-        if types.is_struct(tpe_l):
+        if types.is_struct_or_union(tpe_l):
             node.type = dict(tpe_l.fields)[node.right.name]
         #elif types.is_function(tpe_r):
         #    error("Universal call syntax not implemented")
@@ -458,7 +458,7 @@ class Compiler(AstWalker):
             assert_error(value.modifier is Modifier.Var, "Can't assign let or const")
         
         tpe = left.type
-        if  types.is_struct(tpe) and isinstance(node.right[0], model.StructInit):
+        if types.is_struct_or_union(tpe) and isinstance(node.right[0], model.StructInit):
             right.type = tpe
         
         self.walk_child(node, node.right)
@@ -618,64 +618,89 @@ class Compiler(AstWalker):
 
     def walk_TypeDecl(self, node: model.TypeDecl):
         self.walk_children(node)
-        assert_error(len(node.name) == len(node.value) == 1,
+        assert_error(1 == len(node.name) >= len(node.value or []),
             "Parallel type assignments not implemented")
 
-        val = node.value[0]
+        val = node.value[0] if node.value else None
         name = node.name[0].ast[-1]
         if hasattr(node, "typename"):
             typename = node.typename
         else:
             typename = self.prefix_name(node.share, name)
-        
-        if isinstance(val, model.TEnum):
-            tpe = self.scope.type_lookup(val.type) or types.int
-            ns = self.scope.enter_namespace(name, share = node.share)
 
-            value = -1
-            for nme in val.body.ast:
-                if nme.value:
-                    value = nme.value.ast
-                else:
-                    value += 1
+        if val:
+            node.forward_declare = False
+
+            if name in self.scope.dict:
+                tpe = self.scope.dict[name].value
+                typename = tpe.name
+                if isinstance(tpe, types.TypeWrapper):
+                    tpe2 = self.scope.type_lookup(val)
+                    tpe2.name = typename
+                    assert_error(types.is_struct_or_union(tpe2), 
+                        "Can only forward declare structs or unions")
+                    tpe.set_base_type(tpe2)
+                else: error("Redeclaration of %s" % name)
                 
-                name = nme.name.name
-                identifier = typename + "_" + name
-                nme.name.identifier = identifier
-                ns.create_variable(
-                    modifier = Modifier.Let, name = name, tpe = tpe, 
-                    value = value, identifier = identifier)
+                node.type = tpe2
+                node.typename = typename
 
-            enum_type = self.scope.type_lookup(val)
-            ns.value = Value(Modifier.Type, name, None, node.share, typename, enum_type)
-            
-            node.type = enum_type
-            node.typename = typename
+            elif isinstance(val, model.TEnum):
+                tpe = self.scope.type_lookup(val.type) or types.int
+                ns = self.scope.enter_namespace(name, share = node.share)
+
+                value = -1
+                for nme in val.body.ast:
+                    if nme.value:
+                        value = nme.value.ast
+                    else:
+                        value += 1
+                    
+                    name = nme.name.name
+                    identifier = typename + "_" + name
+                    nme.name.identifier = identifier
+                    ns.create_variable(
+                        modifier = Modifier.Let, name = name, tpe = tpe, 
+                        value = value, identifier = identifier)
+
+                enum_type = self.scope.type_lookup(val)
+                ns.value = Value(Modifier.Type, name, None, node.share, typename, enum_type)
+                
+                node.type = enum_type
+                node.typename = typename
+            else:
+                # Create dummy for self reference
+                tpe = types.Type(c_type = None, name = typename)
+                self.scope.create_type(name, tpe, share = node.share, identifier = typename)
+
+                tpe2 = self.scope.type_lookup(val)
+                tpe2.name = typename
+
+                def resolve_types(tpe2):
+                    if types.is_struct_or_union(tpe2):
+                        for i in range(len(tpe2.fields)):
+                            k, v = tpe2.fields[i]
+                            if types.is_struct_or_union(v):
+                                resolve_types(v)
+                            elif types.is_pointer(v) and v.type == tpe:
+                                v = types.PointerT(tpe2)
+                            tpe2.fields[i] = (k, v)
+
+                resolve_types(tpe2)  
+
+                node.type = tpe2
+                node.typename = typename
+
+                del self.scope.dict[name] # Remove dummy again
+                self.scope.create_type(name, tpe2, share = node.share, identifier = typename)
         else:
-            # Create dummy for self reference
-            tpe = types.void_p
+            node.forward_declare = True
+
+            tpe = types.TypeWrapper(name = typename)
             self.scope.create_type(name, tpe, share = node.share, identifier = typename)
 
-            tpe2 = self.scope.type_lookup(val)
-            tpe2.name = typename
-
-            def resolve_types(tpe2):
-                if types.is_struct(tpe2):
-                    for i in range(len(tpe2.fields)):
-                        k, v = tpe2.fields[i]
-                        if types.is_struct(v):
-                            resolve_types(v)
-                        elif types.is_pointer(v) and v.type == tpe:
-                            v = types.PointerT(tpe2)
-                        tpe2.fields[i] = (k, v)
-
-            resolve_types(tpe2)  
-
-            node.type = tpe2
+            node.type = tpe
             node.typename = typename
-
-            del self.scope.dict[name] # Remove dummy again
-            self.scope.create_type(name, node.type, share = node.share, identifier = typename)
 
         return node
 
@@ -696,7 +721,7 @@ class Compiler(AstWalker):
         elif id_decl.type:
             tpe = self.scope.type_lookup(id_decl.type)
 
-            if (len(node.right) == 1 and types.is_struct(tpe) 
+            if (len(node.right) == 1 and types.is_struct_or_union(tpe) 
                 and isinstance(node.right[0], model.StructInit)):
                 node.right[0].type = tpe
             self.walk_child(node, node.right)

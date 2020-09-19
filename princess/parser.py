@@ -18,6 +18,7 @@ import sys
 from tatsu.buffering import Buffer
 from tatsu.parsing import Parser
 from tatsu.parsing import tatsumasu, leftrec, nomemo
+from tatsu.parsing import leftrec, nomemo  # noqa
 from tatsu.util import re, generic_main  # noqa
 
 
@@ -2156,17 +2157,17 @@ class PrincessParser(Parser):
             self._stmt_typedecl_lhs_()
         self._positive_gather(block2, sep2)
         self.name_last_node('name')
-        self._n__()
-        self._token('=')
-        self._n__()
+        with self._optional():
+            self._token('=')
+            self._n__()
 
-        def sep4():
-            self._token(',')
+            def sep4():
+                self._token(',')
 
-        def block4():
-            self._stmt_typedecl_rhs_()
-        self._positive_gather(block4, sep4)
-        self.name_last_node('value')
+            def block4():
+                self._stmt_typedecl_rhs_()
+            self._positive_gather(block4, sep4)
+            self.name_last_node('value')
         self.ast._define(
             ['name', 'share', 'value'],
             []

@@ -1,4 +1,4 @@
-from tests import eval_expr, eval, skip
+from tests import eval_expr, eval, skip, parse
 
 def test_struct_basic():
     prog = """\
@@ -142,6 +142,22 @@ def test_struct_reassignment():
         return t.v
     """
     assert eval(prog) == 5
+
+def test_struct_forward_declare():
+    prog = """\
+        type T
+
+        var foo: *T = null
+
+        type T = struct {
+            a: int
+            b: int
+        }
+
+        foo = *({ 1, 2 } !T)
+        return (@foo).a, (@foo).b
+    """
+    assert eval(prog) == (1, 2)
 
 def test_union():
     prog = """\
