@@ -29,8 +29,8 @@ class Modifier(str, Enum):
     Type = "type"
 
 unsigned_t = set([types.char, types.uint8, types.uint16, 
-    types.uint32, types.uint64, types.size_t, types.ushort, types.uint, types.ulong, types.char])
-signed_t = set([types.int8, types.int16, types.int32, types.int64, types.short, types.int, types.long])
+    types.uint32, types.uint64, types.size_t, types.ushort, types.uint, types.ulong])
+signed_t = set([types.int8, types.int16, types.int32, types.int64, types.short, types.int, types.long, types.char])
 float_t = set([types.double, types.float, types.float64, types.float32])
 int_t = unsigned_t | signed_t
 
