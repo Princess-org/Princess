@@ -111,7 +111,7 @@ def test_struct_recursive():
         }
 
         def make_List() -> List {
-            return {0, null}!List
+            return {0, null} !List
         }
 
         def insert(list: *List, e: int) {
@@ -133,6 +133,25 @@ def test_struct_recursive():
         return (@(list.next)).element
     """
     assert eval(prog) == 10
+
+def test_struct_recursive_2():
+    prog = """\
+        type Node
+
+        type NodeBinaryOp = struct {
+            left: *Node
+            right: *Node
+        }
+
+        type NodeValue = struct #union {
+            bin_op: NodeBinaryOp
+        }
+
+        type Node = struct {
+            value: NodeValue
+        }
+    """
+    eval(prog)
 
 def test_struct_reassignment():
     prog = """\

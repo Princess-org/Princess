@@ -29,9 +29,9 @@ class Modifier(str, Enum):
     Type = "type"
 
 unsigned_t = set([types.char, types.uint8, types.uint16, 
-    types.uint32, types.uint64, types.size_t])
-signed_t = set([types.int8, types.int16, types.int32, types.int64])
-float_t = set([types.double, types.float])
+    types.uint32, types.uint64, types.size_t, types.ushort, types.uint, types.ulong, types.char])
+signed_t = set([types.int8, types.int16, types.int32, types.int64, types.short, types.int, types.long])
+float_t = set([types.double, types.float, types.float64, types.float32])
 int_t = unsigned_t | signed_t
 
 def to_signed(t):
@@ -39,7 +39,12 @@ def to_signed(t):
         return {types.uint8: types.int8, 
             types.uint16: types.int16, 
             types.uint32: types.int32, 
-            types.uint64: types.int64}[t]
+            types.uint64: types.int64,
+            types.size_t: types.int64,
+            types.ubyte: types.byte,
+            types.uint: types.int,
+            types.ushort: types.short,
+            types.ulong: types.long}[t]
     return t
 
 def cast_to(a, node, b):

@@ -43,20 +43,30 @@ def to_c_format_specifier(tpe):
         if tpe.type is types.char:
             return "%s"
         else: return "%p"
+    elif types.is_enum(tpe):
+        return "%d"
     else:
         try:
             return {
                 types.size_t: "%zu",
                 types.byte: "%hhd",
+                types.int8: "%hhd",
                 types.ubyte: "%hhu",
+                types.uint8: "%hhu",
                 types.char: "%c",
                 types.short: "%hd",
+                types.int16: "%hd",
                 types.ushort: "%hu",
+                types.uint16: "%hu",
                 types.bool: "%d",
                 types.int: "%d",
+                types.int32: "%d",
                 types.uint: "%u",
+                types.uint32: "%u",
                 types.long: "%ld",
+                types.int64: "%ld",
                 types.ulong: "%lu",
+                types.uint64: "%lu",
                 types.float: "%f",
                 types.double: "%f"
             }[tpe]

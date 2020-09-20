@@ -59,11 +59,11 @@ class Type:
         return res
 
     def __hash__(self):
-        return hash(self.c_type)
+        return id(self.c_type)
     
     def __eq__(self, value):
         if is_type(value):
-            return self.c_type == value.c_type
+            return id(self) == id(value)
         return False
 
     def __str__(self):
@@ -175,7 +175,8 @@ class Enum(Type):
         return self.type.c_type
 
     def _to_typestring(self, identifier, recursive = False):
-        return ("enum {" + ", ".join(
+        name = self.name or ""
+        return ("enum " + name + " {" + ", ".join(
             f[0] + " = " + str(f[1]) for f in self.fields
         ) + "} " + identifier)
     
