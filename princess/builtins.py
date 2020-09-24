@@ -82,6 +82,14 @@ def _print(function, node, compiler: Compiler):
     node.left = ast.Identifier("printf")
     return node
 
+def _error(function, node, compiler: Compiler):
+    node.args[:] = [ast.CallArg(value = ast.Identifier("stderr")), ast.CallArg(value = ast.String("".join(to_c_format_specifier(
+        compiler.scope.type_lookup(a.value.type)) for a in node.args)))] + node.args
+
+    node.left = ast.Identifier("fprintf")
+    return node
+
+
 def _concat(function, node, compiler: Compiler):
     node.args[:] = [node.args[0]] + [ast.CallArg(value = ast.String("".join(to_c_format_specifier(
         compiler.scope.type_lookup(a.value.type)) for a in node.args[1:])))] + node.args[1:]
@@ -183,6 +191,7 @@ compiler.builtins.create_function("allocate", types.FunctionT(c = True, macro = 
 compiler.builtins.create_function("reallocate", types.FunctionT(c = True, return_t = (types.void_p,), parameter_t = (types.void_p, types.size_t), macro = _reallocate))
 compiler.builtins.create_function("free", types.FunctionT(c = True, parameter_t = (types.void_p,)))
 compiler.builtins.create_function("print", types.FunctionT(c = True, return_t = (types.int,), macro = _print))
+compiler.builtins.create_function("error", types.FunctionT(c = True, return_t = (types.int,), macro = _error))
 compiler.builtins.create_function("concat", types.FunctionT(c = True, return_t = (types.int,), macro = _concat))
 compiler.builtins.create_function("open", types.FunctionT(c = True, return_t = (types.FILE_T,), parameter_t = (types.string, types.string), macro = _open))
 compiler.builtins.create_function("close", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.FILE_T,), macro = _close))

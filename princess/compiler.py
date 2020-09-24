@@ -136,7 +136,7 @@ class Scope:
             if isinstance(value.value, Scope):
                 value = value.value.value
         except KeyError:
-            error("Unknown identifier", v)
+            error("Unknown identifier \"%s\"" % v.name, v)
 
         assert (value.modifier == Modifier.Const 
             or value.modifier == Modifier.Type)
