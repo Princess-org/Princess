@@ -367,7 +367,7 @@ class Compiler(AstWalker):
         tpe = node.value.type
         assert_error(tpe in int_t or tpe is types.char, "Switch statement on %s not implemented" % tpe)
         return node
-
+    
     def walk_For(self, node: model.For):
         self.walk_child(node, node.iterator)
         in_stmt = node.iterator
@@ -467,6 +467,7 @@ class Compiler(AstWalker):
             right.type = tpe
         
         self.walk_child(node, node.right)
+        right = node.right[0]
 
         tpe2 = right.type
         if types.is_array(tpe) and types.is_array(tpe2) and tpe.n == tpe2.n != None and hasattr(node, "first_assign"):
