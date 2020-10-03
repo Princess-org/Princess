@@ -1,4 +1,5 @@
 import lexer
+import vector
 
 export type NodeKind = enum {
     ERROR
@@ -40,16 +41,16 @@ export type VarDecl = enum {
 
 export type Node
 
-export type NodeList = struct {
-    value: *Node 
-    next: *NodeList
+export type NodeIdDecl = struct {
+    value: *Node
+    tpe: *Node
 }
 
 export type NodeVarDecl = struct {
     share: ShareMarker
     kw: VarDecl
-    left: *NodeList
-    right: *NodeList
+    left: *vector::Vector
+    right: *vector::Vector
 }
 
 export type NodeBinaryOp = struct {
@@ -65,7 +66,9 @@ export type NodeValue = struct #union {
     bin_op: NodeBinaryOp
     un_op: NodeUnaryOp
     var_decl: NodeVarDecl
-    body: *NodeList
+    id_decl: NodeIdDecl
+
+    body: *vector::Vector
     expr: *Node
     i: uint64
     str: string
@@ -130,16 +133,16 @@ def skip_whitespace(state: *ParseState) {
 }
 
 def pop(state: *ParseState) -> lexer::Token {
-    let list = (@state).tokens
     skip_whitespace(state)
+    let list = (@state).tokens
     let token = (@@list).value
     @list = (@@list).next
     return token
 }
 
 def peek(state: *ParseState) -> lexer::Token {
-    let list = (@state).tokens
     skip_whitespace(state)
+    let list = (@state).tokens
     return (@@list).value
 }
 
@@ -160,7 +163,6 @@ def expect(state: *ParseState, tpe: lexer::TokenType, msg: string) {
 
 def skip_newline(state: *ParseState) {
     loop {
-        skip_whitespace(state)
         let token = peek(state)
         if token.tpe == lexer::TokenType::NEW_LINE {
             pop(state)
@@ -179,6 +181,23 @@ def next_token(state: *ParseState, tpe: lexer::TokenType) -> bool {
     return false
 }
 
+def parse_identifier(parse_state: *ParseState) -> *Node {
+    // TODO Handle identifiers with double colons
+    let token = pop(parse_state)
+    if token.tpe != lexer::TokenType::IDENTIFIER {
+        errort(token, parse_state, "Expected identifier\n")
+        return null
+    }
+
+    var node = allocate(Node)
+    (@node).kind = NodeKind::IDENTIFIER
+    (@node).value.str = token.value.str
+    (@node).line = token.line
+    (@node).column = token.column
+
+    return node
+}
+
 def parse_term(parse_state: *ParseState) -> *Node {
     let token = pop(parse_state)
     var node = allocate(Node)
@@ -190,10 +209,10 @@ def parse_term(parse_state: *ParseState) -> *Node {
         (@node).kind = NodeKind::FLOAT
         (@node).value.f = token.value.f
     } else if token.tpe == lexer::TokenType::IDENTIFIER {
-        (@node).kind = NodeKind::IDENTIFIER
-        (@node).value.str = token.value.str
+        unget_token(parse_state, token)
+        return parse_identifier(parse_state)
     } else if token.tpe == lexer::TokenType::STRING {
-        (@node).kind = NodeKind::STRING
+        (@node).kind = NodeKind::IDENTIFIER
         (@node).value.str = token.value.str
     } else if token.tpe == lexer::TokenType::CHAR {
         (@node).kind = NodeKind::CHAR
@@ -285,6 +304,10 @@ def parse_expression(parse_state: *ParseState) -> *Node {
     return node
 }
 
+def parse_type(parse_state: *ParseState) -> *Node {
+
+}
+
 def parse_def(parse_state: *ParseState, share: ShareMarker) -> *Node {
 
 }
@@ -300,21 +323,95 @@ def parse_vardecl(parse_state: *ParseState, share: ShareMarker, vardecl: VarDecl
 
         return null
     }
-    skip_whitespace(parse_state)
+    skip_newline(parse_state)
 
-    var list = allocate(NodeList)
-    let head = list
+    var vec_left = vector::make()
     loop {
-        tok = peek(parse_state)
+        tok = pop(parse_state)
         if tok.tpe == lexer::TokenType::O_PAREN {
-            pop(parse_state)
             // Assignment
             let expr = parse_expression(parse_state)
-            expect(parse_state, lexer::TokenType::C_PAREN, "Expected )\n")
+            expect(parse_state, lexer::TokenType::C_PAREN, "Expected ')'\n")
+            var node = allocate(Node)
+            (@node).kind = NodeKind::IDASSIGN
+            (@node).line = tok.line
+            (@node).column = tok.column
+            (@node).value.expr = expr
+            vector::push(vec_left, node)
         } else {
             // Id decl
+            unget_token(parse_state, tok)
+            var ident = parse_identifier(parse_state)
+
+            tok = peek(parse_state)
+            var tpe: *Node = null
+            if tok.tpe == lexer::TokenType::COLON {
+                // Type
+                pop(parse_state)
+                tpe = parse_type(parse_state)
+            }
+            var node = allocate(Node)
+            (@node).kind = NodeKind::IDDECL
+            (@node).line = tok.line
+            (@node).column = tok.column
+            (@node).value.id_decl = {
+                value = ident,
+                tpe = tpe
+            } !NodeIdDecl
+            vector::push(vec_left, node)
+        }
+        tok = pop(parse_state)
+        if tok.tpe == lexer::TokenType::COMMA {
+            skip_newline(parse_state)
+            continue
+        } else if tok.tpe == lexer::TokenType::OP_ASSIGN or
+            tok.tpe == lexer::TokenType::NEW_LINE or
+            tok.tpe == lexer::TokenType::EOF {
+            break
+        } else {
+            errort(tok, parse_state, "Expected identifier, (expression) or '='\n")
+            return null
         }
     }
+
+    skip_newline(parse_state)
+
+    var vec_right = vector::make()
+    if tok.tpe == lexer::TokenType::OP_ASSIGN {
+        loop {
+            var expr = parse_expression(parse_state)
+            vector::push(vec_right, expr)
+            
+            tok = pop(parse_state)
+            if tok.tpe == lexer::TokenType::COMMA {
+                skip_newline(parse_state)
+                continue
+            } else if tok.tpe == lexer::TokenType::NEW_LINE or
+                tok.tpe == lexer::TokenType::EOF {
+                break
+            }
+        }
+        //if vector::length(vec_left) != vector::length(vec_right) {
+        //    errort(tok, parse_state, "Unbalanced assignment\n")
+        //}
+    } else if vardecl == VarDecl::LET or
+        vardecl == VarDecl::CONST {
+        errort(tok, parse_state, "Expected '='\n")
+        return null
+    }
+
+    var node = allocate(Node)
+    (@node).kind = NodeKind::VARDECL
+    (@node).line = line
+    (@node).column = column
+    (@node).value.var_decl = {
+        share = share,
+        kw = vardecl,
+        left = vec_left,
+        right = vec_right
+    } !NodeVarDecl
+
+    return node
 }
 
 def parse_typedecl(parse_state: *ParseState, share: ShareMarker) -> *Node {
@@ -396,10 +493,10 @@ export def parse(list: *lexer::TokenList, lines: [string]) -> *Node {
     parse_state.lines = lines
     parse_state.tokens = *list
     
-    var node_list = allocate(NodeList)
-    var head = node_list
+    var vec = vector::make()
 
-    while list != null and (@list).value.tpe != lexer::TokenType::EOF {
+    while list != null and peek(*parse_state).tpe != lexer::TokenType::EOF {
+        skip_newline(*parse_state)
         let node = parse_statement(*parse_state)
         if not node {
             // We encountered an error, skip to the next new line
@@ -410,21 +507,15 @@ export def parse(list: *lexer::TokenList, lines: [string]) -> *Node {
             }
             skip_newline(*parse_state)
         } else {
-            (@node_list).value = node
-            (@node_list).next = allocate(NodeList)
-            node_list = (@node_list).next
+            vector::push(vec, node)
         }
     }
-
-    // Remove last item
-    free((@node_list).next)
-    (@node_list).next = null
 
     let program_node = allocate(Node)
     (@program_node).kind = NodeKind::PROGRAM
     (@program_node).line = 0
     (@program_node).column = 0
-    (@program_node).value.body = head
+    (@program_node).value.body = vec
 
     return program_node
 }

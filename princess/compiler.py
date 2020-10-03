@@ -445,7 +445,7 @@ class Compiler(AstWalker):
             else:
                 error("Illegal access")
         else:
-            error("Member access on incompatible type")
+            error("Member access on incompatible type", node)
         
         return node
     
