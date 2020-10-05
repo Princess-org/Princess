@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <assert.h>
+#include <signal.h>
 
 #if !defined(_WIN32)
 extern FILE *stdout;

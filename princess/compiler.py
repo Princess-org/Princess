@@ -54,7 +54,7 @@ def cast_to(a, node, b):
     
     return ast.Cast(left = node, type = b)
 
-def common_type(a, b, sign_convert = False):
+def common_type(a, b, sign_convert = False, node = None):
     """ Finds the common type of a and b, implicit up conversion """
     if a == b: return a
     elif a in int_t and b in int_t:
@@ -70,7 +70,7 @@ def common_type(a, b, sign_convert = False):
     elif a in int_t and b in float_t:
         result = b
     else: # Sanity check TODO: Raise proper exception
-        error("Incompatible types %s %s" % (a, b))
+        error("Incompatible types %s %s" % (a, b), node = node)
 
     return result
 
@@ -508,7 +508,7 @@ class Compiler(AstWalker):
         self.walk_children(node)
 
         tpe = node.right.type
-        assert_error(types.is_pointer(tpe), "Must be a pointer type")
+        assert_error(types.is_pointer(tpe), "Must be a pointer type", node = node)
 
         node.type = tpe.type
         return node
@@ -574,7 +574,7 @@ class Compiler(AstWalker):
         elif isinstance(node, (model.BAnd, model.BOr, model.Xor)):
             # Bitwise, only works on ints
             assert_error(l in int_t and r in int_t, "Illegal argument %s %s" % (l, r))
-            node.type = common_type(l, r, sign_convert = False)
+            node.type = common_type(l, r, sign_convert = False, node = node)
         elif isinstance(node, (model.PAdd, model.PSub)):
             # TODO pointer - pointer
             assert_error((types.is_pointer(l) or l is types.string or l is types.void_p) 
@@ -587,7 +587,7 @@ class Compiler(AstWalker):
             node.type = types.bool
         else:
             # Arithmetic
-            node.type = common_type(l, r, sign_convert = True)
+            node.type = common_type(l, r, sign_convert = True, node = node)
 
         node.left = cast_to(l, node.left, node.type)
         node.right = cast_to(r, node.right, node.type)
