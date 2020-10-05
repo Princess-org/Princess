@@ -13,7 +13,7 @@ def is_array(t):
     return isinstance(t, ArrayT)
 
 def is_string(t):
-    return (is_array(t) and t.type is char) or (is_pointer(t) and t.type is char) or t is string
+    return (is_array(t) and t.type == char) or (is_pointer(t) and t.type == char) or t is string
 
 def is_struct_or_union(t):
     return is_struct(t) or is_union(t)
@@ -59,11 +59,11 @@ class Type:
         return res
 
     def __hash__(self):
-        return id(self.c_type)
+        return hash(self.name)
     
     def __eq__(self, value):
         if is_type(value):
-            return id(self) == id(value)
+            return self.name == value.name
         return False
 
     def __str__(self):
@@ -78,7 +78,10 @@ class TypeWrapper(Type):
         self._base_type = tpe
         self.__class__ = type(tpe.__class__.__name__,
             (self.__class__, tpe.__class__), {})
-        self.__dict__ = tpe.__dict__
+        self.__dict__.update(tpe.__dict__)
+
+    def __reduce__(self):
+        return self._base_type.__reduce__()
 
 class PointerT(Type):
     def __init__(self, tpe, name = None):
@@ -229,4 +232,4 @@ long = Type(ctypes.c_long, "long")
 ulong = Type(ctypes.c_ulong, "ulong")
 float = Type(ctypes.c_float, "float")
 double = Type(ctypes.c_double, "double")
-string = ArrayT(char)
+string = ArrayT(char, name = "string")

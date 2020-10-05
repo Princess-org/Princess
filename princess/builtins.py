@@ -1,3 +1,4 @@
+from princess.model import PrincessModelBuilderSemantics
 from princess.compiler import int_t, assert_error, Modifier, Compiler, error
 from princess import types, ast, compiler
 
@@ -71,7 +72,7 @@ def to_c_format_specifier(tpe):
                 types.double: "%f"
             }[tpe]
         except KeyError:
-            error("Wrong type")
+            error("Wrong type %s" % tpe.name)
 
 # TODO Do proper paremeter and return types
 

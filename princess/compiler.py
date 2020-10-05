@@ -1,5 +1,6 @@
-import subprocess, sys, os, uuid
+import subprocess, sys, os, uuid, pickle
 import ctypes, copy
+from datetime import datetime
 from pathlib import Path
 from enum import Enum
 from ctypes import cdll
@@ -90,6 +91,7 @@ class Scope:
         self.value = None
         self.parent = parent
         self.dict = {}
+        self.imports = []
 
     def __contains__(self, identifier):
         try:
@@ -351,6 +353,7 @@ class Compiler(AstWalker):
 
         module = node.modules[0]
         name = module.name.ast[-1]
+        self.scope.imports.append(name)
         alias = (module.alias or module.name).ast[-1]
         scope = compile_module(name, self.base_path, self.include_path)
         exports = {name:var for name, var in scope.dict.items() if var.share & ast.Share.Export}
@@ -989,18 +992,36 @@ def compile_module(module, base_path, include_path):
     if module in _modules:
         return _modules[module]
 
-    # TODO Support multiple include directories
-    file_path = include_path / Path(module + ".pr")
-    with open(file_path) as fp:
-        src = fp.read()
-    p_ast = parse(src)
-    scope = Scope(builtins)
-    csrc, _ = compile(p_ast, scope, module, base_path, include_path)
-    _modules[module] = scope
-    
-    c_file_path = base_path / (file_path.stem + ".c")
-    with open(c_file_path, "w") as fp:
-        fp.write(csrc)
+    cache_file = base_path / (module + ".pc")
+    file_path = include_path / (module + ".pr")
+
+    recompile = True
+    if cache_file.exists():
+        last_compiled = datetime.fromtimestamp(os.path.getmtime(cache_file))
+        last_modified = datetime.fromtimestamp(os.path.getmtime(file_path))
+        if last_modified < last_compiled:
+            recompile = False
+
+    if recompile:
+        with open(file_path) as fp:
+            src = fp.read()
+        p_ast = parse(src)
+        scope = Scope(builtins)
+        csrc, _ = compile(p_ast, scope, module, base_path, include_path)
+        _modules[module] = scope
+        
+        c_file_path = base_path / (file_path.stem + ".c")
+        with open(c_file_path, "w") as fp:
+            fp.write(csrc)
+        
+        with open(cache_file, "wb") as fp:
+            pickle.dump(scope, fp)
+    else:
+        with open(cache_file, "rb") as fp:
+            scope = pickle.load(fp)
+        _modules[module] = scope
+        for module in scope.imports:
+            compile_module(module, base_path, include_path)
     
     return scope
 
