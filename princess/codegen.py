@@ -289,12 +289,10 @@ class CCodeGen(CodeGenerator):
                 fields.update(dllexport = "DLL_EXPORT")
             else:
                 fields.update(dllexport = "")
+            if fields["body"]:
+                return self.template + " {{\n{body:1::}\n}}"
 
-        template = """\
-            {dllexport} {return_type} {identifier}({args::, :}) {{
-            {body:1::}
-            }}\
-        """
+        template = "{dllexport} {return_type} {identifier}({args::, :})"
 
     class StructArg(Renderer):
         def _render_fields(self, fields):

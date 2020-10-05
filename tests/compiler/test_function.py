@@ -86,6 +86,21 @@ def test_function_address():
 
     assert eval(prog) == 2
 
+def test_forward_declare():
+    prog = """\
+        def bar -> int
+
+        def foo -> int {
+            return bar()
+        }
+        def bar -> int {
+            return 1
+        }
+        return foo()
+    """
+    
+    assert eval(prog) == 1
+
 def test_cli_arguments():
     prog = """\
         return args.size, args[0], args[1]

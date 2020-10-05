@@ -215,7 +215,9 @@ class Scope:
         return self.create_variable(modifier = Modifier.Type, name = name, 
             tpe = None, share = share, value = value, identifier = identifier)
 
-    def create_function(self, name, tpe, share = ast.Share.No, identifier = None):
+    def create_function(self, name, tpe, share = ast.Share.No, identifier = None, forward_declare = False):
+        if not forward_declare and name in self.dict:
+            del self.dict[name]
         return self.create_variable(modifier = Modifier.Const, name = name, 
             tpe = tpe, share = share, identifier = identifier)
 
@@ -829,7 +831,10 @@ class Compiler(AstWalker):
         self.walk_child(node, node.args, node.returns)
 
         name = node.name.ast[-1]
-        node.identifier = self.prefix_name(node.share, name)
+        if name in self.scope.dict:
+            node.identifier = self.scope.dict[name].identifier
+        else:
+            node.identifier = self.prefix_name(node.share, name)
 
         struct_identifier = create_unique_identifier()
 
@@ -839,7 +844,7 @@ class Compiler(AstWalker):
             tuple(self.scope.type_lookup(n.type) for n in node.args or []),
             struct_identifier)
         
-        self.scope.create_function(name, function, node.share, node.identifier)
+        self.scope.create_function(name, function, node.share, node.identifier, not node.body)
 
         if node.body:
             self.enter_scope()
