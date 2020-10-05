@@ -187,7 +187,8 @@ size_t = Type(ctypes.c_size_t, "size_t")
 
 
 class FunctionT(Type):
-    def __init__(self, return_t = (void,), parameter_t = (), struct_identifier = None, macro = None, c = False, name = None):
+    def __init__(self, return_t = (void,), parameter_t = (), struct_identifier = None, fun_name = None, macro = None, c = False, name = None):
+        self.fun_name = fun_name
         self.return_t = return_t
         self.parameter_t = parameter_t
         self.macro = macro

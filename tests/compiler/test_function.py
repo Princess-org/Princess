@@ -35,11 +35,11 @@ def test_array_passing():
     prog = """\
         let array = [1, 2, 3, 4]
 
-        def first(a: [4 int]) {
+        def first(a: [4 int]) -> int {
             return a[0]
         }
 
-        def second(a: [int]) {
+        def second(a: [int]) -> int {
             return a[1]
         }
 
@@ -63,7 +63,7 @@ def test_recursion():
 
 def test_nested_function():
     prog = """\
-        def foo {
+        def foo -> int {
             let a = 1
             def bar -> int {
                 return a

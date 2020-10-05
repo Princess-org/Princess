@@ -104,7 +104,7 @@ def test_export():
     prog = """\
         export var a = 20
         export var b = 21
-        export def test() {
+        export def test -> int {
             return a
         }
         return test()

@@ -804,8 +804,9 @@ class Compiler(AstWalker):
         self.walk_children(node)
 
         function = self.current_function
-        function.return_t = tuple(self.scope.type_lookup(n.type) for n in node.ast)
-        function.return_t = function.return_t or (types.void, )
+        if function.fun_name == "p_main":
+            function.return_t = tuple(self.scope.type_lookup(n.type) for n in node.ast)
+            function.return_t = function.return_t or (types.void, )
 
         if len(function.return_t) > 1:
             node.struct_identifier = function.struct_identifier
@@ -842,7 +843,7 @@ class Compiler(AstWalker):
             tuple(self.scope.type_lookup(n) for n in node.returns) 
                 if node.returns else (types.void,), 
             tuple(self.scope.type_lookup(n.type) for n in node.args or []),
-            struct_identifier)
+            struct_identifier, name)
         
         self.scope.create_function(name, function, node.share, node.identifier, not node.body)
 
@@ -881,7 +882,9 @@ class Compiler(AstWalker):
         else:
             node.return_type = function.return_t[0]
             node.type = self.scope.type_lookup(node.return_type)
-    
+            
+            #print("Function:", name, "returns:", node.return_type)
+
             return node
 
     def walk_Program(self, node: model.Program):
