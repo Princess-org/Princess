@@ -230,7 +230,7 @@ class CCodeGen(CodeGenerator):
 
     class Case(Renderer):
         def _render_fields(self, fields):
-            if "value" not in fields:
+            if not fields["value"]:
                 return """\
                     break;
                     default:

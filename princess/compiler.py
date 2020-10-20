@@ -364,7 +364,8 @@ class Compiler(AstWalker):
 
     def walk_Case(self, node: model.Case):
         self.walk_children(node)
-        assert_error(len(node.value) == 1, "Switch statement with multiple values not implemented")
+        if node.value:
+            assert_error(len(node.value) == 1, "Switch statement with multiple values not implemented")
         return node
 
     def walk_Switch(self, node: model.Switch):
