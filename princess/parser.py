@@ -18,6 +18,7 @@ import sys
 from tatsu.buffering import Buffer
 from tatsu.parsing import Parser
 from tatsu.parsing import tatsumasu, leftrec, nomemo
+from tatsu.parsing import leftrec, nomemo  # noqa
 from tatsu.util import re, generic_main  # noqa
 
 
@@ -223,6 +224,8 @@ class PrincessParser(Parser):
                             with self._option():
                                 with self._group():
                                     self._token('.')
+                                    with self._ifnot():
+                                        self._token('.')
                                     self._cut()
                                     with self._group():
                                         with self._choice():
@@ -249,6 +252,8 @@ class PrincessParser(Parser):
                     self._constant('0')
                     self.name_last_node('num')
                     self._token('.')
+                    with self._ifnot():
+                        self._token('.')
                     self._cut()
 
                     def block11():
@@ -1214,6 +1219,8 @@ class PrincessParser(Parser):
         self._expr_10_()
         self.name_last_node('left')
         self._token('.')
+        with self._ifnot():
+            self._token('.')
         self._value_()
         self.name_last_node('right')
         self.ast._define(
@@ -1656,13 +1663,13 @@ class PrincessParser(Parser):
     @tatsumasu('AssignAndOp')
     @nomemo
     def _expr_assign_op_(self):  # noqa
-        self._expr_2_()
+        self._expr_1_()
         self.name_last_node('left')
         self._assign_op_()
         self.name_last_node('op')
         self._n__()
         self._cut()
-        self._expr_1_()
+        self._expr_0_()
         self.name_last_node('right')
         self.ast._define(
             ['left', 'op', 'right'],
@@ -1681,7 +1688,7 @@ class PrincessParser(Parser):
                 with self._option():
                     self._struct_lit_typed_()
                 with self._option():
-                    self._expr_1_()
+                    self._expr_0_()
                 self._error('no available options')
         self.name_last_node('@')
 
@@ -1713,19 +1720,19 @@ class PrincessParser(Parser):
 
     @tatsumasu('IfExpr')
     def _expr_if_(self):  # noqa
-        self._expr_2_()
+        self._expr_1_()
         self.name_last_node('if_true')
         with self._group():
             self._token('if')
         self._n__()
         self._cut()
-        self._expr_1_()
+        self._expr_0_()
         self.name_last_node('cond')
         self._n__()
         with self._group():
             self._token('else')
         self._n__()
-        self._expr_1_()
+        self._expr_0_()
         self.name_last_node('if_false')
         self.ast._define(
             ['cond', 'if_false', 'if_true'],
@@ -1749,43 +1756,32 @@ class PrincessParser(Parser):
         self.name_last_node('@')
 
     @tatsumasu('Range')
-    @nomemo
     def _expr_range_(self):  # noqa
         with self._optional():
-            self._expr_1_()
+            self._expr_2_()
             self.name_last_node('from_')
-        self._token(':')
+        self._token('..')
         with self._optional():
             self._n__()
-            self._expr_1_()
+            self._expr_2_()
             self.name_last_node('to')
-            with self._optional():
-                self._token(':')
-                self._n__()
-                self._expr_1_()
-                self.name_last_node('step')
         self.ast._define(
-            ['from_', 'step', 'to'],
+            ['from_', 'to'],
             []
         )
 
-    @tatsumasu('Range')
-    def _expr_rangec_(self):  # noqa
+    @tatsumasu('RangeIncl')
+    @nomemo
+    def _expr_range_incl_(self):  # noqa
         with self._optional():
-            self._expr_1c_()
+            self._expr_2_()
             self.name_last_node('from_')
-        self._token(':')
-        with self._optional():
-            self._n__()
-            self._expr_1c_()
-            self.name_last_node('to')
-            with self._optional():
-                self._token(':')
-                self._n__()
-                self._expr_1c_()
-                self.name_last_node('step')
+        self._token('..=')
+        self._n__()
+        self._expr_2_()
+        self.name_last_node('to')
         self.ast._define(
-            ['from_', 'step', 'to'],
+            ['from_', 'to'],
             []
         )
 
@@ -1939,6 +1935,18 @@ class PrincessParser(Parser):
     def _expr_1_(self):  # noqa
         with self._choice():
             with self._option():
+                self._expr_range_incl_()
+            with self._option():
+                self._expr_range_()
+            with self._option():
+                self._expr_2_()
+            self._error('no available options')
+
+    @tatsumasu()
+    @nomemo
+    def _expr_0_(self):  # noqa
+        with self._choice():
+            with self._option():
                 self._expr_do_()
             with self._option():
                 self._expr_size_of_()
@@ -1949,16 +1957,6 @@ class PrincessParser(Parser):
             with self._option():
                 self._expr_if_()
             with self._option():
-                self._expr_2_()
-            self._error('no available options')
-
-    @tatsumasu()
-    @nomemo
-    def _expr_0_(self):  # noqa
-        with self._choice():
-            with self._option():
-                self._expr_range_()
-            with self._option():
                 self._expr_1_()
             self._error('no available options')
 
@@ -1968,7 +1966,7 @@ class PrincessParser(Parser):
         self._expr_0_()
 
     @tatsumasu()
-    def _expr_1c_(self):  # noqa
+    def _expression_no_assign_(self):  # noqa
         with self._choice():
             with self._option():
                 self._expr_do_()
@@ -1978,15 +1976,6 @@ class PrincessParser(Parser):
                 self._expr_if_()
             with self._option():
                 self._expr_2_()
-            self._error('no available options')
-
-    @tatsumasu()
-    def _expression_no_assign_(self):  # noqa
-        with self._choice():
-            with self._option():
-                self._expr_rangec_()
-            with self._option():
-                self._expr_1c_()
             self._error('no available options')
 
     @tatsumasu()
@@ -3026,7 +3015,7 @@ class PrincessSemantics(object):
     def expr_range(self, ast):  # noqa
         return ast
 
-    def expr_rangec(self, ast):  # noqa
+    def expr_range_incl(self, ast):  # noqa
         return ast
 
     def expr_11(self, ast):  # noqa
@@ -3066,9 +3055,6 @@ class PrincessSemantics(object):
         return ast
 
     def expression(self, ast):  # noqa
-        return ast
-
-    def expr_1c(self, ast):  # noqa
         return ast
 
     def expression_no_assign(self, ast):  # noqa

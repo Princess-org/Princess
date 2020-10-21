@@ -186,7 +186,7 @@ def test_while():
 def test_for_simple():
     assert parse ("""\
         var i = 0
-        for i in 1:20 { 
+        for i in 1..20 { 
             /* in line /* comment */*/
             print("Hello World") // EOL
         }

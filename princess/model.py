@@ -353,7 +353,11 @@ class SizeOf(Expression):
 
 class Range(Expression):
     from_ = None
-    step = None
+    to = None
+
+
+class RangeIncl(Expression):
+    from_ = None
     to = None
 
 

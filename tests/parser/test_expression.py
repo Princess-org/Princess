@@ -176,19 +176,19 @@ class TestOperators:
         )
 
     def test_array_slice(self):
-        assert parse("array[:]") == Program(
+        assert parse("array[..]") == Program(
             ArrayIndex(
                 left = Identifier("array"),
                 right = Range()
             )
         )
-        assert parse("array[1:]") == Program(
+        assert parse("array[1..]") == Program(
             ArrayIndex(
                 left = Identifier("array"),
                 right = Range(from_ = Integer(1))
             )
         )
-        assert parse("array[:-2]") == Program(
+        assert parse("array[..-2]") == Program(
             ArrayIndex(
                 left = Identifier("array"),
                 right = Range(to = UMinus(right = Integer(2)))
@@ -229,7 +229,12 @@ def test_if_expression():
     assertFailedParse("foo = 10 if true") # TODO Bad error message
 
 def test_range_expression():
-    assert parse("1:2") == Program(Range(from_ = Integer(1), to = Integer(2)))
+    assert parse("1..2") == Program(Range(from_ = Integer(1), to = Integer(2)))
+    assert parse("1..") == Program(Range(from_ = Integer(1)))
+    assert parse("..2") == Program(Range(to = Integer(2)))
+    assert parse("..") == Program(Range())
+    assert parse("1..=2") == Program(RangeIncl(from_ = Integer(1), to = Integer(2)))
+    assert parse("..=2") == Program(RangeIncl(to = Integer(2)))
 
 def test_do_expression():
     assert parse("""\

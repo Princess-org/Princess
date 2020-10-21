@@ -390,12 +390,7 @@ class Compiler(AstWalker):
             )
             node.init_expr = var_decl
             node.test_expr = ast.Compare(identifier, ast.CompareOp("<"), range_.to)
-            if range_.step:
-                step = range_.step
-            elif range_.from_.ast > range_.to.ast:
-                step = ast.Integer(-1)
-            else:
-                step = ast.Integer(1)
+            step = ast.Integer(1)
             node.update_expr = ast.AssignAndOp(
                 left = identifier,
                 op = ast.AssignOp("+="),
