@@ -13,7 +13,7 @@ def test_concat_stack():
     prog = """\
         let a = "Hello"
         let b = "World"
-        var c: [12 char]
+        var c: [12; char]
         concat(c, a, " ", b)
         return c
     """
@@ -39,7 +39,7 @@ def test_file_io_binary():
 
         rewind(fp)
         
-        var c: [15 char]
+        var c: [15; char]
         read(fp, c)
         var b: int
         read(fp, *b)
@@ -57,7 +57,7 @@ def test_file_io_text():
 
         seek(fp, 0, SEEK_SET) // Same as rewind
 
-        var buffer: [20 char]
+        var buffer: [20; char]
         read_line(fp, buffer)
         var num: int
         scan(fp, *num)

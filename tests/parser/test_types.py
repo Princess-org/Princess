@@ -34,17 +34,17 @@ def test_array_simple():
     assert parse("type [int]") == parse("type [var int]") == Program(
         ArrayT(Identifier("int"))
     )
-    assert parse("type [3 let int]") == Program(
+    assert parse("type [3; let int]") == Program(
         ArrayT(n = Integer(3), keyword = "let", type = Identifier("int"))
     )
-    assert parse("type [3 [10 int]]") == Program(
+    assert parse("type [3; [10; int]]") == Program(
         ArrayT(n = Integer(3), type = ArrayT(n = Integer(10), type = Identifier("int")))
     )
 
 def test_array_expr():
     """ Tests array types that take type expressions """
     
-    assert parse("type [3*size let gen_type(int)]") == Program(
+    assert parse("type [3*size; let gen_type(int)]") == Program(
         ArrayT(
             n = ast("3 * size"),
             keyword = "let",

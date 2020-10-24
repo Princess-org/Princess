@@ -35,7 +35,7 @@ def test_array_passing():
     prog = """\
         let array = [1, 2, 3, 4]
 
-        def first(a: [4 int]) -> int {
+        def first(a: [4; int]) -> int {
             return a[0]
         }
 

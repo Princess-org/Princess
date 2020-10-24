@@ -984,6 +984,7 @@ class PrincessParser(Parser):
                     self._expression_()
                 self._error('no available options')
         self.name_last_node('n')
+        self._token(';')
         with self._group():
             with self._choice():
                 with self._option():
@@ -994,9 +995,8 @@ class PrincessParser(Parser):
                     self._constant('var')
                 self._error('no available options')
         self.name_last_node('keyword')
-        with self._optional():
-            self._type_()
-            self.name_last_node('type')
+        self._type_()
+        self.name_last_node('type')
         self._token(']')
         self.ast._define(
             ['keyword', 'n', 'type'],
