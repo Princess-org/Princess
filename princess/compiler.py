@@ -576,13 +576,14 @@ class Compiler(AstWalker):
             node.type = common_type(l, r, sign_convert = False, node = node)
         elif isinstance(node, (model.PAdd, model.PSub)):
             # TODO pointer - pointer
-            assert_error((types.is_pointer(l) or l is types.string or l is types.void_p) 
+            assert_error((types.is_pointer(l) or l == types.string or l == types.void_p) 
                 and r in int_t,  "Illegal argument %s %s" % (l, r))
             node.type = l
 
             return node # No conversion
         elif isinstance(node, (model.And, model.Or)):
-            assert_error(node.right.type is node.left.type is types.bool, "incompatible type")
+            # TODO implement this porperly and support pointers
+            #assert_error(node.right.type == node.left.type == types.bool, "incompatible type")
             node.type = types.bool
         else:
             # Arithmetic
