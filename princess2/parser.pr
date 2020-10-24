@@ -10,6 +10,7 @@ export type NodeKind = enum {
     FLOAT
     BOOLEAN
     IDENTIFIER
+    NULL
     CAST
     ADD
     SUB
@@ -50,6 +51,9 @@ export type NodeKind = enum {
     SHL_EQ
     SHR_EQ
     ASSIGN
+    IF
+    ELSE_IF
+    ELSE
     ARRAY_SUBSCRIPT
     FUNC_CALL
     VAR_DECL
@@ -80,6 +84,18 @@ export type VarDecl = enum {
 }
 
 export type Node
+
+export type NodeIf = struct {
+    cond: *Node
+    body: *vector::Vector
+    else_if: *vector::Vector
+    else_: *Node
+}
+
+export type NodeElseIf = struct {
+    cond: *Node
+    body: *vector::Vector
+}
 
 export type NodeArrayStaticT = struct {
     n: *Node
@@ -140,6 +156,8 @@ export type NodeValue = struct #union {
     t_arrs: NodeArrayStaticT
     func_call: NodeFuncCall
     assign: NodeAssign
+    if_: NodeIf
+    else_if: NodeElseIf
 
     body: *vector::Vector
     expr: *Node
@@ -280,6 +298,15 @@ def next_token(state: *ParseState, tpe: lexer::TokenType) -> bool {
     return false
 }
 
+// Forward declare stuff
+def parse_type(parse_state: *ParseState) -> *Node
+def expect_type(parse_state: *ParseState) -> *Node
+def parse_expression(parse_state: *ParseState) -> *Node
+def expect_expression(parse_state: *ParseState) -> *Node
+def parse_expression_no_assign(parse_state: *ParseState) -> *Node
+def expect_expression_no_assign(parse_state: *ParseState) -> *Node
+def parse_block(parse_state: *ParseState, vec: *vector::Vector)
+
 def expect_identifier(parse_state: *ParseState) -> *Node {
     var token = pop(parse_state)
     
@@ -308,13 +335,6 @@ def expect_identifier(parse_state: *ParseState) -> *Node {
 
     return node
 }
-
-def parse_type(parse_state: *ParseState) -> *Node
-def expect_type(parse_state: *ParseState) -> *Node
-def parse_expression(parse_state: *ParseState) -> *Node
-def expect_expression(parse_state: *ParseState) -> *Node
-def parse_expression_no_assign(parse_state: *ParseState) -> *Node
-def expect_expression_no_assign(parse_state: *ParseState) -> *Node
 
 def parse_array_n(parse_state: *ParseState) -> *Node {
     var tok = peek(parse_state)
@@ -619,6 +639,8 @@ def parse_term(parse_state: *ParseState) -> *Node {
 
         (@node).kind = NodeKind::BOOLEAN
         (@node).value.i = value
+    } else if token.tpe == lexer::TokenType::K_NULL {
+        (@node).kind = NodeKind::NULL
     } else {
         free(node)
         // errort(token, parse_state, "Expected literal or identifier\n")
@@ -1129,8 +1151,85 @@ def parse_typedecl(parse_state: *ParseState, share: ShareMarker) -> *Node {
     return null
 }
 
-def parse_if_stmt(parse_state: *ParseState) -> *Node {
-    return null
+def expect_if_stmt(parse_state: *ParseState) -> *Node {
+    var token = peek(parse_state)
+    let line = token.line
+    let column = token.column
+
+    expect(parse_state, lexer::TokenType::K_IF, "Expected if\n")
+    skip_newline(parse_state)
+    let cond = expect_expression(parse_state)
+    skip_newline(parse_state)
+    expect(parse_state, lexer::TokenType::O_BRACE, "Expected '{'\n")
+    var body = vector::make()
+    parse_block(parse_state, body)
+    expect(parse_state, lexer::TokenType::C_BRACE, "Expected '}'\n")
+    skip_newline(parse_state)
+
+    var else_if = vector::make()
+    var else_node: *Node = null
+
+    token = peek(parse_state)
+    loop {
+        if token.tpe == lexer::TokenType::K_ELSE {
+            pop(parse_state)
+            skip_newline(parse_state)
+            token = peek(parse_state)
+            if token.tpe == lexer::TokenType::K_IF {
+                pop(parse_state)
+                var cond = expect_expression(parse_state)
+                
+                skip_newline(parse_state)
+                expect(parse_state, lexer::TokenType::O_BRACE, "Expected '{'\n")
+                var body = vector::make()
+                parse_block(parse_state, body)
+                expect(parse_state, lexer::TokenType::C_BRACE, "Expected '}'\n")
+
+                let elif_node = allocate(Node)
+                (@elif_node).kind = NodeKind::ELSE_IF
+                (@elif_node).line = token.line
+                (@elif_node).column = token.column
+                (@elif_node).value.else_if = {
+                    cond = cond,
+                    body = body
+                } !NodeElseIf
+
+                vector::push(else_if, elif_node)
+
+                token = peek(parse_state)
+            } else {
+                skip_newline(parse_state)
+
+                expect(parse_state, lexer::TokenType::O_BRACE, "Expected '{'\n")
+                var body = vector::make()
+                parse_block(parse_state, body)
+                expect(parse_state, lexer::TokenType::C_BRACE, "Expected '}'\n")
+
+                else_node = allocate(Node)
+                (@else_node).kind = NodeKind::ELSE
+                (@else_node).line = token.line
+                (@else_node).column = token.column
+                (@else_node).value.body = body
+                    
+                break
+            }
+        } else {
+            break
+        }
+    }
+
+    var node = allocate(Node)
+    (@node).kind = NodeKind::IF
+    (@node).line = line
+    (@node).column = column
+    (@node).value.if_ = {
+        cond = cond,
+        body = body,
+        else_if = else_if,
+        else_ = else_node
+    } !NodeIf
+
+    return node
 }
 
 def parse_import_stmt(parse_state: *ParseState) -> *Node {
@@ -1141,10 +1240,10 @@ def parse_t_term(parse_state: *ParseState) {
     let token = peek(parse_state)
     if token.tpe == lexer::TokenType::SEMICOLON or token.tpe == lexer::TokenType::NEW_LINE {
         pop(parse_state)
-    } else if token.tpe != lexer::TokenType::EOF and token.tpe != lexer::TokenType::C_BRACE {
+    }/* else if token.tpe != lexer::TokenType::EOF and token.tpe != lexer::TokenType::C_BRACE {
         pop(parse_state)
         errort(token, parse_state, "Missing statement separator\n")
-    }
+    }*/
 }
 
 def parse_statement2(parse_state: *ParseState, share: ShareMarker) -> *Node {
@@ -1189,7 +1288,7 @@ def parse_statement(parse_state: *ParseState) -> *Node {
             return null
         }
     } else if lh.tpe == lexer::TokenType::K_IF {
-        node = parse_if_stmt(parse_state)
+        node = expect_if_stmt(parse_state)
     } else {
         node = parse_statement2(parse_state, ShareMarker::NONE)
         if not node {
@@ -1200,28 +1299,40 @@ def parse_statement(parse_state: *ParseState) -> *Node {
     return node
 }
 
+def parse_block(parse_state: *ParseState, vec: *vector::Vector) {
+    skip_newline(parse_state)
+    var token = peek(parse_state)
+    while token.tpe != lexer::TokenType::EOF and
+        token.tpe != lexer::TokenType::C_BRACE {
+
+        skip_newline(parse_state)
+        let node = parse_statement(parse_state)
+        (@parse_state).has_error = false
+        if not node {
+            // We encountered an error, skip to the next newline
+            var lh = pop(parse_state)
+            while not (lh.tpe == lexer::TokenType::NEW_LINE or 
+                lh.tpe == lexer::TokenType::EOF) {
+                lh = pop(parse_state)
+            }
+            skip_newline(parse_state)
+        } else {
+            vector::push(vec, node)
+        }
+        token = peek(parse_state)
+    }
+}
+
 export def parse(list: *lexer::TokenList, lines: [string]) -> *Node {
     var parse_state: ParseState
     parse_state.lines = lines
     parse_state.tokens = *list
     
     var vec = vector::make()
-
-    while list != null and peek(*parse_state).tpe != lexer::TokenType::EOF {
-        skip_newline(*parse_state)
-        let node = parse_statement(*parse_state)
-        parse_state.has_error = false
-        if not node {
-            // We encountered an error, skip to the next newline
-            var lh = pop(*parse_state)
-            while not (lh.tpe == lexer::TokenType::NEW_LINE or 
-                lh.tpe == lexer::TokenType::EOF) {
-                lh = pop(*parse_state)        
-            }
-            skip_newline(*parse_state)
-        } else {
-            vector::push(vec, node)
-        }
+    parse_block(*parse_state, vec)
+    var token = peek(*parse_state)
+    if token.tpe != lexer::TokenType::EOF {
+        errort(token, *parse_state, "Unexpected closing '}'\n")
     }
 
     let program_node = allocate(Node)
