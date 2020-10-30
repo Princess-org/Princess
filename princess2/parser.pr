@@ -11,6 +11,7 @@ export type NodeKind = enum {
     BOOLEAN
     IDENTIFIER
     NULL
+    MEMBER_ACCESS
     CAST
     ADD
     SUB
@@ -55,6 +56,8 @@ export type NodeKind = enum {
     ELSE_IF
     ELSE
     LOOP
+    FOR
+    FOR_ID_DECL
     BREAK
     CONTINUE
     ARRAY_SUBSCRIPT
@@ -156,6 +159,17 @@ export type NodeAssign = struct {
     right: *vector::Vector
 }
 
+export type NodeForIdDecl = struct {
+    kw: VarDecl
+    ident: *Node
+}
+
+export type NodeFor = struct {
+    iddecl: *Node
+    expr: *Node
+    body: *vector::Vector
+}
+
 export type NodeValue = struct #union {
     bin_op: NodeBinaryOp
     var_decl: NodeVarDecl
@@ -169,6 +183,8 @@ export type NodeValue = struct #union {
     assign: NodeAssign
     if_: NodeIf
     else_if: NodeElseIf
+    for_loop: NodeFor
+    for_id_decl: NodeForIdDecl
 
     body: *vector::Vector
     expr: *Node
@@ -410,7 +426,7 @@ def expect_array(parse_state: *ParseState) -> *Node {
     let line = tok.line
     let column = tok.column
 
-    // [N let T], [N var T] and [N T]
+    // [N; let T], [N; var T] and [N; T]
     var tokens = @(@parse_state).tokens
     var node = parse_array_n(parse_state)
     if node {
@@ -662,7 +678,7 @@ def parse_term(parse_state: *ParseState) -> *Node {
     return node
 }
 
-def parse_func_args(parse_state: *ParseState, node: *Node) -> *Node {
+def expect_func_args(parse_state: *ParseState, node: *Node) -> *Node {
     var token = peek(parse_state)
     let line = token.line
     let column = token.column
@@ -742,13 +758,15 @@ def parse_post_expression(parse_state: *ParseState) -> *Node {
     var node = parse_term(parse_state)
     loop {
         if next_token(parse_state, lexer::TokenType::O_PAREN) {
-            node = parse_func_args(parse_state, node)
+            node = expect_func_args(parse_state, node)
             expect(parse_state, lexer::TokenType::C_PAREN, "Expected ')'\n")
         } else if next_token(parse_state, lexer::TokenType::O_SQUARE) {
             skip_newline(parse_state)
-            node = make_bin_op(token, NodeKind::ARRAY_SUBSCRIPT, node, parse_term(parse_state))
+            node = make_bin_op(token, NodeKind::ARRAY_SUBSCRIPT, node, parse_expression(parse_state))
             skip_newline(parse_state)
             expect(parse_state, lexer::TokenType::C_SQUARE, "Expected ']'\n")
+        } else if next_token(parse_state, lexer::TokenType::DOT) {
+            node = make_bin_op(token, NodeKind::MEMBER_ACCESS, node, expect_identifier(parse_state))
         } else {
             return node
         }
@@ -1236,6 +1254,60 @@ def expect_loop_stmt(parse_state: *ParseState) -> *Node {
     return node
 }
 
+def expect_for_stmt(parse_state: *ParseState) -> *Node {
+    var token = peek(parse_state)
+    let line = token.line
+    let column = token.column
+
+    expect(parse_state, lexer::TokenType::K_FOR, "Expected for\n")
+    skip_newline(parse_state)
+
+    var iddecl: *Node = null
+    token = peek(parse_state)
+    if token.tpe == lexer::TokenType::K_VAR or
+        token.tpe == lexer::TokenType::K_LET {
+        
+        var kw = VarDecl::VAR
+        if token.tpe == lexer::TokenType::K_LET {
+            kw = VarDecl::LET
+        }
+
+        pop(parse_state)
+        let ident = expect_identifier(parse_state)
+        iddecl = allocate(Node)
+        (@iddecl).kind = NodeKind::FOR_ID_DECL
+        (@iddecl).value.for_id_decl = {
+            kw = kw,
+            ident = ident
+        } !NodeForIdDecl
+        (@iddecl).line = token.line
+        (@iddecl).column = token.column
+    } else {
+        iddecl = expect_identifier(parse_state)
+    }
+
+    skip_newline(parse_state)
+    expect(parse_state, lexer::TokenType::K_IN, "Expected in\n")
+    skip_newline(parse_state)
+    var expr = expect_expression(parse_state)
+    expect(parse_state, leser::TokenType::O_BRACE, "Expected '{'\n")
+    var body = vector::make()
+    parse_block(parse_state, body)
+    expect(parse_state, lexer::TokenType::C_BRACE, "Expected '}'\n")
+
+    var node = allocate(Node)
+    (@node).kind = NodeKind::FOR
+    (@node).line = line
+    (@node).column = column
+    (@node).value.for_loop = {
+        iddecl = iddecl,
+        expr = expr,
+        body = body
+    } !NodeFor
+
+    return node
+}
+
 def expect_if_stmt(parse_state: *ParseState) -> *Node {
     var token = peek(parse_state)
     let line = token.line
@@ -1250,7 +1322,6 @@ def expect_if_stmt(parse_state: *ParseState) -> *Node {
     parse_block(parse_state, body)
     expect(parse_state, lexer::TokenType::C_BRACE, "Expected '}'\n")
     
-    // Save tokens to recover the new line after the if statement
     var tokens = @(@parse_state).tokens
     skip_newline(parse_state)
 
@@ -1258,6 +1329,9 @@ def expect_if_stmt(parse_state: *ParseState) -> *Node {
     var else_node: *Node = null
 
     token = peek(parse_state)
+    if token.tpe != lexer::TokenType::K_ELSE {
+        @(@parse_state).tokens = tokens
+    }
     loop {
         if token.tpe == lexer::TokenType::K_ELSE {
             pop(parse_state)
@@ -1273,6 +1347,9 @@ def expect_if_stmt(parse_state: *ParseState) -> *Node {
                 parse_block(parse_state, body)
                 expect(parse_state, lexer::TokenType::C_BRACE, "Expected '}'\n")
 
+                tokens = @(@parse_state).tokens
+                skip_newline(parse_state)
+
                 let elif_node = allocate(Node)
                 (@elif_node).kind = NodeKind::ELSE_IF
                 (@elif_node).line = token.line
@@ -1285,6 +1362,10 @@ def expect_if_stmt(parse_state: *ParseState) -> *Node {
                 vector::push(else_if, elif_node)
 
                 token = peek(parse_state)
+            
+                if token.tpe != lexer::TokenType::K_ELSE {
+                    @(@parse_state).tokens = tokens
+                }
             } else {
                 skip_newline(parse_state)
 
@@ -1302,7 +1383,6 @@ def expect_if_stmt(parse_state: *ParseState) -> *Node {
                 break
             }
         } else {
-            @(@parse_state).tokens = tokens
             break
         }
     }
@@ -1380,6 +1460,8 @@ def parse_statement(parse_state: *ParseState) -> *Node {
         node = expect_if_stmt(parse_state)
     } else if lh.tpe == lexer::TokenType::K_LOOP {
         node = expect_loop_stmt(parse_state)
+    } else if lh.tpe == lexer::TokenType::K_FOR {
+        node = expect_for_stmt(parse_state)
     } else if lh.tpe == lexer::TokenType::K_BREAK {
         pop(parse_state)
         node = allocate(Node)
