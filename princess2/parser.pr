@@ -56,6 +56,8 @@ export type NodeKind = enum {
     IMPORT
     IMPORT_MODULE
     ASSIGN
+    SWITCH
+    CASE
     IF
     ELSE_IF
     ELSE
@@ -105,6 +107,16 @@ export type Node
 export type NodeImportModule = struct {
     name: *Node
     alias: *Node
+}
+
+export type NodeSwitch = struct {
+    expr: *Node
+    body: *vector::Vector
+}
+
+export type NodeCase = struct {
+    expr: *Node
+    body: *vector::Vector
 }
 
 export type NodeIf = struct {
@@ -221,6 +233,8 @@ export type NodeValue = struct #union {
     assign: NodeAssign
     if_: NodeIf
     else_if: NodeElseIf
+    switch_: NodeSwitch
+    case_: NodeCase
     while_loop: NodeWhile
     for_loop: NodeFor
     for_id_decl: NodeForIdDecl
@@ -374,6 +388,7 @@ def expect_expression(parse_state: *ParseState) -> *Node
 def parse_expression_no_assign(parse_state: *ParseState) -> *Node
 def expect_expression_no_assign(parse_state: *ParseState) -> *Node
 def parse_block(parse_state: *ParseState, vec: *vector::Vector)
+def parse_block_stmt(parse_state: *ParseState, vec: *vector::Vector)
 
 def expect_identifier(parse_state: *ParseState) -> *Node {
     var token = pop(parse_state)
@@ -598,7 +613,8 @@ def expect_struct(parse_state: *ParseState) -> *Node {
     var body = vector::make()
 
     token = peek(parse_state)
-    while token.tpe != lexer::TokenType::C_BRACE {
+    while token.tpe != lexer::TokenType::C_BRACE and
+        token.tpe != lexer::TokenType::EOF {
         skip_newline(parse_state)
         vector::push(body, parse_id_decl_struct(parse_state))
         token = peek(parse_state)
@@ -663,7 +679,8 @@ def expect_enum(parse_state: *ParseState) -> *Node {
     var body = vector::make()
 
     token = peek(parse_state)
-    while token.tpe != lexer::TokenType::C_BRACE {
+    while token.tpe != lexer::TokenType::C_BRACE and
+        token.tpe != lexer::TokenType::EOF {
         skip_newline(parse_state)
         vector::push(body, parse_id_decl_enum(parse_state))
         token = peek(parse_state)
@@ -1626,6 +1643,68 @@ def expect_if_stmt(parse_state: *ParseState) -> *Node {
     return node
 }
 
+def expect_switch_stmt(parse_state: *ParseState) -> *Node {
+    var token = peek(parse_state)
+    let line = token.line
+    let column = token.column   
+
+    expect(parse_state, lexer::TokenType::K_SWITCH, "Expected switch\n")
+    skip_newline(parse_state)
+    let expr = expect_expression(parse_state)
+    skip_newline(parse_state)
+    expect(parse_state, lexer::TokenType::O_BRACE, "Expected '{'\n")
+    var body = vector::make()
+    loop {
+        skip_newline(parse_state)
+        token = pop(parse_state)
+        if token.tpe == lexer::TokenType::C_BRACE or
+            token.tpe == lexer::TokenType::EOF {
+            break        
+        } else if token.tpe == lexer::TokenType::K_CASE {
+            let line = token.line
+            let column = token.column
+
+            var body2 = vector::make()
+            var expr2 = expect_expression(parse_state)
+            skip_newline(parse_state)
+            expect(parse_state, lexer::TokenType::COLON, "Expected ':'\n")
+            token = peek(parse_state)
+            while token.tpe != lexer::TokenType::K_CASE and
+                token.tpe != lexer::TokenType::C_BRACE and
+                token.tpe != lexer::TokenType::EOF {
+                parse_block_stmt(parse_state, body2)
+                token = peek(parse_state)
+            }
+            var node = allocate(Node)
+            (@node).kind = NodeKind::CASE
+            (@node).line = line
+            (@node).column = column
+            (@node).value.case_ = {
+                expr = expr2,
+                body = body2
+            } !NodeCase
+
+            vector::push(body, node)
+        } else {
+            errort(token, parse_state, "Expected case\n")
+        }
+    }
+    if token.tpe != lexer::TokenType::C_BRACE {
+        errort(token, parse_state, "Expected '}'\n")
+    }
+
+    var node = allocate(Node)
+    (@node).kind = NodeKind::SWITCH
+    (@node).line = line
+    (@node).column = column
+    (@node).value.switch_ = {
+        expr = expr,
+        body = body
+    } !NodeSwitch
+
+    return node
+}
+
 def expect_import_stmt(parse_state: *ParseState) -> *Node {
     var token = peek(parse_state)
     let line = token.line
@@ -1730,6 +1809,8 @@ def parse_statement(parse_state: *ParseState) -> *Node {
         }
     } else if lh.tpe == lexer::TokenType::K_IF {
         node = expect_if_stmt(parse_state)
+    } else if lh.tpe == lexer::TokenType::K_SWITCH {
+        node = expect_switch_stmt(parse_state)  
     } else if lh.tpe == lexer::TokenType::K_LOOP {
         node = expect_loop_stmt(parse_state)
     } else if lh.tpe == lexer::TokenType::K_FOR {
@@ -1754,26 +1835,29 @@ def parse_statement(parse_state: *ParseState) -> *Node {
     return node
 }
 
+def parse_block_stmt(parse_state: *ParseState, vec: *vector::Vector) {
+    skip_newline(parse_state)
+    let node = parse_statement(parse_state)
+    (@parse_state).has_error = false
+    if not node {
+        // We encountered an error, skip to the next newline
+        var lh = pop(parse_state)
+        while not (lh.tpe == lexer::TokenType::NEW_LINE or 
+            lh.tpe == lexer::TokenType::EOF) {
+            lh = pop(parse_state)
+        }
+        skip_newline(parse_state)
+    } else {
+        vector::push(vec, node)
+    }
+}
+
 def parse_block(parse_state: *ParseState, vec: *vector::Vector) {
     skip_newline(parse_state)
     var token = peek(parse_state)
     while token.tpe != lexer::TokenType::EOF and
         token.tpe != lexer::TokenType::C_BRACE {
-
-        skip_newline(parse_state)
-        let node = parse_statement(parse_state)
-        (@parse_state).has_error = false
-        if not node {
-            // We encountered an error, skip to the next newline
-            var lh = pop(parse_state)
-            while not (lh.tpe == lexer::TokenType::NEW_LINE or 
-                lh.tpe == lexer::TokenType::EOF) {
-                lh = pop(parse_state)
-            }
-            skip_newline(parse_state)
-        } else {
-            vector::push(vec, node)
-        }
+        parse_block_stmt(parse_state, vec)
         token = peek(parse_state)
     }
 }
