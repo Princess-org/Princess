@@ -1004,8 +1004,9 @@ def compile_module(module, base_path, include_path):
             src = fp.read()
         p_ast = parse(src)
         scope = Scope(builtins)
-        csrc, _ = compile(p_ast, scope, module, base_path, include_path)
+
         _modules[module] = scope
+        csrc, _ = compile(p_ast, scope, module, base_path, include_path)
         
         c_file_path = base_path / (file_path.stem + ".c")
         with open(c_file_path, "w") as fp:
