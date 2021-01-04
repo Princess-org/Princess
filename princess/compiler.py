@@ -194,7 +194,7 @@ class Scope:
         error("Type not implemented")
 
     def create_variable(self, modifier: Modifier, name: str, tpe, share = ast.Share.No, value = None, identifier: str = None):
-        # print(name, identifier)
+        #print("create_variable", name, identifier, self)
         assert_error(isinstance(name, str), "Illegal declaration")
         if identifier: 
             assert_error(isinstance(identifier, str), "Illegal declaration")
@@ -290,7 +290,9 @@ class Compiler(AstWalker):
 
     @property
     def current_function(self):
-        return self.function_stack[-1]
+        if len(self.function_stack) > 0:
+            return self.function_stack[-1]
+        return None
 
     def prefix_name(self, share, name):
         share = share or ast.Share.No
@@ -357,6 +359,7 @@ class Compiler(AstWalker):
         alias = (module.alias or module.name).ast[-1]
         scope = compile_module(name, self.base_path, self.include_path)
         exports = {name:var for name, var in scope.dict.items() if var.share & ast.Share.Export}
+        #print("Import", name, scope, scope.dict)
         ns = self.scope.enter_namespace(alias)
         ns.dict.update(exports)
         #print(ns.dict)
@@ -714,19 +717,16 @@ class Compiler(AstWalker):
 
     def walk_VarDecl(self, node: model.VarDecl):
         self.walk_child(node, node.left)
-        
+
         if not node.right:
             node.right = []
+
         assert_error(len(node.left) == 1 >= len(node.right), 
             "Parallel assignment not implemented")
-
         modifier = Modifier(node.keyword)
         id_decl = node.left[0]
         
-        if hasattr(node, "type") and node.type:
-            tpe = node.type # for already walked declarations
-            self.walk_child(node, node.right)
-        elif id_decl.type:
+        if id_decl.type:
             tpe = self.scope.type_lookup(id_decl.type)
 
             if (len(node.right) == 1 and types.is_struct_or_union(tpe) 
@@ -740,6 +740,10 @@ class Compiler(AstWalker):
         name = id_decl.name.name
         identifier = self.prefix_name(node.share, name)
         self.scope.create_variable(modifier, name, tpe, node.share, identifier = identifier)
+        
+        if not self.current_function:
+            # Top level variables are assigned inside the main function
+            node.right = []
         
         node.type = tpe
         node.name = name
@@ -891,7 +895,7 @@ class Compiler(AstWalker):
         code = []
         main_code = []
 
-        self.enter_scope()
+        #self.enter_scope()
         for n in node.ast:
             if isinstance(n, model.Import):
                 module = n.modules[0]
@@ -903,25 +907,14 @@ class Compiler(AstWalker):
                 if not name in _modules:
                     main_code.append(call) 
                 
-                n = self.walk(n)
                 code.append(n)
             elif isinstance(n, (model.TypeDecl, model.Def)):
-                n = self.walk(n)
                 code.append(n)
             elif isinstance(n, model.VarDecl):
                 if n.right:
                     assert_error(len(n.left) == 1 >= len(n.right), "Parallel assignment not implemented")
-                    n = self.walk(n)
                 
-                tpe = n.type if hasattr(n, "type") else None
-                var_decl = ast.VarDecl(
-                    left = n.left,
-                    right = [],
-                    keyword = n.keyword,
-                    type = tpe,
-                    share = n.share
-                )
-                code.append(var_decl)
+                code.append(n)
 
                 if n.right:
                     assignment = ast.Assign(
@@ -933,7 +926,7 @@ class Compiler(AstWalker):
                     main_code.append(assignment)
             else:
                 main_code.append(n)
-        self.exit_scope()
+        #self.exit_scope()
 
         main_function = ast.Def(
             name = ast.Identifier("p_main"),
@@ -987,6 +980,7 @@ def compile(p_ast, scope = None, filename = None, base_path = Path(""), include_
 _modules = {} # compiled modules
 def compile_module(module, base_path, include_path):
     if module in _modules:
+        #print("Returning compiled module", module)
         return _modules[module]
 
     cache_file = base_path / (module + ".pc")
@@ -1006,6 +1000,7 @@ def compile_module(module, base_path, include_path):
         scope = Scope(builtins)
 
         _modules[module] = scope
+        #print("Compiling module", module, scope)
         csrc, _ = compile(p_ast, scope, module, base_path, include_path)
         
         c_file_path = base_path / (file_path.stem + ".c")

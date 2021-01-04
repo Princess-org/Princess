@@ -81,7 +81,10 @@ class TypeWrapper(Type):
         self.__dict__.update(tpe.__dict__)
 
     def __reduce__(self):
-        return self._base_type.__reduce__()
+        if self._base_type:
+            return self._base_type.__reduce__()
+        else:
+            return super().__reduce__()
 
 class PointerT(Type):
     def __init__(self, tpe, name = None):
