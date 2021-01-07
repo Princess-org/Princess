@@ -45,38 +45,34 @@ All of these identifiers can be used:
 ### Export:
 
 In C everything is global by default and static is used to internal linkage.
-In ++C internal linkage is the default and export is used for globals.
+In Princess internal linkage is the default and export is used for globals.
 
 Import is used to consume an external file as module:
 
 ```
-import "<file_name>" [as <module_name>]
+import <file_name> [as <module_name>]
 ```
 If no module name is specified the file name is chosen.
 
+Imports are relative to the main file location.
 ```
-import <std_module> [as <module_name>]
+import <folder>::<file_name>
 ```
-This tries to find the module from a list of pre-imported libraries specified
-by the compiler. This includes the standard library, the exact behavior is
-implementation defined.
 
 #### Example:
 ```
-// in File "file_a.ppc":
+// in File "file_a.pr":
        def by_4(a: int) -> int = a * 4
 export def by_2(a: int) -> int = a * 2
 
-// in File "file_b.ppc":
-import "file_a" as multiply
+// in File "file_b.pr":
+import file_a as multiply
 
-def main {
-    multiply::by_2(5) // Okay
-    by_2(5) // Also okay, this is only allowed if there are no collisions
-    5.by_2() // As well as this
-    
-    multiply::by_4(5) // Fail
-}
+multiply::by_2(5) // Okay
+by_2(5) // Also okay, this is only allowed if there are no collisions
+5.by_2() // As well as this
+
+multiply::by_4(5) // Fail
 ```
 
 Exported symbols get mangled for the linker:
@@ -85,6 +81,7 @@ TODO
 You can also import functions:
 `import def ... [as <name>]`
 Just leave out the function's body.
+This is useful for interop to C for example.
 
 
 ### Variables:
@@ -100,7 +97,7 @@ Just leave out the function's body.
 ```
 type <type> = <type>
 
-type Matrix3d = [3 [3 double]]
+type Matrix3d = [3; [3; double]]
 ```
 
 ### Grammar
@@ -128,7 +125,7 @@ def fun(
     foo +
         bar // Valid
     
-    return a, // Comma needed here, "return a" doesnt need more parameters
+    return a, // Comma needs to be on the same line, "return a" doesnt need more parameters
         b
 }
  
@@ -153,17 +150,8 @@ uint8, uint16, uint32, uint64, uint128
 int8, int16, int32, int64, int128
 float32, float64, float128
 
-bool, string, char, size
+bool, string, char, size_t
 ```
-
-### Extended types:
-
-```
-register_size, databus_size, address_size
-
-(type bool = int, type string = [char])
-```
-
 uint and int are platform dependent, i.e 16/32/64 bit
 
 ## Overview
@@ -174,12 +162,12 @@ A -> B             // Takes A, returns B
 (A, B) -> (C, D)   // Takes A and B, returns C and D
 
 // Array types:
-[N let T] == [N let T] == struct {let e1: T; ...; let eN: T}   // immutable static array with N elements of type T
-[N T]     == [N var T] == struct {e1: T; ...; eN: T}           // mutable static array with N elements of type T
-[let T]   == [let T]   == struct {value: &T; size: size}       // immutable dynamic array of type T
-[T]       == [var T]   == struct {value: *T; size: size}       // mutable dynamic array of type T
-[let]     == [let]     == struct {value: &, size: size}        // immutable dynamic array of unknown type (void*)
-[]        == [var]     == struct {value: *, size: size}        // mutable dynamic array of unknown type (void*)
+[N; let T]  == [N; let T]   == struct {let e1: T; ...; let eN: T}   // immutable static array with N elements of type T
+[N: T]      == [N; var T]   == struct {e1: T; ...; eN: T}           // mutable static array with N elements of type T
+[let T]     == [let T]      == struct {value: &T; size: size}       // immutable dynamic array of type T
+[T]         == [var T]      == struct {value: *T; size: size}       // mutable dynamic array of type T
+[let]       == [let]        == struct {value: &, size: size}        // immutable dynamic array of unknown type (void*)
+[]          == [var]        == struct {value: *, size: size}        // mutable dynamic array of unknown type (void*)
 
 // Pointer types:
 *  == *var     // raw pointer to a mutable value, same as void* in C
@@ -234,7 +222,6 @@ def polymorph(type A, b: A, c: type C) -> C {
     // Implementation here, must return a C
     // A body is not required
 }
-def polymorph(a) { ... } // This is the same as a: type A
 ```
 
 A accepts a type as argument, so you can pass in "i8" for example
@@ -298,7 +285,7 @@ type Q = S - B // everything in A but not c_fun
 def add(args: ...) // Accepts any arguments
 def add(args: int...) // Only accepts ints
 
-let a = [1, 2, 3] // TODO: Alternative syntax: #{1, 2, 3}
+let a = [1, 2, 3]
 add(a...) // Splat operator
 add(1, 2)
 ```
@@ -387,11 +374,11 @@ let i = a += 1 // this would be (*a)++ in C
 
 ```
 // size_of:
-    size_of(<type>)
-    size_of(<expression>)
+    size_of <type>
+    size_of <expression>
 // align_of:
-    align_of(<type>)
-    align_of(<expression>)
+    align_of <type>
+    align_of <expression>
 ```
     
 Tip: In case of ambigiouty, expression is always preferred, use "type(T)" to specifically treat something as a type
@@ -402,8 +389,8 @@ There are 2 different types of arrays,
 static array and dynamic arrays
 
 - `[int8]`: A dynamic array of integers
-- `[8 int8]`: A static array of 8 integers
-- `[10 [10 int8]]`: A static 2 dimensionsal array of integers (10 x 10)
+- `[8; int8]`: A static array of 8 integers
+- `[10; [10; int8]]`: A static 2 dimensionsal array of integers (10 x 10)
 
 Array postfix works on both: `foo[10]`
 
@@ -413,14 +400,9 @@ The underlying types are:
 // Dynamic array
 type [T] = struct {value: *T, size: size}
 // Static array
-type [N T] = struct {x0 ... xN: T};
-```
+type [N; T] = struct {x0 ... xN: T};
 
-Referencing a dynamic array of unknown type is possible and looks like this:
-```
-type [] = struct {value: *, size: size}
-
-const my_array: [? int] = [1, 2, 4, 6]; // this infers [4 int]
+const my_array: [?; int] = [1, 2, 4, 6]; // this infers [4 int]
 ```
 
 Conversion between the types can be done like this:
@@ -432,7 +414,7 @@ import array
 var int_5: [5 int] = ...
 var int_N: [int] = ...
 var int_ptr: *int = ...
-var size: size = ...
+var size: size_t = ...
 
 int_5 = [1, 2, 3, 4, 5] // Works, copy, same size
 int_N = [1, 2] // Works, no copy, can't change the elements!
@@ -473,9 +455,9 @@ All calls to `array()` create a new copy!
 ```
 let a1 = array([1, 2, 3]) // Literal in static memory, a1 is allocated on the heap!
 defer free(arr) // Don't forget this
-let a2 = array([5 int]) // Uninitialized
-let a3 = array([5 int], 0) // Zero initialized
-let a4 = array([20 [5 int]]) // Also multi dimensional array
+let a2 = array([5; int]) // Uninitialized
+let a3 = array([5; int], 0) // Zero initialized
+let a4 = array([20; [5; int]]) // Also multi dimensional array
 ... // Just imagine we free all of them down here
 ```
 
@@ -488,24 +470,16 @@ like C but with a different syntax
 var a = 42
 let b = 8
 
-var c: *int // Can be reassigned
-var d: &int
-let e: *int // Can not be reassigned, would have to be initialized here!
-let f: &int
-
-c = d = e = f = *a // Allowed
-d = f = *b // Allowed
-c = e = *b // Not allowed
-
-// TLDR: You can make &int point to a var, but *int can't point to a let
-
+var c: *int             // Mutable pointer to a variable
+let d: *int = *a        // Constant pointer to a variable
+var e: *let int         // Pointer to a constant
+let f: *let int = *b    // Constant pointer to a constant
 ```
 
 Take the address of foo: `*foo`. Read: "pointer to foo"
 Take the value of foo: `@foo`. Read: "value at foo"
 
 Pointer arithmetic like C.
-Pointes can be used with array postfix notation.
 
 #### Void pointer:
 The void pointer is simply `*`, as well as a void reference `&`
@@ -532,24 +506,17 @@ struct [#align_as([type]/0..N)] [#union] {
 
 To create a struct variable:
 ```
-foo: struct { x, y: int } // Anonymous struct here
+var foo: struct { x: int; y: int } // Anonymous struct here
 foo.x = 10
 foo.y = 30
-
-// On heap
-bar: & = mem::allocate(foo)
-bar.x = 10
-bar.y = 30
 ```
-or with an array literal
+or with an struct literal
 ```
-foo: struct { x, y: int } = {10, 30} // TODO: Like this? Or maybe [10, 30]
-bar = {10, 30}
+var foo: struct { x, y: int } = {10, 30}
 ```
 or by using explicit names
 ```
-foo: struct { x, y: int } = {y = 30, x = 10}
-bar = {y = 30, x = 10}
+var foo: struct { x, y: int } = {y = 30, x = 10}
 ```
 
 Struct initializers can only be used in the following contexts:
@@ -608,13 +575,13 @@ assert(size_of(union) == size_of(i16)) // true
 You can take a pointer of a function with *
 ```
 const a = *fun
-a(...);
+a(...)
 ```
 
 Similar to C, however, the types look like this:
 ```
 var a: int ->
-var b: (int8, uint) -> int // Brackets required here
+var b: (int8, uint) -> int // Parens required here
 var c: ->
 ```
 
@@ -653,7 +620,7 @@ go_to <label>
 ### For loop:
 
 ```
-for var a: &int in array { // Can capture by reference, pointer or by value
+for var a: *int in array { // Can capture by reference, pointer or by value
 
 }
 ```
@@ -721,7 +688,7 @@ floatN -> floatM // Where M >= N
 ### Switch statement:
 
 ```
-switch [#fallthrough] <type> {
+switch <type> {
 case <var>[,<var>...]:
     ...
     [break | continue]
@@ -734,16 +701,16 @@ No implicit fallthrough
 Example:
 
 ```
-switch number [#fallthrough] {
+switch number {
 case 1, 2:
-    printf("This is either 1 or 2")
+    print("This is either 1 or 2")
 case 3:
-    printf("This is a 3")
+    print("This is a 3")
     continue
 case 4:
-    printf("This is a 3 or a 4")
+    print("This is a 3 or a 4")
 case:
-    printf("This is some other number")
+    print("This is some other number")
 }
 ```
 
@@ -758,7 +725,7 @@ There is limited type inference available in the following cases:
 ```
 let a = 5 // a is an int
 let a = 5.5 // a is a double
-let a = "string" // a is [6 uint8]
+let a = "string" // a is [6; char]
 ```
 
 #### For expressions:
@@ -769,7 +736,7 @@ let a = function_that_returns_int() // a is an int
 
 #### For static array sizes:
 ```
-let a : [? int] = [1, 2, 3] // a is [3 int]
+let a : [?; int] = [1, 2, 3] // a is [3 int]
 ```
 
 ### Conditional compilation:
@@ -789,15 +756,15 @@ File scoped variables may be read from and written to. Constants from other modu
 may be read from.
 
 ```
-// "file_a.ppc":
+// "file_a.pr":
 export const a: bool = true;
 
-// "file_b.ppc":
-import "file_c"
+// "file_b.pr":
+import file_c
 printf(my_fun()) // This prints "A is true"
 
-// "file_c.ppc":
-import "file_a"
+// "file_c.pr":
+import file_a
 
 const b = a #if "A is true" else "A is false";
 
