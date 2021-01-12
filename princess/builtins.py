@@ -3,34 +3,67 @@ from princess.compiler import int_t, assert_error, Modifier, Compiler, error
 from princess import types, ast, compiler
 
 def _allocate(function, node, compiler: Compiler):
+    assert_error(len(node.args) in (1, 2), "Invalid number of arguments")
     arg = node.args[0].value
     if compiler.scope.type_lookup(arg.type) in int_t:
         function.return_t = (types.void_p,)
         function.parameter_t = (types.size_t,)
-    else:
-        if len(node.args) == 2:
-            tpe = types.ArrayT(compiler.scope.type_lookup(arg))
-            function.return_t = (tpe,)
+    elif len(node.args) == 2:
+        tpe = types.ArrayT(compiler.scope.type_lookup(arg))
+        function.return_t = (tpe,)
 
-            n = node.args[1].value
-            assert_error(n.type in int_t, "Invalid argument")
-            call = ast.Call(
-                left = ast.Identifier("malloc"),
-                args = [ast.CallArg(value = ast.Mul(left = ast.SizeOf(arg), right = n))]
-            )
-            call.left.type = function
-            array = ast.ArrayInitializer(
-                length = n,
-                value = call,
-                type = tpe
-            )
-            return array
-        else:
-            tpe = types.PointerT(compiler.scope.type_lookup(arg))
-            function.return_t = (tpe,)
-            node.args[0].value = ast.SizeOf(arg)
+        n = node.args[1].value
+        assert_error(n.type in int_t, "Invalid argument")
+        call = ast.Call(
+            left = ast.Identifier("malloc"),
+            args = [ast.CallArg(value = ast.Mul(left = ast.SizeOf(arg), right = n))]
+        )
+        call.left.type = function
+        array = ast.ArrayInitializer(
+            length = n,
+            value = call,
+            type = tpe
+        )
+        return array
+    else:
+        tpe = types.PointerT(compiler.scope.type_lookup(arg))
+        function.return_t = (tpe,)
+        node.args[0].value = ast.SizeOf(arg)
 
     node.left = ast.Identifier("malloc") 
+    return node
+
+def _zero_allocate(function, node, compiler: Compiler):
+    assert_error(len(node.args) in (1, 2), "Invalid number of arguments")
+    function.parameter_t = (types.size_t, types.size_t)
+    
+    arg = node.args[0].value
+    if compiler.scope.type_lookup(arg.type) in int_t:
+        function.return_t = (types.void_p,)
+        node.args = [ast.CallArg(value = ast.Integer(1)), ast.CallArg(value = arg)]
+    elif len(node.args) == 2:
+        tpe = types.ArrayT(compiler.scope.type_lookup(arg))
+        function.return_t = (tpe,)
+
+        n = node.args[1].value
+        assert_error(n.type in int_t, "Invalid argument")
+        call = ast.Call(
+            left = ast.Identifier("calloc"),
+            args = [ast.CallArg(value = n), ast.CallArg(value = ast.SizeOf(arg))]
+        )
+        call.left.type = function
+        array = ast.ArrayInitializer(
+            length = n,
+            value = call,
+            type = tpe
+        )
+        return array
+    else:
+        tpe = types.PointerT(compiler.scope.type_lookup(arg))
+        function.return_t = (tpe,)
+        node.args = [ast.CallArg(value = ast.Integer(1)), ast.CallArg(value = ast.SizeOf(arg))]
+
+    node.left = ast.Identifier("calloc")
     return node
 
 def _reallocate(function, node, compiler: Compiler):
@@ -189,6 +222,7 @@ def _max(function, node, compiler: Compiler):
     return node
 
 compiler.builtins.create_function("allocate", types.FunctionT(c = True, macro = _allocate))
+compiler.builtins.create_function("zero_allocate", types.FunctionT(c = True, macro = _zero_allocate))
 compiler.builtins.create_function("reallocate", types.FunctionT(c = True, return_t = (types.void_p,), parameter_t = (types.void_p, types.size_t), macro = _reallocate))
 compiler.builtins.create_function("free", types.FunctionT(c = True, parameter_t = (types.void_p,)))
 compiler.builtins.create_function("print", types.FunctionT(c = True, return_t = (types.int,), macro = _print))

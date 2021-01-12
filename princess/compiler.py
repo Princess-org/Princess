@@ -775,7 +775,7 @@ class Compiler(AstWalker):
 
     def walk_Call(self, node: model.Call):
         self.walk_child(node, node.left)
-        tpe = copy.copy(node.left.type)
+        tpe = node.left.type
         assert_error(types.is_function(tpe), "Can only call functions")
         
         for i in range(len(node.args)):
@@ -787,12 +787,11 @@ class Compiler(AstWalker):
         self.walk_child(node, node.args)
 
         if tpe.macro:
+            tpe = copy.copy(tpe)
             node = tpe.macro(tpe, node, self)
-            # In case the macro changed something
-            self.walk_children(node)
-            # This is so that we don't run the same code again
             tpe.macro = None
-        
+            self.walk_children(node)
+
         if isinstance(node, model.Call):
             if tpe.c:
                 for arg in node.args:
