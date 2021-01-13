@@ -510,20 +510,13 @@ var foo: struct { x: int; y: int } // Anonymous struct here
 foo.x = 10
 foo.y = 30
 ```
-or with an struct literal
+or with a struct literal
 ```
-var foo: struct { x, y: int } = {10, 30}
+var foo: struct { x: int; y: int } = {10, 30}
 ```
 or by using explicit names
 ```
-var foo: struct { x, y: int } = {y = 30, x = 10}
-```
-
-Struct initializers can only be used in the following contexts:
-```
-return <struct-initializer>
-<struct-initializer> ! <type>
-<name>([<name> =] <struct-initializer>) // Call
+var foo: struct { x: int; y: int } = {y = 30, x = 10}
 ```
 
 You can create a type for a struct:

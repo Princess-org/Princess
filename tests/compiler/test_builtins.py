@@ -85,3 +85,10 @@ def test_length():
         return length(str), length(str2)
     """
     assert eval(prog) == (11, 11)
+
+def test_array_size():
+    prog = """\
+        var array: [int] = [1, 2, 3, 4]
+        return array.size
+    """
+    assert eval(prog) == 4
