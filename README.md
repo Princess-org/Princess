@@ -163,7 +163,7 @@ A -> B             // Takes A, returns B
 
 // Array types:
 [N; let T]  == [N; let T]   == struct {let e1: T; ...; let eN: T}   // immutable static array with N elements of type T
-[N: T]      == [N; var T]   == struct {e1: T; ...; eN: T}           // mutable static array with N elements of type T
+[N; T]      == [N; var T]   == struct {e1: T; ...; eN: T}           // mutable static array with N elements of type T
 [let T]     == [let T]      == struct {value: &T; size: size}       // immutable dynamic array of type T
 [T]         == [var T]      == struct {value: *T; size: size}       // mutable dynamic array of type T
 [let]       == [let]        == struct {value: &, size: size}        // immutable dynamic array of unknown type (void*)
