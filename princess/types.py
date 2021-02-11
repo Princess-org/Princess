@@ -19,7 +19,7 @@ def is_struct_or_union(t):
     return is_struct(t) or is_union(t)
 
 def is_struct(t):
-    return isinstance(t, Struct)
+    return isinstance(t, Struct) or isinstance(t, TypeWrapper) # TODO Is it a good idea to assume that?
 
 def is_union(t):
     return isinstance(t, Union)

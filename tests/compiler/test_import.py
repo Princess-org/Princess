@@ -18,6 +18,10 @@ def test_import():
 
 def test_mutual_import():
     prog = """\
+        // Forward declare A here
+        type test_a::A
+        // Incomplete type, can only create pointers
+        var a: *test_a::A
         import test_a
     """
 

@@ -342,6 +342,7 @@ class Compiler(AstWalker):
             value = self.scope[node]
             if isinstance(value.value, Scope):
                 value = value.value.value
+            if not value: return node
 
             node.modifier = value.modifier
             node.identifier = value.identifier
@@ -636,8 +637,10 @@ class Compiler(AstWalker):
         name = node.name[0].ast[-1]
         if hasattr(node, "typename"):
             typename = node.typename
-        else:
+        elif len(node.name[0].ast) == 1:
             typename = self.prefix_name(node.share, name)
+        else:
+            typename = name
 
         if val:
             node.forward_declare = False
@@ -707,8 +710,13 @@ class Compiler(AstWalker):
         else:
             node.forward_declare = True
 
+            if len(node.name[0].ast) == 2:
+                scope = self.scope.enter_namespace(node.name[0].ast[0])
+                typename = "_".join(node.name[0].ast)
+            else: scope = self.scope
+
             tpe = types.TypeWrapper(name = typename)
-            self.scope.create_type(name, tpe, share = node.share, identifier = typename)
+            scope.create_type(name, tpe, share = node.share, identifier = typename)
 
             node.type = tpe
             node.typename = typename
