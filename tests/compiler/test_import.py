@@ -23,10 +23,13 @@ def test_mutual_import():
         // Incomplete type, can only create pointers
         var a: *test_a::A
         import test_a
+        // Now test_a::A is a complete type
+        a = *({ value = 1 } !test_a::A)
+        return (@a).value
     """
 
     base_path = Path("bin/test_import").resolve()
     base_path.mkdir(parents = True, exist_ok = True)
     include_path = Path("tests/compiler")
     
-    eval(prog, base_path, include_path)
+    eval(prog, base_path, include_path) == 1

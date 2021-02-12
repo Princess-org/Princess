@@ -707,6 +707,8 @@ class Compiler(AstWalker):
 
                 del self.scope.dict[name] # Remove dummy again
                 self.scope.create_type(name, tpe2, share = node.share, identifier = typename)
+
+                set_base_type(self.filename, name, tpe2, self.base_path)
         else:
             node.forward_declare = True
 
@@ -717,6 +719,9 @@ class Compiler(AstWalker):
 
             tpe = types.TypeWrapper(name = typename)
             scope.create_type(name, tpe, share = node.share, identifier = typename)
+
+            if len(node.name[0].ast) == 2:
+                set_incomplete_type(node.name[0].ast[0], name, tpe, self.filename)
 
             node.type = tpe
             node.typename = typename
@@ -973,6 +978,39 @@ for n in dir(types):
         builtins.create_type(n, v)
         
 import princess.builtins
+
+class IncompleteType:
+    def __init__(self, tpe, dependant):
+        self.tpe = tpe
+        self.dependants = [dependant]
+
+_incomplete_types = {}
+
+def set_base_type(filename, typename, tpe, base_path):
+    incomplete_type = get_incomplete_type(filename, typename)
+    if incomplete_type:
+        incomplete_type.tpe.set_base_type(tpe)
+        for dependant in incomplete_type.dependants:
+            cache_module(dependant, base_path)
+
+def get_incomplete_type(filename, typename):
+    types = _incomplete_types.setdefault(filename, {})
+    if typename in types:
+        return types[typename]
+
+def set_incomplete_type(filename, typename, tpe, dependant):
+    types = _incomplete_types.setdefault(filename, {})
+    if typename in types:
+        types[typename].dependants.append(dependant)
+    else:
+        types[typename] = IncompleteType(tpe, dependant)
+
+def cache_module(module, base_path):
+    cache_file = base_path / (module + ".pc")
+    scope = _modules[module]
+
+    with open(cache_file, "wb") as fp:
+        pickle.dump(scope, fp)
 
 # TODO Rewrite these functions to use more sensible arguments
 def compile(p_ast, scope = None, filename = None, base_path = Path(""), include_path = Path("")):
