@@ -362,6 +362,8 @@ class Compiler(AstWalker):
         exports = {name:var for name, var in scope.dict.items() if var.share & ast.Share.Export}
         #print("Import", name, scope, scope.dict)
         ns = self.scope.enter_namespace(alias)
+        for k,v in exports.items():
+            set_base_type(name, k, v.value, self.base_path)
         ns.dict.update(exports)
         #print(ns.dict)
         return node
@@ -1006,6 +1008,8 @@ def set_incomplete_type(filename, typename, tpe, dependant):
         types[typename] = IncompleteType(tpe, dependant)
 
 def cache_module(module, base_path):
+    if not module in _modules: return
+
     cache_file = base_path / (module + ".pc")
     scope = _modules[module]
 
