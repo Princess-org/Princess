@@ -63,7 +63,7 @@ class Type:
     
     def __eq__(self, value):
         if is_type(value):
-            return self.name == value.name
+            return self.name == value.name # TODO This will fail for typedef
         return False
 
     def __str__(self):

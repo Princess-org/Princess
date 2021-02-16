@@ -20,12 +20,17 @@ export type TypeKind = enum {
     NAMESPACE
     // Forward declaration
     STUB
+    // Auto cast, this type will convert to anything
+    // AUTO_CAST // TODO Actually implement this
 }
 
 export type Type = struct {
     kind: TypeKind
     // Name of the type as used by the source code
+    // Might be the name of a typedef
     name: string
+    // Unique name of the type
+    type_name: string
     // Size in bytes
     size: size_t
     align: size_t
@@ -39,6 +44,152 @@ export type Type = struct {
     // Function
     return_t: *vector::Vector
     parameter_t: *vector::Vector
+}
+
+export type State = struct {
+    filename: string
+    node: *parser::Node
+}
+
+export def is_function(tpe: *Type) -> bool {
+    return (@tpe).kind == TypeKind::FUNCTION
+}
+
+def append_module(name: string, state: *State) -> string {
+    var buf = buffer::make_buffer()
+    buffer::append_str(*buf, (@state).filename)
+    buffer::append_str(*buf, "::")
+    buffer::append_str(*buf, name)
+    return buffer::to_string(*buf)
+}
+
+export def make_type(kind: TypeKind, name: string, state: *State) -> *Type {
+    var t = allocate(Type)
+    (@t).kind = kind
+    (@t).type_name = append_module(name, state)
+    (@t).name = name
+
+    return t
+}
+
+// This is used for typedefs
+export def copy(a: *Type, name: string) -> *Type {
+    var t = allocate(Type)
+    (@t).kind = (@a).kind
+    (@t).name = name
+    (@t).type_name = (@a).type_name
+    (@t).size = (@a).size
+    (@t).align = (@a).align
+    (@t).unsig = (@a).unsig
+    (@t).length = (@a).length
+    (@t).tpe = (@a).tpe
+    (@t).fields = (@a).fields
+    (@t).return_t = (@a).return_t
+    (@t).parameter_t = (@a).parameter_t
+    return t
+}
+
+export def equals(a: *Type, b: *Type) -> bool {
+    if a == b {
+        return true
+    }
+    if (@a).kind != (@b).kind { return false }
+
+    let kind = (@a).kind
+    if kind == TypeKind::BOOL { return true }
+    if kind == TypeKind::WORD or kind == TypeKind::FLOAT {
+        return (@a).size == (@b).size
+    }
+    if kind == TypeKind::ENUM or
+        kind == TypeKind::STRUCT or
+        kind = TypeKind::UNION {
+
+        return (@a).type_name == (@b).type_name        
+    }
+    if kind == TypeKind::ARRAY or
+        kind == TypeKind::POINTER or
+        kind == TypeKind::REFERENCE {
+        
+        return equals((@a).tpe, (@b).tpe)
+    }
+    if kind == TypeKind::STATIC_ARRAY {
+        return (@a).length == (@b).length and equals((@a).tpe, (@b).tpe)
+    }
+    if kind == TypeKind::FUNCTION {
+        if vector::length((@a).parameter_t) != vector::length((@b).parameter_t) or
+            vector::length((@a).return_t) != vector::length((@b).return_t) {
+            return false        
+        }
+        for var i in 0..vector::length((@a).parameter_t) {
+            if not equals(vector::get((@a).parameter_t, i), vector::get((@b).parameter_t, i)) {
+                return false
+            }
+        }
+        for var i in 0..vector::length((@a).return_t) {
+            if not equals(vector::get((@a).return_t, i), vector::get((@b).return_t, i)) {
+                return false
+            }
+        }
+        return true
+    }
+
+    assert(false)
+}
+
+// Tries to convert type b to type a
+// The return value is -1 if b can't be converted to a
+// if the types are equal, 0 is returned.
+// Otherwise a positive integer is returned.
+def convert_type_score(a: *Type, b: *Type) -> int {
+    if equals(a, b) {
+        return 0
+    }
+    if ((@a).kind == TypeKind::WORD and (@b).kind == TypeKind::WORD or
+        (@a).kind == TypeKind::FLOAT and (@b).kind == TypeKind::FLOAT) and
+        (@a).size >= (@b).size {
+        
+        // TODO if we are ever going to allow a 24 bit value this is going to fail
+        return log2((@a).size) !int - log2((@b).size) !int
+    }
+    if (@a).kind == TypeKind::FLOAT and
+        (@b).kind == TypeKind::WORD {
+        
+        return 10
+    }
+    if ((@a).kind == TypeKind::POINTER and (@b).kind == TypeKind::POINTER or
+        (@a).kind == TypeKind::REFERENCE and (@b).kind == TypeKind::REFERENCE) and
+        (@a).tpe == null {
+        
+        return 1
+    }
+    if (@a).kind == TypeKind::ARRAY and (@b).kind == STATIC_ARRAY and 
+        equals((@a).tpe, (@b).tpe) {
+        
+        return 1
+    }
+    return -1
+}
+
+// Calculates a score for overload resultion, the result is 0 for an exact match
+// and a positive integer if the argument types need to be converted.
+// -1 is returned if the argument types don't match.
+export def overload_score(a: *Type, b: *Type) -> int {
+    assert((@a).kind == TypeKind::FUNCTION)
+    assert((@b).kind == TypeKind::FUNCTION)
+
+    let param_a = (@a).parameter_t
+    let param_b = (@b).parameter_t
+    // TODO varargs
+    if vector::length(param_a) != vector::length(param_b) {
+        return -1
+    }
+
+    var sum = 0
+    for var i in 0..vector::length(param_a) {
+        sum += convert_type_score(vector::get(param_a, i), vector::get(param_b, i))
+    }
+
+    return sum
 }
 
 export def type_to_str(tpe: *Type) -> string {
@@ -58,16 +209,16 @@ export def type_to_str(tpe: *Type) -> string {
             buffer::append_char(*buf, 'b')
         case TypeKind::STRUCT:
             buffer::append_char(*buf, 'S')
-            buffer::append_str(*buf, util::int_to_str(length((@tpe).name)))
-            buffer::append_str(*buf, (@tpe).name)
+            buffer::append_str(*buf, util::int_to_str(length((@tpe).type_name)))
+            buffer::append_str(*buf, (@tpe).type_name)
         case TypeKind::UNION:
             buffer::append_char(*buf, 'U')
-            buffer::append_str(*buf, util::int_to_str(length((@tpe).name)))
-            buffer::append_str(*buf, (@tpe).name)
+            buffer::append_str(*buf, util::int_to_str(length((@tpe).type_name)))
+            buffer::append_str(*buf, (@tpe).type_name)
         case TypeKind::ENUM:
             buffer::append_char(*buf, 'E')
-            buffer::append_str(*buf, util::int_to_str(length((@tpe).name)))
-            buffer::append_str(*buf, (@tpe).name)
+            buffer::append_str(*buf, util::int_to_str(length((@tpe).type_name)))
+            buffer::append_str(*buf, (@tpe).type_name)
         case TypeKind::FUNCTION:
             buffer::append_char(*buf, 'F')
             for var i in 0..vector::length((@tpe).parameter_t) {
@@ -91,14 +242,24 @@ export def type_to_str(tpe: *Type) -> string {
         case TypeKind::ARRAY:
             buffer::append_char(*buf, 'A')
             buffer::append_str(*buf, type_to_str((@tpe).tpe))
+        case: assert(false)
     }
 
     return buffer::to_string(*buf)
 }
 
-export type State = struct {
-    filename: string
-    node: *parser::Node
+export def mangle_function_name(name: string, parameter_t: *vector::Vector) -> string {
+    var buf = buffer::make_buffer()
+    buffer::append_str(*buf, "_F")
+    buffer::append_str(*buf, util::int_to_str(length(name)))
+    buffer::append_str(*buf, name)
+    buffer::append_str(*buf, "__")
+
+    for var i in 0..vector::length(parameter_t) {
+        buffer::append_str(*buf, type_to_str(vector::get(parameter_t, i) !*Type))
+    }
+
+    return buffer::to_string(*buf)
 }
 
 // TODO Make this function variadic
