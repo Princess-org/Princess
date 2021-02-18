@@ -337,7 +337,7 @@ class Compiler(AstWalker):
 
     def walk_Identifier(self, node: model.Identifier):
         node.name = "_".join(node.ast) # TODO
-
+        
         if node in self.scope:
             value = self.scope[node]
             if isinstance(value.value, Scope):
@@ -360,12 +360,10 @@ class Compiler(AstWalker):
         alias = (module.alias or module.name).ast[-1]
         scope = compile_module(name, self.base_path, self.include_path)
         exports = {name:var for name, var in scope.dict.items() if var.share & ast.Share.Export}
-        #print("Import", name, scope, scope.dict)
         ns = self.scope.enter_namespace(alias)
         for k,v in exports.items():
             set_base_type(name, k, v.value, self.base_path)
         ns.dict.update(exports)
-        #print(ns.dict)
         return node
 
     def walk_Case(self, node: model.Case):
@@ -924,7 +922,11 @@ class Compiler(AstWalker):
                 call = ast.Call(left = ast.Identifier(name, "p_main"), args = [
                     ast.CallArg(value = ast.Identifier("args"))
                 ])
-                if not name in _modules:
+                # Make sure stuff is only imported once
+                # Originally this was checking if name is in _modules
+                # but that somehow failed, so we do this instead
+                if name not in _imported:
+                    _imported.add(name)
                     main_code.append(call) 
                 
                 code.append(n)
@@ -1036,6 +1038,7 @@ def compile(p_ast, scope = None, filename = None, base_path = Path(""), include_
     return csrc, main_type
 
 _modules = {} # compiled modules
+_imported = set() # Already imported modules
 def compile_module(module, base_path, include_path):
     if module in _modules:
         #print("Returning compiled module", module)
