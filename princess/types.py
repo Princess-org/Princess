@@ -75,16 +75,18 @@ class TypeWrapper(Type):
         super().__init__(None, name = name)
 
     def set_base_type(self, tpe):
+        if not tpe: return
         self._base_type = tpe
         self.__class__ = type(tpe.__class__.__name__,
             (self.__class__, tpe.__class__), {})
         self.__dict__.update(tpe.__dict__)
 
+    def __set_state__(self, dict):
+        self.__dict__.update(dict)
+        self.set_base_type(dict["_base_type"])
+
     def __reduce__(self):
-        if self._base_type:
-            return self._base_type.__reduce__()
-        else:
-            return super().__reduce__()
+        return (TypeWrapper, (), self.__dict__)
 
 class PointerT(Type):
     def __init__(self, tpe, name = None):

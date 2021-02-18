@@ -655,7 +655,7 @@ class Compiler(AstWalker):
                     tpe2.name = typename
                     assert_error(types.is_struct_or_union(tpe2), 
                         "Can only forward declare structs or unions")
-                    tpe.set_base_type(tpe2)
+                    set_base_type(self.filename, name, tpe2, self.base_path)
                 else: error("Redeclaration of %s" % name)
                 
                 node.type = tpe2
@@ -715,15 +715,21 @@ class Compiler(AstWalker):
             node.forward_declare = True
 
             if len(node.name[0].ast) == 2:
-                scope = self.scope.enter_namespace(node.name[0].ast[0])
+                fn = node.name[0].ast[0]
+                scope = self.scope.enter_namespace(fn)
                 typename = "_".join(node.name[0].ast)
-            else: scope = self.scope
+            else: 
+                scope = self.scope
+                fn = self.filename
 
-            tpe = types.TypeWrapper(name = typename)
+            if fn in _incomplete_types and name in _incomplete_types[fn]:
+                tpe = _incomplete_types[fn][name].tpe
+            else:
+                tpe = types.TypeWrapper(name = typename)
+            
             scope.create_type(name, tpe, share = node.share, identifier = typename)
 
-            if len(node.name[0].ast) == 2:
-                set_incomplete_type(node.name[0].ast[0], name, tpe, self.filename)
+            set_incomplete_type(fn, name, tpe, self.filename)
 
             node.type = tpe
             node.typename = typename
@@ -990,7 +996,7 @@ _incomplete_types = {}
 
 def set_base_type(filename, typename, tpe, base_path):
     incomplete_type = get_incomplete_type(filename, typename)
-    if incomplete_type:
+    if incomplete_type and not incomplete_type.tpe._base_type:
         incomplete_type.tpe.set_base_type(tpe)
         for dependant in incomplete_type.dependants:
             cache_module(dependant, base_path)
@@ -1013,8 +1019,11 @@ def cache_module(module, base_path):
     cache_file = base_path / (module + ".pc")
     scope = _modules[module]
 
+    print("Flushing cache on", cache_file)
+
     with open(cache_file, "wb") as fp:
         pickle.dump(scope, fp)
+    
 
 # TODO Rewrite these functions to use more sensible arguments
 def compile(p_ast, scope = None, filename = None, base_path = Path(""), include_path = Path("")):
@@ -1049,7 +1058,8 @@ def compile_module(module, base_path, include_path):
         scope = Scope(builtins)
 
         _modules[module] = scope
-        #print("Compiling module", module, scope)
+        
+        print("Compiling module", module)
         csrc, _ = compile(p_ast, scope, module, base_path, include_path)
         
         c_file_path = base_path / (file_path.stem + ".c")
@@ -1059,6 +1069,7 @@ def compile_module(module, base_path, include_path):
         with open(cache_file, "wb") as fp:
             pickle.dump(scope, fp)
     else:
+        print("Loading cached module", module)
         with open(cache_file, "rb") as fp:
             scope = pickle.load(fp)
         _modules[module] = scope
