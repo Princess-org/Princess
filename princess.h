@@ -1,12 +1,13 @@
 #ifndef PRINCESS_H
 #define PRINCESS_H
 
-#if defined(_WIN32)
+#ifdef _WIN32
 #define DLL_EXPORT __declspec(dllexport)
 #else
 #define DLL_EXPORT
 #endif
 
+#include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -16,7 +17,13 @@
 #include <assert.h>
 #include <signal.h>
 
-#if !defined(_WIN32)
+#ifdef _WIN32
+// TODO
+#else
+#include <linux/limits.h>
+#endif
+
+#ifndef _WIN32
 extern FILE *stdout;
 extern FILE *stderr;
 extern FILE *stdin;
@@ -52,6 +59,13 @@ typedef Array string;
 
 bool starts_with(const char *str, const char *pre) {
     return strncmp(pre, str, strlen(pre)) == 0;
+}
+
+void absolute_path(const char *pathname, char *resolved) {
+#ifdef _WIN32
+#else
+    realpath(pathname, resolved);
+#endif
 }
 
 #endif

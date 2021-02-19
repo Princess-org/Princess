@@ -225,9 +225,11 @@ compiler.builtins.create_function("allocate", types.FunctionT(c = True, macro = 
 compiler.builtins.create_function("zero_allocate", types.FunctionT(c = True, macro = _zero_allocate))
 compiler.builtins.create_function("reallocate", types.FunctionT(c = True, return_t = (types.void_p,), parameter_t = (types.void_p, types.size_t), macro = _reallocate))
 compiler.builtins.create_function("free", types.FunctionT(c = True, parameter_t = (types.void_p,)))
+
 compiler.builtins.create_function("print", types.FunctionT(c = True, return_t = (types.int,), macro = _print))
 compiler.builtins.create_function("error", types.FunctionT(c = True, return_t = (types.int,), macro = _error))
 compiler.builtins.create_function("concat", types.FunctionT(c = True, return_t = (types.int,), macro = _concat))
+
 compiler.builtins.create_function("open", types.FunctionT(c = True, return_t = (types.FILE_T,), parameter_t = (types.string, types.string), macro = _open))
 compiler.builtins.create_function("close", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.FILE_T,), macro = _close))
 compiler.builtins.create_function("write", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.FILE_T, types.void_p, types.size_t), macro = _write))
@@ -239,16 +241,23 @@ compiler.builtins.create_function("scan", types.FunctionT(c = True, return_t = (
 compiler.builtins.create_function("flush", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.FILE_T,), macro = _flush))
 compiler.builtins.create_function("seek", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.FILE_T, types.long, types.int), macro = _seek))
 compiler.builtins.create_function("tell", types.FunctionT(c = True, return_t = (types.int,), parameter_t = (types.FILE_T,), macro = _tell))
+
 compiler.builtins.create_function("pow", types.FunctionT(c = True, return_t = (types.double,), parameter_t = (types.double, types.double)))
 compiler.builtins.create_function("sqrt", types.FunctionT(c = True, return_t = (types.double,), parameter_t = (types.double,)))
+compiler.builtins.create_function("log2", types.FunctionT(c = True, return_t = (types.double,), parameter_t = (types.double,)))
+
+compiler.builtins.create_function("absolute_path", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.string, types.string)))
 compiler.builtins.create_function("exit", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.int,)))
 compiler.builtins.create_function("starts_with", types.FunctionT(c = True, return_t = (types.bool,), parameter_t = (types.string, types.string)))
 compiler.builtins.create_function("assert", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.int,)))
 compiler.builtins.create_function("length", types.FunctionT(c = True, return_t = (types.size_t,), parameter_t = (types.string,), macro = _length))
 compiler.builtins.create_function("memcopy", types.FunctionT(c = True, return_t = (types.void_p,), parameter_t = (types.void_p, types.void_p, types.size_t), macro = _memcopy))
+
 compiler.builtins.create_function("min", types.FunctionT(c = True, return_t = (types.double,), parameter_t = (types.double, types.double), macro = _min))
 compiler.builtins.create_function("max", types.FunctionT(c = True, return_t = (types.double,), parameter_t = (types.double, types.double), macro = _max))
-compiler.builtins.create_function("log2", types.FunctionT(c = True, return_t = (types.double,), parameter_t = (types.double,)))
+
+
+compiler.builtins.create_variable(Modifier.Let, "MAX_PATH", types.int)
 
 compiler.builtins.create_variable(Modifier.Let, "SEEK_SET", types.int)
 compiler.builtins.create_variable(Modifier.Let, "SEEK_CUR", types.int)
