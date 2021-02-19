@@ -1077,6 +1077,7 @@ def compile_module(module, base_path, include_path):
             scope = pickle.load(fp)
         _modules[module] = scope
         for module in scope.imports:
+            _imported.add(module)
             compile_module(module, base_path, include_path)
     
     return scope
