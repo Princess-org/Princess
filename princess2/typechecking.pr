@@ -17,6 +17,8 @@ export type TypeKind = enum {
     REFERENCE
     STATIC_ARRAY
     ARRAY
+    // This is used for functions that return multiple values
+    TUPLE
     // Used for enums
     NAMESPACE
     // Forward declaration
@@ -45,6 +47,8 @@ export type Type = struct {
     // Function
     return_t: *vector::Vector
     parameter_t: *vector::Vector
+    // Tuple
+    elements: *vector::Vector
 }
 
 type scope::Scope
@@ -141,6 +145,35 @@ export def equals(a: *Type, b: *Type) -> bool {
     }
 
     assert(false)
+}
+
+// Returns true if b is assignable to a
+def is_assignable(a: *Type, b: *Type) -> bool {
+    if equals(a, b) { return true }
+    if (@a).kind == TypeKind::WORD and
+        (@b).kind == TypeKind::WORD {
+        return (@a).size >= (@b).size
+    }
+    if (@a).kind == TypeKind::FLOAT {
+        if (@b).kind == TypeKind::WORD {
+            return true
+        }
+        if (@b).kind == TypeKind::FLOAT {
+            return (@a).size >= (@b).size
+        }
+    }
+    if (@a).kind == TypeKind::ARRAY {
+        if (@b).kind == TypeKind::STATIC_ARRAY {
+            return equals((@a).tpe, (@b).tpe)
+        }
+    }
+    if (@a).kind == TypeKind::POINTER and (@a).tpe == null {
+        return (@b).kind == TypeKind::POINTER
+    }
+    if (@a).kind == TypeKind::REFERENCE and (@a).tpe == null {
+        return (@b).kind == TypeKind::REFERENCE
+    }
+    return false
 }
 
 // Tries to convert type b to type a
@@ -288,20 +321,128 @@ export def errorn(node: *parser::Node, msg: string) {
 
 import scope
 import builtins
+import debug
 
 export def typecheck(node: *parser::Node, filename: string) -> *scope::Scope
 
 import compiler
+
+export def type_lookup(node: *parser::Node, state: *State) -> *Type {
+    if (@node).kind == parser::NodeKind::IDENTIFIER {
+        return scope::get_type((@state).scope, node)
+    }
+    // TODO
+    return null
+}
+
+def walk(node: *parser::Node, state: *State)
+
+def walk_Integer(node: *parser::Node, state: *State) {
+    (@node).tpe = builtins::int_  
+    (@node).scope = (@state).scope 
+}
 
 def walk_Identifier(node: *parser::Node, state: *State) {
     (@node).tpe = (@scope::get((@state).scope, node)).tpe
     (@node).scope = (@state).scope
 }
 
+def walk_VarDecl(node: *parser::Node, state: *State) {
+    (@node).scope = (@state).scope
+
+    let share = (@node).value.var_decl.share
+    let kw = (@node).value.var_decl.kw
+    let left = (@node).value.var_decl.left
+    let right = (@node).value.var_decl.right
+
+    let types = vector::make()
+    for var i in 0..vector::length(right) {
+        let value = vector::get(right, i) !*parser::Node
+        walk(value, state)
+        let tpe = (@value).tpe
+        if (@tpe).kind == TypeKind::TUPLE {
+            for var j in 0..vector::length((@tpe).elements) {
+                let tpe = vector::get((@tpe).elements, j) !*Type
+                vector::push(types, tpe)
+            }
+        } else {
+            vector::push(types, tpe)
+        }
+    }
+
+    if (kw == parser::VarDecl::CONST or 
+        kw == parser::VarDecl::LET) and 
+        vector::length(types) != vector::length(left) {
+        
+        errorn(node, "Unbalanced assignment\n")
+        return
+    }
+
+    if vector::length(types) > vector::length(left) {
+        errorn(node, "Too many values to assign\n")
+        return
+    }
+
+    for var i in 0..vector::length(left) {
+        let node = vector::get(left, i) !*parser::Node
+        if (@node).kind == parser::NodeKind::ID_DECL {
+            var tpe_node = (@node).value.id_decl.tpe
+            var tpe: *Type = null
+            if tpe_node {
+                tpe = type_lookup(tpe_node, state)
+            } else {
+                tpe = vector::get(types, i) !*Type
+            }
+
+            let ident = (@node).value.id_decl.value
+
+            assert((@ident).kind == parser::NodeKind::IDENTIFIER)
+
+            var value: *parser::Node = null
+            if i < vector::length(right) {
+                value = vector::get(right, i) !*parser::Node
+            }
+
+            if value {
+                var rhstpe = (@value).tpe
+
+                if not is_assignable(tpe, rhstpe) {
+                    errorn(node, "Incompatible types ")
+                    error(debug::type_to_str(tpe), " and ", debug::type_to_str(rhstpe), "\n")
+                    continue
+                }
+            }
+
+            scope::create_variable((@state).scope, node, share, kw, parser::identifier_to_str(ident), tpe, null)
+
+        } else if (@node).kind == parser::NodeKind::ID_ASSIGN {
+            walk((@node).value.expr, state)
+            let tpe = (@(@node).value.expr).tpe
+
+            if i >= vector::length(types) {
+                errorn(node, "Must assign a value\n")
+                continue
+            }
+
+            let rhstpe = vector::get(types, i) !*Type
+
+            if not is_assignable(tpe, rhstpe) {
+                errorn(node, "Incompatible types ")
+                error(debug::type_to_str(tpe), " and ", debug::type_to_str(rhstpe), "\n")
+                continue
+            }
+        } else { assert(false) }
+    }
+}
+
 def walk(node: *parser::Node, state: *State) {
     switch (@node).kind !int {
+        case parser::NodeKind::INTEGER:
+            walk_Integer(node, state)
         case parser::NodeKind::IDENTIFIER:
             walk_Identifier(node, state)
+        case parser::NodeKind::VAR_DECL:
+            walk_VarDecl(node, state)
         case:
             assert(false)
     }
