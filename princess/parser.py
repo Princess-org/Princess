@@ -18,6 +18,7 @@ import sys
 from tatsu.buffering import Buffer
 from tatsu.parsing import Parser
 from tatsu.parsing import tatsumasu, leftrec, nomemo
+from tatsu.parsing import leftrec, nomemo  # noqa
 from tatsu.util import re, generic_main  # noqa
 
 
@@ -2401,8 +2402,15 @@ class PrincessParser(Parser):
     @tatsumasu()
     def _stmt_case_rhs_(self):  # noqa
         self._n__()
-        self._value_()
-        self.name_last_node('@')
+        with self._group():
+            with self._choice():
+                with self._option():
+                    self._expr_range_()
+                    self.name_last_node('@')
+                with self._option():
+                    self._value_()
+                    self.name_last_node('@')
+                self._error('no available options')
 
     @tatsumasu('Case')
     def _stmt_case_(self):  # noqa

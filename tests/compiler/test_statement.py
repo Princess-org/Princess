@@ -124,3 +124,17 @@ def test_switch():
         }
     """
     assert eval(prog) == 10
+
+def test_switch_complex():
+    prog = """\
+        let i = 20
+        switch i {
+        case 0..10:
+            return 5
+        case 11..20:
+            return 10
+        case:
+            return 20
+        }
+    """
+    assert eval(prog) == 10

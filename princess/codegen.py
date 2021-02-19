@@ -167,6 +167,9 @@ class CCodeGen(CodeGenerator):
             fields.update(type = fields["type"].to_arraystring())
         template = "((Array){{{length}, ({type}){{ {value::, :} }}}})"
 
+    class Range(Renderer):
+        template = "{from_} ... {to}"
+
     class CallArg(Renderer):
         template = "{value}"
     class Call(Renderer):
