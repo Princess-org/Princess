@@ -17,6 +17,8 @@ export type TypeKind = enum {
     REFERENCE
     STATIC_ARRAY
     ARRAY
+    // Type for integer literal, this converts to all sorts of types
+    INT_LITERAL
     // This is used for functions that return multiple values
     TUPLE
     // Used for enums
@@ -49,6 +51,11 @@ export type Type = struct {
     parameter_t: *vector::Vector
     // Tuple
     elements: *vector::Vector
+    // int literal
+    i: uint64
+    // -1 for negative numbers, 1 for postive
+    // This is so that we can represent all possible numbers
+    sign: int
 }
 
 type scope::Scope
@@ -83,11 +90,10 @@ export def make_type(kind: TypeKind, name: string, node: *parser::Node) -> *Type
     return t
 }
 
-// This is used for typedefs
-export def copy(a: *Type, name: string) -> *Type {
+export def copy(a: *Type) -> *Type {
     var t = allocate(Type)
     (@t).kind = (@a).kind
-    (@t).name = name
+    (@t).name = (@a).name
     (@t).type_name = (@a).type_name
     (@t).size = (@a).size
     (@t).align = (@a).align
@@ -97,6 +103,8 @@ export def copy(a: *Type, name: string) -> *Type {
     (@t).fields = (@a).fields
     (@t).return_t = (@a).return_t
     (@t).parameter_t = (@a).parameter_t
+    (@t).i = (@a).i
+    (@t).sign = (@a).sign
     return t
 }
 
@@ -110,6 +118,9 @@ export def equals(a: *Type, b: *Type) -> bool {
     if kind == TypeKind::BOOL { return true }
     if kind == TypeKind::WORD or kind == TypeKind::FLOAT {
         return (@a).size == (@b).size
+    }
+    if kind == TypeKind::INT_LITERAL {
+        return (@a).i == (@b).i and (@a).sign == (@b).sign
     }
     if kind == TypeKind::ENUM or
         kind == TypeKind::STRUCT or
@@ -150,16 +161,37 @@ export def equals(a: *Type, b: *Type) -> bool {
 // Returns true if b is assignable to a
 def is_assignable(a: *Type, b: *Type) -> bool {
     if equals(a, b) { return true }
-    if (@a).kind == TypeKind::WORD and
-        (@b).kind == TypeKind::WORD {
-        return (@a).size >= (@b).size
+    if (@a).kind == TypeKind::WORD {
+        if (@b).kind == TypeKind::WORD {
+            return (@a).size >= (@b).size
+        }
+        if (@b).kind == TypeKind::INT_LITERAL {
+            if (@a).unsig {
+                if (@b).sign != 1 { return false }
+                switch (@a).size {
+                    case 1: return (@b).i <= util::MAX_UINT8
+                    case 2: return (@b).i <= util::MAX_UINT16
+                    case 4: return (@b).i <= util::MAX_UINT32
+                    case 8: return true
+                    case: assert(false)
+                }
+            } else {
+                if (@b).i > util::MAX_INT64 { return false }
+                var i: int64 = (@b).i * (@b).sign
+                switch (@a).size {
+                    case 1: return i >= util::MIN_INT8  and i <= util::MAX_INT8
+                    case 2: return i >= util::MIN_INT16 and i <= util::MAX_INT16
+                    case 4: return i >= util::MIN_INT32 and i <= util::MAX_INT32
+                    case 8: return true
+                    case: assert(false)
+                }
+            }
+        }
     }
     if (@a).kind == TypeKind::FLOAT {
-        if (@b).kind == TypeKind::WORD {
+        if (@b).kind == TypeKind::WORD or
+            (@b).kind == TypeKind::FLOAT {
             return true
-        }
-        if (@b).kind == TypeKind::FLOAT {
-            return (@a).size >= (@b).size
         }
     }
     if (@a).kind == TypeKind::ARRAY {
@@ -184,12 +216,20 @@ def convert_type_score(a: *Type, b: *Type) -> int {
     if equals(a, b) {
         return 0
     }
-    if ((@a).kind == TypeKind::WORD and (@b).kind == TypeKind::WORD or
-        (@a).kind == TypeKind::FLOAT and (@b).kind == TypeKind::FLOAT) and
+    if ((@a).kind == TypeKind::WORD or (@a).kind == TypeKind::FLOAT) and 
+        (@b).kind == TypeKind::INT_LITERAL {
+        if is_assignable(a, b) { return 0 }
+        else { return -1 }
+    }
+    if ((@a).kind == TypeKind::WORD and (@b).kind == TypeKind::WORD and
         (@a).size >= (@b).size {
         
         // TODO if we are ever going to allow a 24 bit value this is going to fail
         return log2((@a).size) !int - log2((@b).size) !int
+    }
+    if (@a).kind == TypeKind::FLOAT and (@b).kind == TypeKind::FLOAT {
+        // TODO This works because there are only two float sizes
+        return 1
     }
     if (@a).kind == TypeKind::FLOAT and
         (@b).kind == TypeKind::WORD {
@@ -337,8 +377,13 @@ export def type_lookup(node: *parser::Node, state: *State) -> *Type {
 
 def walk(node: *parser::Node, state: *State)
 
+let int_literal = make_type(TypeKind::INT_LITERAL, "int_literal", null)
+
 def walk_Integer(node: *parser::Node, state: *State) {
-    (@node).tpe = builtins::int_  
+    var tpe = copy(int_literal)
+    (@tpe).i = (@node).value.i
+    (@tpe).sign = 1
+    (@node).tpe = tpe
     (@node).scope = (@state).scope 
 }
 

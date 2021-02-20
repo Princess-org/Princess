@@ -62,6 +62,9 @@ class CCodeGen(CodeGenerator):
             fields.update(value = ("true" if fields["value"] else "false"))
         template = "{value}"   
     class Integer(Renderer):
+        def _render_fields(self, fields):
+            if fields["value"] > 0x7FFFFFFFFFFFFFF:
+                fields["value"] = "%dULL" % fields["value"]
         template = "{value}"
     class Float(Renderer):
         template = "{value}"
