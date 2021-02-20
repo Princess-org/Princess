@@ -131,6 +131,10 @@ def _concat(function, node, compiler: Compiler):
     node.left = ast.Identifier("sprintf")
     return node
 
+def _reopen(function, node, compiler: Compiler):
+    node.left = ast.Identifier("freopen")
+    return node
+
 def _open(function, node, compiler: Compiler):
     node.left = ast.Identifier("fopen")
     return node
@@ -230,6 +234,7 @@ compiler.builtins.create_function("print", types.FunctionT(c = True, return_t = 
 compiler.builtins.create_function("error", types.FunctionT(c = True, return_t = (types.int,), macro = _error))
 compiler.builtins.create_function("concat", types.FunctionT(c = True, return_t = (types.int,), macro = _concat))
 
+compiler.builtins.create_function("reopen", types.FunctionT(c = True, return_t = (types.FILE_T,), parameter_t = (types.string, types.string, types.FILE_T), macro = _reopen))
 compiler.builtins.create_function("open", types.FunctionT(c = True, return_t = (types.FILE_T,), parameter_t = (types.string, types.string), macro = _open))
 compiler.builtins.create_function("close", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.FILE_T,), macro = _close))
 compiler.builtins.create_function("write", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.FILE_T, types.void_p, types.size_t), macro = _write))
