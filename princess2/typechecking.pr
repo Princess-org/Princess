@@ -77,6 +77,12 @@ export def is_arithmetic(tpe: *Type) -> bool {
         (@tpe).kind == TypeKind::INT_LITERAL
 }
 
+export def is_integer(tpe: *Type) -> bool {
+    if not tpe { return false }
+    return (@tpe).kind == TypeKind::WORD or 
+        (@tpe).kind == TypeKind::INT_LITERAL
+}
+
 def append_module(name: string, node: *parser::Node) -> string {
     if node {
         var buf = buffer::make_buffer()
@@ -175,11 +181,11 @@ def is_assignable(a: *Type, b: *Type) -> bool {
         }
         if (@b).kind == TypeKind::INT_LITERAL {
             if (@a).unsig {
-                if (@b).sign != 1 { return false }
+                var i: uint64 = (@b).i * (@b).sign
                 switch (@a).size {
-                    case 1: return (@b).i <= util::MAX_UINT8
-                    case 2: return (@b).i <= util::MAX_UINT16
-                    case 4: return (@b).i <= util::MAX_UINT32
+                    case 1: return i <= util::MAX_UINT8
+                    case 2: return i <= util::MAX_UINT16
+                    case 4: return i <= util::MAX_UINT32
                     case 8: return true
                     case: assert(false)
                 }
@@ -262,8 +268,7 @@ def convert_type_score(a: *Type, b: *Type) -> int {
 // and a positive integer if the argument types need to be converted.
 // -1 is returned if the argument types don't match.
 export def overload_score(a: *Type, b: *Type) -> int {
-    assert((@a).kind == TypeKind::FUNCTION)
-    assert((@b).kind == TypeKind::FUNCTION)
+    assert(is_function(a) and is_function(b))
 
     let param_a = (@a).parameter_t
     let param_b = (@b).parameter_t
@@ -381,6 +386,36 @@ export def type_lookup(node: *parser::Node, state: *State) -> *Type {
     }
     // TODO
     return null
+}
+
+// Returns the common type of two arithmetic types
+// byte -> ubyte -> short -> ushort -> int -> uint -> long -> ulong
+def common_type(a: *Type, b: *Type) -> *Type {
+    assert(is_arithmetic(a) and is_arithmetic(b))
+
+    if (@a).kind == TypeKind::INT_LITERAL {
+        a = builtins::int_
+    }
+    if (@b).kind == TypeKind::INT_LITERAL {
+        b = builtins::int_
+    }
+
+    if (@a).kind == TypeKind::FLOAT and (@b).kind == TypeKind::WORD {
+        return a
+    }
+    if (@a).kind == (@b).kind {
+        if (@a).size == (@b).size {
+            if (@b).unsig {
+                return b
+            } else {
+                return a
+            }
+        } else if (@a).size > (@b).size {
+            return a 
+        } else {
+            return b
+        }
+    }
 }
 
 def walk(node: *parser::Node, state: *State)
@@ -568,14 +603,58 @@ def walk_USub(node: *parser::Node, state: *State) {
         errorn(node, "Incompatible type ")
         error(debug::type_to_str(tpe), ", must be arithmetic type\n")
     }
-    if (@tpe).unsig {
+    /*if (@tpe).unsig {
         errorn(node, "Negation on unsigned type ")
         error(debug::type_to_str(tpe))
-    }
+    }*/ // TODO Maybe give a warning on this?
     if (@tpe).kind == TypeKind::INT_LITERAL {
         (@tpe).sign = -(@tpe).sign
     }
     (@node).tpe = tpe
+    (@node).scope = (@state).scope
+}
+
+def walk_ArithmeticOp(node: *parser::Node, state: *State) {
+    let left = (@node).value.bin_op.left
+    let right = (@node).value.bin_op.right
+    walk(left, state)
+    walk(right, state)
+
+    (@node).tpe = common_type((@left).tpe, (@right).tpe)
+    (@node).scope = (@state).scope
+}
+
+def walk_BitwiseOp(node: *parser::Node, state: *State) {
+    let left = (@node).value.bin_op.left
+    let right = (@node).value.bin_op.right
+    walk(left, state)
+    walk(right, state)
+
+    if not is_integer((@left).tpe) or not is_integer((@right).tpe) {
+        errorn(node, "Invalid operands of type ")
+        error(debug::type_to_str((@left).tpe), " and ", debug::type_to_str((@right).tpe), "to bitwise operator")
+    }
+
+    (@node).tpe = common_type((@left).tpe, (@right).tpe)
+    (@node).scope = (@state).scope
+}
+
+def walk_BooleanOp(node: *parser::Node, state: *State) {
+    let left = (@node).value.bin_op.left
+    let right = (@node).value.bin_op.right
+    walk(left, state)
+    walk(right, state)
+
+    (@node).tpe = builtins::bool_
+    (@node).scope = (@state).scope
+}
+
+def walk_Cast(node: *parser::Node, state: *State) {
+    let left = (@node).value.bin_op.left
+    let right = (@node).value.bin_op.right
+    walk(left, state)
+    walk(right, state)
+    (@node).tpe = type_lookup(right, state)
     (@node).scope = (@state).scope
 }
 
@@ -597,6 +676,8 @@ def walk(node: *parser::Node, state: *State) {
             walk_Float(node, state)
         case parser::NodeKind::IDENTIFIER:
             walk_Identifier(node, state)
+        case parser::NodeKind::CAST:
+            walk_Cast(node, state)
         case parser::NodeKind::ASSIGN:
             walk_Assign(node, state)
         case parser::NodeKind::VAR_DECL:
@@ -605,6 +686,12 @@ def walk(node: *parser::Node, state: *State) {
             walk_UAdd(node, state)
         case parser::NodeKind::USUB:
             walk_USub(node, state)
+        case parser::NodeKind::ADD..parser::NodeKind::MOD:
+            walk_ArithmeticOp(node, state)
+        case parser::NodeKind::BAND..parser::NodeKind::BXOR:
+            walk_BitwiseOp(node, state)
+        case parser::NodeKind::AND..parser::NodeKind::OR:
+            walk_BooleanOp(node, state)
         case:
             assert(false)
     }

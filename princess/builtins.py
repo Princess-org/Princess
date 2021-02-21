@@ -261,7 +261,7 @@ compiler.builtins.create_function("memcopy", types.FunctionT(c = True, return_t 
 compiler.builtins.create_function("min", types.FunctionT(c = True, return_t = (types.double,), parameter_t = (types.double, types.double), macro = _min))
 compiler.builtins.create_function("max", types.FunctionT(c = True, return_t = (types.double,), parameter_t = (types.double, types.double), macro = _max))
 
-
+compiler.builtins.create_variable(Modifier.Let, "WIN32", types.bool)
 compiler.builtins.create_variable(Modifier.Let, "MAX_PATH", types.int)
 
 compiler.builtins.create_variable(Modifier.Let, "SEEK_SET", types.int)
