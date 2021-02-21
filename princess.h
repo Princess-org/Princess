@@ -17,6 +17,11 @@
 #include <assert.h>
 #include <signal.h>
 
+#ifdef _WIN32
+#else
+#include <linux/limits.h>
+#endif
+
 #ifndef _WIN32
 extern FILE *stdout;
 extern FILE *stderr;

@@ -251,18 +251,20 @@ compiler.builtins.create_function("pow", types.FunctionT(c = True, return_t = (t
 compiler.builtins.create_function("sqrt", types.FunctionT(c = True, return_t = (types.double,), parameter_t = (types.double,)))
 compiler.builtins.create_function("log2", types.FunctionT(c = True, return_t = (types.double,), parameter_t = (types.double,)))
 
+compiler.builtins.create_function("getenv", types.FunctionT(c = True, return_t = (types.string,), parameter_t = (types.string,)))
 compiler.builtins.create_function("absolute_path", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.string, types.string)))
 compiler.builtins.create_function("exit", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.int,)))
 compiler.builtins.create_function("starts_with", types.FunctionT(c = True, return_t = (types.bool,), parameter_t = (types.string, types.string)))
 compiler.builtins.create_function("assert", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.int,)))
 compiler.builtins.create_function("length", types.FunctionT(c = True, return_t = (types.size_t,), parameter_t = (types.string,), macro = _length))
+compiler.builtins.create_function("strlen", types.FunctionT(c = True, return_t = (types.size_t,), parameter_t = (types.string,)))
 compiler.builtins.create_function("memcopy", types.FunctionT(c = True, return_t = (types.void_p,), parameter_t = (types.void_p, types.void_p, types.size_t), macro = _memcopy))
 
 compiler.builtins.create_function("min", types.FunctionT(c = True, return_t = (types.double,), parameter_t = (types.double, types.double), macro = _min))
 compiler.builtins.create_function("max", types.FunctionT(c = True, return_t = (types.double,), parameter_t = (types.double, types.double), macro = _max))
 
 compiler.builtins.create_variable(Modifier.Let, "WIN32", types.bool)
-compiler.builtins.create_variable(Modifier.Let, "MAX_PATH", types.int)
+compiler.builtins.create_variable(Modifier.Let, "PATH_MAX", types.int)
 
 compiler.builtins.create_variable(Modifier.Let, "SEEK_SET", types.int)
 compiler.builtins.create_variable(Modifier.Let, "SEEK_CUR", types.int)
