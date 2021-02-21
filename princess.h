@@ -17,16 +17,17 @@
 #include <assert.h>
 #include <signal.h>
 
-#ifdef _WIN32
-// TODO
-#else
-#include <linux/limits.h>
-#endif
-
 #ifndef _WIN32
 extern FILE *stdout;
 extern FILE *stderr;
 extern FILE *stdin;
+#endif
+
+// This is so that we have access to the define at runtime
+#ifdef _WIN32
+const bool WIN32 = true;
+#else
+const bool WIN32 = false;
 #endif
 
 typedef uint8_t     uint8;
