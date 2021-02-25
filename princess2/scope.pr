@@ -19,12 +19,17 @@ export type Value = struct {
 export type Scope = struct {
     parent: *Scope
     fields: *map::Map
+    // This is a list of imported scopes,
+    // for resolving names from other modules without
+    // specifying the full path
+    imports: *vector::Vector
 }
 
 export def enter_scope(scope: *Scope) -> *Scope {
     var s = allocate(Scope)
     (@s).parent = scope
     (@s).fields = map::make()
+    (@s).imports = null
     return s
 }
 
@@ -32,14 +37,123 @@ export def exit_scope(scope: *Scope) -> *Scope {
     return (@scope).parent
 }
 
+export def get(scope: *Scope, id: *parser::Node) -> *Value
+
+def find_function(v: *Value, parameter_t: *vector::Vector, score: *int) -> *Value {
+    if not v { return null }
+    if not typechecking::is_function((@v).tpe) {
+        return null
+    }
+    var found: *Value = null
+    loop {
+        let s = typechecking::overload_score((@v).tpe, parameter_t)
+        if s >= 0 {
+            if s < @score {
+                @score = s
+                found = v
+            }
+        }
+        v = (@v).next
+        if not v { break }
+    }
+    return found
+}
+
+export def get_function(scope: *Scope, id: *parser::Node, parameter_t: *vector::Vector) -> *Value {
+    assert((@id).kind == parser::NodeKind::IDENTIFIER)
+    if vector::length((@id).value.body) == 1 {
+        let name = @(vector::get((@id).value.body, 0) !*string)
+        var score = util::MAX_INT32 !int
+        var value = find_function(map::get((@scope).fields, name), parameter_t, *score)
+        let scores = vector::make()
+        if (@scope).imports {
+            for var i in 0..vector::length((@scope).imports) {
+                let scope2 = vector::get((@scope).imports, i) !*Scope
+                var value2 = find_function(map::get((@scope2).fields, name), parameter_t, *score)
+                if value2 {
+                    value = value2
+                    var i = allocate(int)
+                    @i = score
+                    vector::push(scores, i)
+                }
+            }
+            var found = false
+            if vector::length(scores) > 1 {
+                // Check if there was an ambiguous reference 
+                for var i in 0..vector::length(scores) {
+                    var score2 = vector::get(scores, i) !*int
+                    if @score2 == score {
+                        if found {
+                            typechecking::errorn(id, "Ambiguous reference\n")
+                            return null
+                        }
+                        found = true
+                    }
+                }
+            }
+        }
+        if value { return value }
+        if (@scope).parent {
+            return get_function((@scope).parent, id, parameter_t)
+        }
+        return null
+    } else {
+        let head = vector::head_vec((@id).value.body)
+        let tail = vector::tail((@id).value.body)
+
+        let id_head = parser::copy_node(id)
+        (@id_head).value.body = head
+        let id_tail = parser::copy_node(id)
+        (@id_tail).value.body = tail
+
+        let s = get(scope, id_head)
+        if s {
+            if (@(@s).tpe).kind != typechecking::TypeKind::NAMESPACE {
+                typechecking::errorn(id, "Use of :: on non namespace\n")
+                return null
+            }
+            return get_function((@s).value !*Scope, id_tail, parameter_t)
+        }
+        return null
+    }
+}
+
+def unwrap_function_without_parameters(v: *Value) -> *Value {
+    if not v { return null }
+    if not typechecking::is_function((@v).tpe) {
+        return v
+    }
+    loop {
+        if vector::length((@(@v).tpe).parameter_t) == 0 {
+            return v
+        }
+        v = (@v).next
+        if not v { break }
+    }
+    return null
+}
+
 export def get(scope: *Scope, id: *parser::Node) -> *Value {
     assert((@id).kind == parser::NodeKind::IDENTIFIER)
     if vector::length((@id).value.body) == 1 {
         let name = @(vector::get((@id).value.body, 0) !*string)
-        var value = map::get((@scope).fields, name)
-        if value {
-            return value
+        var value = unwrap_function_without_parameters(map::get((@scope).fields, name))
+        if value { return value }
+        if (@scope).imports {
+            for var i in 0..vector::length((@scope).imports) {
+                let scope2 = vector::get((@scope).imports, i) !*Scope
+                var value2 = unwrap_function_without_parameters(map::get((@scope2).fields, name))
+                if value2 and value {
+                    // TODO save location of values to give better error messages
+                    typechecking::errorn(id, "Ambiguous reference\n")
+                    return null
+                }
+                if value2 {
+                    value = value2
+                }
+            }
         }
+        if value { return value }
         if (@scope).parent {
             return get((@scope).parent, id)
         }
@@ -50,13 +164,15 @@ export def get(scope: *Scope, id: *parser::Node) -> *Value {
 
         let id_head = parser::copy_node(id)
         (@id_head).value.body = head
-
         let id_tail = parser::copy_node(id)
         (@id_tail).value.body = tail
 
         let s = get(scope, id_head)
         if s {
-            assert((@(@s).tpe).kind == typechecking::TypeKind::NAMESPACE)
+            if (@(@s).tpe).kind != typechecking::TypeKind::NAMESPACE {
+                typechecking::errorn(id, "Use of :: on non namespace\n")
+                return null
+            }
             return get((@s).value !*Scope, id_tail)
         }
         return null
@@ -76,6 +192,7 @@ export def get_const_value(scope: *Scope, id: *parser::Node) -> *Value {
 
 export def get_type(scope: *Scope, id: *parser::Node) -> *typechecking::Type {
     let value = get_const_value(scope, id)
+    if not value { return null }
     assert((@value).modifier == parser::VarDecl::TYPE)
     return (@value).value !*typechecking::Type
 }
@@ -147,7 +264,7 @@ export def create_function(
         }
         var next = (@val).next
         while next {
-            if typechecking::overload_score((@next).tpe, tpe) == 0 {
+            if typechecking::overload_score((@next).tpe, (@tpe).parameter_t) == 0 {
                 typechecking::errorn(node, "Function ")
                 error("\"", name, "\" was already declared previously (same arguments)\n")
             }
