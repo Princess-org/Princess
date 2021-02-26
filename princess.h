@@ -17,22 +17,16 @@
 #include <assert.h>
 #include <signal.h>
 
-#ifdef _WIN32
-#else
-#include <linux/limits.h>
-#endif
-
 #ifndef _WIN32
+#include <linux/limits.h>
+
 extern FILE *stdout;
 extern FILE *stderr;
 extern FILE *stdin;
-#endif
 
-// This is so that we have access to the define at runtime
-#ifdef _WIN32
-const bool WIN32 = true;
+#define WIN32 0
 #else
-const bool WIN32 = false;
+#include <fileapi.h>
 #endif
 
 typedef uint8_t     uint8;
@@ -69,8 +63,10 @@ bool starts_with(const char *str, const char *pre) {
 
 void absolute_path(const char *pathname, char *resolved) {
 #ifdef _WIN32
+    GetFullPathNameA(pathname, MAX_PATH, resolved, NULL);
 #else
-    realpath(pathname, resolved);
+    if (resolved)
+        realpath(pathname, resolved);
 #endif
 }
 
