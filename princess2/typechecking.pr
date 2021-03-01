@@ -29,6 +29,14 @@ export type TypeKind = enum {
     STUB
 }
 
+export type Type
+
+export type StructMember = struct {
+    name: string
+    tpe: *Type
+    offset: size_t
+}
+
 export type Type = struct {
     kind: TypeKind
     // Name of the type as used by the source code
@@ -44,8 +52,8 @@ export type Type = struct {
     length: size_t
     // Type both used for array/pointer and enum
     tpe: *Type
-    // Fields for both struct and enum
-    fields: *map::Map
+    // Fields for struct, array of StructMember
+    fields: [StructMember]
     // Function
     return_t: *vector::Vector
     parameter_t: *vector::Vector
@@ -107,7 +115,18 @@ def append_module(name: string, node: *parser::Node) -> string {
 }
 
 export def make_type(kind: TypeKind, node: *parser::Node) -> *Type {
+    assert((@node).kind == parser::NodeKind::IDENTIFIER)
     let name = parser::identifier_to_str(node)
+    var t = allocate(Type)
+    (@t).kind = kind
+    (@t).type_name = append_module(name, node)
+    (@t).name = name
+
+    return t
+}
+
+def make_anonymous_type(kind: TypeKind, node: *parser::Node) -> *Type {
+    let name = util::make_unique_name()
     var t = allocate(Type)
     (@t).kind = kind
     (@t).type_name = append_module(name, node)
@@ -407,7 +426,76 @@ def unbox_int_literal(tpe: *Type) -> *Type {
 def type_lookup(node: *parser::Node, state: *State) -> *Type {
     if (@node).kind == parser::NodeKind::IDENTIFIER {
         return scope::get_type((@state).scope, node)
+    } else if (@node).kind == parser::NodeKind::STRUCT_T {
+        let tpe = make_anonymous_type(TypeKind::STRUCT, node)
+        
+        let length = vector::length((@node).value.body)
+        if length == 0 {
+            errorn(node, "Empty struct not allowed\n")
+            return null
+        }
+
+        let fields = allocate(StructMember, length)
+
+        var offset = 0
+        var align = 1
+        for var i in 0..length {
+            let field = vector::get((@node).value.body, i) !*parser::Node
+            // TODO Allow anonymous structs
+            assert((@field).kind == parser::NodeKind::ID_DECL_STRUCT)
+            
+            var name = parser::identifier_to_str((@field).value.id_decl_struct.ident)
+            var tpe = type_lookup((@field).value.id_decl_struct.tpe, state)
+            
+            offset = (ceil(offset / (@tpe).align !double) * (@tpe).align) !int
+            align = util::lcm(align, (@tpe).align)
+
+            fields[i] = { name, tpe, offset } !StructMember
+            offset += (@tpe).size
+        }
+        offset = (ceil(offset / align !double) * align) !int
+
+        (@tpe).size = offset
+        (@tpe).align = align
+        (@tpe).fields = fields
+
+        return tpe
+    } else if (@node).kind == parser::NodeKind::UNION_T {
+        let tpe = make_anonymous_type(TypeKind::UNION, node)
+
+        let length = vector::length((@node).value.body)
+        if length == 0 {
+            errorn(node, "Empty union not allowed\n")
+            return null
+        }
+
+        let fields = allocate(StructMember, length)
+
+        var size = 0
+        var align = 1
+        for var i in 0..length {
+            let field = vector::get((@node).value.body, i) !*parser::Node
+            // TODO Allow anonymous structs
+            assert((@field).kind == parser::NodeKind::ID_DECL_STRUCT)
+
+            var name = parser::identifier_to_str((@field).value.id_decl_struct.ident)
+            var tpe = type_lookup((@field).value.id_decl_struct.tpe, state)
+
+            fields[i] = { name, tpe, 0 } !StructMember
+
+            size = max((@tpe).size, size) !int
+            align = max((@tpe).align, align) !int
+        }
+
+        (@tpe).size = size
+        (@tpe).align = align
+        (@tpe).fields = fields
+
+        return tpe
     }
+
+    error((@node).kind !int, "\n")
+    assert(false)
     // TODO
     return null
 }
@@ -815,7 +903,13 @@ def walk_TypeDecl(node: *parser::Node, state: *State) {
         }
         var tpe: *Type
         if value {
-            tpe = type_lookup(value, state)
+            tpe = copy(type_lookup(value, state))
+            (@tpe).name = parser::identifier_to_str(name)
+            if (@value).kind == parser::NodeKind::STRUCT_T or
+                (@value).kind == parser::NodeKind::UNION_T {
+                // Name anonymous struct or union
+                (@tpe).type_name = append_module((@tpe).name, node)
+            }
         } else {
             tpe = make_type(TypeKind::STUB, name)
         }
