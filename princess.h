@@ -16,6 +16,7 @@
 #include <math.h>
 #include <assert.h>
 #include <signal.h>
+#include <stdarg.h>
 
 #ifndef _WIN32
 #include <linux/limits.h>
@@ -59,6 +60,15 @@ typedef Array string;
 
 bool starts_with(const char *str, const char *pre) {
     return strncmp(pre, str, strlen(pre)) == 0;
+}
+
+int concat(char *str, const char *fmt, ...) {
+    va_list aptr;
+    str += strlen(str);
+    va_start(aptr, fmt);
+    int chars = vsprintf(str, fmt, aptr);
+    va_end(aptr);
+    return chars;
 }
 
 void absolute_path(const char *pathname, char *resolved) {

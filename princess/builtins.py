@@ -128,7 +128,6 @@ def _concat(function, node, compiler: Compiler):
     node.args[:] = [node.args[0]] + [ast.CallArg(value = ast.String("".join(to_c_format_specifier(
         compiler.scope.type_lookup(a.value.type)) for a in node.args[1:])))] + node.args[1:]
 
-    node.left = ast.Identifier("sprintf")
     return node
 
 def _reopen(function, node, compiler: Compiler):
