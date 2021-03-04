@@ -19,8 +19,6 @@ export type TypeKind = enum {
     ARRAY
     // Type for integer literal, this converts to all sorts of types
     INT_LITERAL
-    // This is used for functions that return multiple values
-    TUPLE
     // Used for enums
     NAMESPACE
     // Auto cast, this type will convert to anything
@@ -57,8 +55,6 @@ export type Type = struct {
     // Function
     return_t: *vector::Vector
     parameter_t: *vector::Vector
-    // Tuple
-    elements: *vector::Vector
     // int literal
     i: uint64
     // -1 for negative numbers, 1 for postive
@@ -309,7 +305,7 @@ export def overload_score(a: *Type, param_b: *vector::Vector) -> int {
             }
             if not left { return -1 }
         } else {
-            left = vector::get(param_b, i) !*NamedParameter
+            left = vector::get(param_a, i) !*NamedParameter
         }
         let score = convert_type_score((@left).value, (@right).value)
         if score < 0 { return -1 }
@@ -406,6 +402,14 @@ export def errorn(node: *parser::Node, msg: string) {
     error(msg)
 }
 
+def last_ident_to_str(node: *parser::Node) -> string {
+    assert((@node).kind == parser::NodeKind::IDENTIFIER)
+    if vector::length((@node).value.body) > 1 {
+        errorn(node, "Expected plain identifier without path\n")
+    }
+    return @(vector::get((@node).value.body, 0) !*string)
+}
+
 import scope
 import builtins
 import debug
@@ -444,7 +448,7 @@ def type_lookup(node: *parser::Node, state: *State) -> *Type {
             // TODO Allow anonymous structs
             assert((@field).kind == parser::NodeKind::ID_DECL_STRUCT)
             
-            var name = parser::identifier_to_str((@field).value.id_decl_struct.ident)
+            var name = last_ident_to_str((@field).value.id_decl_struct.ident)
             var tpe = type_lookup((@field).value.id_decl_struct.tpe, state)
             
             offset = (ceil(offset / (@tpe).align !double) * (@tpe).align) !int
@@ -478,7 +482,7 @@ def type_lookup(node: *parser::Node, state: *State) -> *Type {
             // TODO Allow anonymous structs
             assert((@field).kind == parser::NodeKind::ID_DECL_STRUCT)
 
-            var name = parser::identifier_to_str((@field).value.id_decl_struct.ident)
+            var name = last_ident_to_str((@field).value.id_decl_struct.ident)
             var tpe = type_lookup((@field).value.id_decl_struct.tpe, state)
 
             fields[i] = { name, tpe, 0 } !StructMember
@@ -580,9 +584,10 @@ def collapse_types(right: *vector::Vector, state: *State) -> *vector::Vector {
         let value = vector::get(right, i) !*parser::Node
         walk(value, state)
         let tpe = (@value).tpe
-        if (@tpe).kind == TypeKind::TUPLE {
-            for var j in 0..vector::length((@tpe).elements) {
-                let tpe = vector::get((@tpe).elements, j) !*Type
+        if (@tpe).kind == TypeKind::FUNCTION {
+            // TODO Error on function with 1
+            for var j in 0..vector::length((@tpe).return_t) {
+                let tpe = vector::get((@tpe).return_t, j) !*Type
                 vector::push(types, tpe)
             }
         } else {
@@ -656,8 +661,13 @@ def walk_VarDecl(node: *parser::Node, state: *State) {
             if tpe_node {
                 tpe = type_lookup(tpe_node, state)
             } else {
-                tpe = vector::get(types, i) !*Type
-                tpe = unbox_int_literal(tpe)
+                if i < vector::length(types) {
+                    tpe = vector::get(types, i) !*Type
+                    tpe = unbox_int_literal(tpe)
+                } else {
+                    errorn(node, "Need to specify a type\n")
+                    continue
+                }
             }
 
             let ident = (@node).value.id_decl.value
@@ -855,8 +865,7 @@ def walk_Def(node: *parser::Node, state: *State) {
         let named = allocate(NamedParameter)
         let name = (@param).value.param.name
         let tpe = type_lookup((@param).value.param.tpe, state)
-        // TODO Make it illegal to use foo::bar as name
-        (@named).name = parser::identifier_to_str(name)
+        (@named).name = last_ident_to_str(name)
         (@named).value = tpe
 
         if body {
@@ -917,6 +926,46 @@ def walk_TypeDecl(node: *parser::Node, state: *State) {
     }
 }
 
+def walk_Return(node: *parser::Node, state: *State) {
+    for var i in 0..vector::length((@node).value.body) {
+        walk(vector::get((@node).value.body, i), state)
+    }
+}
+
+def walk_FuncCall(node: *parser::Node, state: *State) {
+    var arguments = vector::make()
+
+    for var i in 0..vector::length((@node).value.func_call.args) {
+        let n = vector::get((@node).value.func_call.args, i) !*parser::Node
+        walk(n, state)
+        let np = allocate(NamedParameter)
+        (@np).name = ""
+        (@np).value = (@n).tpe
+        vector::push(arguments, np)
+    }
+    for var i in 0..vector::length((@node).value.func_call.kwargs) {
+        let n = vector::get((@node).value.func_call.kwargs, i) !*parser::Node
+        walk((@n).value.named_arg.value, state)
+        let np = allocate(NamedParameter)
+        (@np).name = last_ident_to_str((@n).value.named_arg.name)
+        (@np).value = (@n).tpe
+        vector::push(arguments, np)
+    }
+    // TODO What about function pointers and foo.bar(baz) == bar(foo, baz)
+    let left = (@node).value.func_call.left
+    let function = scope::get_function((@state).scope, left, arguments)
+
+    if not function {
+        errorn(left, "Function \"")
+        error(parser::identifier_to_str(left), "\" not found\n")
+    } else {
+        (@node).tpe = (@function).tpe
+    }
+
+    
+    (@node).scope = (@state).scope
+}
+
 def walk(node: *parser::Node, state: *State) {
     // Something is seriously going wrong here
     if not node { assert(false) }
@@ -960,6 +1009,10 @@ def walk(node: *parser::Node, state: *State) {
             walk_BooleanOp(node, state)
         case parser::NodeKind::TYPE_DECL:
             walk_TypeDecl(node, state)
+        case parser::NodeKind::RETURN:
+            walk_Return(node, state)
+        case parser::NodeKind::FUNC_CALL:
+            walk_FuncCall(node, state)
         case:
             assert(false)
     }
