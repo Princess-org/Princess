@@ -23,7 +23,7 @@ def test_concat_malloc():
     prog = """\
         let a = "Hello"
         let b = "World"
-        var c = allocate(char, 12)
+        var c = zero_allocate(char, 12)
         concat(c, a, " ", b)
         return c
     """
