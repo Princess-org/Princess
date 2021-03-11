@@ -10,7 +10,7 @@
 # Any changes you make to it will be overwritten the next time
 # the file is generated.
 
-from __future__ import print_function, division, absolute_import, unicode_literals
+from __future__ import generator_stop
 
 from tatsu.objectmodel import Node
 from tatsu.semantics import ModelBuilderSemantics

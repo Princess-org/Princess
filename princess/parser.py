@@ -11,7 +11,7 @@
 # the file is generated.
 
 
-from __future__ import print_function, division, absolute_import, unicode_literals
+from __future__ import generator_stop
 
 import sys
 
@@ -23,40 +23,40 @@ from tatsu.util import re, generic_main  # noqa
 
 
 KEYWORDS = {
-    'and',
-    'as',
-    'break',
-    'case',
-    'const',
-    'continue',
-    'def',
-    'do',
-    'else',
-    'enum',
-    'export',
-    'false',
-    'for',
-    'from',
-    'go_to',
-    'if',
-    'import',
-    'in',
-    'label',
-    'let',
-    'loop',
-    'not',
-    'null',
-    'or',
-    'return',
-    'size_of',
-    'struct',
-    'switch',
-    'true',
-    'type',
-    'unsigned',
-    'var',
     'while',
     'word',
+    'else',
+    'unsigned',
+    'let',
+    'export',
+    'label',
+    'or',
+    'size_of',
+    'def',
+    'if',
+    'const',
+    'switch',
+    'null',
+    'var',
+    'import',
+    'true',
+    'from',
+    'loop',
+    'struct',
+    'false',
+    'not',
+    'type',
+    'return',
+    'enum',
+    'continue',
+    'for',
+    'do',
+    'as',
+    'in',
+    'go_to',
+    'and',
+    'break',
+    'case',
 }  # type: ignore
 
 
@@ -72,7 +72,7 @@ class PrincessBuffer(Buffer):
         namechars='_',
         **kwargs
     ):
-        super(PrincessBuffer, self).__init__(
+        super().__init__(
             text,
             whitespace=whitespace,
             nameguard=nameguard,
@@ -96,12 +96,12 @@ class PrincessParser(Parser):
         parseinfo=True,
         keywords=None,
         namechars='_',
-        buffer_class=PrincessBuffer,
+        tokenizercls=PrincessBuffer,
         **kwargs
     ):
         if keywords is None:
             keywords = KEYWORDS
-        super(PrincessParser, self).__init__(
+        super().__init__(
             whitespace=whitespace,
             nameguard=nameguard,
             comments_re=comments_re,
@@ -111,7 +111,7 @@ class PrincessParser(Parser):
             parseinfo=parseinfo,
             keywords=keywords,
             namechars=namechars,
-            buffer_class=buffer_class,
+            tokenizercls=tokenizercls,
             **kwargs
         )
 

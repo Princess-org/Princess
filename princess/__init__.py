@@ -6,7 +6,7 @@ class instance:
 
 def load_parser():
     from princess import parser, model, lexer
-    instance.parser = parser.PrincessParser(buffer_class = lexer.Lexer)
+    instance.parser = parser.PrincessParser(tokenizercls = lexer.Lexer)
 
 def parse(input: str, **kwargs):
     from princess import semantics

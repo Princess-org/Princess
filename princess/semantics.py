@@ -17,7 +17,7 @@ def decode_escape_seq(ast):
         '"': '"', '\'': '\'', '\\': '\\'}[e]
 
 def char_to_str(ast):
-    if isinstance(ast, list): return decode_escape_seq(ast)
+    if isinstance(ast, tuple): return decode_escape_seq(ast)
     else: return ast
 
 class CompareOp(str, Enum):
