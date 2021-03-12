@@ -23,40 +23,40 @@ from tatsu.util import re, generic_main  # noqa
 
 
 KEYWORDS = {
-    'while',
-    'word',
-    'else',
-    'unsigned',
-    'let',
-    'export',
-    'label',
-    'or',
-    'size_of',
-    'def',
-    'if',
-    'const',
-    'switch',
-    'null',
-    'var',
-    'import',
-    'true',
-    'from',
-    'loop',
-    'struct',
-    'false',
-    'not',
-    'type',
-    'return',
-    'enum',
-    'continue',
-    'for',
-    'do',
-    'as',
-    'in',
-    'go_to',
     'and',
+    'as',
     'break',
     'case',
+    'const',
+    'continue',
+    'def',
+    'do',
+    'else',
+    'enum',
+    'export',
+    'false',
+    'for',
+    'from',
+    'go_to',
+    'if',
+    'import',
+    'in',
+    'label',
+    'let',
+    'loop',
+    'not',
+    'null',
+    'or',
+    'return',
+    'size_of',
+    'struct',
+    'switch',
+    'true',
+    'type',
+    'unsigned',
+    'var',
+    'while',
+    'word',
 }  # type: ignore
 
 
@@ -96,7 +96,7 @@ class PrincessParser(Parser):
         parseinfo=True,
         keywords=None,
         namechars='_',
-        tokenizercls=PrincessBuffer,
+        buffer_class=PrincessBuffer,
         **kwargs
     ):
         if keywords is None:
@@ -111,7 +111,7 @@ class PrincessParser(Parser):
             parseinfo=parseinfo,
             keywords=keywords,
             namechars=namechars,
-            tokenizercls=tokenizercls,
+            buffer_class=buffer_class,
             **kwargs
         )
 
@@ -154,7 +154,7 @@ class PrincessParser(Parser):
             with self._option():
                 with self._if():
                     self._token('}')
-            self._error('no available options')
+            self._error('expecting one of: /[\\n]+/ ; t_newline')
 
     @tatsumasu()
     def _n__(self):  # noqa
@@ -191,7 +191,7 @@ class PrincessParser(Parser):
                 self._pattern('[+-]')
             with self._option():
                 self._constant('+')
-            self._error('no available options')
+            self._error('expecting one of: /[+-]/')
 
     @tatsumasu()
     def _exp_(self):  # noqa
@@ -236,7 +236,7 @@ class PrincessParser(Parser):
                                                 self._positive_closure(block3)
                                             with self._option():
                                                 self._constant('0')
-                                            self._error('no available options')
+                                            self._error('expecting one of: digit')
                                     self.name_last_node('frac')
                                     with self._optional():
                                         self._exp_()
@@ -246,7 +246,7 @@ class PrincessParser(Parser):
                                 self.name_last_node('frac')
                                 self._exp_()
                                 self.name_last_node('exp')
-                            self._error('no available options')
+                            self._error('expecting one of: . exp')
             with self._option():
                 with self._group():
                     self._constant('0')
@@ -263,7 +263,7 @@ class PrincessParser(Parser):
                     with self._optional():
                         self._exp_()
                     self.name_last_node('exp')
-            self._error('no available options')
+            self._error('expecting one of: . /[0-9]/ digit')
         self.ast._define(
             ['exp', 'frac', 'num'],
             []
@@ -343,7 +343,7 @@ class PrincessParser(Parser):
                     self._t_oct_literal_()
                 with self._option():
                     self._t_dec_literal_()
-                self._error('no available options')
+                self._error('expecting one of: /0b/ /0o/ /0x/ /[0-9]/ digit t_bin_literal t_dec_literal t_hex_literal t_oct_literal')
 
     @tatsumasu()
     def _t_num_lit_(self):  # noqa
@@ -353,7 +353,7 @@ class PrincessParser(Parser):
                     self._t_float_literal_()
                 with self._option():
                     self._t_int_literal_()
-                self._error('no available options')
+                self._error('expecting one of: . /0b/ /0o/ /0x/ /[0-9]/ digit t_bin_literal t_dec_literal t_float_literal t_hex_literal t_int_literal t_oct_literal')
 
     @tatsumasu()
     def _ESC_CHAR_(self):  # noqa
@@ -392,7 +392,7 @@ class PrincessParser(Parser):
             with self._option():
                 self._cut()
                 self._ESC_CHAR_()
-            self._error('no available options')
+            self._error('expecting one of: /U/ /u/ /x/ ~')
 
     @tatsumasu()
     def _T_CHAR_(self):  # noqa
@@ -406,7 +406,7 @@ class PrincessParser(Parser):
                         self.name_last_node('@')
                 with self._option():
                     self._pattern('[^\\0\\x7f\\x80"\\\\]+')
-                self._error('no available options')
+                self._error('expecting one of: /[^\\0\\x7f\\x80"\\\\]+/ /\\\\/')
 
     @tatsumasu()
     def _T_CHAR_S_(self):  # noqa
@@ -420,7 +420,7 @@ class PrincessParser(Parser):
                         self.name_last_node('@')
                 with self._option():
                     self._pattern("[^\\0\\x7f\\x80'\\\\]")
-                self._error('no available options')
+                self._error("expecting one of: /[^\\0\\x7f\\x80'\\\\]/ /\\\\/")
 
     @tatsumasu('Char')
     def _T_CHAR_LIT_(self):  # noqa
@@ -475,7 +475,7 @@ class PrincessParser(Parser):
                 self._token('false')
                 self._constant(False)
                 self.name_last_node('@')
-            self._error('no available options')
+            self._error('expecting one of: false true')
 
     @tatsumasu('Boolean')
     def _t_bool_lit_(self):  # noqa
@@ -526,7 +526,7 @@ class PrincessParser(Parser):
                     self._T_CHAR_LIT_()
                 with self._option():
                     self._T_STRING_LIT_()
-                self._error('no available options')
+                self._error('expecting one of: " \' . /0b/ /0o/ /0x/ /[0-9]/ T_CHAR_LIT T_STRING_LIT [ array_lit digit false null t_bin_literal t_bool t_bool_lit t_dec_literal t_float_literal t_hex_literal t_int_literal t_null t_num_lit t_oct_literal true')
 
     @tatsumasu()
     def _value_(self):  # noqa
@@ -535,7 +535,7 @@ class PrincessParser(Parser):
                 self._literal_()
             with self._option():
                 self._identifier_()
-            self._error('no available options')
+            self._error('expecting one of: " \' . /(?!\\d)\\w+/ /0b/ /0o/ /0x/ /[0-9]/ :: T_CHAR_LIT T_STRING_LIT [ array_lit digit false identifier literal null t_bin_literal t_bool t_bool_lit t_dec_literal t_float_literal t_hex_literal t_ident t_int_literal t_null t_num_lit t_oct_literal true')
 
     @tatsumasu('StructArg')
     def _struct_arg_named_(self):  # noqa
@@ -573,7 +573,7 @@ class PrincessParser(Parser):
                     self._struct_arg_named_()
                 with self._option():
                     self._struct_arg_()
-                self._error('no available options')
+                self._error('expecting one of: struct_arg struct_arg_named')
         self._gather(block1, sep1)
         self.name_last_node('args')
         self._n__()
@@ -597,7 +597,7 @@ class PrincessParser(Parser):
                     self._struct_arg_named_()
                 with self._option():
                     self._struct_arg_()
-                self._error('no available options')
+                self._error('expecting one of: struct_arg struct_arg_named')
         self._gather(block1, sep1)
         self.name_last_node('args')
         self._n__()
@@ -702,7 +702,7 @@ class PrincessParser(Parser):
                 self._struct_def_noterm_()
                 self.name_last_node('@')
                 self._t_term_()
-            self._error('no available options')
+            self._error('expecting one of: #if ( /(?!\\d)\\w+/ /[\\n\\t ]*/ /[\\n]+/ :: ; identifier n_ stmt_struct_if struct_def_noterm struct_iddecl t_ident t_newline t_oparen t_term type_struct')
 
     @tatsumasu()
     def _struct_def_noterm_(self):  # noqa
@@ -719,7 +719,7 @@ class PrincessParser(Parser):
                         with self._option():
                             self._struct_def_noterm_()
                             self.name_last_node('@')
-                        self._error('no available options')
+                        self._error('expecting one of: struct_def_noterm')
                 self._t_cparen_()
             with self._option():
                 with self._group():
@@ -730,9 +730,9 @@ class PrincessParser(Parser):
                             self._stmt_struct_if_()
                         with self._option():
                             self._struct_iddecl_()
-                        self._error('no available options')
+                        self._error('expecting one of: #if /(?!\\d)\\w+/ /[\\n\\t ]*/ :: identifier n_ stmt_struct_if struct struct_iddecl t_ident type_struct')
                 self.name_last_node('@')
-            self._error('no available options')
+            self._error('expecting one of: #if ( /(?!\\d)\\w+/ /[\\n\\t ]*/ :: identifier n_ stmt_struct_if struct struct_iddecl t_ident t_oparen type_struct')
 
     @tatsumasu('StructBody')
     def _struct_body_(self):  # noqa
@@ -848,7 +848,7 @@ class PrincessParser(Parser):
                 self._enum_def_noterm_()
                 self.name_last_node('@')
                 self._t_term_()
-            self._error('no available options')
+            self._error('expecting one of: #if ( /(?!\\d)\\w+/ /[\\n\\t ]*/ /[\\n]+/ :: ; enum_def_noterm enum_iddecl identifier n_ stmt_enum_if t_ident t_newline t_oparen t_term')
 
     @tatsumasu()
     def _enum_def_noterm_(self):  # noqa
@@ -865,7 +865,7 @@ class PrincessParser(Parser):
                         with self._option():
                             self._enum_def_noterm_()
                             self.name_last_node('@')
-                        self._error('no available options')
+                        self._error('expecting one of: enum_def_noterm')
                 self._t_cparen_()
             with self._option():
                 with self._group():
@@ -874,9 +874,9 @@ class PrincessParser(Parser):
                             self._stmt_enum_if_()
                         with self._option():
                             self._enum_iddecl_()
-                        self._error('no available options')
+                        self._error('expecting one of: #if /(?!\\d)\\w+/ /[\\n\\t ]*/ :: enum_iddecl identifier n_ stmt_enum_if t_ident')
                 self.name_last_node('@')
-            self._error('no available options')
+            self._error('expecting one of: #if ( /(?!\\d)\\w+/ /[\\n\\t ]*/ :: enum_iddecl identifier n_ stmt_enum_if t_ident t_oparen')
 
     @tatsumasu('EnumBody')
     def _enum_body_(self):  # noqa
@@ -919,7 +919,7 @@ class PrincessParser(Parser):
                     self._token('let')
                 with self._option():
                     self._constant('var')
-                self._error('no available options')
+                self._error('expecting one of: let var')
         self.name_last_node('keyword')
         with self._optional():
             self._type_1_()
@@ -940,7 +940,7 @@ class PrincessParser(Parser):
                     self._token('let')
                 with self._option():
                     self._constant('var')
-                self._error('no available options')
+                self._error('expecting one of: let var')
         self.name_last_node('keyword')
         with self._optional():
             self._type_1_()
@@ -961,7 +961,7 @@ class PrincessParser(Parser):
                     self._token('let')
                 with self._option():
                     self._constant('var')
-                self._error('no available options')
+                self._error('expecting one of: let var')
         self.name_last_node('keyword')
         with self._optional():
             self._type_()
@@ -982,7 +982,7 @@ class PrincessParser(Parser):
                     self._token('?')
                 with self._option():
                     self._expression_()
-                self._error('no available options')
+                self._error('expecting one of: ? expression')
         self.name_last_node('n')
         self._token(';')
         with self._group():
@@ -993,7 +993,7 @@ class PrincessParser(Parser):
                     self._token('let')
                 with self._option():
                     self._constant('var')
-                self._error('no available options')
+                self._error('expecting one of: let var')
         self.name_last_node('keyword')
         self._type_()
         self.name_last_node('type')
@@ -1010,7 +1010,7 @@ class PrincessParser(Parser):
                 self._type_array_dyn_()
             with self._option():
                 self._type_array_static_()
-            self._error('no available options')
+            self._error('expecting one of: [ type_array_dyn type_array_static')
 
     @tatsumasu()
     @nomemo
@@ -1038,7 +1038,7 @@ class PrincessParser(Parser):
             with self._option():
                 self._type_()
                 self.add_last_node_to_name('@')
-            self._error('no available options')
+            self._error('expecting one of: & ( * -> /(?!\\d)\\w+/ :: [ enum expr_type_call identifier struct t_ident t_oparen type type_1 type_2 type_3 type_array type_array_dyn type_array_static type_enum type_function type_list type_ptr type_ref type_struct type_structural type_unsigned type_word unsigned word {')
 
     @tatsumasu('FunctionT')
     @nomemo
@@ -1056,7 +1056,7 @@ class PrincessParser(Parser):
                 with self._optional():
                     self._type_list_()
                     self.name_last_node('right')
-            self._error('no available options')
+            self._error('expecting one of: & ( * -> /(?!\\d)\\w+/ :: [ enum expr_type_call identifier struct t_ident t_oparen type type_1 type_2 type_3 type_array type_array_dyn type_array_static type_enum type_function type_list type_ptr type_ref type_struct type_structural type_unsigned type_word unsigned word {')
         self.ast._define(
             ['left', 'right'],
             []
@@ -1088,7 +1088,7 @@ class PrincessParser(Parser):
                 self._type_word_()
             with self._option():
                 self._identifier_()
-            self._error('no available options')
+            self._error('expecting one of: ( /(?!\\d)\\w+/ :: identifier t_ident t_oparen type_word word')
 
     @tatsumasu()
     @leftrec
@@ -1098,7 +1098,7 @@ class PrincessParser(Parser):
                 self._expr_type_call_()
             with self._option():
                 self._type_3_()
-            self._error('no available options')
+            self._error('expecting one of: ( /(?!\\d)\\w+/ :: expr_type_call identifier t_ident t_oparen type_2 type_3 type_word word')
 
     @tatsumasu()
     @nomemo
@@ -1120,7 +1120,7 @@ class PrincessParser(Parser):
                 self._type_array_()
             with self._option():
                 self._type_2_()
-            self._error('no available options')
+            self._error('expecting one of: & ( * /(?!\\d)\\w+/ :: [ enum expr_type_call identifier struct t_ident t_oparen type_2 type_3 type_array type_array_dyn type_array_static type_enum type_ptr type_ref type_struct type_structural type_unsigned type_word unsigned word {')
 
     @tatsumasu()
     @leftrec
@@ -1130,7 +1130,7 @@ class PrincessParser(Parser):
                 self._type_function_()
             with self._option():
                 self._type_1_()
-            self._error('no available options')
+            self._error('expecting one of: & ( * -> /(?!\\d)\\w+/ :: [ enum expr_type_call identifier struct t_ident t_oparen type type_1 type_2 type_3 type_array type_array_dyn type_array_static type_enum type_function type_list type_ptr type_ref type_struct type_structural type_unsigned type_word unsigned word {')
 
     @tatsumasu('CallArg')
     def _call_arg_named_(self):  # noqa
@@ -1166,7 +1166,7 @@ class PrincessParser(Parser):
                     self._call_arg_named_()
                 with self._option():
                     self._call_arg_()
-                self._error('no available options')
+                self._error('expecting one of: call_arg call_arg_named')
         self._gather(block1, sep1)
         self.name_last_node('@')
         self._cut()
@@ -1273,7 +1273,7 @@ class PrincessParser(Parser):
                     self._struct_lit_()
                 with self._option():
                     self._expr_9_()
-                self._error('no available options')
+                self._error('expecting one of: expr_9 struct_lit')
         self.name_last_node('left')
         self._token('!')
         with self._ifnot():
@@ -1570,7 +1570,7 @@ class PrincessParser(Parser):
                     self._token('==')
                 with self._option():
                     self._token('!=')
-                self._error('no available options')
+                self._error('expecting one of: != < <= == > >=')
 
     @tatsumasu()
     def _expr_cmp_(self):  # noqa
@@ -1658,7 +1658,7 @@ class PrincessParser(Parser):
                     self._token('>>=')
                 with self._option():
                     self._token('<<=')
-                self._error('no available options')
+                self._error('expecting one of: %= &= *= ++= += --= -= /= <<= >>= ^= |=')
 
     @tatsumasu('AssignAndOp')
     @nomemo
@@ -1689,7 +1689,7 @@ class PrincessParser(Parser):
                     self._struct_lit_typed_()
                 with self._option():
                     self._expr_0_()
-                self._error('no available options')
+                self._error('expecting one of: " \' ( * ++ - -- . .. ..= /(?!\\d)\\w+/ /0b/ /0o/ /0x/ /[0-9]/ :: @ T_CHAR_LIT T_STRING_LIT [ array_lit digit do expr_0 expr_1 expr_10 expr_11 expr_2 expr_3 expr_4 expr_5 expr_6 expr_7 expr_8 expr_9 expr_add expr_and expr_array_index expr_assign expr_assign_lhs expr_assign_op expr_autocast expr_band expr_bor expr_call expr_cast expr_cmp_start expr_deref expr_div expr_do expr_if expr_invert expr_member_access expr_mod expr_mul expr_not expr_or expr_padd expr_postdec expr_postinc expr_predec expr_preinc expr_psub expr_ptr expr_range expr_range_incl expr_shl expr_shr expr_size_of expr_sub expr_type expr_uminus expr_xor false identifier literal not null size_of struct_lit struct_lit_typed t_bin_literal t_bool t_bool_lit t_dec_literal t_float_literal t_hex_literal t_ident t_int_literal t_null t_num_lit t_oct_literal t_oparen true type value { ~')
         self.name_last_node('@')
 
     @tatsumasu('Assign')
@@ -1796,7 +1796,7 @@ class PrincessParser(Parser):
                 self._t_cparen_()
             with self._option():
                 self._value_()
-            self._error('no available options')
+            self._error('expecting one of: " \' ( . /(?!\\d)\\w+/ /0b/ /0o/ /0x/ /[0-9]/ :: T_CHAR_LIT T_STRING_LIT [ array_lit digit false identifier literal null t_bin_literal t_bool t_bool_lit t_dec_literal t_float_literal t_hex_literal t_ident t_int_literal t_null t_num_lit t_oct_literal t_oparen true value')
 
     @tatsumasu()
     @leftrec
@@ -1818,7 +1818,7 @@ class PrincessParser(Parser):
                 self._expr_postdec_()
             with self._option():
                 self._expr_11_()
-            self._error('no available options')
+            self._error('expecting one of: " \' ( . /(?!\\d)\\w+/ /0b/ /0o/ /0x/ /[0-9]/ :: T_CHAR_LIT T_STRING_LIT [ array_lit digit expr_10 expr_11 expr_array_index expr_autocast expr_call expr_member_access expr_postdec expr_postinc expr_type false identifier literal null t_bin_literal t_bool t_bool_lit t_dec_literal t_float_literal t_hex_literal t_ident t_int_literal t_null t_num_lit t_oct_literal t_oparen true type value')
 
     @tatsumasu()
     @nomemo
@@ -1840,7 +1840,7 @@ class PrincessParser(Parser):
                 self._expr_not_()
             with self._option():
                 self._expr_10_()
-            self._error('no available options')
+            self._error('expecting one of: " \' ( * ++ - -- . /(?!\\d)\\w+/ /0b/ /0o/ /0x/ /[0-9]/ :: @ T_CHAR_LIT T_STRING_LIT [ array_lit digit expr_10 expr_11 expr_array_index expr_autocast expr_call expr_deref expr_invert expr_member_access expr_not expr_postdec expr_postinc expr_predec expr_preinc expr_ptr expr_type expr_uminus false identifier literal not null t_bin_literal t_bool t_bool_lit t_dec_literal t_float_literal t_hex_literal t_ident t_int_literal t_null t_num_lit t_oct_literal t_oparen true type value ~')
 
     @tatsumasu()
     @nomemo
@@ -1850,7 +1850,7 @@ class PrincessParser(Parser):
                 self._expr_cast_()
             with self._option():
                 self._expr_9_()
-            self._error('no available options')
+            self._error('expecting one of: " \' ( * ++ - -- . /(?!\\d)\\w+/ /0b/ /0o/ /0x/ /[0-9]/ :: @ T_CHAR_LIT T_STRING_LIT [ array_lit digit expr_10 expr_11 expr_9 expr_array_index expr_autocast expr_call expr_cast expr_deref expr_invert expr_member_access expr_not expr_postdec expr_postinc expr_predec expr_preinc expr_ptr expr_type expr_uminus false identifier literal not null struct_lit t_bin_literal t_bool t_bool_lit t_dec_literal t_float_literal t_hex_literal t_ident t_int_literal t_null t_num_lit t_oct_literal t_oparen true type value { ~')
 
     @tatsumasu()
     @leftrec
@@ -1868,7 +1868,7 @@ class PrincessParser(Parser):
                 self._expr_xor_()
             with self._option():
                 self._expr_8_()
-            self._error('no available options')
+            self._error('expecting one of: " \' ( * ++ - -- . /(?!\\d)\\w+/ /0b/ /0o/ /0x/ /[0-9]/ :: @ T_CHAR_LIT T_STRING_LIT [ array_lit digit expr_10 expr_11 expr_7 expr_8 expr_9 expr_array_index expr_autocast expr_band expr_bor expr_call expr_cast expr_deref expr_invert expr_member_access expr_not expr_postdec expr_postinc expr_predec expr_preinc expr_ptr expr_shl expr_shr expr_type expr_uminus expr_xor false identifier literal not null struct_lit t_bin_literal t_bool t_bool_lit t_dec_literal t_float_literal t_hex_literal t_ident t_int_literal t_null t_num_lit t_oct_literal t_oparen true type value { ~')
 
     @tatsumasu()
     @leftrec
@@ -1882,7 +1882,7 @@ class PrincessParser(Parser):
                 self._expr_mod_()
             with self._option():
                 self._expr_7_()
-            self._error('no available options')
+            self._error('expecting one of: " \' ( * ++ - -- . /(?!\\d)\\w+/ /0b/ /0o/ /0x/ /[0-9]/ :: @ T_CHAR_LIT T_STRING_LIT [ array_lit digit expr_10 expr_11 expr_6 expr_7 expr_8 expr_9 expr_array_index expr_autocast expr_band expr_bor expr_call expr_cast expr_deref expr_div expr_invert expr_member_access expr_mod expr_mul expr_not expr_postdec expr_postinc expr_predec expr_preinc expr_ptr expr_shl expr_shr expr_type expr_uminus expr_xor false identifier literal not null struct_lit t_bin_literal t_bool t_bool_lit t_dec_literal t_float_literal t_hex_literal t_ident t_int_literal t_null t_num_lit t_oct_literal t_oparen true type value { ~')
 
     @tatsumasu()
     @leftrec
@@ -1898,7 +1898,7 @@ class PrincessParser(Parser):
                 self._expr_sub_()
             with self._option():
                 self._expr_6_()
-            self._error('no available options')
+            self._error('expecting one of: " \' ( * ++ - -- . /(?!\\d)\\w+/ /0b/ /0o/ /0x/ /[0-9]/ :: @ T_CHAR_LIT T_STRING_LIT [ array_lit digit expr_10 expr_11 expr_5 expr_6 expr_7 expr_8 expr_9 expr_add expr_array_index expr_autocast expr_band expr_bor expr_call expr_cast expr_deref expr_div expr_invert expr_member_access expr_mod expr_mul expr_not expr_padd expr_postdec expr_postinc expr_predec expr_preinc expr_psub expr_ptr expr_shl expr_shr expr_sub expr_type expr_uminus expr_xor false identifier literal not null struct_lit t_bin_literal t_bool t_bool_lit t_dec_literal t_float_literal t_hex_literal t_ident t_int_literal t_null t_num_lit t_oct_literal t_oparen true type value { ~')
 
     @tatsumasu()
     @nomemo
@@ -1908,7 +1908,7 @@ class PrincessParser(Parser):
                 self._expr_cmp_start_()
             with self._option():
                 self._expr_5_()
-            self._error('no available options')
+            self._error('expecting one of: " \' ( * ++ - -- . /(?!\\d)\\w+/ /0b/ /0o/ /0x/ /[0-9]/ :: @ T_CHAR_LIT T_STRING_LIT [ array_lit digit expr_10 expr_11 expr_5 expr_6 expr_7 expr_8 expr_9 expr_add expr_array_index expr_autocast expr_band expr_bor expr_call expr_cast expr_cmp_start expr_deref expr_div expr_invert expr_member_access expr_mod expr_mul expr_not expr_padd expr_postdec expr_postinc expr_predec expr_preinc expr_psub expr_ptr expr_shl expr_shr expr_sub expr_type expr_uminus expr_xor false identifier literal not null struct_lit t_bin_literal t_bool t_bool_lit t_dec_literal t_float_literal t_hex_literal t_ident t_int_literal t_null t_num_lit t_oct_literal t_oparen true type value { ~')
 
     @tatsumasu()
     @leftrec
@@ -1918,7 +1918,7 @@ class PrincessParser(Parser):
                 self._expr_and_()
             with self._option():
                 self._expr_4_()
-            self._error('no available options')
+            self._error('expecting one of: " \' ( * ++ - -- . /(?!\\d)\\w+/ /0b/ /0o/ /0x/ /[0-9]/ :: @ T_CHAR_LIT T_STRING_LIT [ array_lit digit expr_10 expr_11 expr_3 expr_4 expr_5 expr_6 expr_7 expr_8 expr_9 expr_add expr_and expr_array_index expr_autocast expr_band expr_bor expr_call expr_cast expr_cmp_start expr_deref expr_div expr_invert expr_member_access expr_mod expr_mul expr_not expr_padd expr_postdec expr_postinc expr_predec expr_preinc expr_psub expr_ptr expr_shl expr_shr expr_sub expr_type expr_uminus expr_xor false identifier literal not null struct_lit t_bin_literal t_bool t_bool_lit t_dec_literal t_float_literal t_hex_literal t_ident t_int_literal t_null t_num_lit t_oct_literal t_oparen true type value { ~')
 
     @tatsumasu()
     @leftrec
@@ -1928,7 +1928,7 @@ class PrincessParser(Parser):
                 self._expr_or_()
             with self._option():
                 self._expr_3_()
-            self._error('no available options')
+            self._error('expecting one of: " \' ( * ++ - -- . /(?!\\d)\\w+/ /0b/ /0o/ /0x/ /[0-9]/ :: @ T_CHAR_LIT T_STRING_LIT [ array_lit digit expr_10 expr_11 expr_2 expr_3 expr_4 expr_5 expr_6 expr_7 expr_8 expr_9 expr_add expr_and expr_array_index expr_autocast expr_band expr_bor expr_call expr_cast expr_cmp_start expr_deref expr_div expr_invert expr_member_access expr_mod expr_mul expr_not expr_or expr_padd expr_postdec expr_postinc expr_predec expr_preinc expr_psub expr_ptr expr_shl expr_shr expr_sub expr_type expr_uminus expr_xor false identifier literal not null struct_lit t_bin_literal t_bool t_bool_lit t_dec_literal t_float_literal t_hex_literal t_ident t_int_literal t_null t_num_lit t_oct_literal t_oparen true type value { ~')
 
     @tatsumasu()
     @nomemo
@@ -1940,7 +1940,7 @@ class PrincessParser(Parser):
                 self._expr_range_()
             with self._option():
                 self._expr_2_()
-            self._error('no available options')
+            self._error('expecting one of: " \' ( * ++ - -- . .. ..= /(?!\\d)\\w+/ /0b/ /0o/ /0x/ /[0-9]/ :: @ T_CHAR_LIT T_STRING_LIT [ array_lit digit expr_10 expr_11 expr_2 expr_3 expr_4 expr_5 expr_6 expr_7 expr_8 expr_9 expr_add expr_and expr_array_index expr_autocast expr_band expr_bor expr_call expr_cast expr_cmp_start expr_deref expr_div expr_invert expr_member_access expr_mod expr_mul expr_not expr_or expr_padd expr_postdec expr_postinc expr_predec expr_preinc expr_psub expr_ptr expr_range expr_range_incl expr_shl expr_shr expr_sub expr_type expr_uminus expr_xor false identifier literal not null struct_lit t_bin_literal t_bool t_bool_lit t_dec_literal t_float_literal t_hex_literal t_ident t_int_literal t_null t_num_lit t_oct_literal t_oparen true type value { ~')
 
     @tatsumasu()
     @nomemo
@@ -1958,7 +1958,7 @@ class PrincessParser(Parser):
                 self._expr_if_()
             with self._option():
                 self._expr_1_()
-            self._error('no available options')
+            self._error('expecting one of: " \' ( * ++ - -- . .. ..= /(?!\\d)\\w+/ /0b/ /0o/ /0x/ /[0-9]/ :: @ T_CHAR_LIT T_STRING_LIT [ array_lit digit do expr_1 expr_10 expr_11 expr_2 expr_3 expr_4 expr_5 expr_6 expr_7 expr_8 expr_9 expr_add expr_and expr_array_index expr_assign expr_assign_lhs expr_assign_op expr_autocast expr_band expr_bor expr_call expr_cast expr_cmp_start expr_deref expr_div expr_do expr_if expr_invert expr_member_access expr_mod expr_mul expr_not expr_or expr_padd expr_postdec expr_postinc expr_predec expr_preinc expr_psub expr_ptr expr_range expr_range_incl expr_shl expr_shr expr_size_of expr_sub expr_type expr_uminus expr_xor false identifier literal not null size_of struct_lit t_bin_literal t_bool t_bool_lit t_dec_literal t_float_literal t_hex_literal t_ident t_int_literal t_null t_num_lit t_oct_literal t_oparen true type value { ~')
 
     @tatsumasu()
     @nomemo
@@ -1976,7 +1976,7 @@ class PrincessParser(Parser):
                 self._expr_if_()
             with self._option():
                 self._expr_2_()
-            self._error('no available options')
+            self._error('expecting one of: " \' ( * ++ - -- . .. ..= /(?!\\d)\\w+/ /0b/ /0o/ /0x/ /[0-9]/ :: @ T_CHAR_LIT T_STRING_LIT [ array_lit digit do expr_1 expr_10 expr_11 expr_2 expr_3 expr_4 expr_5 expr_6 expr_7 expr_8 expr_9 expr_add expr_and expr_array_index expr_autocast expr_band expr_bor expr_call expr_cast expr_cmp_start expr_deref expr_div expr_do expr_if expr_invert expr_member_access expr_mod expr_mul expr_not expr_or expr_padd expr_postdec expr_postinc expr_predec expr_preinc expr_psub expr_ptr expr_range expr_range_incl expr_shl expr_shr expr_size_of expr_sub expr_type expr_uminus expr_xor false identifier literal not null size_of struct_lit t_bin_literal t_bool t_bool_lit t_dec_literal t_float_literal t_hex_literal t_ident t_int_literal t_null t_num_lit t_oct_literal t_oparen true type value { ~')
 
     @tatsumasu()
     def _expression_call_(self):  # noqa
@@ -1985,7 +1985,7 @@ class PrincessParser(Parser):
                 self._struct_lit_typed_()
             with self._option():
                 self._expression_no_assign_()
-            self._error('no available options')
+            self._error('expecting one of: " \' ( * ++ - -- . .. ..= /(?!\\d)\\w+/ /0b/ /0o/ /0x/ /[0-9]/ :: @ T_CHAR_LIT T_STRING_LIT [ array_lit digit do expr_1 expr_10 expr_11 expr_2 expr_3 expr_4 expr_5 expr_6 expr_7 expr_8 expr_9 expr_add expr_and expr_array_index expr_autocast expr_band expr_bor expr_call expr_cast expr_cmp_start expr_deref expr_div expr_do expr_if expr_invert expr_member_access expr_mod expr_mul expr_not expr_or expr_padd expr_postdec expr_postinc expr_predec expr_preinc expr_psub expr_ptr expr_range expr_range_incl expr_shl expr_shr expr_size_of expr_sub expr_type expr_uminus expr_xor expression_no_assign false identifier literal not null size_of struct_lit struct_lit_typed t_bin_literal t_bool t_bool_lit t_dec_literal t_float_literal t_hex_literal t_ident t_int_literal t_null t_num_lit t_oct_literal t_oparen true type value { ~')
 
     @tatsumasu('Share')
     def _import_marker_(self):  # noqa
@@ -1996,7 +1996,7 @@ class PrincessParser(Parser):
                 self.name_last_node('@')
             with self._option():
                 self._constant(0)
-            self._error('no available options')
+            self._error('expecting one of: export')
 
     @tatsumasu('ImportModule')
     def _stmt_import_module_(self):  # noqa
@@ -2067,7 +2067,7 @@ class PrincessParser(Parser):
                     self._struct_lit_typed_()
                 with self._option():
                     self._expression_()
-                self._error('no available options')
+                self._error('expecting one of: expression struct_lit_typed')
         self.name_last_node('@')
 
     @tatsumasu('VarDecl')
@@ -2084,7 +2084,7 @@ class PrincessParser(Parser):
                     self._token('let')
                 with self._option():
                     self._token('const')
-                self._error('no available options')
+                self._error('expecting one of: const let var')
         self.name_last_node('keyword')
         self._n__()
         self._cut()
@@ -2098,7 +2098,7 @@ class PrincessParser(Parser):
                     self._var_idassign_()
                 with self._option():
                     self._var_iddecl_()
-                self._error('no available options')
+                self._error('expecting one of: var_idassign var_iddecl')
         self._positive_gather(block4, sep4)
         self.name_last_node('left')
         with self._optional():
@@ -2329,7 +2329,7 @@ class PrincessParser(Parser):
                                 self._token('var')
                             with self._option():
                                 self._token('let')
-                            self._error('no available options')
+                            self._error('expecting one of: let var')
                     self.name_last_node('keyword')
 
                     def sep3():
@@ -2341,7 +2341,7 @@ class PrincessParser(Parser):
                                 self._var_idassign_()
                             with self._option():
                                 self._var_iddecl_()
-                            self._error('no available options')
+                            self._error('expecting one of: var_idassign var_iddecl')
                     self._positive_gather(block3, sep3)
                     self.name_last_node('left')
                 with self._option():
@@ -2353,7 +2353,7 @@ class PrincessParser(Parser):
                         self._expr_in_assign_()
                     self._positive_gather(block6, sep6)
                     self.name_last_node('left')
-                self._error('no available options')
+                self._error('expecting one of: expr_in_assign let var')
         self._token('in')
         self._n__()
 
@@ -2410,7 +2410,7 @@ class PrincessParser(Parser):
                 with self._option():
                     self._value_()
                     self.name_last_node('@')
-                self._error('no available options')
+                self._error('expecting one of: expr_range value')
 
     @tatsumasu('Case')
     def _stmt_case_(self):  # noqa
@@ -2435,7 +2435,7 @@ class PrincessParser(Parser):
                     self._statement_noterm_()
                 with self._option():
                     self._expression_()
-                self._error('no available options')
+                self._error('expecting one of: expression statement_noterm')
         self.name_last_node('statement')
         self.ast._define(
             ['statement', 'value'],
@@ -2458,7 +2458,7 @@ class PrincessParser(Parser):
                     self._statement_noterm_()
                 with self._option():
                     self._expression_()
-                self._error('no available options')
+                self._error('expecting one of: expression statement_noterm')
         self.name_last_node('statement')
         self.ast._define(
             ['name', 'statement'],
@@ -2491,7 +2491,7 @@ class PrincessParser(Parser):
                     self._token('type')
                 with self._option():
                     self._constant('var')
-                self._error('no available options')
+                self._error('expecting one of: let type var')
         self.name_last_node('keyword')
         self._identifier_()
         self.name_last_node('name')
@@ -2519,7 +2519,7 @@ class PrincessParser(Parser):
                 self._n__()
                 self._expression_()
                 self.name_last_node('@')
-            self._error('no available options')
+            self._error('expecting one of: = code_body {')
 
     @tatsumasu('Share')
     def _share_marker_(self):  # noqa
@@ -2541,7 +2541,7 @@ class PrincessParser(Parser):
             with self._option():
                 self._constant(0)
                 self.name_last_node('@')
-            self._error('no available options')
+            self._error('expecting one of: export import')
 
     @tatsumasu('Def')
     def _stmt_def_(self):  # noqa
@@ -2617,7 +2617,7 @@ class PrincessParser(Parser):
                 self._stmt_break_()
             with self._option():
                 self._stmt_goto_()
-            self._error('no available options')
+            self._error('expecting one of: # /[#]{1,2}(?!\\d)\\w+/ /[\\n\\t ]*/ break const continue def export for go_to if import import_marker let loop n_ pragma_ident return share_marker stmt_break stmt_continue stmt_def stmt_for_loop stmt_goto stmt_if stmt_import stmt_loop stmt_pragma stmt_return stmt_static_if stmt_switch stmt_typedecl stmt_vardecl stmt_while_loop switch type var while')
 
     @tatsumasu()
     @nomemo
@@ -2634,7 +2634,7 @@ class PrincessParser(Parser):
                             self._stmt_label_()
                         with self._option():
                             self._stmt_case_()
-                        self._error('no available options')
+                        self._error('expecting one of: stmt_case stmt_label')
                 self.name_last_node('@')
                 self._t_term_()
             with self._option():
@@ -2645,7 +2645,7 @@ class PrincessParser(Parser):
                 self._expression_()
                 self.name_last_node('@')
                 self._t_term_()
-            self._error('no available options')
+            self._error('expecting one of: " # \' ( * ++ - -- . .. ..= /(?!\\d)\\w+/ /0b/ /0o/ /0x/ /[#]{1,2}(?!\\d)\\w+/ /[0-9]/ /[\\n\\t ]*/ /[\\n]+/ :: ; @ T_CHAR_LIT T_STRING_LIT [ array_lit break case const continue def digit do export expr_0 expr_1 expr_10 expr_11 expr_2 expr_3 expr_4 expr_5 expr_6 expr_7 expr_8 expr_9 expr_add expr_and expr_array_index expr_assign expr_assign_lhs expr_assign_op expr_autocast expr_band expr_bor expr_call expr_cast expr_cmp_start expr_deref expr_div expr_do expr_if expr_invert expr_member_access expr_mod expr_mul expr_not expr_or expr_padd expr_postdec expr_postinc expr_predec expr_preinc expr_psub expr_ptr expr_range expr_range_incl expr_shl expr_shr expr_size_of expr_sub expr_type expr_uminus expr_xor expression false for go_to identifier if import import_marker label let literal loop n_ not null pragma_ident return share_marker size_of statement_noterm stmt stmt_break stmt_case stmt_continue stmt_def stmt_for_loop stmt_goto stmt_if stmt_import stmt_label stmt_loop stmt_pragma stmt_return stmt_static_if stmt_switch stmt_typedecl stmt_vardecl stmt_while_loop struct_lit switch t_bin_literal t_bool t_bool_lit t_dec_literal t_float_literal t_hex_literal t_ident t_int_literal t_newline t_null t_num_lit t_oct_literal t_oparen t_term true type value var while { ~')
 
     @tatsumasu()
     def _statement_noterm_(self):  # noqa
@@ -2662,12 +2662,12 @@ class PrincessParser(Parser):
                         with self._option():
                             self._statement_noterm_()
                             self.name_last_node('@')
-                        self._error('no available options')
+                        self._error('expecting one of: statement_noterm')
                 self._t_cparen_()
             with self._option():
                 self._stmt_()
                 self.name_last_node('@')
-            self._error('no available options')
+            self._error('expecting one of: # ( /[#]{1,2}(?!\\d)\\w+/ /[\\n\\t ]*/ break const continue def export for go_to if import import_marker let loop n_ pragma_ident return share_marker stmt stmt_break stmt_continue stmt_def stmt_for_loop stmt_goto stmt_if stmt_import stmt_loop stmt_pragma stmt_return stmt_static_if stmt_switch stmt_typedecl stmt_vardecl stmt_while_loop switch t_oparen type var while')
 
 
 class PrincessSemantics(object):
