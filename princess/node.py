@@ -72,7 +72,7 @@ class Node(tatsu.model.Node):
         if type(self) != type(other): return False
 
         def _eq(a, b):
-            if self.ast is not None and not isinstance(self.ast, AST):
+            if a.ast is not None and not isinstance(a.ast, AST):
                 if a.ast != b.ast:
                     return False
 
