@@ -20,8 +20,8 @@ class LexerSemantics(PrincessModelBuilderSemantics):
         return ast
 
 class Lexer(PrincessBuffer):
-    def __init__(self, *args, _semantics, **kwargs):
-        self.semantics = _semantics
+    def __init__(self, *args, **kwargs):
+        self.semantics = kwargs["config"].semantics
         super().__init__(*args, **kwargs)
     
     def eat_comments(self):

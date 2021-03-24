@@ -13,4 +13,4 @@ def parse(input: str, **kwargs):
     if instance.parser is None: load_parser()
 
     semantics = semantics.Semantics() # This is really ugly
-    return instance.parser.parse(input, semantics = semantics, _semantics = semantics, rule_name = "program", **kwargs)
+    return instance.parser.parse(input, semantics = semantics, start = "program", **kwargs)
