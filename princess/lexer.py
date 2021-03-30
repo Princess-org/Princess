@@ -1,9 +1,4 @@
-import re
-from collections import namedtuple
-
 from tatsu.infos import ParseInfo
-from tatsu.buffering import Buffer
-from tatsu.semantics import ModelBuilderSemantics
 
 from princess.model import PrincessModelBuilderSemantics
 from princess.parser import PrincessBuffer

@@ -245,7 +245,7 @@ class AstWalker(NodeWalker):
                 node = old_node
             info = node.parseinfo if node else None
             if info:
-                lexer = info.buffer
+                lexer = info.tokenizer
                 raise CompileError(lexer.format_error(str(e), info))
             else: raise CompileError(str(e))
 

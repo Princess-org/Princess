@@ -1,2 +1,2 @@
 mkdir -p bin
-princess -c main.pr -o bin/
+python3.9 -m princess -c main.pr -o bin/
