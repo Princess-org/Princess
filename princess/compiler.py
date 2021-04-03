@@ -840,7 +840,7 @@ class Compiler(AstWalker):
 
         if node.type and not types.is_type(node.type):
             node.type = self.scope.type_lookup(node.type)
-        assert_error(node.type is not None, "Unknown struct type")
+        assert_error(node.type is not None, "Unknown struct type", node = node)
 
         return node
 

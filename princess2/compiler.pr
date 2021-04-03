@@ -1,6 +1,9 @@
 import parser
 import vector
+import map
 import typechecking
+import util
+import builtins
 
 export type Label = struct {
     name: string
@@ -54,8 +57,8 @@ export type Block = struct {
 }
 
 export type Function = struct {
-    // Vector of typechecking::Type
     name: string
+    // Vector of typechecking::Type
     args: *vector::Vector
     ret: *typechecking::Type
     // First node
@@ -63,16 +66,188 @@ export type Function = struct {
 }
 
 export type Structure = struct {
+    name: string
     packed: bool
     // Vector of typechecking::Type
     values: *vector::Vector
 }
 
 export type Result = struct {
-    functions: *vector::Vector
-    structures: *vector::Vector
+    functions: *map::Map
+    structures: *map::Map
+}
+
+type State = struct {
+    filename: string
+    module: string
+    current_function: *Function
+    current_block: *Block
+    result: Result
+}
+
+def walk_expression(node: *parser::Node, state: *State) -> Value
+
+def walk_Integer(node: *parser::Node, state: *State) -> Value {
+    let tpe = (@node).tpe
+    let value = {
+        kind = ValueKind::INT,
+        i = (@tpe).i,
+        sign = (@tpe).sign
+    } !Value
+    return value
+}
+
+def walk_Add(node: *parser::Node, state: *State) -> Value {
+    let tpe = (@node).tpe
+
+    var insn_kind = InsnKind::ADD
+    if typechecking::is_float(tpe) {
+        insn_kind = InsnKind::FADD
+    }
+
+    // TODO Type conversions
+    let left = walk_expression((@node).value.bin_op.left, state)
+    let right = walk_expression((@node).value.bin_op.right, state)
+
+    let value = { 
+        kind = ValueKind::LOCAL, 
+        name = util::make_unique_name(),
+        tpe = tpe 
+    } !Value
+    
+    let insn = allocate(Insn)
+    (@insn).kind = insn_kind
+    (@insn).value.arith = {
+        left = left,
+        right = right,
+        ret = value,
+        tpe = tpe
+    } !InsnArithmetic
+
+    vector::push((@(@state).current_block).insn, insn)
+
+    return value
+}
+
+def walk_expression(node: *parser::Node, state: *State) -> Value {
+    switch (@node).kind !int {
+        case parser::NodeKind::INTEGER:
+            return walk_Integer(node, state)
+        case parser::NodeKind::ADD:
+            return walk_Add(node, state)
+        case:
+            assert(false)
+    }
+}
+
+def walk(node: *parser::Node, state: *State) {
+    switch (@node).kind !int {
+        case: walk_expression(node, state)
+    }
+}
+
+def create_function(tpe: *typechecking::Type, body: *vector::Vector, state: *State) {
+    let function = allocate(Function)
+    (@function).name = typechecking::mangle_function_name((@tpe).type_name, (@tpe).parameter_t)
+    (@function).args = (@tpe).parameter_t
+
+    if vector::length((@tpe).return_t) > 1 {
+        // Create anonymous struct as return type
+        let ret_tpe = typechecking::make_anonymous_type(typechecking::TypeKind::STRUCT, (@state).module)
+        let length = vector::length((@tpe).return_t)
+        let fields = allocate(typechecking::StructMember, length)
+
+        // TODO Somehow refactor this with typechecking::type_lookup
+        var offset = 0
+        var align = 1
+        for var i in 0..length {
+            let tpe = vector::get((@tpe).return_t, i) !*typechecking::Type
+            let name = util::int_to_str(i)
+
+            offset = (ceil(offset / (@tpe).align !double) * (@tpe).align) !int
+            align = util::lcm(align, (@tpe).align)
+
+            fields[i] = { name, tpe, offset } !StructMember
+            offset += (@tpe).size
+        }
+        offset = (ceil(offset / align !double) * align) !int
+
+        (@ret_tpe).size = offset
+        (@ret_tpe).align = align
+        (@ret_tpe).fields = fields
+
+        (@function).ret = ret_tpe
+
+        // Store return type in structures
+        map::put((@state).result.structures, (@ret_tpe).type_name, ret_tpe)
+    } else if vector::length((@tpe).return_t) == 1 {
+        (@function).ret = vector::get((@tpe).return_t, 0) !*typechecking::Type
+    } else {
+        (@function).ret = null
+    }
+
+    (@state).current_function = function
+    
+    let block = allocate(Block)
+    (@block).label_ = "start"
+    (@block).insn = vector::make()
+    (@block).next = null
+
+    (@state).current_block = block
+    for var i in 0..vector::length(body) {
+        let node = vector::get(body, i)
+        walk(node, state)
+    }
+
+    map::put((@state).result.functions, (@function).name, function)
+}
+
+def walk_Def(node: *parser::Node, state: *State){
+    create_function((@node).tpe, (@node).value.def_.body, state)
+}
+
+def walk_TypeDecl(node: *parser::Node, state: *State) {
+
 }
 
 export def compile(node: *parser::Node, filename: string, module: string) -> Result {
+    assert((@node).kind == parser::NodeKind::PROGRAM)
     
+    let body = vector::make()
+    let state = {
+        filename = filename,
+        module = module,
+        result = {
+            functions = map::make(),
+            structures = map::make()
+        } !Result
+    } !State
+
+    for var i in 0..vector::length((@node).value.body) {
+        let node = vector::get((@node).value.body, i) !*parser::Node
+        switch (@node).kind !int {
+            case parser::NodeKind::DEF:
+                walk_Def(node, *state)
+            case parser::NodeKind::TYPE_DECL:
+                walk_TypeDecl(node, *state)
+            case:
+                vector::push(body, node)
+        }
+    }
+    let ident = parser::make_identifier(["main"])
+    (@ident).loc.module = module
+    (@ident).loc.filename = filename
+    let main_tpe = typechecking::make_type(typechecking::TypeKind::FUNCTION, ident)
+    
+    let string_array_tpe = allocate(typechecking::Type)
+    (@string_array_tpe).kind = typechecking::TypeKind::ARRAY
+    (@string_array_tpe).tpe = builtins::string_
+    let args = vector::make()
+    vector::push(args, string_array_tpe)
+
+    (@main_tpe).parameter_t = args
+    // TODO Infer return types
+    (@main_tpe).return_t = vector::make()
+
+    create_function(main_tpe, body, *state)
 }
