@@ -245,6 +245,7 @@ compiler.builtins.create_function("scan", types.FunctionT(c = True, return_t = (
 compiler.builtins.create_function("flush", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.FILE_T,), macro = _flush))
 compiler.builtins.create_function("seek", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.FILE_T, types.long, types.int), macro = _seek))
 compiler.builtins.create_function("tell", types.FunctionT(c = True, return_t = (types.int,), parameter_t = (types.FILE_T,), macro = _tell))
+compiler.builtins.create_function("remove", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.string,)))
 
 compiler.builtins.create_function("ceil", types.FunctionT(c = True, return_t = (types.double,), parameter_t = (types.double,)))
 compiler.builtins.create_function("pow", types.FunctionT(c = True, return_t = (types.double,), parameter_t = (types.double, types.double)))
