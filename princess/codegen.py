@@ -317,7 +317,7 @@ class CCodeGen(CodeGenerator):
                             args[i] = (Array) {{ strlen(argv[i]) + 1, argv[i] }};
                         }}
                         Array res = {{ argc, args }};
-                        {fields["file"]}_p_main(res);
+                        {file}_p_main(res);
                     }}
                 """))
             else:
