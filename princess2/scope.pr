@@ -10,14 +10,23 @@ export type Value = struct {
     modifier: parser::VarDecl
     // Name used by the source code
     name: string
+    // Name used by the assembly, might be suffixed with a number
+    // in case of shadowed variables
+    assembly_name: string
     tpe: *typechecking::Type
     value: *
     // In case multiple values share one name (overloaded functions)
     next: *Value
     forward_declare: bool
+    // True if the value is a global value
+    global: bool
 }
 
 export type Scope = struct {
+    // Counter for local scopes (shadowing)
+    // Starts from 0 for function scopes
+    // is -1 for all other scopes
+    scope_count: int
     parent: *Scope
     fields: *map::Map
     // This is a list of imported scopes,
@@ -26,11 +35,38 @@ export type Scope = struct {
     imports: *vector::Vector
 }
 
+def get_scope_count(scope: *Scope) -> *int {
+    if not scope { return null }
+    if (@scope).scope_count >= 0 {
+        return *(@scope).scope_count
+    }
+    return get_scope_count((@scope).parent)
+}
+
+def is_global(scope: *Scope) -> bool {
+    // TODO Check against builtins
+    if (@scope).parent == null { return true }
+    scope = (@scope).parent
+    if (@scope).parent == null { return true }
+    return false
+}
+
 export def enter_scope(scope: *Scope) -> *Scope {
     var s = allocate(Scope)
+    var scope_count = get_scope_count(scope)
+    if scope_count {
+        (@scope_count) += 1
+    }
+    (@s).scope_count = -1
     (@s).parent = scope
     (@s).fields = map::make()
     (@s).imports = null
+    return s
+}
+
+export def enter_function_scope(scope: *Scope) -> *Scope {
+    var s = enter_scope(scope)
+    (@s).scope_count = 0
     return s
 }
 
@@ -264,10 +300,12 @@ export def create_function(
     (@v).share = share
     (@v).modifier = parser::VarDecl::CONST
     (@v).name = name
+    (@v).assembly_name = name
     (@v).tpe = tpe
     (@v).value = null
     (@v).next = null
     (@v).forward_declare = forward_declare
+    (@v).global = is_global(scope)
 
     if map::contains((@scope).fields, name) {
         var val = map::get((@scope).fields, name) !*Value
@@ -298,6 +336,14 @@ export def create_function(
     }
 }
 
+def append_scope_count(scope: *Scope, name: string) -> string {
+    let buf = buffer::make_buffer()
+    buffer::append_str(*buf, name)
+    buffer::append_char(*buf, '.')
+    buffer::append_str(*buf, util::int_to_str(@get_scope_count(scope)))
+    return buffer::to_string(*buf)
+}
+
 export def create_variable(
     scope: *Scope, node: *parser::Node, share: parser::ShareMarker, 
     modifier: parser::VarDecl, tpe: *typechecking::Type, value: *) {
@@ -310,9 +356,11 @@ export def create_variable(
     (@v).share = share
     (@v).modifier = modifier
     (@v).name = name
+    (@v).assembly_name = append_scope_count(scope, name)
     (@v).tpe = tpe
     (@v).value = value
     (@v).next = null
+    (@v).global = is_global(scope)
 
     if map::contains((@scope).fields, name) {
         typechecking::errorn(node, "Redeclaration of ")
@@ -335,9 +383,11 @@ export def create_type(
     (@v).share = share
     (@v).modifier = parser::VarDecl::TYPE
     (@v).name = name
+    (@v).assembly_name = name
     (@v).tpe = type_t
     (@v).value = tpe
     (@v).next = null
+    (@v).global = is_global(scope)
 
     let value = map::get((@scope).fields, name) !*Value
     if value {
@@ -370,9 +420,11 @@ export def enter_namespace(scope: *Scope, node: *parser::Node) -> *Scope {
     (@v).share = parser::ShareMarker::NONE
     (@v).modifier = parser::VarDecl::CONST
     (@v).name = name
+    (@v).assembly_name = name
     (@v).tpe = tpe
     (@v).value = scope2
     (@v).next = null
+    (@v).global = is_global(scope)
 
     if map::contains((@scope).fields, name) {
         typechecking::errorn(node, "Redeclaration of ")
