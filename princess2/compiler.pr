@@ -12,7 +12,7 @@ export type Label = struct {
 export type ValueKind = enum {
     LOCAL; GLOBAL;
     INT; FLOAT; STRING
-    ARRAY; STRUCT
+    ARRAY; STRUCT; NULL
 }
 
 export type Value = struct {
@@ -27,10 +27,13 @@ export type Value = struct {
     tpe: *typechecking::Type
 }
 
+let NO_VALUE = { kind = ValueKind::NULL, tpe = null } !Value
+
 export type InsnKind = enum {
     ADD; SUB; MUL; SREM; UREM; SDIV; UDIV
     FADD; FSUB; FMUL; FREM; FDIV
-    RET; LOAD; STORE
+    RET; LOAD; STORE; ALLOCA
+    CALL
 }
 
 export type InsnStore = struct {
@@ -39,12 +42,10 @@ export type InsnStore = struct {
 }
 
 export type InsnLoad = struct {
-    tpe: *typechecking::Type
     loc: Value
 }
 
 export type InsnReturn = struct {
-    tpe: *typechecking::Type
     value: Value
 }
 
@@ -52,7 +53,16 @@ export type InsnArithmetic = struct {
     ret: Value
     left: Value
     right: Value
-    tpe: *typechecking::Type
+}
+
+export type InsnAlloca = struct {
+    ret: Value
+}
+
+export type InsnCall = struct {
+    name: Value
+    ret: Value
+    args: [Value]
 }
 
 export type InsnValue = struct #union {
@@ -60,6 +70,8 @@ export type InsnValue = struct #union {
     ret: InsnReturn
     store: InsnStore
     load: InsnLoad
+    alloca: InsnAlloca
+    call: InsnCall
 }
 
 export type Insn = struct {
@@ -80,6 +92,7 @@ export type Function = struct {
     // Vector of typechecking::NamedParameter
     args: *vector::Vector
     ret: *typechecking::Type
+    multiple_returns: bool
     // First node
     block: *Block
 }
@@ -107,6 +120,7 @@ type State = struct {
     counter: int
     filename: string
     module: string
+    // TODO Make this a stack for nested functions
     current_function: *Function
     current_block: *Block
     result: Result
@@ -153,11 +167,52 @@ def walk_Add(node: *parser::Node, state: *State) -> Value {
     (@insn).value.arith = {
         left = left,
         right = right,
-        ret = value,
-        tpe = tpe
+        ret = value
     } !InsnArithmetic
 
     vector::push((@(@state).current_block).insn, insn)
+
+    return value
+}
+
+def walk_Call(node: *parser::Node, state: *State) -> Value {
+    if not (@node).tpe { return NO_VALUE }
+    var name = parser::identifier_to_str((@node).value.func_call.left)
+    let parameter_t = (@(@node).tpe).parameter_t
+    name = typechecking::mangle_function_name(name, parameter_t)
+    let function = map::get((@state).result.functions, name) !*Function
+
+    if not function { return NO_VALUE }
+    
+    let name_v = {
+        kind = ValueKind::GLOBAL,
+        name = name,
+        tpe = null
+    } !Value
+
+    var value = NO_VALUE
+    if (@function).ret {
+        value = {
+            kind = ValueKind::LOCAL,
+            name = make_unique_name(state),
+            tpe = (@function).ret
+        } !Value
+    }
+
+    let args = allocate(Value, vector::length(parameter_t))
+    for var i in 0..args.size {
+        let arg = vector::get(parameter_t, i)
+        let value = walk_expression(arg, state)
+        args[i] = value
+    }
+
+    let insn = allocate(Insn)
+    (@insn).kind = InsnKind::CALL
+    (@insn).value.call = {
+        name = name_v,
+        ret = value,
+        args = args
+    } !InsnCall
 
     return value
 }
@@ -172,21 +227,52 @@ def walk_expression(node: *parser::Node, state: *State) -> Value {
             return walk_Integer(node, state)
         case parser::NodeKind::ADD:
             return walk_Add(node, state)
+        case parser::NodeKind::FUNC_CALL:
+            return walk_Call(node, state)
         case parser::NodeKind::ASSIGN:
             return walk_Assign(node, state)
         case:
+            error((@node).kind, "\n")
             assert(false)
     }
 }
 
-def walk_VarDecl(node: *parser::Node, state: *State) {
+def walk_Return(node: *parser::Node, state: *State) {
+    let current_function = (@state).current_function
 
+    var value: Value
+    if (@current_function).multiple_returns {
+        let ret_args = allocate(Value, vector::length((@node).value.body))
+        for var i in 0..ret_args.size {
+            ret_args[i] = walk_expression(vector::get((@node).value.body, i) !*parser::Node, state)
+        }
+        value = {
+            kind = ValueKind::STRUCT,
+            values = ret_args,
+            tpe = (@current_function).ret
+        } !Value
+    } else {
+        let arg = vector::peek((@node).value.body)
+        value = walk_expression(arg, state)
+    }
+
+    let ret = allocate(Insn)
+    (@ret).kind = InsnKind::RET
+    (@ret).value.ret.value = value
+
+    vector::push((@(@state).current_block).insn, ret)
+}
+
+def walk_VarDecl(node: *parser::Node, state: *State) {
+    
 }
 
 def walk(node: *parser::Node, state: *State) {
     switch (@node).kind !int {
         case parser::NodeKind::VAR_DECL:
             walk_VarDecl(node, state)
+        case parser::NodeKind::RETURN:
+            walk_Return(node, state)
         case: walk_expression(node, state)
     }
 }
@@ -195,6 +281,7 @@ def create_function(tpe: *typechecking::Type, body: *vector::Vector, state: *Sta
     let function = allocate(Function)
     (@function).name = typechecking::mangle_function_name((@tpe).type_name, (@tpe).parameter_t)
     (@function).args = (@tpe).parameter_t
+    (@function).multiple_returns = false
 
     if vector::length((@tpe).return_t) > 1 {
         // Create anonymous struct as return type
@@ -222,6 +309,7 @@ def create_function(tpe: *typechecking::Type, body: *vector::Vector, state: *Sta
         (@ret_tpe).fields = fields
 
         (@function).ret = ret_tpe
+        (@function).multiple_returns = true
 
         // Store return type in structures
         map::put((@state).result.structures, (@ret_tpe).type_name, ret_tpe)
@@ -260,7 +348,7 @@ def create_function(tpe: *typechecking::Type, body: *vector::Vector, state: *Sta
         if last_insn and (@last_insn).kind != InsnKind::RET {
             let ret = allocate(Insn)
             (@ret).kind = InsnKind::RET
-            (@ret).value.ret.tpe = null
+            (@ret).value.ret.value = NO_VALUE
             vector::push((@last_block).insn, ret)
         }
     }
