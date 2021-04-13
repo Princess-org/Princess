@@ -1,9 +1,12 @@
+import buffer
 import parser
 import vector
 import map
+import scope
 import typechecking
 import util
 import builtins
+import debug
 
 export type Label = struct {
     name: string
@@ -42,6 +45,7 @@ export type InsnStore = struct {
 }
 
 export type InsnLoad = struct {
+    value: Value
     loc: Value
 }
 
@@ -139,7 +143,8 @@ def walk_Integer(node: *parser::Node, state: *State) -> Value {
     let value = {
         kind = ValueKind::INT,
         i = (@tpe).i,
-        sign = (@tpe).sign
+        sign = (@tpe).sign,
+        tpe = tpe
     } !Value
     return value
 }
@@ -177,7 +182,7 @@ def walk_Add(node: *parser::Node, state: *State) -> Value {
 
 def walk_Call(node: *parser::Node, state: *State) -> Value {
     if not (@node).tpe { return NO_VALUE }
-    var name = parser::identifier_to_str((@node).value.func_call.left)
+    var name = (@(@node).tpe).type_name
     let parameter_t = (@(@node).tpe).parameter_t
     name = typechecking::mangle_function_name(name, parameter_t)
     let function = map::get((@state).result.functions, name) !*Function
@@ -200,10 +205,22 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
     }
 
     let args = allocate(Value, vector::length(parameter_t))
-    for var i in 0..args.size {
-        let arg = vector::get(parameter_t, i)
-        let value = walk_expression(arg, state)
-        args[i] = value
+    for var i in 0..vector::length((@node).value.func_call.args) {
+        let n = vector::get((@node).value.func_call.args, i) !*parser::Node
+        args[i] = walk_expression(n, state)
+    }
+    for var i in 0..vector::length((@node).value.func_call.kwargs) {
+        let n = vector::get((@node).value.func_call.args, i) !*parser::Node
+        assert((@n).kind == parser::NodeKind::NAMED_ARG)
+        // Find named parameter
+        let name = typechecking::last_ident_to_str((@n).value.named_arg.name)
+        let value = (@n).value.named_arg.value
+        for var j in 0..vector::length(parameter_t) {
+            let p = vector::get(parameter_t, j) !*typechecking::NamedParameter
+            if (@p).name == name {
+                args[j] = walk_expression(value, state)
+            }
+        }
     }
 
     let insn = allocate(Insn)
@@ -214,15 +231,44 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
         args = args
     } !InsnCall
 
+    vector::push((@(@state).current_block).insn, insn)
+
+    return value
+}
+
+def walk_Identifier(node: *parser::Node, state: *State) -> Value {
+    let value = {
+        kind = ValueKind::LOCAL,
+        name = make_unique_name(state),
+        tpe = (@node).tpe
+    } !Value
+
+    let val = scope::get((@node).scope, node)
+    if not val { return NO_VALUE }
+    let name = (@val).assembly_name
+    
+    let insn = allocate(Insn)
+    (@insn).kind = InsnKind::LOAD
+    (@insn).value.load = {
+        value = value,
+        loc = {
+            kind = ValueKind::LOCAL,
+            name = name,
+            tpe = typechecking::pointer((@node).tpe)
+        } !Value
+    }
+
+    vector::push((@(@state).current_block).insn, insn)
     return value
 }
 
 def walk_Assign(node: *parser::Node, state: *State) -> Value {
-    
 }
 
 def walk_expression(node: *parser::Node, state: *State) -> Value {
     switch (@node).kind !int {
+        case parser::NodeKind::IDENTIFIER:
+            return walk_Identifier(node, state)
         case parser::NodeKind::INTEGER:
             return walk_Integer(node, state)
         case parser::NodeKind::ADD:
@@ -277,10 +323,9 @@ def walk(node: *parser::Node, state: *State) {
     }
 }
 
-def create_function(tpe: *typechecking::Type, body: *vector::Vector, state: *State) {
+def create_function(tpe: *typechecking::Type, body: *vector::Vector, scpe: *scope::Scope, state: *State) {
     let function = allocate(Function)
     (@function).name = typechecking::mangle_function_name((@tpe).type_name, (@tpe).parameter_t)
-    (@function).args = (@tpe).parameter_t
     (@function).multiple_returns = false
 
     if vector::length((@tpe).return_t) > 1 {
@@ -331,6 +376,54 @@ def create_function(tpe: *typechecking::Type, body: *vector::Vector, state: *Sta
     (@function).block = block
     (@state).current_block = block
 
+    // Create function arguments
+    for var i in 0..vector::length((@tpe).parameter_t) {
+        let np = vector::get((@tpe).parameter_t, i) !*typechecking::NamedParameter
+        /*let vars = map::keys((@scpe).fields)
+        for var i in 0..vars.size {
+            let v = vars[i]
+            print(v, "\n")
+        }*/
+        let name = (@scope::get(scpe, parser::make_identifier([(@np).name]))).assembly_name
+        let buf = buffer::make_buffer()
+        buffer::append_str(*buf, name)
+        buffer::append_str(*buf, ".value")
+        // Rename to name.value
+        (@np).name = buffer::to_string(*buf)
+        // Insert alloca and store instructions
+
+        let alloca = allocate(Insn)
+        (@alloca).kind = InsnKind::ALLOCA
+        (@alloca).value.alloca = {
+            ret = {
+                kind = ValueKind::LOCAL,
+                name = name,
+                tpe = (@np).value
+            } !Value
+        } !InsnAlloca
+
+        vector::push((@(@state).current_block).insn, alloca)
+
+        let store = allocate(Insn)
+        (@store).kind = InsnKind::STORE
+        (@store).value.store = {
+            value = {
+                kind = ValueKind::LOCAL,
+                name = (@np).name,
+                tpe = (@np).value
+            } !Value,
+            loc = {
+                kind = ValueKind::LOCAL,
+                name = name,
+                tpe = typechecking::pointer((@np).value)
+            } !Value
+        } !InsnStore
+
+        vector::push((@(@state).current_block).insn, store)
+    }
+
+    (@function).args = (@tpe).parameter_t
+
     for var i in 0..vector::length(body) {
         let node = vector::get(body, i)
         walk(node, state)
@@ -340,22 +433,18 @@ def create_function(tpe: *typechecking::Type, body: *vector::Vector, state: *Sta
     // TODO Make another compiler pass that checks for missing return statements and dead code
     if not (@function).ret {
         // Check for missing return statement
-        var last_block = block
-        while (@last_block).next {
-            last_block = (@last_block).next
-        }
-        let last_insn = vector::peek((@last_block).insn) !*Insn
+        let last_insn = vector::peek((@(@state).current_block).insn) !*Insn
         if last_insn and (@last_insn).kind != InsnKind::RET {
             let ret = allocate(Insn)
             (@ret).kind = InsnKind::RET
             (@ret).value.ret.value = NO_VALUE
-            vector::push((@last_block).insn, ret)
+            vector::push((@(@state).current_block).insn, ret)
         }
     }
 }
 
 def walk_Def(node: *parser::Node, state: *State){
-    create_function((@node).tpe, (@node).value.def_.body, state)
+    create_function((@node).tpe, (@node).value.def_.body, (@node).scope, state)
 }
 
 def walk_TypeDecl(node: *parser::Node, state: *State) {
@@ -434,7 +523,15 @@ export def compile(node: *parser::Node, filename: string, module: string) -> Res
     // TODO Infer return types
     (@main_tpe).return_t = vector::make()
 
-    create_function(main_tpe, body, *state)
+    scope::create_variable(
+        (@node).scope, 
+        parser::make_identifier(["args"]), 
+        parser::ShareMarker::NONE, 
+        parser::VarDecl::VAR, 
+        string_array_tpe, null
+    )
+
+    create_function(main_tpe, body, (@node).scope, *state)
 
     return state.result
 }
