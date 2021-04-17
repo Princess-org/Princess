@@ -11,10 +11,13 @@ def type_to_str(tpe: *typechecking::Type) -> string {
     if not tpe { return "void" }
     let buf = buffer::make_buffer()
     switch (@tpe).kind !int {
+        case typechecking::TypeKind::BOOL:
+            buffer::append_str(*buf, "i1")
         case typechecking::TypeKind::WORD:
             buffer::append_char(*buf, 'i')
             buffer::append_str(*buf, util::int_to_str((@tpe).size * 8))
         case typechecking::TypeKind::INT_LITERAL:
+            // TODO Promote to bigger types
             buffer::append_char(*buf, 'i')
             buffer::append_str(*buf, util::int_to_str((size_of int) * 8))
         case typechecking::TypeKind::FLOAT:
@@ -24,12 +27,23 @@ def type_to_str(tpe: *typechecking::Type) -> string {
                 case: assert(false)
             }
         case typechecking::TypeKind::POINTER:
-            buffer::append_str(*buf, type_to_str((@tpe).tpe))
-            buffer::append_char(*buf, '*')
+            if (@tpe).tpe {
+                buffer::append_str(*buf, type_to_str((@tpe).tpe))
+                buffer::append_char(*buf, '*')
+            } else {
+                // void pointer is i8*
+                buffer::append_str(*buf, "i8*")
+            }
         case typechecking::TypeKind::ARRAY:
-            buffer::append_str(*buf, "{i32, [0 x ")
+            buffer::append_str(*buf, "{i32, ")
             buffer::append_str(*buf, type_to_str((@tpe).tpe))
-            buffer::append_str(*buf, "]}")
+            buffer::append_str(*buf, "*}")
+        case typechecking::TypeKind::STATIC_ARRAY:
+            buffer::append_char(*buf, '[')
+            buffer::append_str(*buf, util::int_to_str((@tpe).length))
+            buffer::append_str(*buf, " x ")
+            buffer::append_str(*buf, type_to_str((@tpe).tpe))
+            buffer::append_char(*buf, ']')
         case typechecking::TypeKind::STRUCT..typechecking::TypeKind::UNION:
             buffer::append_str(*buf, "%\"")
             buffer::append_str(*buf, (@tpe).type_name)
@@ -49,6 +63,12 @@ def value_to_str(value: compiler::Value) -> string {
             buffer::append_str(*buf, "@\"")
             buffer::append_str(*buf, value.name)
             buffer::append_char(*buf, '"')
+        case compiler::ValueKind::BOOL:
+            if value.i {
+                buffer::append_str(*buf, "true")
+            } else {
+                buffer::append_str(*buf, "false")
+            }
         case compiler::ValueKind::INT:
             buffer::append_str(*buf, util::uint_to_str_sign(value.sign, value.i))
         case compiler::ValueKind::FLOAT:
@@ -136,6 +156,26 @@ def emit_load(fp: *, insn: *compiler::Insn) {
     write_string(fp, "\n")
 }
 
+def emit_br(fp: *, insn: *compiler::Insn) {
+    write_string(fp, "\t")
+    write_string(fp, "br ")
+    write_string(fp, type_to_str((@insn).value.br.cond.tpe))
+    write_string(fp, " ")
+    write_string(fp, value_to_str((@insn).value.br.cond))
+    write_string(fp, ", label %")
+    write_string(fp, (@insn).value.br.if_true.name)
+    write_string(fp, ", label %")
+    write_string(fp, (@insn).value.br.if_false.name)
+    write_string(fp, "\n")
+}
+
+def emit_br_unc(fp: *, insn: *compiler::Insn) {
+    write_string(fp, "\t")
+    write_string(fp, "br label %")
+    write_string(fp, (@insn).value.br_unc.label_.name)
+    write_string(fp, "\n")
+}
+
 def emit(fp: *, insn: *compiler::Insn) {
     switch (@insn).kind !int {
         case compiler::InsnKind::ADD:
@@ -150,6 +190,10 @@ def emit(fp: *, insn: *compiler::Insn) {
             emit_load(fp, insn)
         case compiler::InsnKind::CALL:
             emit_call(fp, insn)
+        case compiler::InsnKind::BR:
+            emit_br(fp, insn)
+        case compiler::InsnKind::BR_UNC:
+            emit_br_unc(fp, insn)
         case compiler::InsnKind::RET:
             emit_ret(fp, insn)
         case: assert(false)
@@ -169,8 +213,13 @@ def emit_block(fp: *, block: *compiler::Block) {
 }
 
 def emit_function(fp: *, function: *compiler::Function) {
-    write_string(fp, "define ", type_to_str((@function).ret), " ")
-    write_string(fp, "@\"", (@function).name, "\" (")
+    if (@function).forward_declare {
+        write_string(fp, "declare ")
+    } else {
+        write_string(fp, "define ")
+    }
+    write_string(fp, type_to_str((@function).ret), " ")
+    write_string(fp, "@\"", (@function).name, "\"(")
 
     let len = vector::length((@function).args)
     for var i in 0..len {
@@ -179,20 +228,27 @@ def emit_function(fp: *, function: *compiler::Function) {
         let name = (@np).name
 
         write_string(fp, type_to_str(tpe))
-        write_string(fp, " ")
-        write_string(fp, "%", name)
+        if not (@function).forward_declare {
+            write_string(fp, " ")
+            write_string(fp, "%", name)
+        }
         if i < len - 1 {
             write_string(fp, ", ")
         }
     }
 
-    write_string(fp, ") {\n")
-    var block = (@function).block
-    while block {
-        emit_block(fp, block)
-        block = (@block).next
+    write_string(fp, ")")
+    if not (@function).forward_declare {
+        write_string(fp, " {\n")
+        var block = (@function).block
+        while block {
+            emit_block(fp, block)
+            block = (@block).next
+        }
+        write_string(fp, "}\n")
+    } else {
+        write_string(fp, "\n")
     }
-    write_string(fp, "}\n")
 }
 
 def gen_main_function(fp: *) {
