@@ -1021,7 +1021,7 @@ def cache_module(module, base_path):
     cache_file = base_path / (module + ".pc")
     scope = _modules[module]
 
-    print("Flushing cache on", cache_file)
+    #print("Flushing cache on", cache_file)
 
     with open(cache_file, "wb") as fp:
         pickle.dump(scope, fp)
