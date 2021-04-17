@@ -132,6 +132,11 @@ export type Result = struct {
     globals: *map::Map
 }
 
+type LoopState = struct {
+    break_insn: *Insn
+    continue_insn: *Insn
+}
+
 type State = struct {
     label_counter: int
     counter: int
@@ -140,7 +145,41 @@ type State = struct {
     // TODO Make this a stack for nested functions
     current_function: *Function
     current_block: *Block
+    // Vector of LoopState 
+    loops: *vector::Vector
     result: Result
+}
+
+def get_break_insn(state: *State) -> *Insn {
+    if vector::length((@state).loops) > 0 {
+        return (@(vector::peek((@state).loops) !*LoopState)).break_insn
+    }
+    return null
+}
+
+def get_continue_insn(state: *State) -> *Insn {
+    if vector::length((@state).loops) > 0 {
+        return (@(vector::peek((@state).loops) !*LoopState)).continue_insn
+    }
+    return null
+}
+
+def push_loop_state(state: *State) {
+    let loops = allocate(LoopState)
+
+    let break_insn = allocate(Insn)
+    (@break_insn).kind = InsnKind::BR_UNC
+    let continue_insn = allocate(Insn)
+    (@continue_insn).kind = InsnKind::BR_UNC
+
+    (@loops).break_insn = break_insn
+    (@loops).continue_insn = continue_insn
+    
+    vector::push((@state).loops, loops)
+}
+
+def pop_loop_state(state: *State) {
+    vector::pop((@state).loops)
 }
 
 def make_label(state: *State) -> Label {
@@ -413,6 +452,7 @@ def walk_If(node: *parser::Node, state: *State) {
 
 def walk_Return(node: *parser::Node, state: *State) {
     let current_function = (@state).current_function
+    if not current_function { return }
 
     var value: Value
     if (@current_function).multiple_returns {
@@ -435,6 +475,48 @@ def walk_Return(node: *parser::Node, state: *State) {
     (@ret).value.ret.value = value
 
     push_insn(ret, state)
+    (@state).label_counter += 1
+}
+
+def walk_Break(node: *parser::Node, state: *State) {
+    let break_insn = get_break_insn(state)
+    if not break_insn {
+        typechecking::errorn(node, "break used outside of a loop\n")
+        return
+    }
+    push_insn(break_insn, state)
+    (@state).label_counter += 1
+}
+
+def walk_Continue(node: *parser::Node, state: *State) {
+    let continue_insn = get_continue_insn(state)
+    if not continue_insn {
+        typechecking::errorn(node, "continue used outside of a loop\n")
+        return
+    }
+    push_insn(continue_insn, state)
+    (@state).label_counter += 1
+}
+
+def walk_Loop(node: *parser::Node, state: *State) {
+    push_loop_state(state)
+    let continue_insn = get_continue_insn(state)
+    let break_insn = get_break_insn(state)
+
+    push_insn(continue_insn, state)
+    let start_label = make_label(state)
+    push_label(start_label, state)
+    for var i in 0..vector::length((@node).value.body) {
+        let n = vector::get((@node).value.body, i)
+        walk(n, state)
+    }
+    push_insn(continue_insn, state)
+    let end_label = make_label(state)
+    push_label(end_label, state)
+
+    (@continue_insn).value.br_unc.label_ = start_label
+    (@break_insn).value.br_unc.label_ = end_label
+    pop_loop_state(state)
 }
 
 def walk_VarDecl(node: *parser::Node, state: *State) {
@@ -447,8 +529,14 @@ def walk(node: *parser::Node, state: *State) {
             walk_VarDecl(node, state)
         case parser::NodeKind::RETURN:
             walk_Return(node, state)
+        case parser::NodeKind::BREAK:
+            walk_Break(node, state)
+        case parser::NodeKind::CONTINUE:
+            walk_Continue(node, state)
         case parser::NodeKind::IF:
             walk_If(node, state)
+        case parser::NodeKind::LOOP:
+            walk_Loop(node, state)
         case: walk_expression(node, state)
     }
 }
@@ -476,7 +564,7 @@ def create_function(tpe: *typechecking::Type, body: *vector::Vector, scpe: *scop
             let tpe = vector::get((@tpe).return_t, i) !*typechecking::Type
             let name = util::int_to_str(i)
 
-            offset = (ceil(offset / (@tpe).align !double) * (@tpe).align) !int
+            offset = (ceil(offset / (@tpe).align  !double) * (@tpe).align) !int
             align = util::lcm(align, (@tpe).align)
 
             fields[i] = { name, tpe, offset } !StructMember
@@ -621,6 +709,7 @@ export def compile(node: *parser::Node, filename: string, module: string) -> Res
     let state = {
         filename = filename,
         module = module,
+        loops = vector::make(),
         result = {
             functions = map::make(),
             structures = map::make(),

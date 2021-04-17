@@ -968,7 +968,7 @@ class Compiler(AstWalker):
         #                ast.CallArg(value = ast.Identifier("args"))
         #            ])
         #        ),
-        #        share = ast.Share.No,
+        #        share = ast.Share.No,<<
         #        args = [
         #            ast.DefArg(name = ast.Identifier("args"), type = ast.ArrayT(type = ast.Identifier("string"))),
         #        ],
@@ -1055,6 +1055,8 @@ def compile_module(module, base_path, include_path):
             recompile = False
 
     if recompile:
+        print("Compiling module", module)
+        
         with open(file_path) as fp:
             src = fp.read()
         p_ast = parse(src)
@@ -1062,7 +1064,6 @@ def compile_module(module, base_path, include_path):
 
         _modules[module] = scope
         
-        print("Compiling module", module)
         csrc, _ = compile(p_ast, scope, module, base_path, include_path)
         
         c_file_path = base_path / (file_path.stem + ".c")
