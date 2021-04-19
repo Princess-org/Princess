@@ -13,9 +13,9 @@ export type Label = struct {
 }
 
 export type ValueKind = enum {
-    LOCAL; GLOBAL;
+    NULL; LOCAL; GLOBAL;
     BOOL; INT; FLOAT; STRING
-    ARRAY; STRUCT; NULL
+    ARRAY; STRUCT
 }
 
 export type Value = struct {
@@ -27,6 +27,8 @@ export type Value = struct {
     s: string
     // Used for both struct and array
     values: [Value]
+    // Address of a value
+    addr: *Value
     tpe: *typechecking::Type
 }
 
@@ -36,7 +38,14 @@ export type InsnKind = enum {
     ADD; SUB; MUL; SREM; UREM; SDIV; UDIV
     FADD; FSUB; FMUL; FREM; FDIV
     RET; LOAD; STORE; ALLOCA
+    EXTRACTVALUE
     CALL; BR_UNC; BR
+}
+
+export type InsnExtractValue = struct {
+    ret: Value
+    value: Value
+    index: [int]
 }
 
 export type InsnStore = struct {
@@ -88,6 +97,7 @@ export type InsnValue = struct #union {
     call: InsnCall
     br_unc: InsnBrUnc
     br: InsnBr
+    extract_value: InsnExtractValue
 }
 
 export type Insn = struct {
@@ -112,13 +122,6 @@ export type Function = struct {
     forward_declare: bool
     // First node
     block: *Block
-}
-
-export type Structure = struct {
-    name: string
-    packed: bool
-    // Vector of typechecking::Type
-    values: *vector::Vector
 }
 
 export type Result = struct {
@@ -338,16 +341,22 @@ def walk_Identifier(node: *parser::Node, state: *State) -> Value {
     if (@val).global {
         kind = ValueKind::GLOBAL
     }
+
+    let loc = {
+        kind = kind,
+        name = name,
+        tpe = typechecking::pointer((@node).tpe)
+    } !Value
+
+    let l = allocate(Value)
+    (@l) = loc
+    value.addr = l
     
     let insn = allocate(Insn)
     (@insn).kind = InsnKind::LOAD
     (@insn).value.load = {
         value = value,
-        loc = {
-            kind = kind,
-            name = name,
-            tpe = typechecking::pointer((@node).tpe)
-        } !Value
+        loc = loc
     }
 
     push_insn(insn, state)
@@ -357,6 +366,79 @@ def walk_Identifier(node: *parser::Node, state: *State) -> Value {
 def walk_Assign(node: *parser::Node, state: *State) -> Value {
     // TODO Make this possible: a, b = c, d = e, f
     // Right now we can only return one value
+    // This probably means adding tuples to the language
+
+    let right = (@node).value.assign.right
+    let left = (@node).value.assign.left
+    var last_value: Value
+
+    var j = 0
+    for var i in 0..vector::length(right) {
+        let n = vector::get(right, i) !*parser::Node
+        let value = walk_expression(n, state)
+        let tpe = (@n).tpe
+        if (@tpe).kind == typechecking::TypeKind::FUNCTION and vector::length((@tpe).return_t) > 1 {
+            for var k in 0..vector::length((@tpe).return_t) {
+                let t = vector::get((@tpe).return_t, k)
+                if j >= vector::length(left) { return NO_VALUE }
+                let l = vector::get(left, j) !*parser::Node
+
+                let addr = @(walk_expression(l, state).addr)
+                if addr.kind == ValueKind::NULL {
+                    typechecking::errorn(l, "Can't assign, expression has no address\n")
+                    return NO_VALUE
+                }
+
+                let ret = {
+                    kind = ValueKind::LOCAL,
+                    name = make_unique_name(state),
+                    tpe = t
+                } !Value
+
+                let index = allocate(int, 1)
+                index[0] = k
+
+                let extract = allocate(Insn)
+                (@extract).kind = InsnKind::EXTRACTVALUE
+                (@extract).value.extract_value = {
+                    ret = ret,
+                    value = value,
+                    index = index
+                } !InsnExtractValue
+
+                let store = allocate(Insn)
+                (@store).kind = InsnKind::STORE
+                (@store).value.store = {
+                    value = ret,
+                    loc = addr
+                } !InsnStore
+
+                push_insn(extract, state)
+                push_insn(store, state)
+
+                last_value = ret
+                j += 1
+            }
+        } else {
+            if j >= vector::length(left) { return NO_VALUE }
+            let l = vector::get(left, j) !*parser::Node
+            // TODO This adds a useless load instruction
+            let addr = @(walk_expression(l, state).addr)
+
+            let store = allocate(Insn)
+            (@store).kind = InsnKind::STORE
+            (@store).value.store = {
+                value = value,
+                loc = addr
+            } !InsnStore
+
+            push_insn(store, state)
+
+            last_value = value
+            j += 1
+        }
+    }
+    return last_value
 }
 
 def walk_expression(node: *parser::Node, state: *State) -> Value {
@@ -556,6 +638,7 @@ def walk_VarDecl(node: *parser::Node, state: *State) {
         let assign = allocate(parser::Node)
         (@assign).kind = parser::NodeKind::ASSIGN
         (@assign).loc = (@node).loc
+        (@assign).scope = (@node).scope
         (@assign).value.assign = {
             left = assign_left,
             right = right
@@ -602,14 +685,14 @@ def create_function(tpe: *typechecking::Type, body: *vector::Vector, scpe: *scop
         var offset = 0
         var align = 1
         for var i in 0..length {
-            let tpe = vector::get((@tpe).return_t, i) !*typechecking::Type
+            let t = vector::get((@tpe).return_t, i) !*typechecking::Type
             let name = util::int_to_str(i)
 
-            offset = (ceil(offset / (@tpe).align  !double) * (@tpe).align) !int
-            align = util::lcm(align, (@tpe).align)
+            offset = (ceil(offset / (@t).align  !double) * (@tpe).align) !int
+            align = util::lcm(align, (@t).align)
 
-            fields[i] = { name, tpe, offset } !StructMember
-            offset += (@tpe).size
+            fields[i] = { name, t, offset } !StructMember
+            offset += (@t).size
         }
         offset = (ceil(offset / align !double) * align) !int
 
@@ -741,6 +824,7 @@ def walk_top_VarDecl(node: *parser::Node, body: *vector::Vector, state: *State) 
         let node_assign = allocate(parser::Node)
         (@node_assign).kind = parser::NodeKind::ASSIGN
         (@node_assign).loc = (@node).loc
+        (@node_assign).scope = (@node).scope
         (@node_assign).value.assign = {
             left = left,
             right = (@node).value.var_decl.right
