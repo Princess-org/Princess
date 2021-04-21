@@ -39,7 +39,15 @@ export type InsnKind = enum {
     FADD; FSUB; FMUL; FREM; FDIV
     RET; LOAD; STORE; ALLOCA
     EXTRACTVALUE
+    TRUNC; ZEXT; SEXT; FPTRUNC; FPEXT
+    FPTOUI; FPTOSI; UITOFP; SITOFP
+    PTRTOINT; INTTOPTR; BITCAST
     CALL; BR_UNC; BR
+}
+
+export type InsnConvert = struct {
+    ret: Value
+    value: Value
 }
 
 export type InsnExtractValue = struct {
@@ -98,6 +106,7 @@ export type InsnValue = struct #union {
     br_unc: InsnBrUnc
     br: InsnBr
     extract_value: InsnExtractValue
+    convert: InsnConvert
 }
 
 export type Insn = struct {
@@ -239,14 +248,95 @@ def walk_Float(node: *parser::Node, state: *State) -> Value {
     return value
 }
 
-def convert_to(value: Value, tpe: *typechecking::Type, state: *State) -> Value {
-    return value
+def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Type, state: *State) -> Value {
+    if typechecking::equals(value.tpe, tpe) {
+        return value
+    }
+
+    var kind: InsnKind
+
+    if typechecking::is_integer(tpe) {
+        if typechecking::is_integer(value.tpe) {
+            if (@value.tpe).size == (@tpe).size {
+                // Types only differ in sign, llvm doesn't treat them any different
+                return value
+            } else if (@value.tpe).size > (@tpe).size {
+                kind = InsnKind::TRUNC
+            } else if (@tpe).unsig {
+                kind = InsnKind::ZEXT
+            } else {
+                kind = InsnKind::SEXT
+            }
+        } else if typechecking::is_float(value.tpe) {
+            if (@tpe).unsig {
+                kind = InsnKind::FPTOUI
+            } else {
+                kind = InsnKind::FPTOSI
+            }
+        } else if typechecking::is_pointer(value.tpe) {
+            kind = InsnKind::PTRTOINT
+        } else {
+            typechecking::errorn(node, "Can't convert ")
+            error(debug::type_to_str(value.tpe), " to ", debug::type_to_str(tpe), "\n")
+            return value
+        }
+    } else if typechecking::is_float(tpe) {
+        if typechecking::is_integer(value.tpe) {
+            if (@value.tpe).unsig {
+                kind = InsnKind::UITOFP
+            } else {
+                kind = InsnKind::SITOFP
+            }
+        } else if typechecking::is_float(value.tpe) {
+            if (@value.tpe).size > (@tpe).size {
+                kind = InsnKind::FPTRUNC
+            } else {
+                kind = InsnKind::FPEXT
+            }
+        } else {
+            typechecking::errorn(node, "Can't convert ")
+            error(debug::type_to_str(value.tpe), " to ", debug::type_to_str(tpe), "\n")
+            return value
+        }
+    } else if typechecking::is_pointer(tpe) {
+        if typechecking::is_pointer(value.tpe) {
+            kind = InsnKind::BITCAST
+        } else if typechecking::is_integer(value.tpe) {
+            kind = InsnKind::INTTOPTR
+        } else {
+            typechecking::errorn(node, "Can't convert ")
+            error(debug::type_to_str(value.tpe), " to ", debug::type_to_str(tpe), "\n")
+            return value
+        }
+    }
+
+    let ret = {
+        kind = ValueKind::LOCAL,
+        name = make_unique_name(state),
+        tpe = tpe
+    } !Value
+
+    let insn = allocate(Insn)
+    (@insn).kind = kind
+    (@insn).value.convert = {
+        ret = ret,
+        value = value
+    } !InsnConvert
+
+    push_insn(insn, state)
+
+    return ret
+}
+
+def walk_Cast(node: *parser::Node, state: *State) -> Value {
+    let value = walk_expression((@node).value.expr, state)
+    return convert_to(node, value, (@node).tpe, state)
 }
 
 def walk_ArithmeticOp(node: *parser::Node, insn_kind: InsnKind, tpe: *typechecking::Type, state: *State) -> Value {
     // TODO Type conversions
-    let left = convert_to(walk_expression((@node).value.bin_op.left, state), tpe)
-    let right = convert_to(walk_expression((@node).value.bin_op.right, state), tpe)
+    let left = convert_to(node, walk_expression((@node).value.bin_op.left, state), tpe, state)
+    let right = convert_to(node, walk_expression((@node).value.bin_op.right, state), tpe, state)
 
     let value = { 
         kind = ValueKind::LOCAL, 
@@ -529,6 +619,8 @@ def walk_expression(node: *parser::Node, state: *State) -> Value {
             return walk_Float(node, state)
         case parser::NodeKind::BOOLEAN:
             return walk_Boolean(node, state)
+        case parser::NodeKind::CAST:
+            return walk_Cast(node, state)
         case parser::NodeKind::ADD:
             return walk_Add(node, state)
         case parser::NodeKind::SUB:
