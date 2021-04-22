@@ -15,7 +15,7 @@ export type Label = struct {
 export type ValueKind = enum {
     NULL; LOCAL; GLOBAL;
     BOOL; INT; FLOAT; STRING
-    ARRAY; STRUCT
+    ARRAY; STRUCT; UNION
 }
 
 export type Value = struct {
@@ -38,11 +38,19 @@ export type InsnKind = enum {
     ADD; SUB; MUL; SREM; UREM; SDIV; UDIV
     FADD; FSUB; FMUL; FREM; FDIV
     RET; LOAD; STORE; ALLOCA
-    EXTRACTVALUE
+    EXTRACTVALUE; GETELEMENTPTR
     TRUNC; ZEXT; SEXT; FPTRUNC; FPEXT
     FPTOUI; FPTOSI; UITOFP; SITOFP
     PTRTOINT; INTTOPTR; BITCAST
     CALL; BR_UNC; BR
+}
+
+export type InsnGetElementPtr = struct {
+    ret: Value
+    // Here the type isn't the same as ret
+    tpe: *typechecking::Type
+    value: Value
+    index: [Value]
 }
 
 export type InsnConvert = struct {
@@ -106,6 +114,7 @@ export type InsnValue = struct #union {
     br_unc: InsnBrUnc
     br: InsnBr
     extract_value: InsnExtractValue
+    gep: InsnGetElementPtr
     convert: InsnConvert
 }
 
@@ -513,6 +522,7 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
         let n = vector::get(right, i) !*parser::Node
         let value = walk_expression(n, state)
         let tpe = (@n).tpe
+        if not tpe { continue }
         if (@tpe).kind == typechecking::TypeKind::FUNCTION and vector::length((@tpe).return_t) > 1 {
             for var k in 0..vector::length((@tpe).return_t) {
                 let t = vector::get((@tpe).return_t, k)
@@ -609,6 +619,73 @@ def walk_Ptr(node: *parser::Node, state: *State) -> Value {
     return @(value.addr)
 }
 
+def walk_MemberAccess(node: *parser::Node, state: *State) -> Value {
+    let left = (@node).value.bin_op.left
+    let right = (@node).value.bin_op.right
+    if not (@node).tpe { return NO_VALUE }
+    let value = walk_expression(left, state)
+    let struct_tpe = (@left).tpe
+
+    // TODO This might double error
+    let name = typechecking::last_ident_to_str(right)
+    let index = allocate(Value, 2)
+    index[0] = {
+        kind = ValueKind::INT,
+        sign = 1,
+        i = 0,
+        tpe = builtins::int_
+    } !Value
+
+    for var i in 0..(@struct_tpe).fields.size {
+        let member = (@struct_tpe).fields[i]
+        if member.name == name {
+            index[1] = {
+                kind = ValueKind::INT,
+                sign = 1,
+                i = i,
+                tpe = builtins::int_
+            } !Value
+            break
+        }
+    }
+
+    let gep_ret = {
+        kind = ValueKind::LOCAL,
+        name = make_unique_name(state),
+        tpe = typechecking::pointer((@node).tpe)
+    } !Value
+
+    let gep = allocate(Insn)
+    (@gep).kind = InsnKind::GETELEMENTPTR
+    (@gep).value.gep = {
+        ret = gep_ret,
+        tpe = struct_tpe,
+        value = @value.addr,
+        index = index
+    } !InsnGetElementPtr
+
+    let addr = allocate(Value)
+    (@addr) = gep_ret
+    let ret = {
+        kind = ValueKind::LOCAL,
+        name = make_unique_name(state),
+        tpe = (@node).tpe,
+        addr = addr
+    } !Value
+
+    let load = allocate(Insn)
+    (@load).kind = InsnKind::LOAD
+    (@load).value.load = {
+        value = ret,
+        loc = gep_ret
+    } !InsnLoad
+
+    push_insn(gep, state)
+    push_insn(load, state)
+
+    return ret
+}
+
 def walk_expression(node: *parser::Node, state: *State) -> Value {
     switch (@node).kind !int {
         case parser::NodeKind::IDENTIFIER:
@@ -639,6 +716,8 @@ def walk_expression(node: *parser::Node, state: *State) -> Value {
             return walk_Deref(node, state)
         case parser::NodeKind::PTR:
             return walk_Ptr(node, state)
+        case parser::NodeKind::MEMBER_ACCESS:
+            return walk_MemberAccess(node, state)
         case:
             error((@node).kind, "\n")
             assert(false)
@@ -979,7 +1058,17 @@ def walk_Def(node: *parser::Node, state: *State){
 }
 
 def walk_TypeDecl(node: *parser::Node, state: *State) {
-
+    let left = (@node).value.type_decl.left
+    for var i in 0..vector::length(left) {
+        let n = vector::get(left, i) !*parser::Node
+        let tpe = (@n).tpe
+        if not tpe { continue }
+        if (@tpe).kind == typechecking::TypeKind::STRUCT or
+            (@tpe).kind == typechecking::TypeKind::UNION {
+            
+            map::put((@state).result.structures, (@tpe).type_name, tpe)
+        }
+    }
 }
 
 def walk_top_VarDecl(node: *parser::Node, body: *vector::Vector, state: *State) {
