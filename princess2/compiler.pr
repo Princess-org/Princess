@@ -31,6 +31,7 @@ export type Value = struct {
     i: uint64
     f: double
     s: string
+    undef: bool
     // Used for both struct and array
     values: [Value]
     // Address of a value
@@ -44,11 +45,18 @@ export type InsnKind = enum {
     ADD; SUB; MUL; SREM; UREM; SDIV; UDIV
     FADD; FSUB; FMUL; FREM; FDIV
     RET; LOAD; STORE; ALLOCA
-    EXTRACTVALUE; GETELEMENTPTR
+    INSERTVALUE; EXTRACTVALUE; GETELEMENTPTR
     TRUNC; ZEXT; SEXT; FPTRUNC; FPEXT
     FPTOUI; FPTOSI; UITOFP; SITOFP
     PTRTOINT; INTTOPTR; BITCAST
     CALL; BR_UNC; BR
+}
+
+export type InsnInsertValue = struct {
+    ret: Value
+    value: Value
+    element: Value
+    index: [int]
 }
 
 export type InsnGetElementPtr = struct {
@@ -119,6 +127,7 @@ export type InsnValue = struct #union {
     call: InsnCall
     br_unc: InsnBrUnc
     br: InsnBr
+    insert_value: InsnInsertValue
     extract_value: InsnExtractValue
     gep: InsnGetElementPtr
     convert: InsnConvert
@@ -246,6 +255,7 @@ def push_label(label_: Label, state: *State) {
     // TODO Might want to use the actual label here
     (@block).label_ = label_.name
     (@block).insn = vector::make()
+    (@block).next = null
     (@(@state).current_block).next = block
     (@state).current_block = block
 }
@@ -367,6 +377,76 @@ def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Type, stat
 def walk_Cast(node: *parser::Node, state: *State) -> Value {
     let value = walk_expression((@node).value.expr, state)
     return convert_to(node, value, (@node).tpe, state)
+}
+
+def walk_StructLit(node: *parser::Node, state: *State) -> Value {
+    let tpe = (@node).tpe
+    let args = (@node).value.struct_lit.args
+    let kwargs = (@node).value.struct_lit.kwargs
+
+    let values = allocate(Value, (@tpe).fields.size)
+    for var i in 0..vector::length(args) {
+        let arg = vector::get(args, i) !*parser::Node
+        let value = walk_expression(arg, state)
+        if i > values.size {
+            typechecking::errorn(arg, "Too many arguments to struct literal\n")
+            return NO_VALUE
+        }
+        values[i] = value
+    }
+    for var i in 0..vector::length(kwargs) {
+        let kwarg = vector::get(kwargs, i) !*parser::Node
+        let name = typechecking::last_ident_to_str((@kwarg).value.named_arg.name)
+        let value = walk_expression((@kwarg).value.named_arg.value, state)
+        
+        var found = false
+        for var j in 0..(@tpe).fields.size {
+            let field_name = (@tpe).fields[j].name
+            if field_name == name {
+                values[j] = value
+                found = true
+                break
+            }
+        }
+        if not found {
+            typechecking::errorn(kwarg, "Unknown field \"")
+            error(name, "\"\n")
+            return NO_VALUE
+        }
+    }
+    var value = {
+        kind = ValueKind::STRUCT,
+        values = values,
+        tpe = tpe
+    } !Value
+
+    for var i in 0..values.size {
+        let val = values[i]
+        if val.kind == ValueKind::LOCAL or val.kind == ValueKind::GLOBAL {
+            values[i] = {
+                undef = true,
+                tpe = val.tpe
+            } !Value
+
+            let ret = make_local_value(tpe, null, state)
+            
+            let index = allocate(int, 1)
+            index[0] = i
+            let insert = allocate(Insn)
+            (@insert).kind = InsnKind::INSERTVALUE
+            (@insert).value.insert_value = {
+                ret = ret,
+                value = value,
+                element = val,
+                index = index
+            } !InsnInsertValue
+            
+            push_insn(insert, state)
+            value = ret
+        }
+    }
+    
+    return value
 }
 
 def walk_ArithmeticOp(node: *parser::Node, insn_kind: InsnKind, tpe: *typechecking::Type, state: *State) -> Value {
@@ -847,6 +927,8 @@ def walk_expression(node: *parser::Node, state: *State) -> Value {
             return walk_MemberAccess(node, state)
         case parser::NodeKind::ARRAY_SUBSCRIPT:
             return walk_ArraySubscript(node, state)
+        case parser::NodeKind::STRUCT_LIT:
+            return walk_StructLit(node, state)
         case:
             error((@node).kind, "\n")
             assert(false)
@@ -1068,6 +1150,7 @@ def create_function(tpe: *typechecking::Type, body: *vector::Vector, scpe: *scop
         // Create anonymous struct as return type
         // TODO Might want to use an inline struct type for return values
         let ret_tpe = typechecking::make_anonymous_type(typechecking::TypeKind::STRUCT, (@state).module)
+        (@ret_tpe).packed = false
         let length = vector::length((@tpe).return_t)
         let fields = allocate(typechecking::StructMember, length)
 
@@ -1212,6 +1295,7 @@ def walk_top_VarDecl(node: *parser::Node, body: *vector::Vector, state: *State) 
             
             let global = allocate(Value)
             (@global).kind = ValueKind::GLOBAL
+            (@global).undef = false
             (@global).name = name
             (@global).tpe = (@v).tpe
             map::put((@state).result.globals, (@global).name, global)
