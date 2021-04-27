@@ -44,12 +44,40 @@ let NO_VALUE = { kind = ValueKind::NULL, tpe = null } !Value
 export type InsnKind = enum {
     ADD; SUB; MUL; SREM; UREM; SDIV; UDIV
     FADD; FSUB; FMUL; FREM; FDIV
+    AND; OR; XOR; FCMP; ICMP
     RET; LOAD; STORE; ALLOCA
     INSERTVALUE; EXTRACTVALUE; GETELEMENTPTR
     TRUNC; ZEXT; SEXT; FPTRUNC; FPEXT
     FPTOUI; FPTOSI; UITOFP; SITOFP
     PTRTOINT; INTTOPTR; BITCAST
     CALL; BR_UNC; BR
+}
+
+// Floating point constants
+export let f_ueq = "ueq"
+export let f_ugt = "ugt"
+export let f_uge = "uge"
+export let f_ult = "ult"
+export let f_ule = "ule"
+export let f_une = "une"
+
+// Integer constants
+export let i_eq  = "eq"
+export let i_ne  = "ne"
+export let i_ugt = "ugt"
+export let i_uge = "uge"
+export let i_ult = "ult"
+export let i_ule = "ule"
+export let i_sgt = "sgt"
+export let i_sge = "sge"
+export let i_slt = "slt"
+export let i_sle = "sle"
+
+export type InsnCmp = struct {
+    op: string
+    ret: Value
+    left: Value
+    right: Value
 }
 
 export type InsnInsertValue = struct {
@@ -131,6 +159,7 @@ export type InsnValue = struct #union {
     extract_value: InsnExtractValue
     gep: InsnGetElementPtr
     convert: InsnConvert
+    cmp: InsnCmp
 }
 
 export type Insn = struct {
@@ -905,6 +934,115 @@ def walk_SizeOf(node: *parser::Node, state: *State) -> Value {
     return value
 }
 
+def compare(node: *parser::Node, left: Value, right: Value, state: *State) -> Value {
+    var tpe: *typechecking::Type = null
+    if typechecking::is_pointer(left.tpe) {
+        // TODO We need something like intptr_t, but for now size_t will suffice
+        left = convert_to(node, left, builtins::size_t_, state)
+    }
+    if typechecking::is_pointer(right.tpe) {
+        right = convert_to(node, right, builtins::size_t_, state)
+    }
+    if typechecking::is_arithmetic(left.tpe) and typechecking::is_arithmetic(right.tpe) {
+        tpe = typechecking::common_type(left.tpe, right.tpe)
+
+        left = convert_to(node, left, tpe, state)
+        right = convert_to(node, right, tpe, state)
+
+        var kind: InsnKind
+        var op: string
+        if typechecking::is_float(tpe) {
+            kind = InsnKind::FCMP
+            switch (@node).kind !int {
+                case parser::NodeKind::EQ:  op = f_ueq
+                case parser::NodeKind::NEQ: op = f_une
+                case parser::NodeKind::GT:  op = f_ugt
+                case parser::NodeKind::LT:  op = f_ult
+                case parser::NodeKind::GEQ: op = f_uge
+                case parser::NodeKind::LEQ: op = f_ule
+                case: assert(false)
+            }
+        } else {
+            kind = InsnKind::ICMP
+            if (@tpe).unsig {
+                switch (@node).kind !int {
+                    case parser::NodeKind::EQ:  op = i_eq
+                    case parser::NodeKind::NEQ: op = i_ne
+                    case parser::NodeKind::GT:  op = i_ugt
+                    case parser::NodeKind::LT:  op = i_ult
+                    case parser::NodeKind::GEQ: op = f_uge
+                    case parser::NodeKind::LEQ: op = f_ule
+                    case: assert(false)
+                }
+            } else {
+                switch (@node).kind !int {
+                    case parser::NodeKind::EQ:  op = i_eq
+                    case parser::NodeKind::NEQ: op = i_ne
+                    case parser::NodeKind::GT:  op = i_sgt
+                    case parser::NodeKind::LT:  op = i_slt
+                    case parser::NodeKind::GEQ: op = i_sge
+                    case parser::NodeKind::LEQ: op = i_sle
+                    case: assert(false)
+                }
+            }
+        }
+
+        let ret = make_local_value((@node).tpe, null, state)
+
+        let insn = allocate(Insn)
+        (@insn).kind = kind
+        (@insn).value.cmp = {
+            op = op,
+            ret = ret,
+            left = left,
+            right = right
+        }
+
+        push_insn(insn, state)
+
+        return ret
+    } else if typechecking::equals(left.tpe, right.tpe) { 
+        if typechecking::equals(left.tpe, builtins::string_) {
+            // TODO Compare strings
+        }
+        assert(false)
+    } else {
+        // TODO Compare arrays that aren't of equal type
+        assert(false)
+    }
+}
+
+def walk_ComparisionOp(node: *parser::Node, state: *State) -> Value {
+    let left = (@node).value.bin_op.left
+    let right = (@node).value.bin_op.right
+
+    if (@left).kind >= parser::NodeKind::EQ and (@left).kind <= parser::NodeKind::LEQ {
+        let value_left = walk_expression(left, state)
+        // These two values get compared
+        let value_leftc = walk_expression((@left).value.bin_op.right, state)
+        let value_rightc = walk_expression(right, state)
+        let value = compare(node, value_leftc, value_rightc, state)
+        
+        let ret = make_local_value(builtins::bool_, null, state)
+
+        let insn_and = allocate(Insn)
+        (@insn_and).kind = InsnKind::AND
+        (@insn_and).value.arith = {
+            ret = ret,
+            left = value_left,
+            right = value
+        } !InsnArithmetic
+
+        push_insn(insn_and, state)
+
+        return ret
+    } else {
+        let value_left = walk_expression(left, state)
+        let value_right = walk_expression(right, state)
+        return compare(node, value_left, value_right, state)
+    }
+}
+
 def walk_expression(node: *parser::Node, state: *State) -> Value {
     switch (@node).kind !int {
         case parser::NodeKind::IDENTIFIER:
@@ -929,6 +1067,8 @@ def walk_expression(node: *parser::Node, state: *State) -> Value {
             return walk_Mod(node, state)
         case parser::NodeKind::DIV:
             return walk_Div(node, state)
+        case parser::NodeKind::EQ..parser::NodeKind::LEQ:
+            return walk_ComparisionOp(node, state)
         case parser::NodeKind::FUNC_CALL:
             return walk_Call(node, state)
         case parser::NodeKind::ASSIGN:
