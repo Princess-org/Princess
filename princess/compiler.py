@@ -1108,7 +1108,7 @@ def compile_file(file, base_path = Path(""), include_path = Path(""), codecov = 
     
     args = ["gcc", "-g", "-I" + str(include_dir), "-o", str(exefile), str(c_file), "-lm"]
     if codecov:
-        args.extend(["-fprofile-arcs", "-ftest-coverage"])
+        args.extend(["--coverage"])
     p = subprocess.Popen(
         args
     )
