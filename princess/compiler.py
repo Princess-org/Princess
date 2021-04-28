@@ -1,5 +1,5 @@
 import subprocess, sys, os, uuid, pickle
-import ctypes, copy
+import ctypes, copy, hashlib
 from datetime import datetime
 from pathlib import Path
 from enum import Enum
@@ -20,8 +20,8 @@ class CompileAssert(Exception):
         self.node = node
 class CompileError(Exception): pass
 
-def create_unique_identifier():
-    return "_" + str(uuid.uuid4())[:8]
+def create_unique_identifier(module: str):
+    return "_" + hashlib.md5(module.encode()).hexdigest()[:8]
 
 class Modifier(str, Enum):
     Const = "const"
@@ -303,7 +303,7 @@ class Compiler(AstWalker):
         elif len(self.function_stack) > 0:
             identifier = name
         else:
-            identifier = create_unique_identifier() + "_" + name
+            identifier = create_unique_identifier(self.filename) + "_" + name
         return identifier
     
     def walk_Body(self, node: model.Body):
@@ -859,7 +859,7 @@ class Compiler(AstWalker):
         else:
             node.identifier = self.prefix_name(node.share, name)
 
-        struct_identifier = create_unique_identifier()
+        struct_identifier = create_unique_identifier(self.filename)
 
         function = types.FunctionT(
             tuple(self.scope.type_lookup(n) for n in node.returns) 
@@ -1030,7 +1030,7 @@ def cache_module(module, base_path):
 # TODO Rewrite these functions to use more sensible arguments
 def compile(p_ast, scope = None, filename = None, base_path = Path(""), include_path = Path("")):
     if not filename:
-        filename = create_unique_identifier()
+        filename = str(uuid.uuid4())[:8]
     if not scope:
         scope = Scope(builtins)
     p_ast, main_type = Compiler(scope, filename, base_path, include_path).walk(p_ast)
