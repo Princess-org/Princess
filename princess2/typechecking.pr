@@ -107,18 +107,17 @@ export def is_function(tpe: *Type) -> bool {
     return (@tpe).kind == TypeKind::FUNCTION
 }
 
-export def is_arithmetic(tpe: *Type) -> bool {
+export def is_integer(tpe: *Type) -> bool {
     if not tpe { return false }
     return (@tpe).kind == TypeKind::WORD or 
-        (@tpe).kind == TypeKind::FLOAT or 
         (@tpe).kind == TypeKind::INT_LITERAL or
         (@tpe).kind == TypeKind::BOOL
 }
 
-export def is_integer(tpe: *Type) -> bool {
+export def is_arithmetic(tpe: *Type) -> bool {
     if not tpe { return false }
-    return (@tpe).kind == TypeKind::WORD or 
-        (@tpe).kind == TypeKind::INT_LITERAL
+    return is_integer(tpe) or 
+        (@tpe).kind == TypeKind::FLOAT
 }
 
 export def is_float(tpe: *Type) -> bool {
@@ -140,6 +139,12 @@ export def is_pointer(tpe: *Type) -> bool {
     if not tpe { return false }
     return (@tpe).kind == TypeKind::POINTER
     // TODO What about references?
+}
+
+export def is_struct(tpe: *Type) -> bool {
+    if not tpe { return false }
+    return (@tpe).kind == TypeKind::STRUCT or
+        (@tpe).kind == TypeKind::UNION
 }
 
 export def pointer(tpe: *Type) -> *Type {
@@ -620,6 +625,15 @@ let int_literal = make_type(TypeKind::INT_LITERAL, parser::make_identifier(["int
 (@int_literal).size = size_of int
 (@int_literal).align = (@int_literal).size
 
+def walk_Null(node: *parser::Node, state: *State) {
+    // TODO Null doesn't really have a type
+    let tpe = allocate(Type)
+    (@tpe).kind = TypeKind::POINTER
+    (@tpe).tpe = null
+    
+    (@node).tpe = tpe
+}
+
 def walk_Integer(node: *parser::Node, state: *State) {
     var tpe = copy(int_literal)
     (@tpe).i = (@node).value.i
@@ -659,8 +673,7 @@ def walk_Identifier(node: *parser::Node, state: *State) {
     }
 }
 
-def collapse_types(right: *vector::Vector, state: *State) -> *vector::Vector { 
-    let types = vector::make()
+def collapse_types(right: *vector::Vector, types: *vector::Vector, nodes: *vector::Vector, state: *State) { 
     for var i in 0..vector::length(right) {
         let value = vector::get(right, i) !*parser::Node
         walk(value, state)
@@ -669,20 +682,22 @@ def collapse_types(right: *vector::Vector, state: *State) -> *vector::Vector {
             for var j in 0..vector::length((@tpe).return_t) {
                 let t = vector::get((@tpe).return_t, j) !*Type
                 vector::push(types, t)
+                vector::push(nodes, value)
             }
         } else {
             vector::push(types, tpe)
+            vector::push(nodes, value)
         }
     }
-    return types
 }
 
 def walk_Assign(node: *parser::Node, state: *State) {
-    // TODO assignment of struct literals
     let left = (@node).value.assign.left
     let right = (@node).value.assign.right
 
-    let types = collapse_types(right, state)
+    let types = vector::make()
+    let nodes = vector::make()
+    collapse_types(right, types, nodes, state)
 
     if vector::length(types) != vector::length(left) {
         errorn(node, "Unbalanced assignment\n")
@@ -695,11 +710,17 @@ def walk_Assign(node: *parser::Node, state: *State) {
         if not check_is_identifier_assignable(node, state) {
             continue
         }
-        let tpe = vector::get(types, i) !*Type
-        // TODO
-        if not tpe { continue }
-        
-        if not (@node).tpe { continue }
+        var tpe = vector::get(types, i) !*Type
+        let n = vector::get(nodes, i) !*parser::Node
+
+        if (@n).kind == parser::NodeKind::NULL and is_pointer((@node).tpe) or
+            (@n).kind == parser::NodeKind::STRUCT_LIT and is_struct((@node).tpe) {
+            (@n).tpe = (@node).tpe
+            tpe = (@node).tpe
+        }
+
+        if not tpe or not (@node).tpe { continue }
+
         if not is_assignable((@node).tpe, tpe) {
             errorn(node, "Incompatible types ")
             error(debug::type_to_str((@node).tpe), " and ", debug::type_to_str(tpe), "\n")
@@ -709,8 +730,6 @@ def walk_Assign(node: *parser::Node, state: *State) {
 }
 
 def walk_VarDecl(node: *parser::Node, state: *State) {
-    // TODO assignment of struct literals
-
     let share = (@node).value.var_decl.share
     let kw = (@node).value.var_decl.kw
     let left = (@node).value.var_decl.left
@@ -722,7 +741,9 @@ def walk_VarDecl(node: *parser::Node, state: *State) {
         }
     }
 
-    let types = collapse_types(right, state)
+    let types = vector::make()
+    let nodes = vector::make()
+    collapse_types(right, types, nodes, state)
 
     if (kw == parser::VarDecl::CONST or 
         kw == parser::VarDecl::LET) and 
@@ -746,7 +767,17 @@ def walk_VarDecl(node: *parser::Node, state: *State) {
                 tpe = type_lookup(tpe_node, state)
 
                 if i < vector::length(types) {
-                    let rhstpe = vector::get(types, i) !*Type
+                    var rhstpe = vector::get(types, i) !*Type
+                    let n = vector::get(nodes, i) !*parser::Node
+
+                    if (@n).kind == parser::NodeKind::NULL and is_pointer(tpe) or
+                        (@n).kind == parser::NodeKind::STRUCT_LIT and is_struct(tpe) {
+                        (@n).tpe = tpe
+                        rhstpe = tpe
+                    }
+
+                    if not tpe or not rhstpe { continue }
+
                     if not is_assignable(tpe, rhstpe) {
                         errorn(node, "Incompatible types ")
                         error(debug::type_to_str(tpe), " and ", debug::type_to_str(rhstpe), "\n")
@@ -790,7 +821,16 @@ def walk_VarDecl(node: *parser::Node, state: *State) {
                 continue
             }
 
-            let rhstpe = vector::get(types, i) !*Type
+            var rhstpe = vector::get(types, i) !*Type
+            let n2 = vector::get(nodes, i) !*parser::Node
+
+            if (@n2).kind == parser::NodeKind::NULL and is_pointer(tpe) or
+                (@n2).kind == parser::NodeKind::STRUCT_LIT and is_struct(tpe) {
+                (@n2).tpe = tpe
+                rhstpe = tpe
+            }
+
+            if not tpe or not rhstpe { continue }
 
             if not is_assignable(tpe, rhstpe) {
                 errorn(node, "Incompatible types ")
@@ -1123,7 +1163,9 @@ def walk_Return(node: *parser::Node, state: *State) {
         return
     }
     
-    let types = collapse_types(body, state)
+    let types = vector::make()
+    let nodes = vector::make()
+    collapse_types(body, types, nodes, state)
     let returns = (@current_fun).return_t
 
     if vector::length(types) != vector::length(returns) {
@@ -1133,7 +1175,17 @@ def walk_Return(node: *parser::Node, state: *State) {
 
     for var i in 0..vector::length(returns) {
         let argtpe = vector::get(returns, i) !*Type
-        let rettpe = vector::get(types, i) !*Type
+        var rettpe = vector::get(types, i) !*Type
+        let n = vector::get(nodes, i) !*parser::Node
+        
+        if (@n).kind == parser::NodeKind::NULL and is_pointer(argtpe) or
+            (@n).kind == parser::NodeKind::STRUCT_LIT and is_struct(argtpe) {
+            (@n).tpe = argtpe
+            rettpe = argtpe
+        }
+
+        if not argtpe or not rettpe { continue }
+
         if not is_assignable(argtpe, rettpe) {
             // TODO This doesn't point to the actual value
             errorn(node, "Wrong type of return argument, got ")
@@ -1300,9 +1352,6 @@ def walk_ArraySubscript(node: *parser::Node, state: *State) {
 }
 
 def walk_StructLit(node: *parser::Node, state: *State) {
-    if not (@node).tpe {
-        errorn(node, "Need to specify a type for struct literal\n")
-    }
     for var i in 0..vector::length((@node).value.struct_lit.args) {
         let n = vector::get((@node).value.struct_lit.args, i) !*parser::Node
         walk(n, state)
@@ -1400,6 +1449,8 @@ def walk(node: *parser::Node, state: *State) {
     (@node).scope = (@state).scope
 
     switch (@node).kind !int {
+        case parser::NodeKind::NULL:
+            walk_Null(node, state)
         case parser::NodeKind::INTEGER:
             walk_Integer(node, state)
         case parser::NodeKind::BOOLEAN:

@@ -115,6 +115,11 @@ DLL_EXPORT string util_double_to_hex_str(double f) {
     (((char *)str.value)[0]) = '0';
     (((char *)str.value)[1]) = 'x';
     int i = 2;
+    if ((n == 0)) {
+        (((char *)str.value)[i]) = '0';
+        (str.size) = 4;
+        return str;
+    }  ;
     uint64 shifter = n;
     while (shifter) {
         (i += 1);

@@ -801,13 +801,17 @@ DLL_EXPORT string debug_type_to_str(typechecking_Type *tpe);
  string _ad42f669_pointer_t_to_string(typechecking_Type *tpe) {
     buffer_Buffer buf = buffer_make_buffer();
     buffer_append_char((&buf), '*');
-    buffer_append_str((&buf), debug_type_to_str(((*tpe).tpe)));
+    if (((*tpe).tpe)) {
+        buffer_append_str((&buf), debug_type_to_str(((*tpe).tpe)));
+    }  ;
     return buffer_to_string((&buf));
 };
  string _ad42f669_reference_t_to_string(typechecking_Type *tpe) {
     buffer_Buffer buf = buffer_make_buffer();
     buffer_append_char((&buf), '&');
-    buffer_append_str((&buf), debug_type_to_str(((*tpe).tpe)));
+    if (((*tpe).tpe)) {
+        buffer_append_str((&buf), debug_type_to_str(((*tpe).tpe)));
+    }  ;
     return buffer_to_string((&buf));
 };
  string _ad42f669_array_t_to_string(typechecking_Type *tpe) {

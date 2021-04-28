@@ -118,6 +118,8 @@ bool test_compiler_print_ll;
     string res = _6dcc03b3_compile(str);
     str = ((Array){65, "\x0a""        let a = 10!float + 20\x0a""        let b = 10!uint + 20\x0a""    "});
     res = _6dcc03b3_compile(str);
+    str = ((Array){106, "\x0a""        let a = 200!bool\x0a""        let b = 1.5!bool\x0a""        let c: *int = null\x0a""        let d = c!bool\x0a""    "});
+    res = _6dcc03b3_compile(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
  void _6dcc03b3_test_member_access() {
@@ -139,6 +141,8 @@ bool test_compiler_print_ll;
     str = ((Array){152, "\x0a""        type T = struct {\x0a""            a: int\x0a""            b: int\x0a""        }\x0a""        let a = 20\x0a""        let b = 50\x0a""        let c = {a = a, b = b} !T\x0a""    "});
     res = _6dcc03b3_compile(str);
     str = ((Array){202, "\x0a""        type A = struct {\x0a""            a: int\x0a""        }\x0a""        type B = struct {\x0a""            b: A\x0a""            c: int\x0a""        }\x0a""        let a = 20\x0a""        let b = 50\x0a""        let v = {{a} !A, b} !B\x0a""    "});
+    res = _6dcc03b3_compile(str);
+    str = ((Array){184, "\x0a""        type A = struct {\x0a""            value: int\x0a""        }\x0a""\x0a""        def ret_a -> A {\x0a""            return {10}\x0a""        }\x0a""\x0a""        let a: A = {10}\x0a""        var b: A\x0a""        b = {10}\x0a""    "});
     res = _6dcc03b3_compile(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };

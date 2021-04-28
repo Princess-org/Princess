@@ -114,6 +114,11 @@ typedef struct _87f75ce3_State {int label_counter; int counter; string filename;
 };
  compiler_Value _87f75ce3_walk_expression(parser_Node *node, _87f75ce3_State *state);
  void _87f75ce3_walk(parser_Node *node, _87f75ce3_State *state);
+ compiler_Value _87f75ce3_walk_Null(parser_Node *node, _87f75ce3_State *state) {
+    typechecking_Type *tpe = ((*node).tpe);
+    compiler_Value value = ((compiler_Value){ .kind = compiler_ValueKind_NULL, .tpe = tpe });
+    return value;
+};
  compiler_Value _87f75ce3_walk_Boolean(parser_Node *node, _87f75ce3_State *state) {
     typechecking_Type *tpe = ((*node).tpe);
     compiler_Value value = ((compiler_Value){ .kind = compiler_ValueKind_BOOL, .i = (((*node).value).i), .tpe = tpe });
@@ -142,7 +147,30 @@ typedef struct _87f75ce3_State {int label_counter; int counter; string filename;
         return value;
     }  ;
     compiler_InsnKind kind;
-    if (typechecking_is_integer(tpe)) {
+    if ((((*tpe).kind) == typechecking_TypeKind_BOOL)) {
+        if (typechecking_is_pointer((value.tpe))) {
+            value = _87f75ce3_convert_to(node, value, builtins_size_t_, state);
+        }  ;
+        if (typechecking_is_float((value.tpe))) {
+            compiler_Value ret = _87f75ce3_make_local_value(builtins_bool_, NULL, state);
+            compiler_Insn *insn = malloc((sizeof(compiler_Insn)));
+            ((*insn).kind) = compiler_InsnKind_FCMP;
+            (((*insn).value).cmp) = ((compiler_InsnCmp){ .op = compiler_f_une, .ret = ret, .left = value, .right = ((compiler_Value){ .kind = compiler_ValueKind_FLOAT, .tpe = (value.tpe), .f = 0.0 }) });
+            _87f75ce3_push_insn(insn, state);
+            return ret;
+        } else if (typechecking_is_integer((value.tpe))) {
+            compiler_Value ret = _87f75ce3_make_local_value(builtins_bool_, NULL, state);
+            compiler_Insn *insn = malloc((sizeof(compiler_Insn)));
+            ((*insn).kind) = compiler_InsnKind_ICMP;
+            (((*insn).value).cmp) = ((compiler_InsnCmp){ .op = compiler_i_ne, .ret = ret, .left = value, .right = ((compiler_Value){ .kind = compiler_ValueKind_INT, .tpe = (value.tpe), .i = 0 }) });
+            _87f75ce3_push_insn(insn, state);
+            return ret;
+        } else {
+            typechecking_errorn(node, ((Array){15, "Can't convert "}));
+            fprintf(stderr, (((Array){9, "%s%s%s%s"}).value), (debug_type_to_str((value.tpe)).value), (((Array){5, " to "}).value), (debug_type_to_str(tpe).value), (((Array){2, "\x0a"""}).value));
+            return value;
+        };
+    } else if (typechecking_is_integer(tpe)) {
         if (typechecking_is_integer((value.tpe))) {
             if ((((*(value.tpe)).size) == ((*tpe).size))) {
                 return value;
@@ -168,7 +196,8 @@ typedef struct _87f75ce3_State {int label_counter; int counter; string filename;
             fprintf(stderr, (((Array){9, "%s%s%s%s"}).value), (debug_type_to_str((value.tpe)).value), (((Array){5, " to "}).value), (debug_type_to_str(tpe).value), (((Array){2, "\x0a"""}).value));
             return value;
         };
-    } else if (typechecking_is_float(tpe)) {
+    }
+    else if (typechecking_is_float(tpe)) {
         if (typechecking_is_integer((value.tpe))) {
             if (((*(value.tpe)).unsig)) {
                 kind = compiler_InsnKind_UITOFP;
@@ -211,6 +240,10 @@ typedef struct _87f75ce3_State {int label_counter; int counter; string filename;
 };
  compiler_Value _87f75ce3_walk_StructLit(parser_Node *node, _87f75ce3_State *state) {
     typechecking_Type *tpe = ((*node).tpe);
+    if ((!tpe)) {
+        typechecking_errorn(node, ((Array){43, "Need to specify a type for struct literal\x0a"""}));
+        return _87f75ce3_NO_VALUE;
+    }  ;
     vector_Vector *args = ((((*node).value).struct_lit).args);
     vector_Vector *kwargs = ((((*node).value).struct_lit).kwargs);
     Array values = ((Array){(((*tpe).fields).size), malloc(((sizeof(compiler_Value)) * (((*tpe).fields).size)))});
@@ -672,7 +705,7 @@ typedef struct _87f75ce3_State {int label_counter; int counter; string filename;
     if (typechecking_is_pointer((right.tpe))) {
         right = _87f75ce3_convert_to(node, right, builtins_size_t_, state);
     }  ;
-    if ((typechecking_is_arithmetic((left.tpe)) && typechecking_is_arithmetic((right.tpe)))) {
+    if ((((bool)typechecking_is_arithmetic((left.tpe))) && ((bool)typechecking_is_arithmetic((right.tpe))))) {
         tpe = typechecking_common_type((left.tpe), (right.tpe));
         left = _87f75ce3_convert_to(node, left, tpe, state);
         right = _87f75ce3_convert_to(node, right, tpe, state);
@@ -825,6 +858,9 @@ typedef struct _87f75ce3_State {int label_counter; int counter; string filename;
     }  ;
     switch (((int)((*node).kind))) {
         break;
+        case parser_NodeKind_NULL:
+        return _87f75ce3_walk_Null(node, state);
+        break;
         case parser_NodeKind_IDENTIFIER:
         return _87f75ce3_walk_Identifier(node, state);
         break;
@@ -907,7 +943,7 @@ typedef struct _87f75ce3_State {int label_counter; int counter; string filename;
     ;
 };
  void _87f75ce3_walk_If(parser_Node *node, _87f75ce3_State *state) {
-    compiler_Value cond = _87f75ce3_walk_expression(((((*node).value).if_).cond), state);
+    compiler_Value cond = _87f75ce3_convert_to(node, _87f75ce3_walk_expression(((((*node).value).if_).cond), state), builtins_bool_, state);
     compiler_Label entry_label = _87f75ce3_make_label(state);
     compiler_Insn *entry = malloc((sizeof(compiler_Insn)));
     ((*entry).kind) = compiler_InsnKind_BR;

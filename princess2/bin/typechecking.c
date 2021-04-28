@@ -22,7 +22,7 @@ DLL_EXPORT void typechecking_errorn(parser_Node *node, string msg);
     if ((length == 0)) {
         return NULL;
     }  else {
-        return ((typechecking_Type *)vector_get(((*state).function_stack), (length - 1)));
+        return ((typechecking_Type *)vector_get(((*state).function_stack), (length - ((int)1))));
     };
 };
  void _3700c937_push_function(_3700c937_State *state, typechecking_Type *tpe) {
@@ -37,17 +37,17 @@ DLL_EXPORT bool typechecking_is_function(typechecking_Type *tpe) {
     }  ;
     return (((*tpe).kind) == typechecking_TypeKind_FUNCTION);
 };
-DLL_EXPORT bool typechecking_is_arithmetic(typechecking_Type *tpe) {
-    if ((!tpe)) {
-        return false;
-    }  ;
-    return ((((((*tpe).kind) == typechecking_TypeKind_WORD) || (((*tpe).kind) == typechecking_TypeKind_FLOAT)) || (((*tpe).kind) == typechecking_TypeKind_INT_LITERAL)) || (((*tpe).kind) == typechecking_TypeKind_BOOL));
-};
 DLL_EXPORT bool typechecking_is_integer(typechecking_Type *tpe) {
     if ((!tpe)) {
         return false;
     }  ;
-    return ((((*tpe).kind) == typechecking_TypeKind_WORD) || (((*tpe).kind) == typechecking_TypeKind_INT_LITERAL));
+    return (((((*tpe).kind) == typechecking_TypeKind_WORD) || (((*tpe).kind) == typechecking_TypeKind_INT_LITERAL)) || (((*tpe).kind) == typechecking_TypeKind_BOOL));
+};
+DLL_EXPORT bool typechecking_is_arithmetic(typechecking_Type *tpe) {
+    if ((!tpe)) {
+        return false;
+    }  ;
+    return (typechecking_is_integer(tpe) || (((*tpe).kind) == typechecking_TypeKind_FLOAT));
 };
 DLL_EXPORT bool typechecking_is_float(typechecking_Type *tpe) {
     if ((!tpe)) {
@@ -66,6 +66,12 @@ DLL_EXPORT bool typechecking_is_pointer(typechecking_Type *tpe) {
         return false;
     }  ;
     return (((*tpe).kind) == typechecking_TypeKind_POINTER);
+};
+DLL_EXPORT bool typechecking_is_struct(typechecking_Type *tpe) {
+    if ((!tpe)) {
+        return false;
+    }  ;
+    return ((((*tpe).kind) == typechecking_TypeKind_STRUCT) || (((*tpe).kind) == typechecking_TypeKind_UNION));
 };
 DLL_EXPORT typechecking_Type * typechecking_pointer(typechecking_Type *tpe) {
     typechecking_Type *t = malloc((sizeof(typechecking_Type)));
@@ -522,6 +528,12 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
 };
  void _3700c937_walk(parser_Node *node, _3700c937_State *state);
 typechecking_Type *_3700c937_int_literal;
+ void _3700c937_walk_Null(parser_Node *node, _3700c937_State *state) {
+    typechecking_Type *tpe = malloc((sizeof(typechecking_Type)));
+    ((*tpe).kind) = typechecking_TypeKind_POINTER;
+    ((*tpe).tpe) = NULL;
+    ((*node).tpe) = tpe;
+};
  void _3700c937_walk_Integer(parser_Node *node, _3700c937_State *state) {
     typechecking_Type *tpe = typechecking_copy(_3700c937_int_literal);
     ((*tpe).i) = (((*node).value).i);
@@ -554,8 +566,7 @@ typechecking_Type *_3700c937_int_literal;
         ((*node).tpe) = ((*value).tpe);
     };
 };
- vector_Vector * _3700c937_collapse_types(vector_Vector *right, _3700c937_State *state) {
-    vector_Vector *types = vector_make();
+ void _3700c937_collapse_types(vector_Vector *right, vector_Vector *types, vector_Vector *nodes, _3700c937_State *state) {
     for (int i = 0;(i < vector_length(right));(i += 1)) {
         parser_Node *value = ((parser_Node *)vector_get(right, i));
         _3700c937_walk(value, state);
@@ -564,19 +575,22 @@ typechecking_Type *_3700c937_int_literal;
             for (int j = 0;(j < vector_length(((*tpe).return_t)));(j += 1)) {
                 typechecking_Type *t = ((typechecking_Type *)vector_get(((*tpe).return_t), j));
                 vector_push(types, t);
+                vector_push(nodes, value);
             }
             ;
         }  else {
             vector_push(types, tpe);
+            vector_push(nodes, value);
         };
     }
     ;
-    return types;
 };
  void _3700c937_walk_Assign(parser_Node *node, _3700c937_State *state) {
     vector_Vector *left = ((((*node).value).assign).left);
     vector_Vector *right = ((((*node).value).assign).right);
-    vector_Vector *types = _3700c937_collapse_types(right, state);
+    vector_Vector *types = vector_make();
+    vector_Vector *nodes = vector_make();
+    _3700c937_collapse_types(right, types, nodes, state);
     if ((vector_length(types) != vector_length(left))) {
         typechecking_errorn(node, ((Array){23, "Unbalanced assignment\x0a"""}));
         return ;
@@ -588,10 +602,12 @@ typechecking_Type *_3700c937_int_literal;
             continue;
         }  ;
         typechecking_Type *tpe = ((typechecking_Type *)vector_get(types, i));
-        if ((!tpe)) {
-            continue;
+        parser_Node *n = ((parser_Node *)vector_get(nodes, i));
+        if ((((((*n).kind) == parser_NodeKind_NULL) && typechecking_is_pointer(((*node).tpe))) || ((((*n).kind) == parser_NodeKind_STRUCT_LIT) && typechecking_is_struct(((*node).tpe))))) {
+            ((*n).tpe) = ((*node).tpe);
+            tpe = ((*node).tpe);
         }  ;
-        if ((!((*node).tpe))) {
+        if ((((bool)(!tpe)) || ((bool)(!((*node).tpe))))) {
             continue;
         }  ;
         if ((!_3700c937_is_assignable(((*node).tpe), tpe))) {
@@ -603,7 +619,6 @@ typechecking_Type *_3700c937_int_literal;
     ((*node).tpe) = ((typechecking_Type *)vector_head(types));
 };
  void _3700c937_walk_VarDecl(parser_Node *node, _3700c937_State *state) {
-    ;
     parser_ShareMarker share = ((((*node).value).var_decl).share);
     parser_VarDecl kw = ((((*node).value).var_decl).kw);
     vector_Vector *left = ((((*node).value).var_decl).left);
@@ -613,7 +628,9 @@ typechecking_Type *_3700c937_int_literal;
             typechecking_errorn(node, ((Array){36, "Can't share non top level variable\x0a"""}));
         }  ;
     }  ;
-    vector_Vector *types = _3700c937_collapse_types(right, state);
+    vector_Vector *types = vector_make();
+    vector_Vector *nodes = vector_make();
+    _3700c937_collapse_types(right, types, nodes, state);
     if ((((kw == parser_VarDecl_CONST) || (kw == parser_VarDecl_LET)) && (vector_length(types) != vector_length(left)))) {
         typechecking_errorn(node, ((Array){23, "Unbalanced assignment\x0a"""}));
         return ;
@@ -631,6 +648,14 @@ typechecking_Type *_3700c937_int_literal;
                 tpe = _3700c937_type_lookup(tpe_node, state);
                 if ((i < vector_length(types))) {
                     typechecking_Type *rhstpe = ((typechecking_Type *)vector_get(types, i));
+                    parser_Node *n = ((parser_Node *)vector_get(nodes, i));
+                    if ((((((*n).kind) == parser_NodeKind_NULL) && typechecking_is_pointer(tpe)) || ((((*n).kind) == parser_NodeKind_STRUCT_LIT) && typechecking_is_struct(tpe)))) {
+                        ((*n).tpe) = tpe;
+                        rhstpe = tpe;
+                    }  ;
+                    if ((((bool)(!tpe)) || ((bool)(!rhstpe)))) {
+                        continue;
+                    }  ;
                     if ((!_3700c937_is_assignable(tpe, rhstpe))) {
                         typechecking_errorn(node, ((Array){20, "Incompatible types "}));
                         fprintf(stderr, (((Array){9, "%s%s%s%s"}).value), (debug_type_to_str(tpe).value), (((Array){6, " and "}).value), (debug_type_to_str(rhstpe).value), (((Array){2, "\x0a"""}).value));
@@ -665,6 +690,14 @@ typechecking_Type *_3700c937_int_literal;
                 continue;
             }  ;
             typechecking_Type *rhstpe = ((typechecking_Type *)vector_get(types, i));
+            parser_Node *n2 = ((parser_Node *)vector_get(nodes, i));
+            if ((((((*n2).kind) == parser_NodeKind_NULL) && typechecking_is_pointer(tpe)) || ((((*n2).kind) == parser_NodeKind_STRUCT_LIT) && typechecking_is_struct(tpe)))) {
+                ((*n2).tpe) = tpe;
+                rhstpe = tpe;
+            }  ;
+            if ((((bool)(!tpe)) || ((bool)(!rhstpe)))) {
+                continue;
+            }  ;
             if ((!_3700c937_is_assignable(tpe, rhstpe))) {
                 typechecking_errorn(node, ((Array){20, "Incompatible types "}));
                 fprintf(stderr, (((Array){9, "%s%s%s%s"}).value), (debug_type_to_str(tpe).value), (((Array){6, " and "}).value), (debug_type_to_str(rhstpe).value), (((Array){2, "\x0a"""}).value));
@@ -862,7 +895,7 @@ typechecking_Type *_3700c937_int_literal;
         Array values = map_keys(((*sc).fields));
         for (int i = 0;(i < (values.size));(i += 1)) {
             scope_Value *value = ((scope_Value *)map_get(((*sc).fields), (((string *)values.value)[i])));
-            if ((((int)((*value).share)) & parser_ShareMarker_EXPORT)) {
+            if ((((int)((*value).share)) & ((int)parser_ShareMarker_EXPORT))) {
                 map_put(((*ns).fields), (((string *)values.value)[i]), value);
             }  ;
         }
@@ -970,7 +1003,9 @@ typechecking_Type *_3700c937_int_literal;
         typechecking_errorn(node, ((Array){30, "return outside of a function\x0a"""}));
         return ;
     }  ;
-    vector_Vector *types = _3700c937_collapse_types(body, state);
+    vector_Vector *types = vector_make();
+    vector_Vector *nodes = vector_make();
+    _3700c937_collapse_types(body, types, nodes, state);
     vector_Vector *returns = ((*current_fun).return_t);
     if ((vector_length(types) != vector_length(returns))) {
         typechecking_errorn(node, ((Array){37, "Wrong number of arguments to return\x0a"""}));
@@ -978,6 +1013,14 @@ typechecking_Type *_3700c937_int_literal;
     for (int i = 0;(i < vector_length(returns));(i += 1)) {
         typechecking_Type *argtpe = ((typechecking_Type *)vector_get(returns, i));
         typechecking_Type *rettpe = ((typechecking_Type *)vector_get(types, i));
+        parser_Node *n = ((parser_Node *)vector_get(nodes, i));
+        if ((((((*n).kind) == parser_NodeKind_NULL) && typechecking_is_pointer(argtpe)) || ((((*n).kind) == parser_NodeKind_STRUCT_LIT) && typechecking_is_struct(argtpe)))) {
+            ((*n).tpe) = argtpe;
+            rettpe = argtpe;
+        }  ;
+        if ((((bool)(!argtpe)) || ((bool)(!rettpe)))) {
+            continue;
+        }  ;
         if ((!_3700c937_is_assignable(argtpe, rettpe))) {
             typechecking_errorn(node, ((Array){36, "Wrong type of return argument, got "}));
             fprintf(stderr, (((Array){9, "%s%s%s%s"}).value), (debug_type_to_str(rettpe).value), (((Array){12, ", expected "}).value), (debug_type_to_str(argtpe).value), (((Array){2, "\x0a"""}).value));
@@ -1129,9 +1172,6 @@ typechecking_Type *_3700c937_int_literal;
     }  ;
 };
  void _3700c937_walk_StructLit(parser_Node *node, _3700c937_State *state) {
-    if ((!((*node).tpe))) {
-        typechecking_errorn(node, ((Array){43, "Need to specify a type for struct literal\x0a"""}));
-    }  ;
     for (int i = 0;(i < vector_length(((((*node).value).struct_lit).args)));(i += 1)) {
         parser_Node *n = ((parser_Node *)vector_get(((((*node).value).struct_lit).args), i));
         _3700c937_walk(n, state);
@@ -1220,6 +1260,9 @@ typechecking_Type *_3700c937_int_literal;
     }  ;
     ((*node).scope) = ((*state).scope);
     switch (((int)((*node).kind))) {
+        break;
+        case parser_NodeKind_NULL:
+        _3700c937_walk_Null(node, state);
         break;
         case parser_NodeKind_INTEGER:
         _3700c937_walk_Integer(node, state);
@@ -1372,6 +1415,9 @@ DLL_EXPORT void typechecking_errorn(parser_Node *node, string msg) {
 DLL_EXPORT void typechecking_p_main(Array args) {
     ;
     _3700c937_counter = 0;
+    scope_p_main(args);
+    builtins_p_main(args);
+    debug_p_main(args);
     _3700c937_int_literal = typechecking_make_type(typechecking_TypeKind_INT_LITERAL, parser_make_identifier(((Array){1, (Array[1]){ ((Array){12, "int_literal"}) }})));
     ((*_3700c937_int_literal).unsig) = false;
     ((*_3700c937_int_literal).size) = (sizeof(int));
