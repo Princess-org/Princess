@@ -76,6 +76,7 @@ def main():
     parser = argparse.ArgumentParser(description = "Princess REPL")
     parser.add_argument("--ast", "-a", action = "store_true", help = "Turns off evaluation and emits the AST")
     parser.add_argument("--src", "-s", action = "store_true", help = "Emits the source code before evaluation")
+    parser.add_argument("--codecov", action = "store_true", help = "Emits code coverage")
     parser.add_argument("-c", metavar = "FILE", type = argparse.FileType("r"), help = "Compile .pr file")
     parser.add_argument("-o", metavar = "DIR", type = dir_path, help = "Output directory")
     
@@ -89,7 +90,7 @@ def main():
         else:
             out = Path("")
 
-        compile_file(args.c.name, base_path = out)
+        compile_file(args.c.name, base_path = out, codecov = args.codecov)
     else:
         print("Princess REPL")
         print("type exit to leave the prompt")

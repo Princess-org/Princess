@@ -1083,7 +1083,7 @@ def compile_module(module, base_path, include_path):
     
     return scope
 
-def compile_file(file, base_path = Path(""), include_path = Path("")):
+def compile_file(file, base_path = Path(""), include_path = Path(""), codecov = False):
     file = Path(file)
     filename = file.stem
 
@@ -1106,8 +1106,11 @@ def compile_file(file, base_path = Path(""), include_path = Path("")):
     else:
         exefile = base_path / filename
     
+    args = ["gcc", "-g", "-I" + str(include_dir), "-o", str(exefile), str(c_file), "-lm"]
+    if codecov:
+        args.extend(["-fprofile-arcs", "-ftest-coverage"])
     p = subprocess.Popen(
-        ["gcc", "-g", "-I" + str(include_dir), "-o", str(exefile), str(c_file), "-lm"]
+        args
     )
     status = p.wait()
     if status:
