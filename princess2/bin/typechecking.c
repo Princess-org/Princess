@@ -1114,6 +1114,9 @@ typechecking_Type *_3700c937_int_literal;
  void _3700c937_walk_Deref(parser_Node *node, _3700c937_State *state) {
     _3700c937_walk((((*node).value).expr), state);
     typechecking_Type *tpe = ((*(((*node).value).expr)).tpe);
+    if ((!tpe)) {
+        return ;
+    }  ;
     if ((!typechecking_is_pointer(tpe))) {
         typechecking_errorn(node, ((Array){33, "Needs to be a pointer type, got "}));
         fprintf(stderr, (((Array){5, "%s%s"}).value), (debug_type_to_str(tpe).value), (((Array){2, "\x0a"""}).value));
@@ -1130,6 +1133,9 @@ typechecking_Type *_3700c937_int_literal;
     _3700c937_walk(((((*node).value).bin_op).left), state);
     parser_Node *right = ((((*node).value).bin_op).right);
     typechecking_Type *tpe = ((*((((*node).value).bin_op).left)).tpe);
+    if ((!tpe)) {
+        return ;
+    }  ;
     if (((((*tpe).kind) == typechecking_TypeKind_STRUCT) || (((*tpe).kind) == typechecking_TypeKind_UNION))) {
         string name = typechecking_last_ident_to_str(right);
         typechecking_Type *rtpe;

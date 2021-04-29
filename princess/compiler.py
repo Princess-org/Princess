@@ -448,7 +448,7 @@ class Compiler(AstWalker):
             elif name == "size":
                 node.type = types.size_t
             else:
-                error("Illegal access")
+                error("Illegal access", node)
         else:
             error("Member access on incompatible type", node)
         
