@@ -193,11 +193,7 @@ DLL_EXPORT void tests_run_test_suite() {
     test_compiler_test();
 };
 DLL_EXPORT void tests_p_main(Array args) {
-    buffer_p_main(args);
-    util_p_main(args);
     parser_p_main(args);
-    vector_p_main(args);
-    map_p_main(args);
     test_lexer_p_main(args);
     test_typechecking_p_main(args);
 };

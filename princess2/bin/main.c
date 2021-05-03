@@ -59,11 +59,11 @@ DLL_EXPORT void main_p_main(Array args) {
         tests_run_test_suite();
     }  else {
         if ((((bool)_fad58de7_filenames) && (vector_length(_fad58de7_filenames) > 0))) {
-            for (int i = 0;(i < vector_length(_fad58de7_filenames));(i += 1)) {
-                string filename = (*((string *)vector_get(_fad58de7_filenames, i)));
-                toolchain_compile_file(filename, ((Array){5, "main"}));
-            }
-            ;
+            if ((vector_length(_fad58de7_filenames) > 1)) {
+                fprintf(stderr, (((Array){3, "%s"}).value), (((Array){29, "More than one file specified"}).value));
+                return ;
+            }  ;
+            toolchain_compile_file((*((string *)vector_peek(_fad58de7_filenames))), ((Array){5, "main"}));
             if ((toolchain_error_count > 0)) {
                 fprintf(stderr, (((Array){7, "%s%d%s"}).value), (((Array){16, "\x0a""Total errors: "}).value), toolchain_error_count, (((Array){2, "\x0a"""}).value));
             }  ;

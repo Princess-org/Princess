@@ -196,6 +196,7 @@ DLL_EXPORT int util_lcm(int a, int b) {
     return ((a * b) / util_gcd(a, b));
 };
 DLL_EXPORT void util_p_main(Array args) {
+    buffer_p_main(args);
     util_MAX_UINT8 = 255;
     util_MAX_UINT16 = 65535;
     util_MAX_UINT32 = 4294967295;

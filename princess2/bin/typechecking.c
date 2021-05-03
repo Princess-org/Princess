@@ -81,6 +81,13 @@ DLL_EXPORT typechecking_Type * typechecking_pointer(typechecking_Type *tpe) {
     ((*t).align) = ((*t).size);
     return t;
 };
+DLL_EXPORT typechecking_Type * typechecking_array(typechecking_Type *tpe) {
+    typechecking_Type *t = malloc((sizeof(typechecking_Type)));
+    ((*t).kind) = typechecking_TypeKind_ARRAY;
+    ((*t).tpe) = tpe;
+    ((*t).size) = (sizeof(string));
+    ((*t).align) = ((*t).size);
+};
  string _3700c937_append_module(string name, string module) {
     buffer_Buffer buf = buffer_make_buffer();
     buffer_append_str((&buf), module);
@@ -874,36 +881,25 @@ typechecking_Type *_3700c937_int_literal;
     _3700c937_walk(left, state);
 };
  void _3700c937_walk_Import(parser_Node *node, _3700c937_State *state) {
+    if ((_3700c937_current_function(state) != NULL)) {
+        typechecking_errorn(node, ((Array){30, "Can only import at top level\x0a"""}));
+        return ;
+    }  ;
     vector_Vector *imports = (((*node).value).body);
     for (int i = 0;(i < vector_length(imports));(i += 1)) {
         parser_Node *imprt = ((parser_Node *)vector_get(imports, i));
         parser_Node *name = ((((*imprt).value).import_module).name);
         parser_Node *alias = ((((*imprt).value).import_module).name);
-        if ((!name)) {
+        if ((!alias)) {
             alias = name;
         }  ;
-        scope_Scope *sc = toolchain_compile_module(name);
-        if ((!sc)) {
+        toolchain_Module *module = toolchain_compile_module(name);
+        if ((!module)) {
             typechecking_errorn(name, ((Array){8, "Module "}));
             fprintf(stderr, (((Array){5, "%s%s"}).value), (parser_identifier_to_str(name).value), (((Array){21, " could not be found\x0a"""}).value));
             return ;
         }  ;
-        scope_Scope *ns = scope_enter_namespace(((*state).scope), alias);
-        if ((!ns)) {
-            return ;
-        }  ;
-        Array values = map_keys(((*sc).fields));
-        for (int i = 0;(i < (values.size));(i += 1)) {
-            scope_Value *value = ((scope_Value *)map_get(((*sc).fields), (((string *)values.value)[i])));
-            if ((((int)((*value).share)) & ((int)parser_ShareMarker_EXPORT))) {
-                map_put(((*ns).fields), (((string *)values.value)[i]), value);
-            }  ;
-        }
-        ;
-        if ((!((*((*state).scope)).imports))) {
-            ((*((*state).scope)).imports) = vector_make();
-        }  ;
-        vector_push(((*((*state).scope)).imports), ns);
+        scope_insert_module(((*state).scope), alias, module);
     }
     ;
 };

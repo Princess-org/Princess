@@ -13,6 +13,7 @@ import typechecking
 import util
 import builtins
 import debug
+import toolchain
 
 export type Label = struct {
     name: string
@@ -1605,7 +1606,7 @@ def create_function(tpe: *typechecking::Type, body: *vector::Vector, scpe: *scop
         if not (@function).ret {
             // Check for missing return statement
             let last_insn = vector::peek((@(@state).current_block).insn) !*Insn
-            if not last_insn or last_insn and (@last_insn).kind != InsnKind::RET {
+            if not last_insn or (@last_insn).kind != InsnKind::RET {
                 let ret = allocate(Insn)
                 (@ret).kind = InsnKind::RET
                 (@ret).value.ret.value = NO_VALUE
@@ -1668,6 +1669,51 @@ def walk_top_VarDecl(node: *parser::Node, body: *vector::Vector, state: *State) 
     }
 }
 
+let imported_modules = vector::make()
+def walk_top_Import(node: *parser::Node, body: *vector::Vector, state: *State) {
+    let imports = (@node).value.body
+    for var i in 0..vector::length(imports) {
+        let imprt = vector::get(imports, i) !*parser::Node
+        let name = (@imprt).value.import_module.name
+        let filename = toolchain::find_module_file(name)
+        if length(filename) == 0 { continue }
+        for var j in 0..vector::length(imported_modules) {
+            let imported = @(vector::get(imported_modules, j) !*string)
+            if imported == filename { continue }
+        }
+        vector::push(imported_modules, util::copy_string(filename))
+
+        let args = vector::make()
+        let arg = parser::make_identifier(["args"])
+        (@arg).scope = (@node).scope
+        (@arg).tpe = typechecking::array(builtins::string_)
+        vector::push(args, arg)
+
+        let name_size = vector::length((@name).value.body)
+        let array = allocate(string, name_size + 1)
+        for var j in 0..name_size {
+            array[j] = @(vector::get((@name).value.body, j) !*string)
+        }
+        array[array.size - 1] = "main"
+        let ident = parser::make_identifier(array)
+        (@ident).scope = (@node).scope
+
+        let sc = (@scope::get((@node).scope, name)).value !*scope::Scope
+
+        let call = allocate(parser::Node)
+        (@call).kind = parser::NodeKind::FUNC_CALL
+        (@call).scope = (@node).scope
+        (@call).tpe = (@(map::get((@sc).fields, "main") !*scope::Value)).tpe
+        (@call).value.func_call = {
+            left = ident,
+            args = args,
+            kwargs = vector::make()
+        } !parser::NodeFuncCall
+
+        vector::push(body, call)
+    }
+}
+
 export def compile(node: *parser::Node, filename: string, module: string) -> Result {
     assert((@node).kind == parser::NodeKind::PROGRAM)
     
@@ -1683,6 +1729,22 @@ export def compile(node: *parser::Node, filename: string, module: string) -> Res
         } !Result
     } !State
 
+    // Forward declare functions from other files
+    let sc = (@node).scope
+    if (@sc).imports {
+        for var i in 0..vector::length((@sc).imports) {
+            let module = vector::get((@sc).imports, i) !*toolchain::Module
+            let m_scope = (@module).scope
+            let keys = map::keys((@m_scope).fields)
+            for var i in 0..keys.size {
+                let value = map::get((@m_scope).fields, keys[i]) !*scope::Value
+                if typechecking::is_function((@value).tpe) and (@value).share !int & parser::ShareMarker::EXPORT {
+                    create_function((@value).tpe, null, sc, *state)
+                }
+            }
+        }
+    }
+
     for var i in 0..vector::length((@node).value.body) {
         let n = vector::get((@node).value.body, i) !*parser::Node
         switch (@n).kind !int {
@@ -1692,6 +1754,8 @@ export def compile(node: *parser::Node, filename: string, module: string) -> Res
                 walk_TypeDecl(n, *state)
             case parser::NodeKind::VAR_DECL:
                 walk_top_VarDecl(n, body, *state)
+            case parser::NodeKind::IMPORT:
+                walk_top_Import(n, body, *state)
             case:
                 vector::push(body, n)
         }
@@ -1715,14 +1779,18 @@ export def compile(node: *parser::Node, filename: string, module: string) -> Res
     // TODO Infer return types
     (@main_tpe).return_t = vector::make()
 
+    let args_ident = parser::make_identifier(["args"])
     scope::create_variable(
         (@node).scope, 
-        parser::make_identifier(["args"]), 
+        args_ident, 
         parser::ShareMarker::NONE, 
         parser::VarDecl::VAR, 
         string_array_tpe, null
     )
+    let value = scope::get((@node).scope, args_ident)
+    (@value).global = false
 
+    scope::create_function((@node).scope, ident, parser::ShareMarker::EXPORT, main_tpe, false)
     create_function(main_tpe, body, (@node).scope, *state)
 
     return state.result

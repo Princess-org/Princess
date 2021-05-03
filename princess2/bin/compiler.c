@@ -13,6 +13,7 @@
 #include "util.c"
 #include "builtins.c"
 #include "debug.c"
+#include "toolchain.c"
 typedef struct compiler_Label {string name;} compiler_Label;
 typedef enum compiler_ValueKind {compiler_ValueKind_NULL = 0, compiler_ValueKind_LOCAL = 1, compiler_ValueKind_GLOBAL = 2, compiler_ValueKind_BOOL = 3, compiler_ValueKind_INT = 4, compiler_ValueKind_FLOAT = 5, compiler_ValueKind_STRING = 6, compiler_ValueKind_ARRAY = 7, compiler_ValueKind_STRUCT = 8, compiler_ValueKind_UNION = 9} compiler_ValueKind;
 typedef struct compiler_Value {enum compiler_ValueKind kind; string name; int sign; uint64 i; double f; string s; bool undef; Array values; struct compiler_Value *addr; struct typechecking_Type *tpe;} compiler_Value;
@@ -1191,7 +1192,7 @@ typedef struct _87f75ce3_State {int label_counter; int counter; string filename;
         ;
         if ((!((*function).ret))) {
             compiler_Insn *last_insn = ((compiler_Insn *)vector_peek(((*((*state).current_block)).insn)));
-            if ((((bool)(!last_insn)) || (((bool)last_insn) && (((*last_insn).kind) != compiler_InsnKind_RET)))) {
+            if ((((bool)(!last_insn)) || (((*last_insn).kind) != compiler_InsnKind_RET))) {
                 compiler_Insn *ret = malloc((sizeof(compiler_Insn)));
                 ((*ret).kind) = compiler_InsnKind_RET;
                 ((((*ret).value).ret).value) = _87f75ce3_NO_VALUE;
@@ -1250,10 +1251,68 @@ typedef struct _87f75ce3_State {int label_counter; int counter; string filename;
         vector_push(body, node_assign);
     }  ;
 };
+vector_Vector *_87f75ce3_imported_modules;
+ void _87f75ce3_walk_top_Import(parser_Node *node, vector_Vector *body, _87f75ce3_State *state) {
+    vector_Vector *imports = (((*node).value).body);
+    for (int i = 0;(i < vector_length(imports));(i += 1)) {
+        parser_Node *imprt = ((parser_Node *)vector_get(imports, i));
+        parser_Node *name = ((((*imprt).value).import_module).name);
+        string filename = toolchain_find_module_file(name);
+        if ((((filename.size) - 1) == 0)) {
+            continue;
+        }  ;
+        for (int j = 0;(j < vector_length(_87f75ce3_imported_modules));(j += 1)) {
+            string imported = (*((string *)vector_get(_87f75ce3_imported_modules, j)));
+            if ((strcmp((imported.value), (filename.value)) == 0)) {
+                continue;
+            }  ;
+        }
+        ;
+        vector_push(_87f75ce3_imported_modules, util_copy_string(filename));
+        vector_Vector *args = vector_make();
+        parser_Node *arg = parser_make_identifier(((Array){1, (Array[1]){ ((Array){5, "args"}) }}));
+        ((*arg).scope) = ((*node).scope);
+        ((*arg).tpe) = typechecking_array(builtins_string_);
+        vector_push(args, arg);
+        int name_size = vector_length((((*name).value).body));
+        Array array = ((Array){(name_size + ((int)1)), malloc((((int64)(sizeof(string))) * ((int64)(name_size + ((int)1)))))});
+        for (int j = 0;(j < name_size);(j += 1)) {
+            (((string *)array.value)[j]) = (*((string *)vector_get((((*name).value).body), j)));
+        }
+        ;
+        (((string *)array.value)[(((int64)(array.size)) - ((int64)1))]) = ((Array){5, "main"});
+        parser_Node *ident = parser_make_identifier(array);
+        ((*ident).scope) = ((*node).scope);
+        scope_Scope *sc = ((scope_Scope *)((*scope_get(((*node).scope), name)).value));
+        parser_Node *call = malloc((sizeof(parser_Node)));
+        ((*call).kind) = parser_NodeKind_FUNC_CALL;
+        ((*call).scope) = ((*node).scope);
+        ((*call).tpe) = ((*((scope_Value *)map_get(((*sc).fields), ((Array){5, "main"})))).tpe);
+        (((*call).value).func_call) = ((parser_NodeFuncCall){ .left = ident, .args = args, .kwargs = vector_make() });
+        vector_push(body, call);
+    }
+    ;
+};
 DLL_EXPORT compiler_Result compiler_compile(parser_Node *node, string filename, string module) {
     assert((((*node).kind) == parser_NodeKind_PROGRAM));
     vector_Vector *body = vector_make();
     _87f75ce3_State state = ((_87f75ce3_State){ .filename = filename, .module = module, .loops = vector_make(), .result = ((compiler_Result){ .functions = map_make(), .structures = map_make(), .globals = map_make() }) });
+    scope_Scope *sc = ((*node).scope);
+    if (((*sc).imports)) {
+        for (int i = 0;(i < vector_length(((*sc).imports)));(i += 1)) {
+            toolchain_Module *module = ((toolchain_Module *)vector_get(((*sc).imports), i));
+            scope_Scope *m_scope = ((*module).scope);
+            Array keys = map_keys(((*m_scope).fields));
+            for (int i = 0;(i < (keys.size));(i += 1)) {
+                scope_Value *value = ((scope_Value *)map_get(((*m_scope).fields), (((string *)keys.value)[i])));
+                if ((((bool)typechecking_is_function(((*value).tpe))) && ((bool)(((int)((*value).share)) & ((int)parser_ShareMarker_EXPORT))))) {
+                    _87f75ce3_create_function(((*value).tpe), NULL, sc, (&state));
+                }  ;
+            }
+            ;
+        }
+        ;
+    }  ;
     for (int i = 0;(i < vector_length((((*node).value).body)));(i += 1)) {
         parser_Node *n = ((parser_Node *)vector_get((((*node).value).body), i));
         switch (((int)((*n).kind))) {
@@ -1266,6 +1325,9 @@ DLL_EXPORT compiler_Result compiler_compile(parser_Node *node, string filename, 
             break;
             case parser_NodeKind_VAR_DECL:
             _87f75ce3_walk_top_VarDecl(n, body, (&state));
+            break;
+            case parser_NodeKind_IMPORT:
+            _87f75ce3_walk_top_Import(n, body, (&state));
             break;
             default:
             vector_push(body, n);
@@ -1287,7 +1349,11 @@ DLL_EXPORT compiler_Result compiler_compile(parser_Node *node, string filename, 
     vector_push(args, named);
     ((*main_tpe).parameter_t) = args;
     ((*main_tpe).return_t) = vector_make();
-    scope_create_variable(((*node).scope), parser_make_identifier(((Array){1, (Array[1]){ ((Array){5, "args"}) }})), parser_ShareMarker_NONE, parser_VarDecl_VAR, string_array_tpe, NULL);
+    parser_Node *args_ident = parser_make_identifier(((Array){1, (Array[1]){ ((Array){5, "args"}) }}));
+    scope_create_variable(((*node).scope), args_ident, parser_ShareMarker_NONE, parser_VarDecl_VAR, string_array_tpe, NULL);
+    scope_Value *value = scope_get(((*node).scope), args_ident);
+    ((*value).global) = false;
+    scope_create_function(((*node).scope), ident, parser_ShareMarker_EXPORT, main_tpe, false);
     _87f75ce3_create_function(main_tpe, body, ((*node).scope), (&state));
     return (state.result);
 };
@@ -1310,6 +1376,7 @@ DLL_EXPORT void compiler_p_main(Array args) {
     memcpy((compiler_i_sge.value), (((Array){4, "sge"}).value), ((sizeof(char)) * (compiler_i_sge.size)));
     memcpy((compiler_i_slt.value), (((Array){4, "slt"}).value), ((sizeof(char)) * (compiler_i_slt.size)));
     memcpy((compiler_i_sle.value), (((Array){4, "sle"}).value), ((sizeof(char)) * (compiler_i_sle.size)));
+    _87f75ce3_imported_modules = vector_make();
 };
 
 

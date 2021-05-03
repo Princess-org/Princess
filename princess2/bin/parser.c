@@ -54,6 +54,8 @@ DLL_EXPORT parser_Node * parser_make_identifier(Array s) {
     (((*node).loc).filename) = ((Array){9, "builtins"});
     (((*node).loc).module) = ((Array){9, "builtins"});
     (((*node).value).body) = vec;
+    ((*node).tpe) = NULL;
+    ((*node).scope) = NULL;
     return node;
 };
 DLL_EXPORT parser_Node * parser_copy_node(parser_Node *node) {

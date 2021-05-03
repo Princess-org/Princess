@@ -13,8 +13,10 @@ Array toolchain_include_path;
 int toolchain_error_count;
 typedef struct scope_Scope scope_Scope;
 typedef struct parser_Node parser_Node;
+typedef struct toolchain_Module {string filename; struct scope_Scope *scope;} toolchain_Module;
 DLL_EXPORT void toolchain_compile_file(string filename, string module);
-DLL_EXPORT scope_Scope * toolchain_compile_module(parser_Node *module);
+DLL_EXPORT toolchain_Module * toolchain_compile_module(parser_Node *module);
+DLL_EXPORT string toolchain_find_module_file(parser_Node *module);
 #include "lexer.c"
 #include "parser.c"
 #include "typechecking.c"
@@ -23,7 +25,7 @@ DLL_EXPORT scope_Scope * toolchain_compile_module(parser_Node *module);
 #include "codegen.c"
 #include "debug.c"
 #include "builtins.c"
- string _8db3e3d6_find_module_file(parser_Node *module) {
+DLL_EXPORT string toolchain_find_module_file(parser_Node *module) {
     assert((((*module).kind) == parser_NodeKind_IDENTIFIER));
     vector_Vector *ident = (((*module).value).body);
     Array path = ((Array){PATH_MAX, calloc(PATH_MAX, (sizeof(char)))});
@@ -73,9 +75,9 @@ DLL_EXPORT void toolchain_compile_file(string filename, string module) {
         }  ;
     };
 };
-DLL_EXPORT scope_Scope * toolchain_compile_module(parser_Node *module) {
-    string filename = _8db3e3d6_find_module_file(module);
-    string modulename = parser_identifier_to_str(module);
+DLL_EXPORT toolchain_Module * toolchain_compile_module(parser_Node *name) {
+    string filename = toolchain_find_module_file(name);
+    string modulename = parser_identifier_to_str(name);
     if ((((filename.size) - 1) == 0)) {
         return NULL;
     }  ;
@@ -84,7 +86,10 @@ DLL_EXPORT scope_Scope * toolchain_compile_module(parser_Node *module) {
         toolchain_compile_file(filename, modulename);
         sc = map_get(toolchain_modules, filename);
     }  ;
-    return sc;
+    toolchain_Module *module = malloc((sizeof(toolchain_Module)));
+    ((*module).filename) = filename;
+    ((*module).scope) = sc;
+    return module;
 };
 DLL_EXPORT void toolchain_p_main(Array args) {
     ;

@@ -177,6 +177,12 @@ bool test_compiler_print_ll;
     string res = _6dcc03b3_compile(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
+ void _6dcc03b3_test_import() {
+    printf((((Array){3, "%s"}).value), (((Array){17, ">Test import... "}).value));
+    Array str = ((Array){52, "\x0a""        import test::a\x0a""        import test::b\x0a""    "});
+    string res = _6dcc03b3_compile(str);
+    printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
+};
 DLL_EXPORT void test_compiler_test() {
     printf((((Array){3, "%s"}).value), (((Array){30, "Running tests on Compiler...\x0a"""}).value));
     _6dcc03b3_test_emit_arithmetic();
@@ -194,6 +200,7 @@ DLL_EXPORT void test_compiler_test() {
     _6dcc03b3_test_compare();
     _6dcc03b3_test_pointer_arithmetic();
     _6dcc03b3_test_assign_eq();
+    _6dcc03b3_test_import();
 };
 DLL_EXPORT void test_compiler_p_main(Array args) {
     test_compiler_print_ll = false;

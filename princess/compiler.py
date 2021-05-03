@@ -605,7 +605,7 @@ class Compiler(AstWalker):
 
     def walk_Compare(self, node: model.Compare):
         self.walk_children(node)
-        assert_error(len(node.ast) == 3, "Mutliple comparisons not supported")
+        assert_error(len(node.ast) == 3, "Multiple comparisons not supported")
 
         left = node.ast[0]
         op = node.ast[1]

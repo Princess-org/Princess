@@ -10,6 +10,7 @@
 #include "vector.c"
 #include "buffer.c"
 #include "util.c"
+#include "toolchain.c"
 typedef struct scope_Value {enum parser_ShareMarker share; enum parser_VarDecl modifier; string name; string assembly_name; struct typechecking_Type *tpe; void *value; struct scope_Value *next; bool forward_declare; bool global;} scope_Value;
 typedef struct scope_Scope {int scope_count; struct scope_Scope *parent; struct map_Map *fields; struct vector_Vector *imports;} scope_Scope;
  int * _31a1fd14_get_scope_count(scope_Scope *scope) {
@@ -92,9 +93,10 @@ DLL_EXPORT scope_Value * scope_get_function(scope_Scope *scope, parser_Node *id,
         }  ;
         if (((*scope).imports)) {
             for (int i = 0;(i < vector_length(((*scope).imports)));(i += 1)) {
-                scope_Scope *scope2 = ((scope_Scope *)vector_get(((*scope).imports), i));
+                toolchain_Module *module = ((toolchain_Module *)vector_get(((*scope).imports), i));
+                scope_Scope *scope2 = ((*module).scope);
                 scope_Value *value2 = _31a1fd14_find_function(map_get(((*scope2).fields), name), parameter_t, (&score));
-                if (value2) {
+                if ((((bool)value2) && ((bool)(((int)((*value2).share)) & parser_ShareMarker_EXPORT)))) {
                     value = value2;
                     int *i = malloc((sizeof(int)));
                     (*i) = score;
@@ -174,13 +176,14 @@ DLL_EXPORT scope_Value * scope_get(scope_Scope *scope, parser_Node *id) {
         }  ;
         if (((*scope).imports)) {
             for (int i = 0;(i < vector_length(((*scope).imports)));(i += 1)) {
-                scope_Scope *scope2 = ((scope_Scope *)vector_get(((*scope).imports), i));
+                toolchain_Module *module = ((toolchain_Module *)vector_get(((*scope).imports), i));
+                scope_Scope *scope2 = ((*module).scope);
                 scope_Value *value2 = _31a1fd14_unwrap_function_without_parameters(map_get(((*scope2).fields), name));
-                if ((((bool)value2) && ((bool)value))) {
-                    typechecking_errorn(id, ((Array){21, "Ambiguous reference\x0a"""}));
-                    return NULL;
-                }  ;
-                if (value2) {
+                if ((((bool)value2) && ((bool)(((int)((*value2).share)) & parser_ShareMarker_EXPORT)))) {
+                    if (value) {
+                        typechecking_errorn(id, ((Array){21, "Ambiguous reference\x0a"""}));
+                        return NULL;
+                    }  ;
                     value = value2;
                 }  ;
             }
@@ -393,6 +396,33 @@ DLL_EXPORT scope_Scope * scope_enter_namespace(scope_Scope *scope, parser_Node *
         map_put(((*scope).fields), name, v);
     };
     return scope2;
+};
+DLL_EXPORT void scope_insert_module(scope_Scope *scope, parser_Node *alias, toolchain_Module *module) {
+    if (((*scope).imports)) {
+        for (int i = 0;(i < vector_length(((*scope).imports)));(i += 1)) {
+            toolchain_Module *module2 = ((toolchain_Module *)vector_get(((*scope).imports), i));
+            if ((strcmp((((*module).filename).value), (((*module2).filename).value)) == 0)) {
+                return ;
+            }  ;
+        }
+        ;
+    }  ;
+    scope_Scope *ns = scope_enter_namespace(scope, alias);
+    if ((!ns)) {
+        return ;
+    }  ;
+    Array values = map_keys(((*((*module).scope)).fields));
+    for (int i = 0;(i < (values.size));(i += 1)) {
+        scope_Value *value = ((scope_Value *)map_get(((*((*module).scope)).fields), (((string *)values.value)[i])));
+        if ((((int)((*value).share)) & parser_ShareMarker_EXPORT)) {
+            map_put(((*ns).fields), (((string *)values.value)[i]), value);
+        }  ;
+    }
+    ;
+    if ((!((*scope).imports))) {
+        ((*scope).imports) = vector_make();
+    }  ;
+    vector_push(((*scope).imports), module);
 };
 DLL_EXPORT void scope_p_main(Array args) {
     ;
