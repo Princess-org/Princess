@@ -237,6 +237,19 @@ typedef struct _1f7978b0_Result {struct scope_Scope *scope; struct parser_Node *
     assert((((*b).tpe) == builtins_int_));
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
+ void _1f7978b0_test_array_size_and_value() {
+    printf((((Array){3, "%s"}).value), (((Array){31, ">Test array size and value... "}).value));
+    Array str = ((Array){155, "\x0a""        let a = [1, 2, 3, 4]\x0a""        let b: [int] = a\x0a""        let c = a.size\x0a""        let d = a.value\x0a""        let e = b.size\x0a""        let f = b.value \x0a""    "});
+    _1f7978b0_Result res = _1f7978b0_typecheck(str);
+    typechecking_Type *c = ((*scope_get((res.scope), parser_make_identifier(((Array){1, (Array[1]){ ((Array){2, "c"}) }})))).tpe);
+    typechecking_Type *d = ((*scope_get((res.scope), parser_make_identifier(((Array){1, (Array[1]){ ((Array){2, "d"}) }})))).tpe);
+    typechecking_Type *e = ((*scope_get((res.scope), parser_make_identifier(((Array){1, (Array[1]){ ((Array){2, "e"}) }})))).tpe);
+    typechecking_Type *f = ((*scope_get((res.scope), parser_make_identifier(((Array){1, (Array[1]){ ((Array){2, "f"}) }})))).tpe);
+    assert(((c == builtins_size_t_) && (e == builtins_size_t_)));
+    assert((((bool)typechecking_is_pointer(d)) && ((bool)typechecking_is_pointer(f))));
+    assert(((((*d).tpe) == builtins_int_) && (((*f).tpe) == builtins_int_)));
+    printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
+};
 DLL_EXPORT void test_typechecking_test() {
     printf((((Array){3, "%s"}).value), (((Array){34, "Running tests on Typechecking...\x0a"""}).value));
     _1f7978b0_test_vardecl();
@@ -252,6 +265,7 @@ DLL_EXPORT void test_typechecking_test() {
     _1f7978b0_test_member_access();
     _1f7978b0_test_array_subscript();
     _1f7978b0_test_array_lit();
+    _1f7978b0_test_array_size_and_value();
 };
 DLL_EXPORT void test_typechecking_p_main(Array args) {
 

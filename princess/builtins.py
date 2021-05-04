@@ -252,6 +252,7 @@ compiler.builtins.create_function("pow", types.FunctionT(c = True, return_t = (t
 compiler.builtins.create_function("sqrt", types.FunctionT(c = True, return_t = (types.double,), parameter_t = (types.double,)))
 compiler.builtins.create_function("log2", types.FunctionT(c = True, return_t = (types.double,), parameter_t = (types.double,)))
 
+compiler.builtins.create_function("system", types.FunctionT(c = True, return_t = (types.int, ), parameter_t = (types.string,)))
 compiler.builtins.create_function("getenv", types.FunctionT(c = True, return_t = (types.string,), parameter_t = (types.string,)))
 compiler.builtins.create_function("absolute_path", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.string, types.string)))
 compiler.builtins.create_function("exit", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.int,)))

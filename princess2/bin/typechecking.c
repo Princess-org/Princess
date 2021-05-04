@@ -1149,7 +1149,15 @@ typechecking_Type *_3700c937_int_literal;
             return ;
         }  ;
         ((*node).tpe) = rtpe;
-    } else if ((((*tpe).kind) == typechecking_TypeKind_ENUM)) {
+    } else if (((((*tpe).kind) == typechecking_TypeKind_ARRAY) || (((*tpe).kind) == typechecking_TypeKind_STATIC_ARRAY))) {
+        string name = typechecking_last_ident_to_str(right);
+        if ((strcmp((name.value), (((Array){5, "size"}).value)) == 0)) {
+            ((*node).tpe) = builtins_size_t_;
+        } else if ((strcmp((name.value), (((Array){6, "value"}).value)) == 0)) {
+            ((*node).tpe) = typechecking_pointer(((*tpe).tpe));
+        } ;
+    }
+    else if ((((*tpe).kind) == typechecking_TypeKind_ENUM)) {
         assert(false);
     } else {
         typechecking_errorn(node, ((Array){30, "Expected aggregate type, got "}));

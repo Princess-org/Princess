@@ -4,6 +4,7 @@
 #include "princess.h"
 #ifndef _test_compiler_H
 #define _test_compiler_H
+#include "buffer.c"
 #include "compiler.c"
 #include "codegen.c"
 #include "lexer.c"
@@ -36,6 +37,7 @@ bool test_compiler_print_ll;
         printf((((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
         printf((((Array){3, "%s"}).value), (buf.value));
     }  ;
+    assert((system((((Array){16, "llc bin/main.ll"}).value)) == 0));
     return buf;
 };
  void _6dcc03b3_test_emit_arithmetic() {
@@ -183,6 +185,12 @@ bool test_compiler_print_ll;
     string res = _6dcc03b3_compile(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
+ void _6dcc03b3_test_array_size_and_value() {
+    printf((((Array){3, "%s"}).value), (((Array){31, ">Test array size and value... "}).value));
+    Array str = ((Array){196, "\x0a""        var a: [4; int]\x0a""        var b: [int]\x0a""\x0a""        let c = a.size\x0a""        let d = a.value\x0a""        let e = b.size\x0a""        let f = b.value\x0a""\x0a""        b.size = 20!int64\x0a""        b.value = null\x0a""    "});
+    string res = _6dcc03b3_compile(str);
+    printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
+};
 DLL_EXPORT void test_compiler_test() {
     printf((((Array){3, "%s"}).value), (((Array){30, "Running tests on Compiler...\x0a"""}).value));
     _6dcc03b3_test_emit_arithmetic();
@@ -201,6 +209,7 @@ DLL_EXPORT void test_compiler_test() {
     _6dcc03b3_test_pointer_arithmetic();
     _6dcc03b3_test_assign_eq();
     _6dcc03b3_test_import();
+    _6dcc03b3_test_array_size_and_value();
 };
 DLL_EXPORT void test_compiler_p_main(Array args) {
     test_compiler_print_ll = false;

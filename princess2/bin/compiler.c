@@ -579,29 +579,11 @@ typedef struct _87f75ce3_State {int label_counter; int counter; string filename;
     }  ;
     return (*(value.addr));
 };
- compiler_Value _87f75ce3_walk_MemberAccess(parser_Node *node, _87f75ce3_State *state) {
-    if ((!((*node).tpe))) {
-        return _87f75ce3_NO_VALUE;
-    }  ;
-    parser_Node *left = ((((*node).value).bin_op).left);
-    parser_Node *right = ((((*node).value).bin_op).right);
-    compiler_Value value = _87f75ce3_walk_expression(left, state);
-    typechecking_Type *struct_tpe = ((*left).tpe);
-    string name = typechecking_last_ident_to_str(right);
-    Array index = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
-    (((compiler_Value *)index.value)[0]) = _87f75ce3_make_int_value(0);
-    for (int i = 0;(i < (((*struct_tpe).fields).size));(i += 1)) {
-        typechecking_StructMember member = (((typechecking_StructMember *)((*struct_tpe).fields).value)[i]);
-        if ((strcmp(((member.name).value), (name.value)) == 0)) {
-            (((compiler_Value *)index.value)[1]) = ((compiler_Value){ .kind = compiler_ValueKind_INT, .sign = 1, .i = i, .tpe = builtins_int_ });
-            break;
-        }  ;
-    }
-    ;
+ compiler_Value _87f75ce3_walk_MemberAccess_gep(parser_Node *node, typechecking_Type *tpe, compiler_Value value, Array index, _87f75ce3_State *state) {
     compiler_Value gep_ret = _87f75ce3_make_local_value(typechecking_pointer(((*node).tpe)), NULL, state);
     compiler_Insn *gep = malloc((sizeof(compiler_Insn)));
     ((*gep).kind) = compiler_InsnKind_GETELEMENTPTR;
-    (((*gep).value).gep) = ((compiler_InsnGetElementPtr){ .ret = gep_ret, .tpe = struct_tpe, .value = (*(value.addr)), .index = index });
+    (((*gep).value).gep) = ((compiler_InsnGetElementPtr){ .ret = gep_ret, .tpe = tpe, .value = (*(value.addr)), .index = index });
     compiler_Value *addr = malloc((sizeof(compiler_Value)));
     (*addr) = gep_ret;
     compiler_Value ret = _87f75ce3_make_local_value(((*node).tpe), addr, state);
@@ -611,6 +593,58 @@ typedef struct _87f75ce3_State {int label_counter; int counter; string filename;
     _87f75ce3_push_insn(gep, state);
     _87f75ce3_push_insn(load, state);
     return ret;
+};
+ compiler_Value _87f75ce3_walk_MemberAccess(parser_Node *node, _87f75ce3_State *state) {
+    if ((!((*node).tpe))) {
+        return _87f75ce3_NO_VALUE;
+    }  ;
+    parser_Node *left = ((((*node).value).bin_op).left);
+    parser_Node *right = ((((*node).value).bin_op).right);
+    compiler_Value value = _87f75ce3_walk_expression(left, state);
+    typechecking_Type *tpe = ((*left).tpe);
+    string name = typechecking_last_ident_to_str(right);
+    if ((((*tpe).kind) == typechecking_TypeKind_STATIC_ARRAY)) {
+        if ((strcmp((name.value), (((Array){5, "size"}).value)) == 0)) {
+            compiler_Value i = _87f75ce3_make_int_value(((*tpe).length));
+            (i.tpe) = builtins_size_t_;
+            return i;
+        } else if ((strcmp((name.value), (((Array){6, "value"}).value)) == 0)) {
+            Array index = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
+            (((compiler_Value *)index.value)[0]) = _87f75ce3_make_int_value(0);
+            ((((compiler_Value *)index.value)[0]).tpe) = builtins_size_t_;
+            (((compiler_Value *)index.value)[1]) = _87f75ce3_make_int_value(0);
+            ((((compiler_Value *)index.value)[1]).tpe) = builtins_size_t_;
+            compiler_Value gep_ret = _87f75ce3_make_local_value(((*node).tpe), NULL, state);
+            compiler_Insn *gep = malloc((sizeof(compiler_Insn)));
+            ((*gep).kind) = compiler_InsnKind_GETELEMENTPTR;
+            (((*gep).value).gep) = ((compiler_InsnGetElementPtr){ .ret = gep_ret, .tpe = tpe, .value = (*(value.addr)), .index = index });
+            _87f75ce3_push_insn(gep, state);
+            return gep_ret;
+        } else {
+            assert(false);
+        };
+    } else if ((((*tpe).kind) == typechecking_TypeKind_ARRAY)) {
+        Array index = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
+        (((compiler_Value *)index.value)[0]) = _87f75ce3_make_int_value(0);
+        if ((strcmp((name.value), (((Array){5, "size"}).value)) == 0)) {
+            (((compiler_Value *)index.value)[1]) = _87f75ce3_make_int_value(0);
+        } else if ((strcmp((name.value), (((Array){6, "value"}).value)) == 0)) {
+            (((compiler_Value *)index.value)[1]) = _87f75ce3_make_int_value(1);
+        } ;
+        return _87f75ce3_walk_MemberAccess_gep(node, tpe, value, index, state);
+    } else {
+        Array index = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
+        (((compiler_Value *)index.value)[0]) = _87f75ce3_make_int_value(0);
+        for (int i = 0;(i < (((*tpe).fields).size));(i += 1)) {
+            typechecking_StructMember member = (((typechecking_StructMember *)((*tpe).fields).value)[i]);
+            if ((strcmp(((member.name).value), (name.value)) == 0)) {
+                (((compiler_Value *)index.value)[1]) = ((compiler_Value){ .kind = compiler_ValueKind_INT, .sign = 1, .i = i, .tpe = builtins_int_ });
+                break;
+            }  ;
+        }
+        ;
+        return _87f75ce3_walk_MemberAccess_gep(node, tpe, value, index, state);
+    };
 };
  compiler_Value _87f75ce3_walk_ArraySubscript(parser_Node *node, _87f75ce3_State *state) {
     if ((!((*node).tpe))) {
@@ -1339,9 +1373,7 @@ DLL_EXPORT compiler_Result compiler_compile(parser_Node *node, string filename, 
     (((*ident).loc).module) = module;
     (((*ident).loc).filename) = filename;
     typechecking_Type *main_tpe = typechecking_make_type(typechecking_TypeKind_FUNCTION, ident);
-    typechecking_Type *string_array_tpe = malloc((sizeof(typechecking_Type)));
-    ((*string_array_tpe).kind) = typechecking_TypeKind_ARRAY;
-    ((*string_array_tpe).tpe) = builtins_string_;
+    typechecking_Type *string_array_tpe = typechecking_array(builtins_string_);
     typechecking_NamedParameter *named = malloc((sizeof(typechecking_NamedParameter)));
     ((*named).name) = ((Array){5, "args"});
     ((*named).value) = string_array_tpe;

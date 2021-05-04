@@ -66,6 +66,7 @@ DLL_EXPORT void main_p_main(Array args) {
             toolchain_compile_file((*((string *)vector_peek(_fad58de7_filenames))), ((Array){5, "main"}));
             if ((toolchain_error_count > 0)) {
                 fprintf(stderr, (((Array){7, "%s%d%s"}).value), (((Array){16, "\x0a""Total errors: "}).value), toolchain_error_count, (((Array){2, "\x0a"""}).value));
+                exit(toolchain_error_count);
             }  ;
         }  else {
             fprintf(stderr, (((Array){3, "%s"}).value), (((Array){24, "File argument required\x0a"""}).value));
