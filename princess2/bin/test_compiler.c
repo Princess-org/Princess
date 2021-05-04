@@ -31,13 +31,17 @@ bool test_compiler_print_ll;
     fread((buf.value), (sizeof(char)), filesize, fh);
     (((char *)buf.value)[filesize]) = '\x00';
     fclose(fh);
-    if (test_compiler_print_ll) {
+    int llc = system((((Array){16, "llc bin/main.ll"}).value));
+    if (llc) {
+        fprintf(stderr, (((Array){3, "%s"}).value), (((Array){25, "LLC compilation failed!\x0a"""}).value));
+        exit((-1));
+    }  ;
+    if ((test_compiler_print_ll || ((bool)llc))) {
         printf((((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
         printf((((Array){3, "%s"}).value), (s.value));
         printf((((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
         printf((((Array){3, "%s"}).value), (buf.value));
     }  ;
-    assert((system((((Array){16, "llc bin/main.ll"}).value)) == 0));
     return buf;
 };
  void _6dcc03b3_test_emit_arithmetic() {
@@ -122,6 +126,8 @@ bool test_compiler_print_ll;
     res = _6dcc03b3_compile(str);
     str = ((Array){106, "\x0a""        let a = 200!bool\x0a""        let b = 1.5!bool\x0a""        let c: *int = null\x0a""        let d = c!bool\x0a""    "});
     res = _6dcc03b3_compile(str);
+    str = ((Array){101, "\x0a""        let a: int64 = 20\x0a""        let b: int16 = 20\x0a""\x0a""        def foo(a: int64)\x0a""        foo(10)\x0a""    "});
+    res = _6dcc03b3_compile(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
  void _6dcc03b3_test_member_access() {
@@ -187,7 +193,7 @@ bool test_compiler_print_ll;
 };
  void _6dcc03b3_test_array_size_and_value() {
     printf((((Array){3, "%s"}).value), (((Array){31, ">Test array size and value... "}).value));
-    Array str = ((Array){196, "\x0a""        var a: [4; int]\x0a""        var b: [int]\x0a""\x0a""        let c = a.size\x0a""        let d = a.value\x0a""        let e = b.size\x0a""        let f = b.value\x0a""\x0a""        b.size = 20!int64\x0a""        b.value = null\x0a""    "});
+    Array str = ((Array){190, "\x0a""        var a: [4; int]\x0a""        var b: [int]\x0a""\x0a""        let c = a.size\x0a""        let d = a.value\x0a""        let e = b.size\x0a""        let f = b.value\x0a""\x0a""        b.size = 20\x0a""        b.value = null\x0a""    "});
     string res = _6dcc03b3_compile(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };

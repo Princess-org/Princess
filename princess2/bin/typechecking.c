@@ -592,6 +592,13 @@ typechecking_Type *_3700c937_int_literal;
     }
     ;
 };
+ typechecking_Type * _3700c937_implicit_conversion(parser_Node *node, typechecking_Type *tpe, typechecking_Type *rhstpe) {
+    if (((((((*node).kind) == parser_NodeKind_NULL) && typechecking_is_pointer(tpe)) || ((((*node).kind) == parser_NodeKind_STRUCT_LIT) && typechecking_is_struct(tpe))) || ((((*node).kind) == parser_NodeKind_INTEGER) && typechecking_is_arithmetic(tpe)))) {
+        ((*node).tpe) = tpe;
+        return tpe;
+    }  ;
+    return rhstpe;
+};
  void _3700c937_walk_Assign(parser_Node *node, _3700c937_State *state) {
     vector_Vector *left = ((((*node).value).assign).left);
     vector_Vector *right = ((((*node).value).assign).right);
@@ -610,10 +617,7 @@ typechecking_Type *_3700c937_int_literal;
         }  ;
         typechecking_Type *tpe = ((typechecking_Type *)vector_get(types, i));
         parser_Node *n = ((parser_Node *)vector_get(nodes, i));
-        if ((((((*n).kind) == parser_NodeKind_NULL) && typechecking_is_pointer(((*node).tpe))) || ((((*n).kind) == parser_NodeKind_STRUCT_LIT) && typechecking_is_struct(((*node).tpe))))) {
-            ((*n).tpe) = ((*node).tpe);
-            tpe = ((*node).tpe);
-        }  ;
+        tpe = _3700c937_implicit_conversion(n, ((*node).tpe), tpe);
         if ((((bool)(!tpe)) || ((bool)(!((*node).tpe))))) {
             continue;
         }  ;
@@ -656,10 +660,7 @@ typechecking_Type *_3700c937_int_literal;
                 if ((i < vector_length(types))) {
                     typechecking_Type *rhstpe = ((typechecking_Type *)vector_get(types, i));
                     parser_Node *n = ((parser_Node *)vector_get(nodes, i));
-                    if ((((((*n).kind) == parser_NodeKind_NULL) && typechecking_is_pointer(tpe)) || ((((*n).kind) == parser_NodeKind_STRUCT_LIT) && typechecking_is_struct(tpe)))) {
-                        ((*n).tpe) = tpe;
-                        rhstpe = tpe;
-                    }  ;
+                    rhstpe = _3700c937_implicit_conversion(n, tpe, rhstpe);
                     if ((((bool)(!tpe)) || ((bool)(!rhstpe)))) {
                         continue;
                     }  ;
@@ -698,10 +699,7 @@ typechecking_Type *_3700c937_int_literal;
             }  ;
             typechecking_Type *rhstpe = ((typechecking_Type *)vector_get(types, i));
             parser_Node *n2 = ((parser_Node *)vector_get(nodes, i));
-            if ((((((*n2).kind) == parser_NodeKind_NULL) && typechecking_is_pointer(tpe)) || ((((*n2).kind) == parser_NodeKind_STRUCT_LIT) && typechecking_is_struct(tpe)))) {
-                ((*n2).tpe) = tpe;
-                rhstpe = tpe;
-            }  ;
+            rhstpe = _3700c937_implicit_conversion(n2, tpe, rhstpe);
             if ((((bool)(!tpe)) || ((bool)(!rhstpe)))) {
                 continue;
             }  ;
@@ -1010,10 +1008,7 @@ typechecking_Type *_3700c937_int_literal;
         typechecking_Type *argtpe = ((typechecking_Type *)vector_get(returns, i));
         typechecking_Type *rettpe = ((typechecking_Type *)vector_get(types, i));
         parser_Node *n = ((parser_Node *)vector_get(nodes, i));
-        if ((((((*n).kind) == parser_NodeKind_NULL) && typechecking_is_pointer(argtpe)) || ((((*n).kind) == parser_NodeKind_STRUCT_LIT) && typechecking_is_struct(argtpe)))) {
-            ((*n).tpe) = argtpe;
-            rettpe = argtpe;
-        }  ;
+        rettpe = _3700c937_implicit_conversion(n, argtpe, rettpe);
         if ((((bool)(!argtpe)) || ((bool)(!rettpe)))) {
             continue;
         }  ;
@@ -1051,7 +1046,31 @@ typechecking_Type *_3700c937_int_literal;
         typechecking_errorn(left, ((Array){11, "Function \""}));
         fprintf(stderr, (((Array){5, "%s%s"}).value), (parser_identifier_to_str(left).value), (((Array){13, "\" not found\x0a"""}).value));
     }  else {
-        ((*node).tpe) = ((*function).tpe);
+        typechecking_Type *tpe = ((*function).tpe);
+        vector_Vector *parameter_t = ((*tpe).parameter_t);
+        for (int i = 0;(i < vector_length(((((*node).value).func_call).args)));(i += 1)) {
+            parser_Node *n = ((parser_Node *)vector_get(((((*node).value).func_call).args), i));
+            typechecking_Type *rhstpe = ((*((typechecking_NamedParameter *)vector_get(parameter_t, i))).value);
+            _3700c937_implicit_conversion(n, rhstpe, NULL);
+        }
+        ;
+        for (int i = 0;(i < vector_length(((((*node).value).func_call).kwargs)));(i += 1)) {
+            parser_Node *n = ((parser_Node *)vector_get(((((*node).value).func_call).kwargs), i));
+            string name = typechecking_last_ident_to_str(((((*n).value).named_arg).name));
+            parser_Node *arg = ((((*n).value).named_arg).value);
+            typechecking_Type *rhstpe;
+            for (int j = 0;(j < vector_length(parameter_t));(j += 1)) {
+                typechecking_NamedParameter *param = ((typechecking_NamedParameter *)vector_get(parameter_t, j));
+                if ((strcmp((((*param).name).value), (name.value)) == 0)) {
+                    rhstpe = ((*param).value);
+                    break;
+                }  ;
+            }
+            ;
+            _3700c937_implicit_conversion(arg, rhstpe, NULL);
+        }
+        ;
+        ((*node).tpe) = tpe;
     };
 };
  void _3700c937_walk_If(parser_Node *node, _3700c937_State *state) {
@@ -1155,7 +1174,9 @@ typechecking_Type *_3700c937_int_literal;
             ((*node).tpe) = builtins_size_t_;
         } else if ((strcmp((name.value), (((Array){6, "value"}).value)) == 0)) {
             ((*node).tpe) = typechecking_pointer(((*tpe).tpe));
-        } ;
+        } else {
+            typechecking_errorn(node, ((Array){24, "Expected size or value\x0a"""}));
+        };
     }
     else if ((((*tpe).kind) == typechecking_TypeKind_ENUM)) {
         assert(false);
