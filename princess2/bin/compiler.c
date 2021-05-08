@@ -54,7 +54,7 @@ typedef struct compiler_Block {string label_; struct vector_Vector *insn; struct
 typedef struct compiler_Function {string name; struct vector_Vector *args; struct typechecking_Type *ret; bool multiple_returns; bool forward_declare; struct compiler_Block *block;} compiler_Function;
 typedef struct compiler_Result {struct map_Map *functions; struct map_Map *structures; struct map_Map *globals;} compiler_Result;
 typedef struct _87f75ce3_LoopState {struct compiler_Insn *break_insn; struct compiler_Insn *continue_insn;} _87f75ce3_LoopState;
-typedef struct _87f75ce3_State {int label_counter; int counter; string filename; string module; struct compiler_Function *current_function; struct compiler_Block *current_block; struct vector_Vector *loops; struct compiler_Result result;} _87f75ce3_State;
+typedef struct _87f75ce3_State {int counter; string filename; string module; struct compiler_Function *current_function; struct compiler_Block *current_block; struct vector_Vector *loops; struct compiler_Result result;} _87f75ce3_State;
  compiler_Insn * _87f75ce3_get_break_insn(_87f75ce3_State *state) {
     if ((vector_length(((*state).loops)) > 0)) {
         return ((*((_87f75ce3_LoopState *)vector_peek(((*state).loops)))).break_insn);
@@ -81,8 +81,8 @@ typedef struct _87f75ce3_State {int label_counter; int counter; string filename;
     vector_pop(((*state).loops));
 };
  compiler_Label _87f75ce3_make_label(_87f75ce3_State *state) {
-    string s = util_int_to_str(((*state).label_counter));
-    (((*state).label_counter) += 1);
+    string s = util_int_to_str(((*state).counter));
+    (((*state).counter) += 1);
     return ((compiler_Label){ .name = s });
 };
  string _87f75ce3_make_unique_name(_87f75ce3_State *state) {
@@ -740,7 +740,7 @@ typedef struct _87f75ce3_State {int label_counter; int counter; string filename;
     if (typechecking_is_pointer((right.tpe))) {
         right = _87f75ce3_convert_to(node, right, builtins_size_t_, state);
     }  ;
-    if ((((bool)typechecking_is_arithmetic((left.tpe))) && ((bool)typechecking_is_arithmetic((right.tpe))))) {
+    if ((typechecking_is_arithmetic((left.tpe)) && typechecking_is_arithmetic((right.tpe)))) {
         tpe = typechecking_common_type((left.tpe), (right.tpe));
         left = _87f75ce3_convert_to(node, left, tpe, state);
         right = _87f75ce3_convert_to(node, right, tpe, state);
@@ -1054,7 +1054,7 @@ typedef struct _87f75ce3_State {int label_counter; int counter; string filename;
     ((*ret).kind) = compiler_InsnKind_RET;
     ((((*ret).value).ret).value) = value;
     _87f75ce3_push_insn(ret, state);
-    (((*state).label_counter) += 1);
+    (((*state).counter) += 1);
 };
  void _87f75ce3_walk_Break(parser_Node *node, _87f75ce3_State *state) {
     compiler_Insn *break_insn = _87f75ce3_get_break_insn(state);
@@ -1063,7 +1063,7 @@ typedef struct _87f75ce3_State {int label_counter; int counter; string filename;
         return ;
     }  ;
     _87f75ce3_push_insn(break_insn, state);
-    (((*state).label_counter) += 1);
+    (((*state).counter) += 1);
 };
  void _87f75ce3_walk_Continue(parser_Node *node, _87f75ce3_State *state) {
     compiler_Insn *continue_insn = _87f75ce3_get_continue_insn(state);
@@ -1072,7 +1072,7 @@ typedef struct _87f75ce3_State {int label_counter; int counter; string filename;
         return ;
     }  ;
     _87f75ce3_push_insn(continue_insn, state);
-    (((*state).label_counter) += 1);
+    (((*state).counter) += 1);
 };
  void _87f75ce3_walk_Loop(parser_Node *node, _87f75ce3_State *state) {
     _87f75ce3_push_loop_state(state);
@@ -1195,7 +1195,7 @@ typedef struct _87f75ce3_State {int label_counter; int counter; string filename;
     if (body) {
         ((*state).current_function) = function;
         ((*state).counter) = 0;
-        ((*state).label_counter) = 0;
+        ((*state).counter) = 0;
         compiler_Block *block = malloc((sizeof(compiler_Block)));
         ((*block).label_) = ((Array){6, "start"});
         ((*block).insn) = vector_make();
@@ -1309,7 +1309,7 @@ vector_Vector *_87f75ce3_imported_modules;
         ((*arg).tpe) = typechecking_array(builtins_string_);
         vector_push(args, arg);
         int name_size = vector_length((((*name).value).body));
-        Array array = ((Array){(name_size + ((int)1)), malloc((((int64)(sizeof(string))) * ((int64)(name_size + ((int)1)))))});
+        Array array = ((Array){(name_size + 1), malloc((((int64)(sizeof(string))) * ((int64)(name_size + 1))))});
         for (int j = 0;(j < name_size);(j += 1)) {
             (((string *)array.value)[j]) = (*((string *)vector_get((((*name).value).body), j)));
         }
@@ -1339,7 +1339,7 @@ DLL_EXPORT compiler_Result compiler_compile(parser_Node *node, string filename, 
             Array keys = map_keys(((*m_scope).fields));
             for (int i = 0;(i < (keys.size));(i += 1)) {
                 scope_Value *value = ((scope_Value *)map_get(((*m_scope).fields), (((string *)keys.value)[i])));
-                if ((((bool)typechecking_is_function(((*value).tpe))) && ((bool)(((int)((*value).share)) & ((int)parser_ShareMarker_EXPORT))))) {
+                if ((typechecking_is_function(((*value).tpe)) && ((bool)(((int)((*value).share)) & parser_ShareMarker_EXPORT)))) {
                     _87f75ce3_create_function(((*value).tpe), NULL, sc, (&state));
                 }  ;
             }

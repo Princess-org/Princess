@@ -66,7 +66,7 @@ DLL_EXPORT void toolchain_compile_file(string filename, string module) {
         lexer_TokenList *tokens = lexer_lex(buf);
         free((buf.value));
         parser_Node *node = parser_parse(tokens, lines, filename, module);
-        scope_Scope *sc = scope_enter_scope(builtins_builtins);
+        scope_Scope *sc = scope_enter_function_scope(builtins_builtins);
         map_put(toolchain_modules, filename, sc);
         typechecking_typecheck(node, sc, filename, module);
         compiler_Result result = compiler_compile(node, filename, module);

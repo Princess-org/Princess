@@ -19,7 +19,7 @@ bool test_compiler_print_ll;
     lexer_TokenList *tokens = lexer_lex(s);
     Array lines = util_split_lines(s);
     parser_Node *node = parser_parse(tokens, lines, main, main);
-    scope_Scope *scope = scope_enter_scope(builtins_builtins);
+    scope_Scope *scope = scope_enter_function_scope(builtins_builtins);
     typechecking_typecheck(node, scope, main, main);
     compiler_Result result = compiler_compile(node, main, main);
     codegen_gen(result, main, main);
@@ -34,13 +34,15 @@ bool test_compiler_print_ll;
     int llc = system((((Array){16, "llc bin/main.ll"}).value));
     if (llc) {
         fprintf(stderr, (((Array){3, "%s"}).value), (((Array){25, "LLC compilation failed!\x0a"""}).value));
-        exit((-1));
     }  ;
     if ((test_compiler_print_ll || ((bool)llc))) {
         printf((((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
         printf((((Array){3, "%s"}).value), (s.value));
         printf((((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
         printf((((Array){3, "%s"}).value), (buf.value));
+    }  ;
+    if (llc) {
+        exit((-1));
     }  ;
     return buf;
 };
@@ -68,7 +70,7 @@ bool test_compiler_print_ll;
     printf((((Array){3, "%s"}).value), (((Array){23, ">Test if statement... "}).value));
     Array str = ((Array){82, "\x0a""        def foo\x0a""        if true {\x0a""            foo()\x0a""        }\x0a""        foo()\x0a""    "});
     string res = _6dcc03b3_compile(str);
-    str = ((Array){169, "\x0a""        def foo\x0a""        if true {\x0a""            foo()\x0a""        } else if false {\x0a""            foo()\x0a""        } else if true {\x0a""            foo()\x0a""        }\x0a""        foo()\x0a""    "});
+    str = ((Array){208, "\x0a""        def foo -> int\x0a""        if true {\x0a""            let x = foo()\x0a""        } else if false {\x0a""            let x = foo()\x0a""        } else if true {\x0a""            let x = foo()\x0a""        }\x0a""        let x = foo()\x0a""    "});
     res = _6dcc03b3_compile(str);
     str = ((Array){117, "\x0a""        def foo\x0a""        if true {\x0a""            foo()\x0a""        } else {\x0a""            foo()\x0a""        }\x0a""        foo()\x0a""    "});
     res = _6dcc03b3_compile(str);
