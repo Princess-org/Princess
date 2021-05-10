@@ -55,12 +55,7 @@ DLL_EXPORT void toolchain_compile_file(string filename, string module) {
     if ((!fh)) {
         fprintf(stderr, (((Array){7, "%s%s%s"}).value), (((Array){7, "File \""}).value), (filename.value), (((Array){17, "\" doesn't exist\x0a"""}).value));
     }  else {
-        fseek(fh, 0, SEEK_END);
-        int filesize = ftell(fh);
-        rewind(fh);
-        Array buf = ((Array){(filesize + 1), malloc((((int64)(sizeof(char))) * ((int64)(filesize + 1))))});
-        fread((buf.value), (sizeof(char)), filesize, fh);
-        (((char *)buf.value)[filesize]) = '\x00';
+        string buf = util_read_all(fh);
         fclose(fh);
         Array lines = util_split_lines(buf);
         lexer_TokenList *tokens = lexer_lex(buf);

@@ -107,6 +107,15 @@ DLL_EXPORT Array util_split_lines(string s) {
     (((char *)(((string *)result.value)[line]).value)[(((int64)size) - ((int64)k))]) = '\x00';
     return result;
 };
+DLL_EXPORT string util_read_all(void *fh) {
+    fseek(fh, 0, SEEK_END);
+    int filesize = ftell(fh);
+    rewind(fh);
+    Array buf = ((Array){(filesize + 1), malloc((((int64)(sizeof(char))) * ((int64)(filesize + 1))))});
+    fread((buf.value), (sizeof(char)), filesize, fh);
+    (((char *)buf.value)[filesize]) = '\x00';
+    return buf;
+};
 DLL_EXPORT string util_double_to_hex_str(double f) {
     Array digits = ((Array){17, "0123456789ABCDEF"});
     uint64 n = (*((uint64 *)(&f)));

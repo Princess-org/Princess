@@ -42,7 +42,7 @@ DLL_EXPORT void main_p_main(Array args) {
     _fad58de7_filenames = ((vector_Vector *)map_get(_fad58de7_res, ((Array){8, "compile"})));
     _fad58de7_includes = ((vector_Vector *)map_get(_fad58de7_res, ((Array){10, "--include"})));
     if (_fad58de7_includes) {
-        toolchain_include_path = ((Array){(vector_length(_fad58de7_includes) + 1), malloc((((int64)(sizeof(string))) * ((int64)(vector_length(_fad58de7_includes) + 1))))});
+        toolchain_include_path = ((Array){(vector_length(_fad58de7_includes) + ((int)1)), malloc((((int64)(sizeof(string))) * ((int64)(vector_length(_fad58de7_includes) + ((int)1)))))});
         (((string *)toolchain_include_path.value)[0]) = ((Array){2, "."});
         for (int i = 0;(i < vector_length(_fad58de7_includes));(i += 1)) {
             string path = (*((string *)vector_get(_fad58de7_includes, i)));

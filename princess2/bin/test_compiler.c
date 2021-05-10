@@ -24,12 +24,7 @@ bool test_compiler_print_ll;
     compiler_Result result = compiler_compile(node, main, main);
     codegen_gen(result, main, main);
     FILE* fh = fopen((((Array){14, "./bin/main.ll"}).value), (((Array){2, "r"}).value));
-    fseek(fh, 0, SEEK_END);
-    int filesize = ftell(fh);
-    rewind(fh);
-    Array buf = ((Array){(filesize + 1), malloc((((int64)(sizeof(char))) * ((int64)(filesize + 1))))});
-    fread((buf.value), (sizeof(char)), filesize, fh);
-    (((char *)buf.value)[filesize]) = '\x00';
+    string buf = util_read_all(fh);
     fclose(fh);
     int llc = system((((Array){16, "llc bin/main.ll"}).value));
     if (llc) {
