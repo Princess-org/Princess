@@ -71,7 +71,7 @@ DLL_EXPORT string parser_identifier_to_str(parser_Node *node) {
     int len = vector_length((((*node).value).body));
     for (int i = 0;(i < len);(i += 1)) {
         buffer_append_str((&buf), (*((string *)vector_get((((*node).value).body), i))));
-        if ((i < (len - 1))) {
+        if ((i < (len - ((int)1)))) {
             buffer_append_str((&buf), ((Array){3, "::"}));
         }  ;
     }
