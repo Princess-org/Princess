@@ -49,6 +49,7 @@ KEYWORDS = {
     'case',
     'size_of',
     'switch',
+    'align_of',
     'def',
     'return',
     'export',
@@ -1879,7 +1880,8 @@ class PrincessParser(Parser):
                 self._error(
                     'expecting one of: '
                     "'{' <struct_lit_typed> 'do' <expr_do>"
-                    "'size_of' <expr_size_of> <expr_1>"
+                    "'size_of' <expr_size_of> 'align_of'"
+                    '<expr_align_of> <expr_1>'
                     '<expr_assign_op> <expr_2>'
                     '<expr_assign_lhs> <expr_assign>'
                     "<expr_if> '..=' <expr_range_incl> '..'"
@@ -1969,6 +1971,14 @@ class PrincessParser(Parser):
     @tatsumasu('SizeOf')
     def _expr_size_of_(self):  # noqa
         self._token('size_of')
+        self._n__()
+        self._cut()
+        self._expression_no_assign_()
+        self.name_last_node('@')
+
+    @tatsumasu('AlignOf')
+    def _expr_align_of_(self):  # noqa
+        self._token('align_of')
         self._n__()
         self._cut()
         self._expression_no_assign_()
@@ -2408,6 +2418,8 @@ class PrincessParser(Parser):
             with self._option():
                 self._expr_size_of_()
             with self._option():
+                self._expr_align_of_()
+            with self._option():
                 self._expr_assign_op_()
             with self._option():
                 self._expr_assign_()
@@ -2418,25 +2430,26 @@ class PrincessParser(Parser):
             self._error(
                 'expecting one of: '
                 "'do' <expr_do> 'size_of' <expr_size_of>"
-                "<expr_1> '..=' <expr_2>"
-                "<expr_range_incl> '..' <expr_range>"
-                '<expr_or> <expr_3> <expr_and> <expr_5>'
-                '<expr_cmp_start> <expr_padd> <expr_psub>'
-                '<expr_add> <expr_sub> <expr_6>'
-                '<expr_mul> <expr_div> <expr_mod>'
-                '<expr_7> <expr_shr> <expr_shl>'
-                "<expr_band> <expr_bor> <expr_xor> '{'"
-                "<struct_lit> <expr_9> <expr_cast> '++'"
-                "<expr_preinc> '--' <expr_predec> '-'"
-                "<expr_uminus> '@' <expr_deref> '*'"
-                "<expr_ptr> '~' <expr_invert> 'not'"
-                "<expr_not> 'type' <expr_type> <expr_10>"
-                '<expr_call> <expr_array_index>'
-                '<expr_member_access> <expr_autocast>'
-                "<expr_postinc> <expr_postdec> '('"
-                "<t_oparen> '[' <array_lit> [0-9] <digit>"
-                "'.' <t_float_literal> 0x <t_hex_literal>"
-                '0b <t_bin_literal> 0o <t_oct_literal>'
+                "'align_of' <expr_align_of> <expr_1>"
+                "'..=' <expr_2> <expr_range_incl> '..'"
+                '<expr_range> <expr_or> <expr_3>'
+                '<expr_and> <expr_5> <expr_cmp_start>'
+                '<expr_padd> <expr_psub> <expr_add>'
+                '<expr_sub> <expr_6> <expr_mul>'
+                '<expr_div> <expr_mod> <expr_7>'
+                '<expr_shr> <expr_shl> <expr_band>'
+                "<expr_bor> <expr_xor> '{' <struct_lit>"
+                "<expr_9> <expr_cast> '++' <expr_preinc>"
+                "'--' <expr_predec> '-' <expr_uminus> '@'"
+                "<expr_deref> '*' <expr_ptr> '~'"
+                "<expr_invert> 'not' <expr_not> 'type'"
+                '<expr_type> <expr_10> <expr_call>'
+                '<expr_array_index> <expr_member_access>'
+                '<expr_autocast> <expr_postinc>'
+                "<expr_postdec> '(' <t_oparen> '['"
+                "<array_lit> [0-9] <digit> '.'"
+                '<t_float_literal> 0x <t_hex_literal> 0b'
+                '<t_bin_literal> 0o <t_oct_literal>'
                 '<t_dec_literal> <t_int_literal>'
                 "<t_num_lit> 'true' 'false' <t_bool>"
                 '<t_bool_lit> \'null\' <t_null> "\'"'
@@ -2461,31 +2474,34 @@ class PrincessParser(Parser):
             with self._option():
                 self._expr_size_of_()
             with self._option():
+                self._expr_align_of_()
+            with self._option():
                 self._expr_if_()
             with self._option():
                 self._expr_2_()
             self._error(
                 'expecting one of: '
                 "'do' <expr_do> 'size_of' <expr_size_of>"
-                "<expr_1> '..=' <expr_2>"
-                "<expr_range_incl> '..' <expr_range>"
-                '<expr_or> <expr_3> <expr_and> <expr_5>'
-                '<expr_cmp_start> <expr_padd> <expr_psub>'
-                '<expr_add> <expr_sub> <expr_6>'
-                '<expr_mul> <expr_div> <expr_mod>'
-                '<expr_7> <expr_shr> <expr_shl>'
-                "<expr_band> <expr_bor> <expr_xor> '{'"
-                "<struct_lit> <expr_9> <expr_cast> '++'"
-                "<expr_preinc> '--' <expr_predec> '-'"
-                "<expr_uminus> '@' <expr_deref> '*'"
-                "<expr_ptr> '~' <expr_invert> 'not'"
-                "<expr_not> 'type' <expr_type> <expr_10>"
-                '<expr_call> <expr_array_index>'
-                '<expr_member_access> <expr_autocast>'
-                "<expr_postinc> <expr_postdec> '('"
-                "<t_oparen> '[' <array_lit> [0-9] <digit>"
-                "'.' <t_float_literal> 0x <t_hex_literal>"
-                '0b <t_bin_literal> 0o <t_oct_literal>'
+                "'align_of' <expr_align_of> <expr_1>"
+                "'..=' <expr_2> <expr_range_incl> '..'"
+                '<expr_range> <expr_or> <expr_3>'
+                '<expr_and> <expr_5> <expr_cmp_start>'
+                '<expr_padd> <expr_psub> <expr_add>'
+                '<expr_sub> <expr_6> <expr_mul>'
+                '<expr_div> <expr_mod> <expr_7>'
+                '<expr_shr> <expr_shl> <expr_band>'
+                "<expr_bor> <expr_xor> '{' <struct_lit>"
+                "<expr_9> <expr_cast> '++' <expr_preinc>"
+                "'--' <expr_predec> '-' <expr_uminus> '@'"
+                "<expr_deref> '*' <expr_ptr> '~'"
+                "<expr_invert> 'not' <expr_not> 'type'"
+                '<expr_type> <expr_10> <expr_call>'
+                '<expr_array_index> <expr_member_access>'
+                '<expr_autocast> <expr_postinc>'
+                "<expr_postdec> '(' <t_oparen> '['"
+                "<array_lit> [0-9] <digit> '.'"
+                '<t_float_literal> 0x <t_hex_literal> 0b'
+                '<t_bin_literal> 0o <t_oct_literal>'
                 '<t_dec_literal> <t_int_literal>'
                 "<t_num_lit> 'true' 'false' <t_bool>"
                 '<t_bool_lit> \'null\' <t_null> "\'"'
@@ -2505,16 +2521,17 @@ class PrincessParser(Parser):
             self._error(
                 'expecting one of: '
                 "'{' <struct_lit_typed> 'do' <expr_do>"
-                "'size_of' <expr_size_of> <expr_1>"
-                '<expr_if> <expr_2> <expr_or> <expr_3>'
-                '<expr_and> <expr_5> <expr_cmp_start>'
-                '<expr_padd> <expr_psub> <expr_add>'
-                '<expr_sub> <expr_6> <expr_mul>'
-                '<expr_div> <expr_mod> <expr_7>'
-                '<expr_shr> <expr_shl> <expr_band>'
-                '<expr_bor> <expr_xor> <struct_lit>'
-                "<expr_9> <expr_cast> '++' <expr_preinc>"
-                "'--' <expr_predec> '-' <expr_uminus> '@'"
+                "'size_of' <expr_size_of> 'align_of'"
+                '<expr_align_of> <expr_1> <expr_if>'
+                '<expr_2> <expr_or> <expr_3> <expr_and>'
+                '<expr_5> <expr_cmp_start> <expr_padd>'
+                '<expr_psub> <expr_add> <expr_sub>'
+                '<expr_6> <expr_mul> <expr_div>'
+                '<expr_mod> <expr_7> <expr_shr>'
+                '<expr_shl> <expr_band> <expr_bor>'
+                '<expr_xor> <struct_lit> <expr_9>'
+                "<expr_cast> '++' <expr_preinc> '--'"
+                "<expr_predec> '-' <expr_uminus> '@'"
                 "<expr_deref> '*' <expr_ptr> '~'"
                 "<expr_invert> 'not' <expr_not> 'type'"
                 '<expr_type> <expr_10> <expr_call>'
@@ -3265,7 +3282,8 @@ class PrincessParser(Parser):
                 "<stmt_return> 'continue' <stmt_continue>"
                 "'break' <stmt_break> 'go_to' <stmt_goto>"
                 "<stmt> <statement_noterm> 'do' <expr_do>"
-                "'size_of' <expr_size_of> <expr_1>"
+                "'size_of' <expr_size_of> 'align_of'"
+                '<expr_align_of> <expr_1>'
                 '<expr_assign_op> <expr_2>'
                 '<expr_assign_lhs> <expr_assign>'
                 "<expr_if> '..=' <expr_range_incl> '..'"
@@ -3684,6 +3702,9 @@ class PrincessSemantics(object):
         return ast
 
     def expr_size_of(self, ast):  # noqa
+        return ast
+
+    def expr_align_of(self, ast):  # noqa
         return ast
 
     def expr_range(self, ast):  # noqa

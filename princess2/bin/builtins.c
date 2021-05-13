@@ -59,13 +59,13 @@ DLL_EXPORT void builtins_p_main(Array args) {
     _a69ecad8_bool_ident = parser_make_identifier(((Array){1, (Array[1]){ ((Array){5, "bool"}) }}));
     builtins_bool_ = typechecking_make_type(typechecking_TypeKind_BOOL, _a69ecad8_bool_ident);
     ((*builtins_bool_).size) = (sizeof(bool));
-    ((*builtins_bool_).align) = ((*builtins_bool_).size);
+    ((*builtins_bool_).align) = (alignof(bool));
     ((*builtins_bool_).unsig) = true;
     scope_create_type(builtins_builtins, _a69ecad8_bool_ident, parser_ShareMarker_NONE, builtins_bool_);
     _a69ecad8_str_ident = parser_make_identifier(((Array){1, (Array[1]){ ((Array){7, "string"}) }}));
     builtins_string_ = typechecking_make_type(typechecking_TypeKind_ARRAY, _a69ecad8_str_ident);
     ((*builtins_string_).size) = (sizeof(string));
-    ((*builtins_string_).align) = (sizeof(void *));
+    ((*builtins_string_).align) = (alignof(string));
     ((*builtins_string_).tpe) = builtins_char_;
     scope_create_type(builtins_builtins, _a69ecad8_str_ident, parser_ShareMarker_NONE, builtins_string_);
     builtins_float_ = _a69ecad8_create_float_type(((Array){6, "float"}), (sizeof(float)));

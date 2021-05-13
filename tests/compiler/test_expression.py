@@ -38,6 +38,13 @@ def test_size_of():
     assert eval_expr("size_of 1 + 1")           == ctypes.sizeof(ctypes.c_int)
     assert eval_expr("size_of (1)")             == ctypes.sizeof(ctypes.c_int)
 
+def test_align_of():
+    assert eval_expr("align_of int")             == ctypes.alignment(ctypes.c_int)
+    assert eval_expr("align_of *int")            == ctypes.alignment(ctypes.POINTER(ctypes.c_int))
+    assert eval_expr("align_of type struct { }") == 1
+    assert eval_expr("align_of 1 + 1")           == ctypes.alignment(ctypes.c_int)
+    assert eval_expr("align_of (1)")             == ctypes.alignment(ctypes.c_int)
+
 @skip("Array type")
 def test_size_of_complex():
     class T(ctypes.Structure):

@@ -69,6 +69,10 @@ bool test_parser_print_ast;
     res = _0b8ef353_parse(str);
     str = ((Array){18, "size_of type *Foo"});
     res = _0b8ef353_parse(str);
+    str = ((Array){13, "align_of foo"});
+    res = _0b8ef353_parse(str);
+    str = ((Array){19, "align_of type *Foo"});
+    res = _0b8ef353_parse(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
  void _0b8ef353_test_vardecl() {

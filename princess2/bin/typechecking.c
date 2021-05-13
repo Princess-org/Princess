@@ -78,7 +78,7 @@ DLL_EXPORT typechecking_Type * typechecking_pointer(typechecking_Type *tpe) {
     ((*t).kind) = typechecking_TypeKind_POINTER;
     ((*t).tpe) = tpe;
     ((*t).size) = (sizeof(void *));
-    ((*t).align) = ((*t).size);
+    ((*t).align) = (alignof(void *));
     return t;
 };
 DLL_EXPORT typechecking_Type * typechecking_array(typechecking_Type *tpe) {
@@ -86,7 +86,7 @@ DLL_EXPORT typechecking_Type * typechecking_array(typechecking_Type *tpe) {
     ((*t).kind) = typechecking_TypeKind_ARRAY;
     ((*t).tpe) = tpe;
     ((*t).size) = (sizeof(string));
-    ((*t).align) = ((*t).size);
+    ((*t).align) = (alignof(string));
 };
  string _3700c937_append_module(string name, string module) {
     buffer_Buffer buf = buffer_make_buffer();
@@ -494,7 +494,7 @@ DLL_EXPORT void typechecking_typecheck(parser_Node *node, scope_Scope *scope, st
         ((*tpe).kind) = typechecking_TypeKind_ARRAY;
         ((*tpe).tpe) = array_tpe;
         ((*tpe).size) = (sizeof(string));
-        ((*tpe).align) = (sizeof(void *));
+        ((*tpe).align) = (alignof(string));
         return tpe;
     }
     else if ((((*node).kind) == parser_NodeKind_ARRAY_STATIC_T)) {
@@ -940,7 +940,7 @@ typechecking_Type *_3700c937_int_literal;
     ;
     typechecking_Type *tpe = typechecking_make_type(typechecking_TypeKind_FUNCTION, name);
     ((*tpe).size) = (sizeof(void *));
-    ((*tpe).align) = ((*tpe).size);
+    ((*tpe).align) = (alignof(void *));
     ((*tpe).parameter_t) = parameter_t;
     ((*tpe).return_t) = return_t;
     if (_3700c937_current_function(state)) {
@@ -1260,6 +1260,28 @@ typechecking_Type *_3700c937_int_literal;
     };
     ((*node).tpe) = builtins_size_t_;
 };
+ void _3700c937_walk_AlignOf(parser_Node *node, _3700c937_State *state) {
+    parser_Node *expr = (((*node).value).expr);
+    if ((((*expr).kind) == parser_NodeKind_IDENTIFIER)) {
+        scope_Value *value = scope_get(((*state).scope), expr);
+        if ((!value)) {
+            typechecking_errorn(expr, ((Array){21, "Unknown identifier \""}));
+            fprintf(stderr, (((Array){5, "%s%s"}).value), (parser_identifier_to_str(expr).value), (((Array){3, "\"\x0a"""}).value));
+            return ;
+        }  ;
+        if ((((*value).modifier) == parser_VarDecl_TYPE)) {
+            ((*expr).tpe) = ((typechecking_Type *)((*value).value));
+        }  else {
+            ((*expr).tpe) = ((*value).tpe);
+        };
+    }  else {
+        ((*expr).tpe) = _3700c937_type_lookup(expr, state);
+        if ((!((*expr).tpe))) {
+            _3700c937_walk(expr, state);
+        }  ;
+    };
+    ((*node).tpe) = builtins_size_t_;
+};
  void _3700c937_walk_ComparisionOp(parser_Node *node, _3700c937_State *state) {
     parser_Node *left = ((((*node).value).bin_op).left);
     parser_Node *right = ((((*node).value).bin_op).right);
@@ -1315,6 +1337,9 @@ typechecking_Type *_3700c937_int_literal;
         break;
         case parser_NodeKind_SIZE_OF:
         _3700c937_walk_SizeOf(node, state);
+        break;
+        case parser_NodeKind_ALIGN_OF:
+        _3700c937_walk_AlignOf(node, state);
         break;
         case parser_NodeKind_LOOP:
         _3700c937_walk_Loop(node, state);
@@ -1449,7 +1474,7 @@ DLL_EXPORT void typechecking_p_main(Array args) {
     _3700c937_int_literal = typechecking_make_type(typechecking_TypeKind_INT_LITERAL, parser_make_identifier(((Array){1, (Array[1]){ ((Array){12, "int_literal"}) }})));
     ((*_3700c937_int_literal).unsig) = false;
     ((*_3700c937_int_literal).size) = (sizeof(int));
-    ((*_3700c937_int_literal).align) = ((*_3700c937_int_literal).size);
+    ((*_3700c937_int_literal).align) = (alignof(int));
 };
 
 

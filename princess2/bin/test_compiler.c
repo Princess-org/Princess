@@ -157,6 +157,12 @@ bool test_compiler_print_ll;
     string res = _6dcc03b3_compile(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
+ void _6dcc03b3_test_align_of() {
+    printf((((Array){3, "%s"}).value), (((Array){19, ">Test align_of... "}).value));
+    Array str = ((Array){229, "\x0a""        type T = struct {\x0a""            a: int\x0a""            b: int\x0a""        }\x0a""\x0a""        let a = align_of T\x0a""        let b = align_of int\x0a""        let c = align_of type *\x0a""        let d = align_of a\x0a""        let e = align_of (a + b)\x0a""    "});
+    string res = _6dcc03b3_compile(str);
+    printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
+};
  void _6dcc03b3_test_array_lit() {
     printf((((Array){3, "%s"}).value), (((Array){24, ">Test array literal... "}).value));
     Array str = ((Array){35, "\x0a""        let a = [1, 2, 3, 4]\x0a""    "});
@@ -208,6 +214,7 @@ DLL_EXPORT void test_compiler_test() {
     _6dcc03b3_test_array_subscript();
     _6dcc03b3_test_struct_lit();
     _6dcc03b3_test_size_of();
+    _6dcc03b3_test_align_of();
     _6dcc03b3_test_compare();
     _6dcc03b3_test_pointer_arithmetic();
     _6dcc03b3_test_assign_eq();

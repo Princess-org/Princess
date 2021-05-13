@@ -261,3 +261,11 @@ def test_size_of():
     assert parse("size_of 1 + 1")            == Program(SizeOf(Add(left = Integer(1), right = Integer(1))))
     assert parse("size_of (1)")              == Program(SizeOf(Integer(1)))
     assert parse("size_of array[1]")         == Program(SizeOf(ArrayIndex(left = Identifier("array"), right = Integer(1))))
+
+def test_align_of():
+    assert parse("align_of int")              == Program(AlignOf(Identifier("int")))
+    assert parse("align_of *int")             == Program(AlignOf(Ptr(right = Identifier("int"))))
+    assert parse("align_of type struct { }")  == Program(AlignOf(Struct(body = StructBody(None))))
+    assert parse("align_of 1 + 1")            == Program(AlignOf(Add(left = Integer(1), right = Integer(1))))
+    assert parse("align_of (1)")              == Program(AlignOf(Integer(1)))
+    assert parse("align_of array[1]")         == Program(AlignOf(ArrayIndex(left = Identifier("array"), right = Integer(1))))
