@@ -732,6 +732,16 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
     (value.tpe) = builtins_size_t_;
     return value;
 };
+ compiler_Value _87f75ce3_walk_AlignOf(parser_Node *node, _87f75ce3_State *state) {
+    typechecking_Type *tpe = ((*(((*node).value).expr)).tpe);
+    if ((!tpe)) {
+        typechecking_errorn(node, ((Array){20, "Invalid expression\x0a"""}));
+        return _87f75ce3_NO_VALUE;
+    }  ;
+    compiler_Value value = _87f75ce3_make_int_value(((*tpe).align));
+    (value.tpe) = builtins_size_t_;
+    return value;
+};
  compiler_Value _87f75ce3_compare(parser_Node *node, compiler_Value left, compiler_Value right, _87f75ce3_State *state) {
     typechecking_Type *tpe = NULL;
     if (typechecking_is_pointer((left.tpe))) {
@@ -913,6 +923,9 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
         break;
         case parser_NodeKind_SIZE_OF:
         return _87f75ce3_walk_SizeOf(node, state);
+        break;
+        case parser_NodeKind_ALIGN_OF:
+        return _87f75ce3_walk_AlignOf(node, state);
         break;
         case parser_NodeKind_CAST:
         return _87f75ce3_walk_Cast(node, state);
@@ -1309,7 +1322,7 @@ vector_Vector *_87f75ce3_imported_modules;
         ((*arg).tpe) = typechecking_array(builtins_string_);
         vector_push(args, arg);
         int name_size = vector_length((((*name).value).body));
-        Array array = ((Array){(name_size + ((int)1)), malloc((((int64)(sizeof(string))) * ((int64)(name_size + ((int)1)))))});
+        Array array = ((Array){(name_size + 1), malloc((((int64)(sizeof(string))) * ((int64)(name_size + 1))))});
         for (int j = 0;(j < name_size);(j += 1)) {
             (((string *)array.value)[j]) = (*((string *)vector_get((((*name).value).body), j)));
         }

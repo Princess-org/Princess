@@ -96,7 +96,7 @@ DLL_EXPORT scope_Value * scope_get_function(scope_Scope *scope, parser_Node *id,
                 toolchain_Module *module = ((toolchain_Module *)vector_get(((*scope).imports), i));
                 scope_Scope *scope2 = ((*module).scope);
                 scope_Value *value2 = _31a1fd14_find_function(map_get(((*scope2).fields), name), parameter_t, (&score));
-                if ((((bool)value2) && ((bool)(((int)((*value2).share)) & ((int)parser_ShareMarker_EXPORT))))) {
+                if ((((bool)value2) && ((bool)(((int)((*value2).share)) & parser_ShareMarker_EXPORT)))) {
                     value = value2;
                     int *i = malloc((sizeof(int)));
                     (*i) = score;
@@ -179,7 +179,7 @@ DLL_EXPORT scope_Value * scope_get(scope_Scope *scope, parser_Node *id) {
                 toolchain_Module *module = ((toolchain_Module *)vector_get(((*scope).imports), i));
                 scope_Scope *scope2 = ((*module).scope);
                 scope_Value *value2 = _31a1fd14_unwrap_function_without_parameters(map_get(((*scope2).fields), name));
-                if ((((bool)value2) && ((bool)(((int)((*value2).share)) & ((int)parser_ShareMarker_EXPORT))))) {
+                if ((((bool)value2) && ((bool)(((int)((*value2).share)) & parser_ShareMarker_EXPORT)))) {
                     if (value) {
                         typechecking_errorn(id, ((Array){21, "Ambiguous reference\x0a"""}));
                         return NULL;
@@ -261,7 +261,7 @@ DLL_EXPORT scope_Scope * scope_enter_namespace(scope_Scope *scope, parser_Node *
  string _31a1fd14_last_path_element(parser_Node *node) {
     assert((((*node).kind) == parser_NodeKind_IDENTIFIER));
     int length = vector_length((((*node).value).body));
-    return (*((string *)vector_get((((*node).value).body), (length - ((int)1)))));
+    return (*((string *)vector_get((((*node).value).body), (length - 1))));
 };
 DLL_EXPORT void scope_create_function(scope_Scope *scope, parser_Node *node, parser_ShareMarker share, typechecking_Type *tpe, bool forward_declare) {
     scope = _31a1fd14_create_path(scope, node);
@@ -419,7 +419,7 @@ DLL_EXPORT void scope_insert_module(scope_Scope *scope, parser_Node *alias, tool
     Array values = map_keys(((*((*module).scope)).fields));
     for (int i = 0;(i < (values.size));(i += 1)) {
         scope_Value *value = ((scope_Value *)map_get(((*((*module).scope)).fields), (((string *)values.value)[i])));
-        if ((((int)((*value).share)) & ((int)parser_ShareMarker_EXPORT))) {
+        if ((((int)((*value).share)) & parser_ShareMarker_EXPORT)) {
             map_put(((*ns).fields), (((string *)values.value)[i]), value);
         }  ;
     }

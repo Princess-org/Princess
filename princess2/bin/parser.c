@@ -8,7 +8,7 @@
 #include "vector.c"
 #include "util.c"
 #include "buffer.c"
-typedef enum parser_NodeKind {parser_NodeKind_PROGRAM = 0, parser_NodeKind_INTEGER = 1, parser_NodeKind_CHAR = 2, parser_NodeKind_STRING = 3, parser_NodeKind_FLOAT = 4, parser_NodeKind_BOOLEAN = 5, parser_NodeKind_IDENTIFIER = 6, parser_NodeKind_NULL = 7, parser_NodeKind_RANGE = 8, parser_NodeKind_RANGE_INC = 9, parser_NodeKind_ARRAY_LIT = 10, parser_NodeKind_STRUCT_LIT = 11, parser_NodeKind_MEMBER_ACCESS = 12, parser_NodeKind_CAST = 13, parser_NodeKind_SIZE_OF = 14, parser_NodeKind_ADD = 15, parser_NodeKind_SUB = 16, parser_NodeKind_MUL = 17, parser_NodeKind_DIV = 18, parser_NodeKind_MOD = 19, parser_NodeKind_AND = 20, parser_NodeKind_OR = 21, parser_NodeKind_UADD = 22, parser_NodeKind_USUB = 23, parser_NodeKind_PTR = 24, parser_NodeKind_DEREF = 25, parser_NodeKind_BNOT = 26, parser_NodeKind_NOT = 27, parser_NodeKind_BAND = 28, parser_NodeKind_BOR = 29, parser_NodeKind_BXOR = 30, parser_NodeKind_SHL = 31, parser_NodeKind_SHR = 32, parser_NodeKind_PADD = 33, parser_NodeKind_PSUB = 34, parser_NodeKind_EQ = 35, parser_NodeKind_NEQ = 36, parser_NodeKind_GT = 37, parser_NodeKind_LT = 38, parser_NodeKind_GEQ = 39, parser_NodeKind_LEQ = 40, parser_NodeKind_PADD_EQ = 41, parser_NodeKind_PSUB_EQ = 42, parser_NodeKind_ADD_EQ = 43, parser_NodeKind_SUB_EQ = 44, parser_NodeKind_MUL_EQ = 45, parser_NodeKind_DIV_EQ = 46, parser_NodeKind_MOD_EQ = 47, parser_NodeKind_AND_EQ = 48, parser_NodeKind_OR_EQ = 49, parser_NodeKind_XOR_EQ = 50, parser_NodeKind_SHL_EQ = 51, parser_NodeKind_SHR_EQ = 52, parser_NodeKind_IMPORT = 53, parser_NodeKind_IMPORT_MODULE = 54, parser_NodeKind_ASSIGN = 55, parser_NodeKind_DEF = 56, parser_NodeKind_PARAMETER = 57, parser_NodeKind_SWITCH = 58, parser_NodeKind_CASE = 59, parser_NodeKind_IF = 60, parser_NodeKind_ELSE_IF = 61, parser_NodeKind_ELSE = 62, parser_NodeKind_LOOP = 63, parser_NodeKind_WHILE = 64, parser_NodeKind_FOR = 65, parser_NodeKind_FOR_ID_DECL = 66, parser_NodeKind_BREAK = 67, parser_NodeKind_CONTINUE = 68, parser_NodeKind_RETURN = 69, parser_NodeKind_ARRAY_SUBSCRIPT = 70, parser_NodeKind_FUNC_CALL = 71, parser_NodeKind_TYPE_DECL = 72, parser_NodeKind_VAR_DECL = 73, parser_NodeKind_ID_DECL = 74, parser_NodeKind_ID_ASSIGN = 75, parser_NodeKind_NAMED_ARG = 76, parser_NodeKind_ID_DECL_STRUCT = 77, parser_NodeKind_ID_DECL_ENUM = 78, parser_NodeKind_ENUM_T = 79, parser_NodeKind_STRUCT_T = 80, parser_NodeKind_UNION_T = 81, parser_NodeKind_FUNCTION_T = 82, parser_NodeKind_UNSIGNED_T = 83, parser_NodeKind_WORD_T = 84, parser_NodeKind_PTR_T = 85, parser_NodeKind_REF_T = 86, parser_NodeKind_ARRAY_T = 87, parser_NodeKind_ARRAY_STATIC_T = 88} parser_NodeKind;
+typedef enum parser_NodeKind {parser_NodeKind_PROGRAM = 0, parser_NodeKind_INTEGER = 1, parser_NodeKind_CHAR = 2, parser_NodeKind_STRING = 3, parser_NodeKind_FLOAT = 4, parser_NodeKind_BOOLEAN = 5, parser_NodeKind_IDENTIFIER = 6, parser_NodeKind_NULL = 7, parser_NodeKind_RANGE = 8, parser_NodeKind_RANGE_INC = 9, parser_NodeKind_ARRAY_LIT = 10, parser_NodeKind_STRUCT_LIT = 11, parser_NodeKind_MEMBER_ACCESS = 12, parser_NodeKind_CAST = 13, parser_NodeKind_SIZE_OF = 14, parser_NodeKind_ALIGN_OF = 15, parser_NodeKind_ADD = 16, parser_NodeKind_SUB = 17, parser_NodeKind_MUL = 18, parser_NodeKind_DIV = 19, parser_NodeKind_MOD = 20, parser_NodeKind_AND = 21, parser_NodeKind_OR = 22, parser_NodeKind_UADD = 23, parser_NodeKind_USUB = 24, parser_NodeKind_PTR = 25, parser_NodeKind_DEREF = 26, parser_NodeKind_BNOT = 27, parser_NodeKind_NOT = 28, parser_NodeKind_BAND = 29, parser_NodeKind_BOR = 30, parser_NodeKind_BXOR = 31, parser_NodeKind_SHL = 32, parser_NodeKind_SHR = 33, parser_NodeKind_PADD = 34, parser_NodeKind_PSUB = 35, parser_NodeKind_EQ = 36, parser_NodeKind_NEQ = 37, parser_NodeKind_GT = 38, parser_NodeKind_LT = 39, parser_NodeKind_GEQ = 40, parser_NodeKind_LEQ = 41, parser_NodeKind_PADD_EQ = 42, parser_NodeKind_PSUB_EQ = 43, parser_NodeKind_ADD_EQ = 44, parser_NodeKind_SUB_EQ = 45, parser_NodeKind_MUL_EQ = 46, parser_NodeKind_DIV_EQ = 47, parser_NodeKind_MOD_EQ = 48, parser_NodeKind_AND_EQ = 49, parser_NodeKind_OR_EQ = 50, parser_NodeKind_XOR_EQ = 51, parser_NodeKind_SHL_EQ = 52, parser_NodeKind_SHR_EQ = 53, parser_NodeKind_IMPORT = 54, parser_NodeKind_IMPORT_MODULE = 55, parser_NodeKind_ASSIGN = 56, parser_NodeKind_DEF = 57, parser_NodeKind_PARAMETER = 58, parser_NodeKind_SWITCH = 59, parser_NodeKind_CASE = 60, parser_NodeKind_IF = 61, parser_NodeKind_ELSE_IF = 62, parser_NodeKind_ELSE = 63, parser_NodeKind_LOOP = 64, parser_NodeKind_WHILE = 65, parser_NodeKind_FOR = 66, parser_NodeKind_FOR_ID_DECL = 67, parser_NodeKind_BREAK = 68, parser_NodeKind_CONTINUE = 69, parser_NodeKind_RETURN = 70, parser_NodeKind_ARRAY_SUBSCRIPT = 71, parser_NodeKind_FUNC_CALL = 72, parser_NodeKind_TYPE_DECL = 73, parser_NodeKind_VAR_DECL = 74, parser_NodeKind_ID_DECL = 75, parser_NodeKind_ID_ASSIGN = 76, parser_NodeKind_NAMED_ARG = 77, parser_NodeKind_ID_DECL_STRUCT = 78, parser_NodeKind_ID_DECL_ENUM = 79, parser_NodeKind_ENUM_T = 80, parser_NodeKind_STRUCT_T = 81, parser_NodeKind_UNION_T = 82, parser_NodeKind_FUNCTION_T = 83, parser_NodeKind_UNSIGNED_T = 84, parser_NodeKind_WORD_T = 85, parser_NodeKind_PTR_T = 86, parser_NodeKind_REF_T = 87, parser_NodeKind_ARRAY_T = 88, parser_NodeKind_ARRAY_STATIC_T = 89} parser_NodeKind;
 typedef enum parser_ShareMarker {parser_ShareMarker_NONE = 0, parser_ShareMarker_EXPORT = 1, parser_ShareMarker_IMPORT = 2, parser_ShareMarker_BOTH = 3} parser_ShareMarker;
 typedef enum parser_VarDecl {parser_VarDecl_VAR = 0, parser_VarDecl_LET = 1, parser_VarDecl_CONST = 2, parser_VarDecl_TYPE = 3} parser_VarDecl;
 typedef struct parser_Node parser_Node;
@@ -71,7 +71,7 @@ DLL_EXPORT string parser_identifier_to_str(parser_Node *node) {
     int len = vector_length((((*node).value).body));
     for (int i = 0;(i < len);(i += 1)) {
         buffer_append_str((&buf), (*((string *)vector_get((((*node).value).body), i))));
-        if ((i < (len - ((int)1)))) {
+        if ((i < (len - 1))) {
             buffer_append_str((&buf), ((Array){3, "::"}));
         }  ;
     }
@@ -983,12 +983,15 @@ DLL_EXPORT string parser_identifier_to_str(parser_Node *node) {
     } ;
     return node;
 };
- parser_Node * _3643b863_parse_size_of(_3643b863_ParseState *parse_state) {
+ parser_Node * _3643b863_parse_size_of_align_of(_3643b863_ParseState *parse_state) {
     lexer_Token token = _3643b863_peek(parse_state);
     if (_3643b863_next_token(parse_state, lexer_TokenType_K_SIZE_OF)) {
         _3643b863_skip_newline(parse_state);
-        return _3643b863_make_un_op(parse_state, token, parser_NodeKind_SIZE_OF, _3643b863_parse_size_of(parse_state));
-    }  else {
+        return _3643b863_make_un_op(parse_state, token, parser_NodeKind_SIZE_OF, _3643b863_parse_size_of_align_of(parse_state));
+    } else if (_3643b863_next_token(parse_state, lexer_TokenType_K_ALIGN_OF)) {
+        _3643b863_skip_newline(parse_state);
+        return _3643b863_make_un_op(parse_state, token, parser_NodeKind_ALIGN_OF, _3643b863_parse_size_of_align_of(parse_state));
+    } else {
         return _3643b863_parse_assign_and_op(parse_state);
     };
 };
@@ -996,7 +999,7 @@ DLL_EXPORT string parser_identifier_to_str(parser_Node *node) {
     lexer_Token token = _3643b863_peek(parse_state);
     int line = (token.line);
     int column = (token.column);
-    parser_Node *node = _3643b863_parse_size_of(parse_state);
+    parser_Node *node = _3643b863_parse_size_of_align_of(parse_state);
     vector_Vector *left = vector_make();
     vector_Vector *right = vector_make();
     vector_push(left, node);
@@ -1004,7 +1007,7 @@ DLL_EXPORT string parser_identifier_to_str(parser_Node *node) {
     while (((token.tpe) == lexer_TokenType_COMMA)) {
         _3643b863_pop(parse_state);
         _3643b863_skip_newline(parse_state);
-        node = _3643b863_parse_size_of(parse_state);
+        node = _3643b863_parse_size_of_align_of(parse_state);
         vector_push(left, node);
         token = _3643b863_peek(parse_state);
     }
@@ -1046,7 +1049,7 @@ DLL_EXPORT string parser_identifier_to_str(parser_Node *node) {
     return node;
 };
  parser_Node * _3643b863_parse_expression_no_assign(_3643b863_ParseState *parse_state) {
-    return _3643b863_parse_size_of(parse_state);
+    return _3643b863_parse_size_of_align_of(parse_state);
 };
  parser_Node * _3643b863_expect_expression_no_assign(_3643b863_ParseState *parse_state) {
     parser_Node *node = _3643b863_parse_expression_no_assign(parse_state);
