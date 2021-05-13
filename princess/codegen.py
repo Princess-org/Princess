@@ -148,6 +148,12 @@ class CCodeGen(CodeGenerator):
             if types.is_type(fields["value"]):
                 fields.update(value = fields["value"].to_typestring(""))
         template = "(sizeof({value}))"
+
+    class AlignOf(Renderer):
+        def _render_fields(self, fields):
+            if types.is_type(fields["value"]):
+                fields.update(value = fields["value"].to_typestring(""))
+        template = "(alignof({value}))"
     
     class Cast(Renderer):
         template = "(({type}){left})"

@@ -350,6 +350,10 @@ class SizeOf(Expression):
     pass
 
 
+class AlignOf(Expression):
+    pass
+
+
 class Range(Expression):
     from_ = None
     to = None

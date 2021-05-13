@@ -561,6 +561,18 @@ class Compiler(AstWalker):
         node.value = tpe
         return node
         
+    def walk_AlignOf(self, node: model.AlignOf):
+        self.walk_children(node)
+        
+        if isinstance(node.ast, model.Type):
+            tpe = self.scope.type_lookup(node.ast)
+        else:
+            tpe = node.ast
+
+        node.type = types.size_t
+        node.value = tpe
+        return node
+        
 
     def walk_BinaryOp(self, node: model.BinaryOp):
         self.walk_children(node)
