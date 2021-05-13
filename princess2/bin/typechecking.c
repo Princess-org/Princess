@@ -22,7 +22,7 @@ DLL_EXPORT void typechecking_errorn(parser_Node *node, string msg);
     if ((length == 0)) {
         return NULL;
     }  else {
-        return ((typechecking_Type *)vector_get(((*state).function_stack), (length - ((int)1))));
+        return ((typechecking_Type *)vector_get(((*state).function_stack), (length - 1)));
     };
 };
  void _3700c937_push_function(_3700c937_State *state, typechecking_Type *tpe) {

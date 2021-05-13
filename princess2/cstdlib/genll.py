@@ -1,5 +1,6 @@
 import re
 import subprocess, json, ctypes, math
+from types import ClassMethodDescriptorType
 import tatsu
 from tatsu.walkers import NodeWalker
 from pathlib import Path
@@ -29,6 +30,7 @@ PARSER = tatsu.compile(GRAMMAR, asmodel = True)
 
 GLOBALS = {}
 TAGGED = {}
+STRUCT_IDS = {}
 
 # Types
 
@@ -36,6 +38,11 @@ class Type:
     def __init__(self, size, align = None):
         self.size = size
         self.align = align or size
+
+class IncompleteType(Type):
+    def __init__(self, name: str):
+        self.name = name
+        super().__init__(0)
 
 class Float(Type):
     def __str__(self) -> str:
@@ -87,9 +94,9 @@ class Struct(Type):
         offset = 0
         align = 1
         for field in self.fields:
-            offset = math.ceil(offset / field.align()) * field.align()
-            align = math.lcm(align, field.align())
-            offset += field.size()
+            offset = math.ceil(offset / field.align) * field.align
+            align = math.lcm(align, field.align)
+            offset += field.size
 
         offset = (math.ceil(offset / align) * align)
         super().__init__(offset, align)
@@ -109,7 +116,7 @@ class VarDecl:
         self.name = name
         self.type = type
 
-class TypeDefDecl:
+class TypedefDecl:
     def __init__(self, name: str, type: Type):
         self.name = name
         self.type = type
@@ -178,6 +185,16 @@ class Walker(NodeWalker):
     def walk_Array(self, node):
         return Array(self.walk(node.type), int(node.size) if node.size else None)
 
+    def walk_Identifier(self, node):
+        return GLOBALS[node.ast]
+
+    def walk_Tagged(self, node):
+        name = node.ast[1].ast
+        if name in TAGGED:
+            return TAGGED[name]
+        else: 
+            return IncompleteType(name)
+
 WALKER = Walker()
 
 def walk_VarDecl(node):
@@ -185,15 +202,43 @@ def walk_VarDecl(node):
 
 def walk_TypedefDecl(node):
     name = node["name"]
+    tpe = PARSER.parse(node["type"]["qualType"], start = "type_1")
+    GLOBALS[name] = WALKER.walk(tpe)
+
+def walk_RecordDeclImpl(node):
+    fields = []
+    for field in node["inner"]:
+        if field["kind"] == "FieldDecl":
+            tpe = PARSER.parse(field["type"]["qualType"], start = "type_1")
+            fields.append(WALKER.walk(tpe))
+        elif field["kind"] == "RecordDecl":
+            record = walk_RecordDeclImpl(field)
+            fields.append(record)
+    
+    name = node["name"] if "name" in node else ""
+    if node["tagUsed"] == "struct":
+        record = Struct(name, fields)
+    else: record = Union(name, fields)
+
+    return record
+
+def walk_RecordDecl(node):
+    name = node["name"] if "name" in node else ""
+    record = walk_RecordDeclImpl(node)
+    if name:
+        TAGGED[name] = record
+    else:
+        STRUCT_IDS[node["id"]] = record
 
 def walk_FunctionDecl(node):
     name = node["name"]
     function = PARSER.parse(node["type"]["qualType"], start = "function_decl")
-    GLOBALS[name] = FunctionDecl(
-        name, 
-        WALKER.walk(function.ret), 
-        map(lambda x: WALKER.walk(x), function.args)
-    )
+    if not "storageClass" in node or node["storageClass"] != "static":
+        GLOBALS[name] = FunctionDecl(
+            name, 
+            WALKER.walk(function.ret), 
+            map(lambda x: WALKER.walk(x), function.args)
+        )
 
 def walk(node):
     if node["kind"] == "VarDecl": 
@@ -202,6 +247,8 @@ def walk(node):
         walk_TypedefDecl(node)
     elif node["kind"] == "FunctionDecl":
         walk_FunctionDecl(node)
+    elif node["kind"] == "RecordDecl":
+        walk_RecordDecl(node)
 
 def main():
     folder = Path(__file__).parent
@@ -219,7 +266,8 @@ def main():
     for top_level in data:
         walk(top_level)
 
-    print("\n".join(map(str, GLOBALS.values())))
+    #print("\n".join(map(str, GLOBALS.values())))
+    print("\n".join(map(str, TAGGED.values())))
 
 if __name__ == "__main__":
     main()
