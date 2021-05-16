@@ -1,7 +1,6 @@
-import re
 import subprocess, json, ctypes, math
-from types import ClassMethodDescriptorType
-import tatsu
+import tatsu, sys
+from tatsu.parsing import Parser
 from tatsu.walkers import NodeWalker
 from pathlib import Path
 
@@ -17,7 +16,7 @@ GRAMMAR = """\
     primitive::Primitive        = [sign] [modifier] specifier | [sign] modifier | sign;
     pointer::Pointer            = type: type '*' ['const'] ['volatile'] ['restrict'];
     array::Array                = type: type '[' size: [/\d+/] ']';
-    function::Function          = ret: type '(' '*' ')' '(' args: ','.{ type_1 | varargs } ')';
+    function::Function          = ret: type / \(\*\)/ '(' args: ','.{ type_1 | varargs } ')';
 
     void::Void = 'void';
     varargs::Varargs = '...';
@@ -29,6 +28,7 @@ GRAMMAR = """\
 PARSER = tatsu.compile(GRAMMAR, asmodel = True)
 
 GLOBALS = {}
+TYPEDEFS = {}
 TAGGED = {}
 STRUCT_IDS = {}
 
@@ -39,10 +39,27 @@ class Type:
         self.size = size
         self.align = align or size
 
+    def to_definition(self) -> str:
+        return str(self)
+
 class IncompleteType(Type):
     def __init__(self, name: str):
         self.name = name
-        super().__init__(0)
+    
+    @property
+    def size(self):
+        return TAGGED[self.name].size
+
+    @property
+    def align(self):
+        return TAGGED[self.name].align
+
+    def __str__(self) -> str:
+        return str(TAGGED[self.name])
+    
+    def to_definition(self) -> str:
+        return TAGGED[self.name].to_definition()
+        
 
 class Float(Type):
     def __str__(self) -> str:
@@ -64,6 +81,10 @@ class Function(Type):
         size = ctypes.sizeof(ctypes.c_void_p)
         super().__init__(size)
 
+    def __str__(self) -> str:
+        args = ', '.join(map(str, filter(lambda x: x != 'void', self.args)))
+        return f"{self.ret} ({args})*"
+
 class Pointer(Type):
     def __init__(self, tpe: Type):
         self.type = tpe
@@ -78,18 +99,36 @@ class Pointer(Type):
 class Array(Type):
     def __init__(self, tpe: Type, length = None):
         self.type = tpe
-        if length == 0:
+        self.length = length
+        if length:
+            size = length * tpe.size
+            align = tpe.align 
+        else:
             size = ctypes.sizeof(ctypes.c_void_p)
             align = size
-        else:
-            size = length * tpe.size
-            align = tpe.align
+            
         super().__init__(size, align)
 
-class Struct(Type):
+    def __str__(self) -> str:
+        if self.length:
+            return f"[{self.length} x {self.type}]"
+        else:
+            return f"{self.type}*"
+
+class Record(Type):
+    def __str__(self) -> str:
+        name = self.typename or self.name
+        if not name: return self.to_definition()
+        else: return "%" + name
+
+class Struct(Record):
     def __init__(self, name: str, fields: list[Type]):
-        self.name = name
+        if name:
+            self.name = "struct." + name
+        else: self.name = None
+
         self.fields = fields
+        self.typename = None
 
         offset = 0
         align = 1
@@ -101,13 +140,36 @@ class Struct(Type):
         offset = (math.ceil(offset / align) * align)
         super().__init__(offset, align)
 
-class Union(Type):
+    def to_definition(self) -> str:
+        if self.fields:
+            return "{" + ", ".join(map(str, self.fields)) + "}"
+        else: return "opaque"
+
+class Union(Record):
     def __init__(self, name: str, fields: list[Type]):
-        self.name = name
+        if name:
+            self.name = "union." + name
+        else: self.name = None
+
         self.fields = fields
-        size = max(map(lambda x: x.size(), fields))
-        align = max(map(lambda x: x.align(), fields))
+        self.typename = None
+
+        if len(fields) == 0:
+            size = align = 1
+        else:
+            size = max(map(lambda x: x.size, fields))
+            align = max(map(lambda x: x.align, fields))
         super().__init__(size, align)
+    
+    def to_definition(self) -> str:
+        if self.fields:
+            return "{[" + str(self.size) + " x i8]}"
+        return "opaque"
+
+class Enum(Type):
+    def __init__(self, name: str):
+        self.name = name
+        super().__init__(ctypes.sizeof(ctypes.c_int))
 
 #Global entities
 
@@ -116,13 +178,8 @@ class VarDecl:
         self.name = name
         self.type = type
 
-class TypedefDecl:
-    def __init__(self, name: str, type: Type):
-        self.name = name
-        self.type = type
-    
     def __str__(self) -> str:
-        return f"%{self.name} = type {self.type}"
+        return f"@{self.name} = external global {self.type}"
 
 class FunctionDecl:
     def __init__(self, name: str, ret: Type, args: list[Type]):
@@ -186,53 +243,85 @@ class Walker(NodeWalker):
         return Array(self.walk(node.type), int(node.size) if node.size else None)
 
     def walk_Identifier(self, node):
-        return GLOBALS[node.ast]
+        return TYPEDEFS[node.ast]
 
     def walk_Tagged(self, node):
         name = node.ast[1].ast
         if name in TAGGED:
             return TAGGED[name]
-        else: 
+        else:
             return IncompleteType(name)
+
+    def walk_Function(self, node):
+        return Function(map(self.walk, node.args), self.walk(node.ret))
 
 WALKER = Walker()
 
+def get_type(node) -> str:
+    tpe = node["type"]
+    if "desugaredQualType" in tpe:
+        return tpe["desugaredQualType"]
+    else: return tpe["qualType"]
+
 def walk_VarDecl(node):
-    pass
+    name = node["name"]
+    tpe = PARSER.parse(get_type(node), start = "type_1")
+    tpe = WALKER.walk(tpe)
+    GLOBALS[name] = VarDecl(name, tpe)
+
+def walk_EnumDecl(node):
+    name = node["name"] if "name" in node else ""
+    record = Enum(name)
+    if name:
+        TAGGED[name] = record
+    STRUCT_IDS[node["id"]] = record
 
 def walk_TypedefDecl(node):
     name = node["name"]
-    tpe = PARSER.parse(node["type"]["qualType"], start = "type_1")
-    GLOBALS[name] = WALKER.walk(tpe)
+    inner = node["inner"][0]
+    if "ownedTagDecl" in inner:
+        id = inner["ownedTagDecl"]["id"]
+        struct = STRUCT_IDS[id]
+        struct.typename = name
+        TYPEDEFS[name] = struct
+    else:
+        tpe = PARSER.parse(get_type(inner), start = "type_1")
+        TYPEDEFS[name] = WALKER.walk(tpe)
 
-def walk_RecordDeclImpl(node):
-    fields = []
-    for field in node["inner"]:
-        if field["kind"] == "FieldDecl":
-            tpe = PARSER.parse(field["type"]["qualType"], start = "type_1")
-            fields.append(WALKER.walk(tpe))
-        elif field["kind"] == "RecordDecl":
-            record = walk_RecordDeclImpl(field)
-            fields.append(record)
-    
+def walk_RecordDecl(node):
     name = node["name"] if "name" in node else ""
+
+    fields = []
+    last_record = None
+    if "inner" in node:
+        for field in node["inner"]:
+            if field["kind"] == "FieldDecl":
+                qual_type = get_type(field)
+                if ("anonymous struct at" in qual_type or 
+                    "anonymous union" in qual_type or 
+                    "anonymous at" in qual_type):
+                    tpe = last_record
+                else:
+                    tpe = PARSER.parse(qual_type, start = "type_1")
+                    tpe = WALKER.walk(tpe)
+                
+                fields.append(tpe)
+            elif field["kind"] == "RecordDecl":
+                last_record = walk_RecordDecl(field)
+    
     if node["tagUsed"] == "struct":
         record = Struct(name, fields)
     else: record = Union(name, fields)
 
-    return record
-
-def walk_RecordDecl(node):
-    name = node["name"] if "name" in node else ""
-    record = walk_RecordDeclImpl(node)
     if name:
         TAGGED[name] = record
-    else:
-        STRUCT_IDS[node["id"]] = record
+    STRUCT_IDS[node["id"]] = record
+
+    return record
 
 def walk_FunctionDecl(node):
     name = node["name"]
-    function = PARSER.parse(node["type"]["qualType"], start = "function_decl")
+    function = PARSER.parse(get_type(node), start = "function_decl")
     if not "storageClass" in node or node["storageClass"] != "static":
         GLOBALS[name] = FunctionDecl(
             name, 
@@ -249,6 +338,10 @@ def walk(node):
         walk_FunctionDecl(node)
     elif node["kind"] == "RecordDecl":
         walk_RecordDecl(node)
+    elif node["kind"] == "EnumDecl":
+        walk_EnumDecl(node)
+
+TAGGED["__va_list_tag"] = Struct("__va_list_tag", [])
 
 def main():
     folder = Path(__file__).parent
@@ -266,8 +359,19 @@ def main():
     for top_level in data:
         walk(top_level)
 
-    #print("\n".join(map(str, GLOBALS.values())))
-    print("\n".join(map(str, TAGGED.values())))
+    with open(folder / "header.ll", "w") as fp:
+        for v in TAGGED.values():
+            if not v.typename and v.name:
+                print(f"%{v.name} = type {v.to_definition()}", file = fp) 
+
+        for n, v in TYPEDEFS.items():
+            if isinstance(v, Record):
+                if v.typename == n:
+                    print(f"%{n} = type {v.to_definition()}", file = fp) 
+
+        for g in GLOBALS.values():
+            print(str(g), file = fp)
+
 
 if __name__ == "__main__":
     main()
