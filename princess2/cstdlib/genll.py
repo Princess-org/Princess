@@ -1,6 +1,5 @@
 import subprocess, json, ctypes, math
-import tatsu, sys
-from tatsu.parsing import Parser
+import tatsu
 from tatsu.walkers import NodeWalker
 from pathlib import Path
 

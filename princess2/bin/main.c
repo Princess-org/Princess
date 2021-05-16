@@ -42,7 +42,7 @@ DLL_EXPORT void main_p_main(Array args) {
     _fad58de7_filenames = ((vector_Vector *)map_get(_fad58de7_res, ((Array){8, "compile"})));
     _fad58de7_includes = ((vector_Vector *)map_get(_fad58de7_res, ((Array){10, "--include"})));
     if (_fad58de7_includes) {
-        toolchain_include_path = ((Array){(vector_length(_fad58de7_includes) + 1), malloc((((int64)(sizeof(string))) * ((int64)(vector_length(_fad58de7_includes) + 1))))});
+        toolchain_include_path = ((Array){(vector_length(_fad58de7_includes) + ((int)1)), malloc((((int64)(sizeof(string))) * ((int64)(vector_length(_fad58de7_includes) + ((int)1)))))});
         (((string *)toolchain_include_path.value)[0]) = ((Array){2, "."});
         for (int i = 0;(i < vector_length(_fad58de7_includes));(i += 1)) {
             string path = (*((string *)vector_get(_fad58de7_includes, i)));
@@ -63,7 +63,7 @@ DLL_EXPORT void main_p_main(Array args) {
                 fprintf(stderr, (((Array){3, "%s"}).value), (((Array){29, "More than one file specified"}).value));
                 return ;
             }  ;
-            toolchain_compile_file((*((string *)vector_peek(_fad58de7_filenames))), ((Array){5, "main"}));
+            toolchain_compile_main_file((*((string *)vector_peek(_fad58de7_filenames))));
             if ((toolchain_error_count > 0)) {
                 fprintf(stderr, (((Array){7, "%s%d%s"}).value), (((Array){16, "\x0a""Total errors: "}).value), toolchain_error_count, (((Array){2, "\x0a"""}).value));
                 exit(toolchain_error_count);

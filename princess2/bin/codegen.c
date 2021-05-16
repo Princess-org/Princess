@@ -476,7 +476,7 @@ ARRAY(codegen_outfolder, char, 2);
             fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, " "}).value));
             fprintf(fp, (((Array){5, "%s%s"}).value), (((Array){2, "%"}).value), (name.value));
         }  ;
-        if ((i < (len - 1))) {
+        if ((i < (len - ((int)1)))) {
             fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, ", "}).value));
         }  ;
     }
@@ -535,7 +535,7 @@ ARRAY(codegen_outfolder, char, 2);
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){12, "\x09""ret i32 0\x0a"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, "}\x0a"""}).value));
 };
-DLL_EXPORT string codegen_gen(compiler_Result result, string filename, string module) {
+DLL_EXPORT string codegen_gen(compiler_Result *result, string filename, string module) {
     buffer_Buffer buf = buffer_make_buffer();
     buffer_append_str((&buf), codegen_outfolder);
     buffer_append_char((&buf), '/');
@@ -544,21 +544,21 @@ DLL_EXPORT string codegen_gen(compiler_Result result, string filename, string mo
     string outfile = buffer_to_string((&buf));
     FILE* fp = fopen((outfile.value), (((Array){2, "w"}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){79, "; This file was compiled by the grace of your highness Princess Vic Nightfall\x0a"""}).value));
-    Array keys_structures = map_keys((result.structures));
+    Array keys_structures = map_keys(((*result).structures));
     for (int i = 0;(i < (keys_structures.size));(i += 1)) {
-        typechecking_Type *structure = ((typechecking_Type *)map_get((result.structures), (((string *)keys_structures.value)[i])));
+        typechecking_Type *structure = ((typechecking_Type *)map_get(((*result).structures), (((string *)keys_structures.value)[i])));
         _574f02bf_emit_structure(fp, structure);
     }
     ;
-    Array keys_functions = map_keys((result.functions));
+    Array keys_functions = map_keys(((*result).functions));
     for (int i = 0;(i < (keys_functions.size));(i += 1)) {
-        compiler_Function *function = ((compiler_Function *)map_get((result.functions), (((string *)keys_functions.value)[i])));
+        compiler_Function *function = ((compiler_Function *)map_get(((*result).functions), (((string *)keys_functions.value)[i])));
         _574f02bf_emit_function(fp, function);
     }
     ;
-    Array keys_globals = map_keys((result.globals));
+    Array keys_globals = map_keys(((*result).globals));
     for (int i = 0;(i < (keys_globals.size));(i += 1)) {
-        compiler_Value *global = ((compiler_Value *)map_get((result.globals), (((string *)keys_globals.value)[i])));
+        compiler_Value *global = ((compiler_Value *)map_get(((*result).globals), (((string *)keys_globals.value)[i])));
         _574f02bf_emit_global(fp, global);
     }
     ;

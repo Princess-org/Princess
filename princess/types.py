@@ -77,13 +77,12 @@ class TypeWrapper(Type):
     def set_base_type(self, tpe):
         if not tpe: return
         self._base_type = tpe
-        self.__class__ = type(tpe.__class__.__name__,
-            (self.__class__, tpe.__class__), {})
+        self.__class__ = tpe.__class__
         self.__dict__.update(tpe.__dict__)
 
-    def __set_state__(self, dict):
+    def __setstate__(self, dict):
         self.__dict__.update(dict)
-        self.set_base_type(dict["_base_type"])
+        self.set_base_type(self._base_type)
 
     def __reduce__(self):
         return (TypeWrapper, (), self.__dict__)

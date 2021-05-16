@@ -54,7 +54,7 @@ typedef struct compiler_Block {string label_; struct vector_Vector *insn; struct
 typedef struct compiler_Function {string name; struct vector_Vector *args; struct typechecking_Type *ret; bool multiple_returns; bool forward_declare; struct compiler_Block *block;} compiler_Function;
 typedef struct compiler_Result {struct map_Map *functions; struct map_Map *structures; struct map_Map *globals;} compiler_Result;
 typedef struct _87f75ce3_LoopState {struct compiler_Insn *break_insn; struct compiler_Insn *continue_insn;} _87f75ce3_LoopState;
-typedef struct _87f75ce3_State {int counter; string filename; string module; struct compiler_Function *current_function; struct compiler_Block *current_block; struct vector_Vector *loops; struct compiler_Result result;} _87f75ce3_State;
+typedef struct _87f75ce3_State {int counter; string filename; string module; struct compiler_Function *current_function; struct compiler_Block *current_block; struct vector_Vector *loops; struct compiler_Result *result;} _87f75ce3_State;
  compiler_Insn * _87f75ce3_get_break_insn(_87f75ce3_State *state) {
     if ((vector_length(((*state).loops)) > 0)) {
         return ((*((_87f75ce3_LoopState *)vector_peek(((*state).loops)))).break_insn);
@@ -381,7 +381,7 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
     string name = ((*((*node).tpe)).type_name);
     vector_Vector *parameter_t = ((*((*node).tpe)).parameter_t);
     name = typechecking_mangle_function_name(name, parameter_t);
-    compiler_Function *function = ((compiler_Function *)map_get((((*state).result).functions), name));
+    compiler_Function *function = ((compiler_Function *)map_get(((*((*state).result)).functions), name));
     if ((!function)) {
         return _87f75ce3_NO_VALUE;
     }  ;
@@ -1198,7 +1198,7 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
         ((*ret_tpe).fields) = fields;
         ((*function).ret) = ret_tpe;
         ((*function).multiple_returns) = true;
-        map_put((((*state).result).structures), ((*ret_tpe).type_name), ret_tpe);
+        map_put(((*((*state).result)).structures), ((*ret_tpe).type_name), ret_tpe);
     } else if ((vector_length(((*tpe).return_t)) == 1)) {
         ((*function).ret) = ((typechecking_Type *)vector_get(((*tpe).return_t), 0));
     } else {
@@ -1247,7 +1247,7 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
             }  ;
         }  ;
     }  ;
-    map_put((((*state).result).functions), ((*function).name), function);
+    map_put(((*((*state).result)).functions), ((*function).name), function);
 };
  void _87f75ce3_walk_Def(parser_Node *node, _87f75ce3_State *state) {
     _87f75ce3_create_function(((*node).tpe), ((((*node).value).def_).body), ((*node).scope), state);
@@ -1261,7 +1261,7 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
             continue;
         }  ;
         if (((((*tpe).kind) == typechecking_TypeKind_STRUCT) || (((*tpe).kind) == typechecking_TypeKind_UNION))) {
-            map_put((((*state).result).structures), ((*tpe).type_name), tpe);
+            map_put(((*((*state).result)).structures), ((*tpe).type_name), tpe);
         }  ;
     }
     ;
@@ -1282,7 +1282,7 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
             ((*global).undef) = false;
             ((*global).name) = name;
             ((*global).tpe) = ((*v).tpe);
-            map_put((((*state).result).globals), ((*global).name), global);
+            map_put(((*((*state).result)).globals), ((*global).name), global);
             vector_push(left, ((((*n).value).id_decl).value));
         }  else {
             vector_push(left, (((*n).value).expr));
@@ -1340,10 +1340,12 @@ vector_Vector *_87f75ce3_imported_modules;
     }
     ;
 };
-DLL_EXPORT compiler_Result compiler_compile(parser_Node *node, string filename, string module) {
+DLL_EXPORT compiler_Result * compiler_compile(parser_Node *node, string filename, string module) {
     assert((((*node).kind) == parser_NodeKind_PROGRAM));
     vector_Vector *body = vector_make();
-    _87f75ce3_State state = ((_87f75ce3_State){ .filename = filename, .module = module, .loops = vector_make(), .result = ((compiler_Result){ .functions = map_make(), .structures = map_make(), .globals = map_make() }) });
+    _87f75ce3_State *state = malloc((sizeof(_87f75ce3_State)));
+    (*state) = ((_87f75ce3_State){ .filename = filename, .module = module, .loops = vector_make(), .result = malloc((sizeof(compiler_Result))) });
+    (*((*state).result)) = ((compiler_Result){ .functions = map_make(), .structures = map_make(), .globals = map_make() });
     scope_Scope *sc = ((*node).scope);
     if (((*sc).imports)) {
         for (int i = 0;(i < vector_length(((*sc).imports)));(i += 1)) {
@@ -1353,7 +1355,7 @@ DLL_EXPORT compiler_Result compiler_compile(parser_Node *node, string filename, 
             for (int i = 0;(i < (keys.size));(i += 1)) {
                 scope_Value *value = ((scope_Value *)map_get(((*m_scope).fields), (((string *)keys.value)[i])));
                 if ((typechecking_is_function(((*value).tpe)) && ((bool)(((int)((*value).share)) & parser_ShareMarker_EXPORT)))) {
-                    _87f75ce3_create_function(((*value).tpe), NULL, sc, (&state));
+                    _87f75ce3_create_function(((*value).tpe), NULL, sc, state);
                 }  ;
             }
             ;
@@ -1365,16 +1367,16 @@ DLL_EXPORT compiler_Result compiler_compile(parser_Node *node, string filename, 
         switch (((int)((*n).kind))) {
             break;
             case parser_NodeKind_DEF:
-            _87f75ce3_walk_Def(n, (&state));
+            _87f75ce3_walk_Def(n, state);
             break;
             case parser_NodeKind_TYPE_DECL:
-            _87f75ce3_walk_TypeDecl(n, (&state));
+            _87f75ce3_walk_TypeDecl(n, state);
             break;
             case parser_NodeKind_VAR_DECL:
-            _87f75ce3_walk_top_VarDecl(n, body, (&state));
+            _87f75ce3_walk_top_VarDecl(n, body, state);
             break;
             case parser_NodeKind_IMPORT:
-            _87f75ce3_walk_top_Import(n, body, (&state));
+            _87f75ce3_walk_top_Import(n, body, state);
             break;
             default:
             vector_push(body, n);
@@ -1399,8 +1401,8 @@ DLL_EXPORT compiler_Result compiler_compile(parser_Node *node, string filename, 
     scope_Value *value = scope_get(((*node).scope), args_ident);
     ((*value).global) = false;
     scope_create_function(((*node).scope), ident, parser_ShareMarker_EXPORT, main_tpe, false);
-    _87f75ce3_create_function(main_tpe, body, ((*node).scope), (&state));
-    return (state.result);
+    _87f75ce3_create_function(main_tpe, body, ((*node).scope), state);
+    return ((*state).result);
 };
 DLL_EXPORT void compiler_p_main(Array args) {
     ;

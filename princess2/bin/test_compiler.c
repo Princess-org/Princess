@@ -21,7 +21,7 @@ bool test_compiler_print_ll;
     parser_Node *node = parser_parse(tokens, lines, main, main);
     scope_Scope *scope = scope_enter_function_scope(builtins_builtins);
     typechecking_typecheck(node, scope, main, main);
-    compiler_Result result = compiler_compile(node, main, main);
+    compiler_Result *result = compiler_compile(node, main, main);
     codegen_gen(result, main, main);
     FILE* fh = fopen((((Array){14, "./bin/main.ll"}).value), (((Array){2, "r"}).value));
     string buf = util_read_all(fh);
