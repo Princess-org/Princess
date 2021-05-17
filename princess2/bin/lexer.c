@@ -104,7 +104,7 @@ DLL_EXPORT void lexer_print_token_list(lexer_TokenList *list) {
     ((*i) += 1);
     ((*column) += 1);
     if (((*i) >= ((s.size) - 1))) {
-        return 26;
+        return ((char)26);
     }  else {
         char c = (((char *)s.value)[(*i)]);
         return c;
@@ -112,7 +112,7 @@ DLL_EXPORT void lexer_print_token_list(lexer_TokenList *list) {
 };
  char _9f927900_peek_char(string s, int *i, int n) {
     if ((((*i) + n) >= ((s.size) - 1))) {
-        return 26;
+        return ((char)26);
     }  else {
         return (((char *)s.value)[((*i) + n)]);
     };

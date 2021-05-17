@@ -13,7 +13,7 @@ DLL_EXPORT buffer_Buffer buffer_make_buffer() {
 };
 DLL_EXPORT void buffer_append_str(buffer_Buffer *buffer, string s) {
     if (((((s.size) - 1) + ((*buffer).size)) > ((*buffer).allocated))) {
-        size_t new_size = ((size_t)fmax((((int64)((*buffer).allocated)) * 2), (((int64)(((*buffer).size) + (s.size))) - 1)));
+        size_t new_size = ((size_t)fmax((((int64)((*buffer).allocated)) * ((int64)2)), (((int64)(((*buffer).size) + (s.size))) - ((int64)1))));
         ((*buffer).allocated) = new_size;
         ((*buffer).value) = realloc(((*buffer).value), ((sizeof(char)) * new_size));
     }  ;

@@ -790,11 +790,9 @@ class Compiler(AstWalker):
         else:
             tpe = self.scope.type_lookup(node.right)
 
-        if isinstance(node.left, (model.Integer, model.Float, model.StructInit)):
+        if isinstance(node.left, model.StructInit):
             node.left.type = tpe
-            if isinstance(node.left, model.StructInit):
-                return self.walk(node.left)
-            return node.left
+            return self.walk(node.left)
 
         self.walk_child(node, node.left)
         node.type = tpe # TODO rewrite cast_to

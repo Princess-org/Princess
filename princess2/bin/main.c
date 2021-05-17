@@ -26,7 +26,7 @@ DLL_EXPORT void main_p_main(Array args) {
     test_parser_p_main(args);
     test_compiler_p_main(args);
     toolchain_p_main(args);
-    _fad58de7_options = ((Array){5, malloc((((int64)(sizeof(getopt_Option))) * 5))});
+    _fad58de7_options = ((Array){5, malloc((((int64)(sizeof(getopt_Option))) * ((int64)5)))});
     (((getopt_Option *)_fad58de7_options.value)[0]) = ((getopt_Option){ getopt_Type_BOOL, ((Array){1, ""}), ((Array){6, "--ast"}), 0, false });
     (((getopt_Option *)_fad58de7_options.value)[1]) = ((getopt_Option){ getopt_Type_BOOL, ((Array){1, ""}), ((Array){5, "--ll"}), 0, false });
     (((getopt_Option *)_fad58de7_options.value)[2]) = ((getopt_Option){ getopt_Type_BOOL, ((Array){1, ""}), ((Array){7, "--test"}), 0, false });

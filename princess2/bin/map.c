@@ -5,6 +5,7 @@
 #ifndef _map_H
 #define _map_H
 int _1d78dc8e_INITIAL_SIZE;
+void *map_sentinel;
 typedef struct _1d78dc8e_Entry _1d78dc8e_Entry;
 typedef struct _1d78dc8e_Entry {string key; void *value; struct _1d78dc8e_Entry *next;} _1d78dc8e_Entry;
 typedef struct map_Map {size_t size; Array entries;} map_Map;
@@ -171,6 +172,7 @@ DLL_EXPORT Array map_keys(map_Map *map) {
 };
 DLL_EXPORT void map_p_main(Array args) {
     _1d78dc8e_INITIAL_SIZE = 16;
+    map_sentinel = ((void *)1);
 };
 
 

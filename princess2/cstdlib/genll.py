@@ -1,5 +1,5 @@
 import subprocess, json, ctypes, math
-import tatsu
+import tatsu, pickle, sys
 from tatsu.walkers import NodeWalker
 from pathlib import Path
 
@@ -126,6 +126,7 @@ class Struct(Record):
             self.name = "struct." + name
         else: self.name = None
 
+        self.qualname = name
         self.fields = fields
         self.typename = None
 
@@ -150,6 +151,7 @@ class Union(Record):
             self.name = "union." + name
         else: self.name = None
 
+        self.qualname = name
         self.fields = fields
         self.typename = None
 
@@ -252,7 +254,7 @@ class Walker(NodeWalker):
             return IncompleteType(name)
 
     def walk_Function(self, node):
-        return Function(map(self.walk, node.args), self.walk(node.ret))
+        return Function(list(map(self.walk, node.args)), self.walk(node.ret))
 
 WALKER = Walker()
 
@@ -325,7 +327,7 @@ def walk_FunctionDecl(node):
         GLOBALS[name] = FunctionDecl(
             name, 
             WALKER.walk(function.ret), 
-            map(lambda x: WALKER.walk(x), function.args)
+            list(map(lambda x: WALKER.walk(x), function.args))
         )
 
 def walk(node):
@@ -343,33 +345,67 @@ def walk(node):
 TAGGED["__va_list_tag"] = Struct("__va_list_tag", [])
 
 def main():
+    global GLOBALS, TAGGED, TYPEDEFS
+
     folder = Path(__file__).parent
+    data_file = folder / "header.pickle"
 
-    with open(folder / "header.json", "w") as fp:
-        p = subprocess.Popen(
-            ["clang", "-Xclang", "-ast-dump=json", "-fsyntax-only", folder / "header.c"], 
-            stdout = fp)
-        p.wait()
+    if data_file.is_file():
+        with open(data_file, "rb") as fp:
+            GLOBALS = pickle.load(fp)
+            TAGGED = pickle.load(fp)
+            TYPEDEFS = pickle.load(fp)
+    else:
+        with open(folder / "header.json", "w") as fp:
+            p = subprocess.Popen(
+                ["clang", "-Xclang", "-ast-dump=json", "-fsyntax-only", folder / "header.c"], 
+                stdout = fp)
+            p.wait()
 
-    with open(folder / "header.json", "r") as fp:
-        data = json.load(fp)
+        with open(folder / "header.json", "r") as fp:
+            data = json.load(fp)
 
-    data = data["inner"]
-    for top_level in data:
-        walk(top_level)
+        data = data["inner"]
+        for top_level in data:
+            walk(top_level)
+
+        with open(data_file, "wb") as fp:
+            pickle.dump(GLOBALS, fp)
+            pickle.dump(TAGGED, fp)
+            pickle.dump(TYPEDEFS, fp)
 
     with open(folder / "header.ll", "w") as fp:
-        for v in TAGGED.values():
-            if not v.typename and v.name:
-                print(f"%{v.name} = type {v.to_definition()}", file = fp) 
 
-        for n, v in TYPEDEFS.items():
-            if isinstance(v, Record):
-                if v.typename == n:
-                    print(f"%{n} = type {v.to_definition()}", file = fp) 
+        has_printed = set()
+        def print_references(tpe):
+            if isinstance(tpe, Pointer):
+                print_references(tpe.type)
+            elif isinstance(tpe, Array):
+                print_references(tpe.type)
+            elif isinstance(tpe, Function):
+                for t in tpe.args:
+                    print_references(t)
+                print_references(tpe.ret)
+            elif isinstance(tpe, Record):
+                if tpe.qualname:
+                    tpe = TAGGED[tpe.qualname]
+                else: tpe = TYPEDEFS[tpe.typename]
+                if tpe.name not in has_printed:
+                    has_printed.add(tpe.name)
+                    print(f"%{tpe.typename or tpe.name} = type {tpe.to_definition()}", file = fp)
+
+                    for t in tpe.fields:
+                        print_references(t)
 
         for g in GLOBALS.values():
-            print(str(g), file = fp)
+            if g.name in sys.argv:
+                print(str(g), file = fp)
+                if isinstance(g, FunctionDecl):
+                    print_references(g.ret)
+                    for v in g.args:
+                        print_references(v)
+                elif isinstance(g, VarDecl):
+                    print_references(g.type)
 
 
 if __name__ == "__main__":

@@ -535,6 +535,23 @@
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, "}\x0a"""}).value));
 };
 #include "toolchain.c"
+ void _574f02bf_gen_cstdlib_includes(void *fp, toolchain_Module *module) {
+    Array keys = map_keys(((*module).imported));
+    buffer_Buffer cmd_buffer = buffer_make_buffer();
+    buffer_append_str((&cmd_buffer), ((Array){28, "python3.9 cstdlib/genll.py "}));
+    for (int i = 0;(i < (keys.size));(i += 1)) {
+        string cfunc = (((string *)keys.value)[i]);
+        buffer_append_str((&cmd_buffer), cfunc);
+        buffer_append_char((&cmd_buffer), ' ');
+    }
+    ;
+    system((buffer_to_string((&cmd_buffer)).value));
+    FILE* fp2 = fopen((((Array){18, "cstdlib/header.ll"}).value), (((Array){2, "r"}).value));
+    string header = util_read_all(fp2);
+    fclose(fp2);
+    fprintf(fp, (((Array){3, "%s"}).value), (header.value));
+    free((header.value));
+};
 DLL_EXPORT string codegen_gen(toolchain_Module *module) {
     compiler_Result *result = ((*module).result);
     buffer_Buffer buf = buffer_make_buffer();
@@ -563,6 +580,12 @@ DLL_EXPORT string codegen_gen(toolchain_Module *module) {
         _574f02bf_emit_global(fp, global);
     }
     ;
+    if ((strcmp((((*module).module).value), (((Array){5, "main"}).value)) == 0)) {
+        map_put(((*module).imported), ((Array){7, "malloc"}), map_sentinel);
+        map_put(((*module).imported), ((Array){5, "free"}), map_sentinel);
+        _574f02bf_gen_main_function(fp);
+    }  ;
+    _574f02bf_gen_cstdlib_includes(fp, module);
     fclose(fp);
     return outfile;
 };

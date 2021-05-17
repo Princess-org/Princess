@@ -1322,7 +1322,7 @@ vector_Vector *_87f75ce3_imported_modules;
         ((*arg).tpe) = typechecking_array(builtins_string_);
         vector_push(args, arg);
         int name_size = vector_length((((*name).value).body));
-        Array array = ((Array){(name_size + ((int)1)), malloc((((int64)(sizeof(string))) * ((int64)(name_size + ((int)1)))))});
+        Array array = ((Array){(name_size + 1), malloc((((int64)(sizeof(string))) * ((int64)(name_size + 1))))});
         for (int j = 0;(j < name_size);(j += 1)) {
             (((string *)array.value)[j]) = (*((string *)vector_get((((*name).value).body), j)));
         }
@@ -1355,7 +1355,7 @@ DLL_EXPORT compiler_Result * compiler_compile(toolchain_Module *module) {
             Array keys = map_keys(((*m_scope).fields));
             for (int i = 0;(i < (keys.size));(i += 1)) {
                 scope_Value *value = ((scope_Value *)map_get(((*m_scope).fields), (((string *)keys.value)[i])));
-                if ((typechecking_is_function(((*value).tpe)) && ((bool)(((int)((*value).share)) & ((int)parser_ShareMarker_EXPORT))))) {
+                if ((typechecking_is_function(((*value).tpe)) && ((bool)(((int)((*value).share)) & parser_ShareMarker_EXPORT)))) {
                     _87f75ce3_create_function(((*value).tpe), NULL, sc, state);
                 }  ;
             }
