@@ -10,7 +10,6 @@
 #include "util.c"
 #include "compiler.c"
 #include "typechecking.c"
-ARRAY(codegen_outfolder, char, 2);
  string _574f02bf_type_to_str(typechecking_Type *tpe) {
     if ((!tpe)) {
         return ((Array){5, "void"});
@@ -535,11 +534,13 @@ ARRAY(codegen_outfolder, char, 2);
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){12, "\x09""ret i32 0\x0a"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, "}\x0a"""}).value));
 };
-DLL_EXPORT string codegen_gen(compiler_Result *result, string filename, string module) {
+#include "toolchain.c"
+DLL_EXPORT string codegen_gen(toolchain_Module *module) {
+    compiler_Result *result = ((*module).result);
     buffer_Buffer buf = buffer_make_buffer();
-    buffer_append_str((&buf), codegen_outfolder);
+    buffer_append_str((&buf), toolchain_outfolder);
     buffer_append_char((&buf), '/');
-    buffer_append_str((&buf), util_replace_all(module, ((Array){3, "::"}), ((Array){2, "."})));
+    buffer_append_str((&buf), util_replace_all(((*module).module), ((Array){3, "::"}), ((Array){2, "."})));
     buffer_append_str((&buf), ((Array){4, ".ll"}));
     string outfile = buffer_to_string((&buf));
     FILE* fp = fopen((outfile.value), (((Array){2, "w"}).value));
@@ -566,7 +567,7 @@ DLL_EXPORT string codegen_gen(compiler_Result *result, string filename, string m
     return outfile;
 };
 DLL_EXPORT void codegen_p_main(Array args) {
-    memcpy((codegen_outfolder.value), (((Array){2, "."}).value), ((sizeof(char)) * (codegen_outfolder.size)));
+
 };
 
 

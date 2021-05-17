@@ -5,6 +5,7 @@
 #ifndef _test_typechecking_H
 #define _test_typechecking_H
 #include "vector.c"
+#include "map.c"
 #include "util.c"
 #include "lexer.c"
 #include "parser.c"
@@ -13,14 +14,22 @@
 #include "builtins.c"
 #include "debug.c"
 #include "codegen.c"
+#include "toolchain.c"
 typedef struct _1f7978b0_Result {struct scope_Scope *scope; struct parser_Node *node;} _1f7978b0_Result;
  _1f7978b0_Result _1f7978b0_typecheck(string s) {
-    codegen_outfolder = ((Array){6, "./bin"});
+    toolchain_outfolder = ((Array){6, "./bin"});
+    Array main = ((Array){5, "main"});
     lexer_TokenList *tokens = lexer_lex(s);
     Array lines = util_split_lines(s);
-    parser_Node *node = parser_parse(tokens, lines, ((Array){5, "main"}), ((Array){5, "main"}));
+    parser_Node *node = parser_parse(tokens, lines, main, main);
     scope_Scope *scope = scope_enter_function_scope(builtins_builtins);
-    typechecking_typecheck(node, scope, ((Array){5, "main"}), ((Array){5, "main"}));
+    toolchain_Module *module = malloc((sizeof(toolchain_Module)));
+    ((*module).filename) = main;
+    ((*module).module) = main;
+    ((*module).node) = node;
+    ((*module).scope) = scope;
+    ((*module).imported) = map_make();
+    typechecking_typecheck(module);
     return ((_1f7978b0_Result){ scope, node });
 };
  string _1f7978b0_next_error_msg(vector_Vector *errors) {

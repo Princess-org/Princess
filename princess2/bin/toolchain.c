@@ -10,11 +10,12 @@
 #include "map.c"
 map_Map *toolchain_modules;
 Array toolchain_include_path;
+ARRAY(toolchain_outfolder, char, 2);
 int toolchain_error_count;
 typedef struct scope_Scope scope_Scope;
 typedef struct parser_Node parser_Node;
 typedef struct compiler_Result compiler_Result;
-typedef struct toolchain_Module {string filename; string module; struct scope_Scope *scope; struct compiler_Result *result;} toolchain_Module;
+typedef struct toolchain_Module {string filename; string module; struct parser_Node *node; struct scope_Scope *scope; struct compiler_Result *result; struct map_Map *imported;} toolchain_Module;
 DLL_EXPORT void toolchain_compile_file(string filename, string module);
 DLL_EXPORT toolchain_Module * toolchain_compile_module(parser_Node *module);
 DLL_EXPORT string toolchain_find_module_file(parser_Node *module);
@@ -34,7 +35,7 @@ DLL_EXPORT string toolchain_find_module_file(parser_Node *module) {
     for (int i = 0;(i < len);(i += 1)) {
         string str = (*((string *)vector_get(ident, i)));
         concat((path.value), (((Array){3, "%s"}).value), (str.value));
-        if ((i < (len - ((int)1)))) {
+        if ((i < (len - 1))) {
             concat((path.value), (((Array){3, "%s"}).value), (((Array){2, "/"}).value));
         }  ;
     }
@@ -66,10 +67,12 @@ DLL_EXPORT void toolchain_compile_file(string filename, string mod) {
         toolchain_Module *module = malloc((sizeof(toolchain_Module)));
         ((*module).filename) = filename;
         ((*module).module) = mod;
+        ((*module).node) = node;
         ((*module).scope) = sc;
+        ((*module).imported) = map_make();
         map_put(toolchain_modules, filename, module);
-        typechecking_typecheck(node, sc, filename, mod);
-        compiler_Result *result = compiler_compile(node, filename, mod);
+        typechecking_typecheck(module);
+        compiler_Result *result = compiler_compile(module);
         ((*module).result) = result;
     };
 };
@@ -93,7 +96,7 @@ DLL_EXPORT void toolchain_compile_main_file(string filename) {
         for (int i = 0;(i < (filenames.size));(i += 1)) {
             string filename = (((string *)filenames.value)[i]);
             toolchain_Module *module = ((toolchain_Module *)map_get(toolchain_modules, filename));
-            codegen_gen(((*module).result), ((*module).filename), ((*module).module));
+            codegen_gen(module);
         }
         ;
     }  ;
@@ -101,6 +104,7 @@ DLL_EXPORT void toolchain_compile_main_file(string filename) {
 DLL_EXPORT void toolchain_p_main(Array args) {
     ;
     toolchain_modules = map_make();
+    memcpy((toolchain_outfolder.value), (((Array){2, "."}).value), ((sizeof(char)) * (toolchain_outfolder.size)));
     toolchain_error_count = 0;
     typechecking_p_main(args);
     scope_p_main(args);

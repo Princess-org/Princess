@@ -1322,7 +1322,7 @@ vector_Vector *_87f75ce3_imported_modules;
         ((*arg).tpe) = typechecking_array(builtins_string_);
         vector_push(args, arg);
         int name_size = vector_length((((*name).value).body));
-        Array array = ((Array){(name_size + 1), malloc((((int64)(sizeof(string))) * ((int64)(name_size + 1))))});
+        Array array = ((Array){(name_size + ((int)1)), malloc((((int64)(sizeof(string))) * ((int64)(name_size + ((int)1)))))});
         for (int j = 0;(j < name_size);(j += 1)) {
             (((string *)array.value)[j]) = (*((string *)vector_get((((*name).value).body), j)));
         }
@@ -1340,11 +1340,12 @@ vector_Vector *_87f75ce3_imported_modules;
     }
     ;
 };
-DLL_EXPORT compiler_Result * compiler_compile(parser_Node *node, string filename, string module) {
+DLL_EXPORT compiler_Result * compiler_compile(toolchain_Module *module) {
+    parser_Node *node = ((*module).node);
     assert((((*node).kind) == parser_NodeKind_PROGRAM));
     vector_Vector *body = vector_make();
     _87f75ce3_State *state = malloc((sizeof(_87f75ce3_State)));
-    (*state) = ((_87f75ce3_State){ .filename = filename, .module = module, .loops = vector_make(), .result = malloc((sizeof(compiler_Result))) });
+    (*state) = ((_87f75ce3_State){ .filename = ((*module).filename), .module = ((*module).module), .loops = vector_make(), .result = malloc((sizeof(compiler_Result))) });
     (*((*state).result)) = ((compiler_Result){ .functions = map_make(), .structures = map_make(), .globals = map_make() });
     scope_Scope *sc = ((*node).scope);
     if (((*sc).imports)) {
@@ -1354,7 +1355,7 @@ DLL_EXPORT compiler_Result * compiler_compile(parser_Node *node, string filename
             Array keys = map_keys(((*m_scope).fields));
             for (int i = 0;(i < (keys.size));(i += 1)) {
                 scope_Value *value = ((scope_Value *)map_get(((*m_scope).fields), (((string *)keys.value)[i])));
-                if ((typechecking_is_function(((*value).tpe)) && ((bool)(((int)((*value).share)) & parser_ShareMarker_EXPORT)))) {
+                if ((typechecking_is_function(((*value).tpe)) && ((bool)(((int)((*value).share)) & ((int)parser_ShareMarker_EXPORT))))) {
                     _87f75ce3_create_function(((*value).tpe), NULL, sc, state);
                 }  ;
             }
@@ -1385,8 +1386,8 @@ DLL_EXPORT compiler_Result * compiler_compile(parser_Node *node, string filename
     }
     ;
     parser_Node *ident = parser_make_identifier(((Array){1, (Array[1]){ ((Array){5, "main"}) }}));
-    (((*ident).loc).module) = module;
-    (((*ident).loc).filename) = filename;
+    (((*ident).loc).module) = ((*module).module);
+    (((*ident).loc).filename) = ((*module).filename);
     typechecking_Type *main_tpe = typechecking_make_type(typechecking_TypeKind_FUNCTION, ident);
     typechecking_Type *string_array_tpe = typechecking_array(builtins_string_);
     typechecking_NamedParameter *named = malloc((sizeof(typechecking_NamedParameter)));

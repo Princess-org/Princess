@@ -5,6 +5,7 @@
 #ifndef _test_compiler_H
 #define _test_compiler_H
 #include "buffer.c"
+#include "map.c"
 #include "compiler.c"
 #include "codegen.c"
 #include "lexer.c"
@@ -12,17 +13,25 @@
 #include "parser.c"
 #include "scope.c"
 #include "typechecking.c"
+#include "toolchain.c"
 bool test_compiler_print_ll;
  string _6dcc03b3_compile(string s) {
-    codegen_outfolder = ((Array){6, "./bin"});
+    toolchain_outfolder = ((Array){6, "./bin"});
     Array main = ((Array){5, "main"});
     lexer_TokenList *tokens = lexer_lex(s);
     Array lines = util_split_lines(s);
     parser_Node *node = parser_parse(tokens, lines, main, main);
     scope_Scope *scope = scope_enter_function_scope(builtins_builtins);
-    typechecking_typecheck(node, scope, main, main);
-    compiler_Result *result = compiler_compile(node, main, main);
-    codegen_gen(result, main, main);
+    toolchain_Module *module = malloc((sizeof(toolchain_Module)));
+    ((*module).filename) = main;
+    ((*module).module) = main;
+    ((*module).node) = node;
+    ((*module).scope) = scope;
+    ((*module).imported) = map_make();
+    typechecking_typecheck(module);
+    compiler_Result *result = compiler_compile(module);
+    ((*module).result) = result;
+    codegen_gen(module);
     FILE* fh = fopen((((Array){14, "./bin/main.ll"}).value), (((Array){2, "r"}).value));
     string buf = util_read_all(fh);
     fclose(fh);
