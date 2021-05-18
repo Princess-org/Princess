@@ -150,6 +150,13 @@
             case compiler_ValueKind_NULL:
             buffer_append_str((&buf), ((Array){5, "null"}));
             break;
+            case compiler_ValueKind_STRING:
+            buffer_append_char((&buf), '{');
+            buffer_append_str((&buf), util_int_to_str(((value.s).size)));
+            buffer_append_str((&buf), ((Array){3, ", "}));
+            buffer_append_str((&buf), util_repr((value.s)));
+            buffer_append_char((&buf), '}');
+            break;
             default:
             printf((((Array){5, "%d%s"}).value), (value.kind), (((Array){2, "\x0a"""}).value));
             assert(false);
@@ -490,7 +497,7 @@
             fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, " "}).value));
             fprintf(fp, (((Array){5, "%s%s"}).value), (((Array){2, "%"}).value), (name.value));
         }  ;
-        if ((i < (len - 1))) {
+        if ((i < (len - ((int)1)))) {
             fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, ", "}).value));
         }  ;
     }

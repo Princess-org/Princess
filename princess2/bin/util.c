@@ -116,9 +116,8 @@ DLL_EXPORT string util_read_all(void *fh) {
     (((char *)buf.value)[filesize]) = '\x00';
     return buf;
 };
-DLL_EXPORT string util_double_to_hex_str(double f) {
+DLL_EXPORT string util_int_to_hex_str(uint64 n) {
     Array digits = ((Array){17, "0123456789ABCDEF"});
-    uint64 n = (*((uint64 *)(&f)));
     string str;
     (str.value) = calloc(1, (((int64)(sizeof(char))) * ((int64)19)));
     (((char *)str.value)[0]) = '0';
@@ -143,6 +142,10 @@ DLL_EXPORT string util_double_to_hex_str(double f) {
     }
     ;
     return str;
+};
+DLL_EXPORT string util_double_to_hex_str(double f) {
+    uint64 n = (*((uint64 *)(&f)));
+    return util_int_to_hex_str(n);
 };
 DLL_EXPORT string util_uint_to_str_sign(int sign, uint64 n) {
     Array digits = ((Array){11, "0123456789"});
@@ -203,6 +206,30 @@ DLL_EXPORT int util_gcd(int a, int b) {
 };
 DLL_EXPORT int util_lcm(int a, int b) {
     return ((a * b) / util_gcd(a, b));
+};
+DLL_EXPORT string util_repr(string s) {
+    buffer_Buffer buf = buffer_make_buffer();
+    buffer_append_str((&buf), ((Array){3, "c\""}));
+    for (int i = 0;(i < (((int64)(s.size)) - ((int64)1)));(i += 1)) {
+        char c = (((char *)s.value)[i]);
+        if (((c < 32) || (c > 126))) {
+            string esc = util_double_to_hex_str(c);
+            buffer_append_char((&buf), '\\');
+            if ((((esc.size) - 1) == 2)) {
+                buffer_append_str((&buf), esc);
+            }  else {
+                buffer_append_char((&buf), '0');
+                buffer_append_str((&buf), esc);
+            };
+        } else if ((c == 92)) {
+            buffer_append_str((&buf), ((Array){4, "\\5C"}));
+        } else {
+            buffer_append_char((&buf), c);
+        };
+    }
+    ;
+    buffer_append_str((&buf), ((Array){5, "\\00\""}));
+    return buffer_to_string((&buf));
 };
 DLL_EXPORT void util_p_main(Array args) {
     buffer_p_main(args);

@@ -11,15 +11,21 @@
 #include "typechecking.c"
 #include "compiler.c"
 #include "scope.c"
- typechecking_Type * _fe23cc40_make_function_type(string name, Array parameter_t, Array return_t, void (*macro)(parser_Node *, compiler_State *)) {
+ typechecking_NamedParameter * _fe23cc40_param(string name, typechecking_Type *tpe) {
+    typechecking_NamedParameter *named = malloc((sizeof(typechecking_NamedParameter)));
+    ((*named).name) = name;
+    ((*named).value) = tpe;
+    return named;
+};
+ typechecking_Type * _fe23cc40_make_function_type(string name, Array parameter_t, Array return_t, compiler_Value (*macro)(parser_Node *, compiler_State *)) {
     vector_Vector *pars = vector_make();
     for (int i = 0;(i < (parameter_t.size));(i += 1)) {
-        vector_push(pars, (&(((typechecking_NamedParameter *)parameter_t.value)[i])));
+        vector_push(pars, (((typechecking_NamedParameter **)parameter_t.value)[i]));
     }
     ;
     vector_Vector *rets = vector_make();
     for (int i = 0;(i < (return_t.size));(i += 1)) {
-        vector_push(rets, (&(((typechecking_Type *)return_t.value)[i])));
+        vector_push(rets, (((typechecking_Type **)return_t.value)[i]));
     }
     ;
     typechecking_Type *tpe = malloc((sizeof(typechecking_Type)));
@@ -31,13 +37,13 @@
     ((*tpe).macro) = macro;
     return tpe;
 };
- void _fe23cc40_create_function(string name, Array parameter_t, Array return_t, void (*macro)(parser_Node *, compiler_State *)) {
+ void _fe23cc40_create_function(string name, Array parameter_t, Array return_t, compiler_Value (*macro)(parser_Node *, compiler_State *)) {
     scope_create_function(builtins_builtins, parser_make_identifier(((Array){1, (string[1]){ name }})), parser_ShareMarker_EXPORT, _fe23cc40_make_function_type(name, parameter_t, return_t, macro), false);
 };
  void _fe23cc40_import_function(compiler_State *state, string function) {
     map_put(((*((*state).module)).imported), function, map_sentinel);
 };
- void _fe23cc40__assert(parser_Node *node, compiler_State *state) {
+ compiler_Value _fe23cc40__assert(parser_Node *node, compiler_State *state) {
     _fe23cc40_import_function(state, ((Array){14, "__assert_fail"}));
     compiler_Value insn = compiler_walk_expression(vector_peek(((((*node).value).func_call).args)), state);
     compiler_Label if_false = compiler_make_label(state);
@@ -61,10 +67,11 @@
     (((*call).value).call) = ((compiler_InsnCall){ .name = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = ((Array){14, "__assert_fail"}) }), .ret = compiler_NO_VALUE, .args = args });
     compiler_push_insn(call, state);
     compiler_push_label(if_true, state);
+    return compiler_NO_VALUE;
 };
 DLL_EXPORT void builtin_functions_p_main(Array args) {
     compiler_p_main(args);
-    _fe23cc40_create_function(((Array){7, "assert"}), ((Array){1, (typechecking_NamedParameter[1]){ ((typechecking_NamedParameter){ ((Array){10, "assertion"}), builtins_bool_ }) }}), ((Array){0, (typechecking_Type[]){  }}), (&_fe23cc40__assert));
+    _fe23cc40_create_function(((Array){7, "assert"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){10, "assertion"}), builtins_bool_) }}), ((Array){0, (typechecking_Type[]){  }}), (&_fe23cc40__assert));
 };
 
 

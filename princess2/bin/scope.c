@@ -264,6 +264,7 @@ DLL_EXPORT scope_Scope * scope_enter_namespace(scope_Scope *scope, parser_Node *
     return (*((string *)vector_get((((*node).value).body), (length - 1))));
 };
 DLL_EXPORT void scope_create_function(scope_Scope *scope, parser_Node *node, parser_ShareMarker share, typechecking_Type *tpe, bool forward_declare) {
+    assert((((*tpe).kind) == typechecking_TypeKind_FUNCTION));
     scope = _31a1fd14_create_path(scope, node);
     if ((!scope)) {
         return ;

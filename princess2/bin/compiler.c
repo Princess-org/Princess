@@ -375,11 +375,15 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     return _87f75ce3_walk_ArithmeticOp(node, compiler_InsnKind_ASHR, tpe, state);
 };
  compiler_Value _87f75ce3_walk_Call(parser_Node *node, compiler_State *state) {
-    if ((!((*node).tpe))) {
+    typechecking_Type *tpe = ((*node).tpe);
+    if ((!tpe)) {
         return compiler_NO_VALUE;
     }  ;
-    string name = ((*((*node).tpe)).type_name);
-    vector_Vector *parameter_t = ((*((*node).tpe)).parameter_t);
+    if (((*tpe).macro)) {
+        return ((*tpe).macro)(node, state);
+    }  ;
+    string name = ((*tpe).type_name);
+    vector_Vector *parameter_t = ((*tpe).parameter_t);
     name = typechecking_mangle_function_name(name, parameter_t);
     compiler_Function *function = ((compiler_Function *)map_get(((*((*state).result)).functions), name));
     if ((!function)) {

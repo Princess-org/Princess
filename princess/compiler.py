@@ -192,11 +192,13 @@ class Scope:
             return types.Enum(tpe, fields)
         elif isinstance(t, model.FunctionT):
             assert(len(t.right) <= 1)
+            if len(t.right) == 0: right = (types.void,)
+            else: right = tuple(map(self.type_lookup, t.right))
             return types.FunctionT(
-                return_t = list(map(self.type_lookup, t.right)),
-                parameter_t = list(map(self.type_lookup, t.left))
+                return_t = right,
+                parameter_t = tuple(map(self.type_lookup, t.left))
             )
-        
+            
         error("Type not implemented")
 
     def create_variable(self, modifier: Modifier, name: str, tpe, share = ast.Share.No, value = None, identifier: str = None):
