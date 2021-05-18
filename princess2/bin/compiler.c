@@ -750,7 +750,7 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
     if (typechecking_is_pointer((right.tpe))) {
         right = _87f75ce3_convert_to(node, right, builtins_size_t_, state);
     }  ;
-    if ((typechecking_is_arithmetic((left.tpe)) && typechecking_is_arithmetic((right.tpe)))) {
+    if ((((bool)typechecking_is_arithmetic((left.tpe))) && ((bool)typechecking_is_arithmetic((right.tpe))))) {
         tpe = typechecking_common_type((left.tpe), (right.tpe));
         left = _87f75ce3_convert_to(node, left, tpe, state);
         right = _87f75ce3_convert_to(node, right, tpe, state);
@@ -1198,7 +1198,6 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
         ((*ret_tpe).fields) = fields;
         ((*function).ret) = ret_tpe;
         ((*function).multiple_returns) = true;
-        map_put(((*((*state).result)).structures), ((*ret_tpe).type_name), ret_tpe);
     } else if ((vector_length(((*tpe).return_t)) == 1)) {
         ((*function).ret) = ((typechecking_Type *)vector_get(((*tpe).return_t), 0));
     } else {
@@ -1308,13 +1307,18 @@ vector_Vector *_87f75ce3_imported_modules;
         if ((((filename.size) - 1) == 0)) {
             continue;
         }  ;
+        bool found = false;
         for (int j = 0;(j < vector_length(_87f75ce3_imported_modules));(j += 1)) {
             string imported = (*((string *)vector_get(_87f75ce3_imported_modules, j)));
             if ((strcmp((imported.value), (filename.value)) == 0)) {
-                continue;
+                found = true;
+                break;
             }  ;
         }
         ;
+        if (found) {
+            continue;
+        }  ;
         vector_push(_87f75ce3_imported_modules, util_copy_string(filename));
         vector_Vector *args = vector_make();
         parser_Node *arg = parser_make_identifier(((Array){1, (Array[1]){ ((Array){5, "args"}) }}));
@@ -1322,7 +1326,7 @@ vector_Vector *_87f75ce3_imported_modules;
         ((*arg).tpe) = typechecking_array(builtins_string_);
         vector_push(args, arg);
         int name_size = vector_length((((*name).value).body));
-        Array array = ((Array){(name_size + 1), malloc((((int64)(sizeof(string))) * ((int64)(name_size + 1))))});
+        Array array = ((Array){(name_size + ((int)1)), malloc((((int64)(sizeof(string))) * ((int64)(name_size + ((int)1)))))});
         for (int j = 0;(j < name_size);(j += 1)) {
             (((string *)array.value)[j]) = (*((string *)vector_get((((*name).value).body), j)));
         }
@@ -1355,7 +1359,7 @@ DLL_EXPORT compiler_Result * compiler_compile(toolchain_Module *module) {
             Array keys = map_keys(((*m_scope).fields));
             for (int i = 0;(i < (keys.size));(i += 1)) {
                 scope_Value *value = ((scope_Value *)map_get(((*m_scope).fields), (((string *)keys.value)[i])));
-                if ((typechecking_is_function(((*value).tpe)) && ((bool)(((int)((*value).share)) & parser_ShareMarker_EXPORT)))) {
+                if ((((bool)typechecking_is_function(((*value).tpe))) && ((bool)(((int)((*value).share)) & ((int)parser_ShareMarker_EXPORT))))) {
                     _87f75ce3_create_function(((*value).tpe), NULL, sc, state);
                 }  ;
             }

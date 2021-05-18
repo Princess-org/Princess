@@ -64,10 +64,25 @@
         buffer_append_str((&buf), _574f02bf_type_to_str(((*tpe).tpe)));
         buffer_append_char((&buf), ']');
         break;
-        case typechecking_TypeKind_STRUCT ... typechecking_TypeKind_UNION:
-        buffer_append_str((&buf), ((Array){3, "%\""}));
-        buffer_append_str((&buf), ((*tpe).type_name));
-        buffer_append_char((&buf), '\"');
+        case typechecking_TypeKind_STRUCT:
+        if ((((((*tpe).type_name).size) - 1) > 0)) {
+            buffer_append_str((&buf), ((Array){3, "%\""}));
+            buffer_append_str((&buf), ((*tpe).type_name));
+            buffer_append_char((&buf), '\"');
+        }  else {
+            buffer_append_char((&buf), '{');
+            size_t len = (((*tpe).fields).size);
+            for (int i = 0;(i < len);(i += 1)) {
+                typechecking_StructMember member = (((typechecking_StructMember *)((*tpe).fields).value)[i]);
+                typechecking_Type *tpe = (member.tpe);
+                buffer_append_str((&buf), _574f02bf_type_to_str(tpe));
+                if ((i < (((int64)len) - ((int64)1)))) {
+                    buffer_append_str((&buf), ((Array){3, ", "}));
+                }  ;
+            }
+            ;
+            buffer_append_char((&buf), '}');
+        };
         break;
         default:
         assert(false);
@@ -528,8 +543,8 @@
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){32, "\x09""%size = zext i32 %argc to i64\x0a"""}).value));
     fprintf(fp, (((Array){8, "%s%zu%s"}).value), (((Array){27, "\x09""%size.1 = mul i64 %size, "}).value), (sizeof(string)), (((Array){2, "\x0a"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){40, "\x09""%args = call i8* @malloc(i64 %size.1)\x0a"""}).value));
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){45, "\x09""%args.1 = bitcast i8* %args to {i32, i8*}*\x0a"""}).value));
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){38, "\x09""%args.2 = alloca {i32, {i32, i8*}*}\x0a"""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){45, "\x09""%args.1 = bitcast i8* %args to {i64, i8*}*\x0a"""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){38, "\x09""%args.2 = alloca {i64, {i64, i8*}*}\x0a"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){29, "\x09""call void @free(i8* %args)\x0a"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){12, "\x09""ret i32 0\x0a"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, "}\x0a"""}).value));
@@ -565,7 +580,11 @@ DLL_EXPORT string codegen_gen(toolchain_Module *module) {
     Array keys_structures = map_keys(((*result).structures));
     for (int i = 0;(i < (keys_structures.size));(i += 1)) {
         typechecking_Type *structure = ((typechecking_Type *)map_get(((*result).structures), (((string *)keys_structures.value)[i])));
-        _574f02bf_emit_structure(fp, structure);
+        if ((((*structure).kind) == typechecking_TypeKind_STRUCT)) {
+            _574f02bf_emit_structure(fp, structure);
+        }  else {
+            assert(false);
+        };
     }
     ;
     Array keys_functions = map_keys(((*result).functions));

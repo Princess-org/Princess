@@ -199,7 +199,7 @@ bool test_compiler_print_ll;
 };
  void _6dcc03b3_test_import() {
     printf((((Array){3, "%s"}).value), (((Array){17, ">Test import... "}).value));
-    Array str = ((Array){52, "\x0a""        import test::a\x0a""        import test::b\x0a""    "});
+    Array str = ((Array){90, "\x0a""        import test::a\x0a""        import test::b\x0a""\x0a""        let a, b = return_multiple()\x0a""    "});
     string res = _6dcc03b3_compile(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };

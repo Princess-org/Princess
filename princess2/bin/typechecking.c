@@ -22,7 +22,7 @@ DLL_EXPORT void typechecking_errorn(parser_Node *node, string msg);
     if ((length == 0)) {
         return NULL;
     }  else {
-        return ((typechecking_Type *)vector_get(((*state).function_stack), (length - 1)));
+        return ((typechecking_Type *)vector_get(((*state).function_stack), (length - ((int)1))));
     };
 };
  void _3700c937_push_function(_3700c937_State *state, typechecking_Type *tpe) {
@@ -111,11 +111,10 @@ int _3700c937_counter;
     return s;
 };
 DLL_EXPORT typechecking_Type * typechecking_make_anonymous_type(typechecking_TypeKind kind, string module) {
-    string name = _3700c937_make_unique_name();
     typechecking_Type *t = malloc((sizeof(typechecking_Type)));
     ((*t).kind) = kind;
-    ((*t).type_name) = _3700c937_append_module(name, module);
-    ((*t).name) = name;
+    ((*t).type_name) = ((Array){1, ""});
+    ((*t).name) = ((Array){1, ""});
     return t;
 };
 DLL_EXPORT typechecking_Type * typechecking_copy(typechecking_Type *a) {
