@@ -9,15 +9,15 @@
 #include "vector.c"
 #include "map.c"
 #include "scope.c"
-#include "typechecking.c"
 #include "util.c"
-#include "builtins.c"
 #include "debug.c"
 #include "toolchain.c"
+#include "builtins.c"
+#include "typechecking.c"
 typedef struct compiler_Label {string name;} compiler_Label;
 typedef enum compiler_ValueKind {compiler_ValueKind_NULL = 0, compiler_ValueKind_LOCAL = 1, compiler_ValueKind_GLOBAL = 2, compiler_ValueKind_BOOL = 3, compiler_ValueKind_INT = 4, compiler_ValueKind_FLOAT = 5, compiler_ValueKind_STRING = 6, compiler_ValueKind_ARRAY = 7, compiler_ValueKind_STRUCT = 8, compiler_ValueKind_UNION = 9} compiler_ValueKind;
 typedef struct compiler_Value {enum compiler_ValueKind kind; string name; int sign; uint64 i; double f; string s; bool undef; Array values; struct compiler_Value *addr; struct typechecking_Type *tpe;} compiler_Value;
-compiler_Value _87f75ce3_NO_VALUE;
+compiler_Value compiler_NO_VALUE;
 typedef enum compiler_InsnKind {compiler_InsnKind_ADD = 0, compiler_InsnKind_SUB = 1, compiler_InsnKind_MUL = 2, compiler_InsnKind_SREM = 3, compiler_InsnKind_UREM = 4, compiler_InsnKind_SDIV = 5, compiler_InsnKind_UDIV = 6, compiler_InsnKind_FADD = 7, compiler_InsnKind_FSUB = 8, compiler_InsnKind_FMUL = 9, compiler_InsnKind_FREM = 10, compiler_InsnKind_FDIV = 11, compiler_InsnKind_ASHR = 12, compiler_InsnKind_SHL = 13, compiler_InsnKind_AND = 14, compiler_InsnKind_OR = 15, compiler_InsnKind_XOR = 16, compiler_InsnKind_FCMP = 17, compiler_InsnKind_ICMP = 18, compiler_InsnKind_RET = 19, compiler_InsnKind_LOAD = 20, compiler_InsnKind_STORE = 21, compiler_InsnKind_ALLOCA = 22, compiler_InsnKind_INSERTVALUE = 23, compiler_InsnKind_EXTRACTVALUE = 24, compiler_InsnKind_GETELEMENTPTR = 25, compiler_InsnKind_TRUNC = 26, compiler_InsnKind_ZEXT = 27, compiler_InsnKind_SEXT = 28, compiler_InsnKind_FPTRUNC = 29, compiler_InsnKind_FPEXT = 30, compiler_InsnKind_FPTOUI = 31, compiler_InsnKind_FPTOSI = 32, compiler_InsnKind_UITOFP = 33, compiler_InsnKind_SITOFP = 34, compiler_InsnKind_PTRTOINT = 35, compiler_InsnKind_INTTOPTR = 36, compiler_InsnKind_BITCAST = 37, compiler_InsnKind_CALL = 38, compiler_InsnKind_BR_UNC = 39, compiler_InsnKind_BR = 40} compiler_InsnKind;
 ARRAY(compiler_f_ueq, char, 4);
 ARRAY(compiler_f_ugt, char, 4);
@@ -54,20 +54,20 @@ typedef struct compiler_Block {string label_; struct vector_Vector *insn; struct
 typedef struct compiler_Function {string name; struct vector_Vector *args; struct typechecking_Type *ret; bool multiple_returns; bool forward_declare; struct compiler_Block *block;} compiler_Function;
 typedef struct compiler_Result {struct map_Map *functions; struct map_Map *structures; struct map_Map *globals;} compiler_Result;
 typedef struct _87f75ce3_LoopState {struct compiler_Insn *break_insn; struct compiler_Insn *continue_insn;} _87f75ce3_LoopState;
-typedef struct _87f75ce3_State {int counter; string filename; string module; struct compiler_Function *current_function; struct compiler_Block *current_block; struct vector_Vector *loops; struct compiler_Result *result;} _87f75ce3_State;
- compiler_Insn * _87f75ce3_get_break_insn(_87f75ce3_State *state) {
+typedef struct compiler_State {struct toolchain_Module *module; int counter; struct compiler_Function *current_function; struct compiler_Block *current_block; struct vector_Vector *loops; struct compiler_Result *result;} compiler_State;
+ compiler_Insn * _87f75ce3_get_break_insn(compiler_State *state) {
     if ((vector_length(((*state).loops)) > 0)) {
         return ((*((_87f75ce3_LoopState *)vector_peek(((*state).loops)))).break_insn);
     }  ;
     return NULL;
 };
- compiler_Insn * _87f75ce3_get_continue_insn(_87f75ce3_State *state) {
+ compiler_Insn * _87f75ce3_get_continue_insn(compiler_State *state) {
     if ((vector_length(((*state).loops)) > 0)) {
         return ((*((_87f75ce3_LoopState *)vector_peek(((*state).loops)))).continue_insn);
     }  ;
     return NULL;
 };
- void _87f75ce3_push_loop_state(_87f75ce3_State *state) {
+ void _87f75ce3_push_loop_state(compiler_State *state) {
     _87f75ce3_LoopState *loops = malloc((sizeof(_87f75ce3_LoopState)));
     compiler_Insn *break_insn = malloc((sizeof(compiler_Insn)));
     ((*break_insn).kind) = compiler_InsnKind_BR_UNC;
@@ -77,20 +77,20 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
     ((*loops).continue_insn) = continue_insn;
     vector_push(((*state).loops), loops);
 };
- void _87f75ce3_pop_loop_state(_87f75ce3_State *state) {
+ void _87f75ce3_pop_loop_state(compiler_State *state) {
     vector_pop(((*state).loops));
 };
- compiler_Label _87f75ce3_make_label(_87f75ce3_State *state) {
+DLL_EXPORT compiler_Label compiler_make_label(compiler_State *state) {
     string s = util_int_to_str(((*state).counter));
     (((*state).counter) += 1);
     return ((compiler_Label){ .name = s });
 };
- string _87f75ce3_make_unique_name(_87f75ce3_State *state) {
+DLL_EXPORT string compiler_make_unique_name(compiler_State *state) {
     string s = util_int_to_str(((*state).counter));
     (((*state).counter) += 1);
     return s;
 };
- compiler_Value _87f75ce3_make_int_value(int v) {
+DLL_EXPORT compiler_Value compiler_make_int_value(int v) {
     compiler_Value value = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = v, .tpe = builtins_int_ });
     if ((v < 0)) {
         (value.sign) = (-1);
@@ -99,10 +99,10 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
     };
     return value;
 };
- compiler_Value _87f75ce3_make_local_value(typechecking_Type *tpe, compiler_Value *addr, _87f75ce3_State *state) {
-    return ((compiler_Value){ .kind = compiler_ValueKind_LOCAL, .name = _87f75ce3_make_unique_name(state), .tpe = tpe, .addr = addr });
+DLL_EXPORT compiler_Value compiler_make_local_value(typechecking_Type *tpe, compiler_Value *addr, compiler_State *state) {
+    return ((compiler_Value){ .kind = compiler_ValueKind_LOCAL, .name = compiler_make_unique_name(state), .tpe = tpe, .addr = addr });
 };
- void _87f75ce3_push_label(compiler_Label label_, _87f75ce3_State *state) {
+DLL_EXPORT void compiler_push_label(compiler_Label label_, compiler_State *state) {
     compiler_Block *block = malloc((sizeof(compiler_Block)));
     ((*block).label_) = (label_.name);
     ((*block).insn) = vector_make();
@@ -110,37 +110,37 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
     ((*((*state).current_block)).next) = block;
     ((*state).current_block) = block;
 };
- void _87f75ce3_push_insn(compiler_Insn *insn, _87f75ce3_State *state) {
+DLL_EXPORT void compiler_push_insn(compiler_Insn *insn, compiler_State *state) {
     vector_push(((*((*state).current_block)).insn), insn);
 };
- compiler_Value _87f75ce3_walk_expression(parser_Node *node, _87f75ce3_State *state);
- void _87f75ce3_walk(parser_Node *node, _87f75ce3_State *state);
- compiler_Value _87f75ce3_walk_Null(parser_Node *node, _87f75ce3_State *state) {
+DLL_EXPORT compiler_Value compiler_walk_expression(parser_Node *node, compiler_State *state);
+DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
+ compiler_Value _87f75ce3_walk_Null(parser_Node *node, compiler_State *state) {
     typechecking_Type *tpe = ((*node).tpe);
     compiler_Value value = ((compiler_Value){ .kind = compiler_ValueKind_NULL, .tpe = tpe });
     return value;
 };
- compiler_Value _87f75ce3_walk_Boolean(parser_Node *node, _87f75ce3_State *state) {
+ compiler_Value _87f75ce3_walk_Boolean(parser_Node *node, compiler_State *state) {
     typechecking_Type *tpe = ((*node).tpe);
     compiler_Value value = ((compiler_Value){ .kind = compiler_ValueKind_BOOL, .i = (((*node).value).i), .tpe = tpe });
     return value;
 };
- compiler_Value _87f75ce3_walk_Integer(parser_Node *node, _87f75ce3_State *state) {
+ compiler_Value _87f75ce3_walk_Integer(parser_Node *node, compiler_State *state) {
     typechecking_Type *tpe = ((*node).tpe);
     compiler_Value value = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = ((*tpe).i), .sign = ((*tpe).sign), .tpe = tpe });
     return value;
 };
- compiler_Value _87f75ce3_walk_Float(parser_Node *node, _87f75ce3_State *state) {
+ compiler_Value _87f75ce3_walk_Float(parser_Node *node, compiler_State *state) {
     typechecking_Type *tpe = ((*node).tpe);
     compiler_Value value = ((compiler_Value){ .kind = compiler_ValueKind_FLOAT, .f = (((*node).value).f), .tpe = tpe });
     return value;
 };
- compiler_Value _87f75ce3_walk_Char(parser_Node *node, _87f75ce3_State *state) {
+ compiler_Value _87f75ce3_walk_Char(parser_Node *node, compiler_State *state) {
     typechecking_Type *tpe = ((*node).tpe);
     compiler_Value value = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = (((*node).value).i), .tpe = tpe });
     return value;
 };
- compiler_Value _87f75ce3_convert_to(parser_Node *node, compiler_Value value, typechecking_Type *tpe, _87f75ce3_State *state) {
+ compiler_Value _87f75ce3_convert_to(parser_Node *node, compiler_Value value, typechecking_Type *tpe, compiler_State *state) {
     if ((((bool)(!(value.tpe))) || ((bool)(!tpe)))) {
         return value;
     }  ;
@@ -153,18 +153,18 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
             value = _87f75ce3_convert_to(node, value, builtins_size_t_, state);
         }  ;
         if (typechecking_is_float((value.tpe))) {
-            compiler_Value ret = _87f75ce3_make_local_value(builtins_bool_, NULL, state);
+            compiler_Value ret = compiler_make_local_value(builtins_bool_, NULL, state);
             compiler_Insn *insn = malloc((sizeof(compiler_Insn)));
             ((*insn).kind) = compiler_InsnKind_FCMP;
             (((*insn).value).cmp) = ((compiler_InsnCmp){ .op = compiler_f_une, .ret = ret, .left = value, .right = ((compiler_Value){ .kind = compiler_ValueKind_FLOAT, .tpe = (value.tpe), .f = 0.0 }) });
-            _87f75ce3_push_insn(insn, state);
+            compiler_push_insn(insn, state);
             return ret;
         } else if (typechecking_is_integer((value.tpe))) {
-            compiler_Value ret = _87f75ce3_make_local_value(builtins_bool_, NULL, state);
+            compiler_Value ret = compiler_make_local_value(builtins_bool_, NULL, state);
             compiler_Insn *insn = malloc((sizeof(compiler_Insn)));
             ((*insn).kind) = compiler_InsnKind_ICMP;
             (((*insn).value).cmp) = ((compiler_InsnCmp){ .op = compiler_i_ne, .ret = ret, .left = value, .right = ((compiler_Value){ .kind = compiler_ValueKind_INT, .tpe = (value.tpe), .i = 0 }) });
-            _87f75ce3_push_insn(insn, state);
+            compiler_push_insn(insn, state);
             return ret;
         } else {
             typechecking_errorn(node, ((Array){15, "Can't convert "}));
@@ -228,32 +228,32 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
             return value;
         };
     } ;
-    compiler_Value ret = _87f75ce3_make_local_value(tpe, NULL, state);
+    compiler_Value ret = compiler_make_local_value(tpe, NULL, state);
     compiler_Insn *insn = malloc((sizeof(compiler_Insn)));
     ((*insn).kind) = kind;
     (((*insn).value).convert) = ((compiler_InsnConvert){ .ret = ret, .value = value });
-    _87f75ce3_push_insn(insn, state);
+    compiler_push_insn(insn, state);
     return ret;
 };
- compiler_Value _87f75ce3_walk_Cast(parser_Node *node, _87f75ce3_State *state) {
-    compiler_Value value = _87f75ce3_walk_expression((((*node).value).expr), state);
+ compiler_Value _87f75ce3_walk_Cast(parser_Node *node, compiler_State *state) {
+    compiler_Value value = compiler_walk_expression((((*node).value).expr), state);
     return _87f75ce3_convert_to(node, value, ((*node).tpe), state);
 };
- compiler_Value _87f75ce3_walk_StructLit(parser_Node *node, _87f75ce3_State *state) {
+ compiler_Value _87f75ce3_walk_StructLit(parser_Node *node, compiler_State *state) {
     typechecking_Type *tpe = ((*node).tpe);
     if ((!tpe)) {
         typechecking_errorn(node, ((Array){43, "Need to specify a type for struct literal\x0a"""}));
-        return _87f75ce3_NO_VALUE;
+        return compiler_NO_VALUE;
     }  ;
     vector_Vector *args = ((((*node).value).struct_lit).args);
     vector_Vector *kwargs = ((((*node).value).struct_lit).kwargs);
     Array values = ((Array){(((*tpe).fields).size), malloc(((sizeof(compiler_Value)) * (((*tpe).fields).size)))});
     for (int i = 0;(i < vector_length(args));(i += 1)) {
         parser_Node *arg = ((parser_Node *)vector_get(args, i));
-        compiler_Value value = _87f75ce3_walk_expression(arg, state);
+        compiler_Value value = compiler_walk_expression(arg, state);
         if ((i > (values.size))) {
             typechecking_errorn(arg, ((Array){38, "Too many arguments to struct literal\x0a"""}));
-            return _87f75ce3_NO_VALUE;
+            return compiler_NO_VALUE;
         }  ;
         (((compiler_Value *)values.value)[i]) = value;
     }
@@ -261,7 +261,7 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
     for (int i = 0;(i < vector_length(kwargs));(i += 1)) {
         parser_Node *kwarg = ((parser_Node *)vector_get(kwargs, i));
         string name = typechecking_last_ident_to_str(((((*kwarg).value).named_arg).name));
-        compiler_Value value = _87f75ce3_walk_expression(((((*kwarg).value).named_arg).value), state);
+        compiler_Value value = compiler_walk_expression(((((*kwarg).value).named_arg).value), state);
         bool found = false;
         for (int j = 0;(j < (((*tpe).fields).size));(j += 1)) {
             string field_name = ((((typechecking_StructMember *)((*tpe).fields).value)[j]).name);
@@ -275,7 +275,7 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
         if ((!found)) {
             typechecking_errorn(kwarg, ((Array){16, "Unknown field \""}));
             fprintf(stderr, (((Array){5, "%s%s"}).value), (name.value), (((Array){3, "\"\x0a"""}).value));
-            return _87f75ce3_NO_VALUE;
+            return compiler_NO_VALUE;
         }  ;
     }
     ;
@@ -284,33 +284,33 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
         compiler_Value val = (((compiler_Value *)values.value)[i]);
         if ((((val.kind) == compiler_ValueKind_LOCAL) || ((val.kind) == compiler_ValueKind_GLOBAL))) {
             (((compiler_Value *)values.value)[i]) = ((compiler_Value){ .undef = true, .tpe = (val.tpe) });
-            compiler_Value ret = _87f75ce3_make_local_value(tpe, NULL, state);
+            compiler_Value ret = compiler_make_local_value(tpe, NULL, state);
             Array index = ((Array){1, malloc((((int64)(sizeof(int))) * ((int64)1)))});
             (((int *)index.value)[0]) = i;
             compiler_Insn *insert = malloc((sizeof(compiler_Insn)));
             ((*insert).kind) = compiler_InsnKind_INSERTVALUE;
             (((*insert).value).insert_value) = ((compiler_InsnInsertValue){ .ret = ret, .value = value, .element = val, .index = index });
-            _87f75ce3_push_insn(insert, state);
+            compiler_push_insn(insert, state);
             value = ret;
         }  ;
     }
     ;
     return value;
 };
- compiler_Value _87f75ce3_walk_ArithmeticOp(parser_Node *node, compiler_InsnKind insn_kind, typechecking_Type *tpe, _87f75ce3_State *state) {
-    compiler_Value left = _87f75ce3_convert_to(node, _87f75ce3_walk_expression(((((*node).value).bin_op).left), state), tpe, state);
-    compiler_Value right = _87f75ce3_convert_to(node, _87f75ce3_walk_expression(((((*node).value).bin_op).right), state), tpe, state);
-    compiler_Value value = _87f75ce3_make_local_value(tpe, NULL, state);
+ compiler_Value _87f75ce3_walk_ArithmeticOp(parser_Node *node, compiler_InsnKind insn_kind, typechecking_Type *tpe, compiler_State *state) {
+    compiler_Value left = _87f75ce3_convert_to(node, compiler_walk_expression(((((*node).value).bin_op).left), state), tpe, state);
+    compiler_Value right = _87f75ce3_convert_to(node, compiler_walk_expression(((((*node).value).bin_op).right), state), tpe, state);
+    compiler_Value value = compiler_make_local_value(tpe, NULL, state);
     compiler_Insn *insn = malloc((sizeof(compiler_Insn)));
     ((*insn).kind) = insn_kind;
     (((*insn).value).arith) = ((compiler_InsnArithmetic){ .left = left, .right = right, .ret = value });
-    _87f75ce3_push_insn(insn, state);
+    compiler_push_insn(insn, state);
     return value;
 };
- compiler_Value _87f75ce3_walk_Add(parser_Node *node, _87f75ce3_State *state) {
+ compiler_Value _87f75ce3_walk_Add(parser_Node *node, compiler_State *state) {
     typechecking_Type *tpe = ((*node).tpe);
     if ((!tpe)) {
-        return _87f75ce3_NO_VALUE;
+        return compiler_NO_VALUE;
     }  ;
     int insn_kind = compiler_InsnKind_ADD;
     if (typechecking_is_float(tpe)) {
@@ -318,10 +318,10 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
     }  ;
     return _87f75ce3_walk_ArithmeticOp(node, insn_kind, tpe, state);
 };
- compiler_Value _87f75ce3_walk_Sub(parser_Node *node, _87f75ce3_State *state) {
+ compiler_Value _87f75ce3_walk_Sub(parser_Node *node, compiler_State *state) {
     typechecking_Type *tpe = ((*node).tpe);
     if ((!tpe)) {
-        return _87f75ce3_NO_VALUE;
+        return compiler_NO_VALUE;
     }  ;
     int insn_kind = compiler_InsnKind_SUB;
     if (typechecking_is_float(tpe)) {
@@ -329,10 +329,10 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
     }  ;
     return _87f75ce3_walk_ArithmeticOp(node, insn_kind, tpe, state);
 };
- compiler_Value _87f75ce3_walk_Mul(parser_Node *node, _87f75ce3_State *state) {
+ compiler_Value _87f75ce3_walk_Mul(parser_Node *node, compiler_State *state) {
     typechecking_Type *tpe = ((*node).tpe);
     if ((!tpe)) {
-        return _87f75ce3_NO_VALUE;
+        return compiler_NO_VALUE;
     }  ;
     int insn_kind = compiler_InsnKind_MUL;
     if (typechecking_is_float(tpe)) {
@@ -340,10 +340,10 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
     }  ;
     return _87f75ce3_walk_ArithmeticOp(node, insn_kind, tpe, state);
 };
- compiler_Value _87f75ce3_walk_Mod(parser_Node *node, _87f75ce3_State *state) {
+ compiler_Value _87f75ce3_walk_Mod(parser_Node *node, compiler_State *state) {
     typechecking_Type *tpe = ((*node).tpe);
     if ((!tpe)) {
-        return _87f75ce3_NO_VALUE;
+        return compiler_NO_VALUE;
     }  ;
     int insn_kind = compiler_InsnKind_SREM;
     if (typechecking_is_float(tpe)) {
@@ -353,10 +353,10 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
     } ;
     return _87f75ce3_walk_ArithmeticOp(node, insn_kind, tpe, state);
 };
- compiler_Value _87f75ce3_walk_Div(parser_Node *node, _87f75ce3_State *state) {
+ compiler_Value _87f75ce3_walk_Div(parser_Node *node, compiler_State *state) {
     typechecking_Type *tpe = ((*node).tpe);
     if ((!tpe)) {
-        return _87f75ce3_NO_VALUE;
+        return compiler_NO_VALUE;
     }  ;
     int insn_kind = compiler_InsnKind_SDIV;
     if (typechecking_is_float(tpe)) {
@@ -366,34 +366,34 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
     } ;
     return _87f75ce3_walk_ArithmeticOp(node, insn_kind, tpe, state);
 };
- compiler_Value _87f75ce3_walk_Shl(parser_Node *node, _87f75ce3_State *state) {
+ compiler_Value _87f75ce3_walk_Shl(parser_Node *node, compiler_State *state) {
     typechecking_Type *tpe = ((*node).tpe);
     return _87f75ce3_walk_ArithmeticOp(node, compiler_InsnKind_SHL, tpe, state);
 };
- compiler_Value _87f75ce3_walk_Shr(parser_Node *node, _87f75ce3_State *state) {
+ compiler_Value _87f75ce3_walk_Shr(parser_Node *node, compiler_State *state) {
     typechecking_Type *tpe = ((*node).tpe);
     return _87f75ce3_walk_ArithmeticOp(node, compiler_InsnKind_ASHR, tpe, state);
 };
- compiler_Value _87f75ce3_walk_Call(parser_Node *node, _87f75ce3_State *state) {
+ compiler_Value _87f75ce3_walk_Call(parser_Node *node, compiler_State *state) {
     if ((!((*node).tpe))) {
-        return _87f75ce3_NO_VALUE;
+        return compiler_NO_VALUE;
     }  ;
     string name = ((*((*node).tpe)).type_name);
     vector_Vector *parameter_t = ((*((*node).tpe)).parameter_t);
     name = typechecking_mangle_function_name(name, parameter_t);
     compiler_Function *function = ((compiler_Function *)map_get(((*((*state).result)).functions), name));
     if ((!function)) {
-        return _87f75ce3_NO_VALUE;
+        return compiler_NO_VALUE;
     }  ;
     compiler_Value name_v = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = name, .tpe = NULL });
-    compiler_Value value = _87f75ce3_NO_VALUE;
+    compiler_Value value = compiler_NO_VALUE;
     if (((*function).ret)) {
-        value = _87f75ce3_make_local_value(((*function).ret), NULL, state);
+        value = compiler_make_local_value(((*function).ret), NULL, state);
     }  ;
     Array args = ((Array){vector_length(parameter_t), malloc((((int64)(sizeof(compiler_Value))) * ((int64)vector_length(parameter_t))))});
     for (int i = 0;(i < vector_length(((((*node).value).func_call).args)));(i += 1)) {
         parser_Node *n = ((parser_Node *)vector_get(((((*node).value).func_call).args), i));
-        (((compiler_Value *)args.value)[i]) = _87f75ce3_walk_expression(n, state);
+        (((compiler_Value *)args.value)[i]) = compiler_walk_expression(n, state);
     }
     ;
     for (int i = 0;(i < vector_length(((((*node).value).func_call).kwargs)));(i += 1)) {
@@ -404,7 +404,7 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
         for (int j = 0;(j < vector_length(parameter_t));(j += 1)) {
             typechecking_NamedParameter *p = ((typechecking_NamedParameter *)vector_get(parameter_t, j));
             if ((strcmp((((*p).name).value), (name.value)) == 0)) {
-                (((compiler_Value *)args.value)[j]) = _87f75ce3_walk_expression(value, state);
+                (((compiler_Value *)args.value)[j]) = compiler_walk_expression(value, state);
             }  ;
         }
         ;
@@ -413,14 +413,14 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
     compiler_Insn *insn = malloc((sizeof(compiler_Insn)));
     ((*insn).kind) = compiler_InsnKind_CALL;
     (((*insn).value).call) = ((compiler_InsnCall){ .name = name_v, .ret = value, .args = args });
-    _87f75ce3_push_insn(insn, state);
+    compiler_push_insn(insn, state);
     return value;
 };
- compiler_Value _87f75ce3_walk_Identifier(parser_Node *node, _87f75ce3_State *state) {
-    compiler_Value value = _87f75ce3_make_local_value(((*node).tpe), NULL, state);
+ compiler_Value _87f75ce3_walk_Identifier(parser_Node *node, compiler_State *state) {
+    compiler_Value value = compiler_make_local_value(((*node).tpe), NULL, state);
     scope_Value *val = scope_get(((*node).scope), node);
     if ((!val)) {
-        return _87f75ce3_NO_VALUE;
+        return compiler_NO_VALUE;
     }  ;
     string name = ((*val).assembly_name);
     int kind = compiler_ValueKind_LOCAL;
@@ -434,10 +434,10 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
     compiler_Insn *insn = malloc((sizeof(compiler_Insn)));
     ((*insn).kind) = compiler_InsnKind_LOAD;
     (((*insn).value).load) = ((compiler_InsnLoad){ .value = value, .loc = loc });
-    _87f75ce3_push_insn(insn, state);
+    compiler_push_insn(insn, state);
     return value;
 };
- compiler_Value _87f75ce3_walk_Assign(parser_Node *node, _87f75ce3_State *state) {
+ compiler_Value _87f75ce3_walk_Assign(parser_Node *node, compiler_State *state) {
     ;
     vector_Vector *right = ((((*node).value).assign).right);
     vector_Vector *left = ((((*node).value).assign).left);
@@ -445,7 +445,7 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
     int j = 0;
     for (int i = 0;(i < vector_length(right));(i += 1)) {
         parser_Node *n = ((parser_Node *)vector_get(right, i));
-        compiler_Value value = _87f75ce3_walk_expression(n, state);
+        compiler_Value value = compiler_walk_expression(n, state);
         typechecking_Type *tpe = ((*n).tpe);
         if ((!tpe)) {
             continue;
@@ -454,15 +454,15 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
             for (int k = 0;(k < vector_length(((*tpe).return_t)));(k += 1)) {
                 void *t = vector_get(((*tpe).return_t), k);
                 if ((j >= vector_length(left))) {
-                    return _87f75ce3_NO_VALUE;
+                    return compiler_NO_VALUE;
                 }  ;
                 parser_Node *l = ((parser_Node *)vector_get(left, j));
-                compiler_Value *addr = (_87f75ce3_walk_expression(l, state).addr);
+                compiler_Value *addr = (compiler_walk_expression(l, state).addr);
                 if ((!addr)) {
                     typechecking_errorn(l, ((Array){41, "Can't assign, expression has no address\x0a"""}));
-                    return _87f75ce3_NO_VALUE;
+                    return compiler_NO_VALUE;
                 }  ;
-                compiler_Value ret = _87f75ce3_make_local_value(t, NULL, state);
+                compiler_Value ret = compiler_make_local_value(t, NULL, state);
                 Array index = ((Array){1, malloc((((int64)(sizeof(int))) * ((int64)1)))});
                 (((int *)index.value)[0]) = k;
                 compiler_Insn *extract = malloc((sizeof(compiler_Insn)));
@@ -471,25 +471,25 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
                 compiler_Insn *store = malloc((sizeof(compiler_Insn)));
                 ((*store).kind) = compiler_InsnKind_STORE;
                 (((*store).value).store) = ((compiler_InsnStore){ .value = ret, .loc = (*addr) });
-                _87f75ce3_push_insn(extract, state);
-                _87f75ce3_push_insn(store, state);
+                compiler_push_insn(extract, state);
+                compiler_push_insn(store, state);
                 last_value = ret;
                 (j += 1);
             }
             ;
         }  else {
             if ((j >= vector_length(left))) {
-                return _87f75ce3_NO_VALUE;
+                return compiler_NO_VALUE;
             }  ;
             parser_Node *l = ((parser_Node *)vector_get(left, j));
-            compiler_Value *addr = (_87f75ce3_walk_expression(l, state).addr);
+            compiler_Value *addr = (compiler_walk_expression(l, state).addr);
             if ((!addr)) {
-                return _87f75ce3_NO_VALUE;
+                return compiler_NO_VALUE;
             }  ;
             compiler_Insn *store = malloc((sizeof(compiler_Insn)));
             ((*store).kind) = compiler_InsnKind_STORE;
             (((*store).value).store) = ((compiler_InsnStore){ .value = value, .loc = (*addr) });
-            _87f75ce3_push_insn(store, state);
+            compiler_push_insn(store, state);
             last_value = value;
             (j += 1);
         };
@@ -497,7 +497,7 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
     ;
     return last_value;
 };
- compiler_Value _87f75ce3_walk_AssignEq(parser_Node *node, _87f75ce3_State *state) {
+ compiler_Value _87f75ce3_walk_AssignEq(parser_Node *node, compiler_State *state) {
     parser_Node *left = ((((*node).value).bin_op).left);
     parser_Node *right = ((((*node).value).bin_op).right);
     parser_NodeKind kind;
@@ -558,83 +558,83 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
     ((*assign_eq_node).loc) = ((*node).loc);
     ((*assign_eq_node).scope) = ((*node).scope);
     (((*assign_eq_node).value).assign) = ((parser_NodeAssign){ .left = left_vec, .right = right_vec });
-    return _87f75ce3_walk_expression(assign_eq_node, state);
+    return compiler_walk_expression(assign_eq_node, state);
 };
- compiler_Value _87f75ce3_walk_Deref(parser_Node *node, _87f75ce3_State *state) {
-    compiler_Value value = _87f75ce3_walk_expression((((*node).value).expr), state);
+ compiler_Value _87f75ce3_walk_Deref(parser_Node *node, compiler_State *state) {
+    compiler_Value value = compiler_walk_expression((((*node).value).expr), state);
     typechecking_Type *tpe = (value.tpe);
     compiler_Value *addr = malloc((sizeof(compiler_Value)));
     (*addr) = value;
-    compiler_Value ret = _87f75ce3_make_local_value(((*tpe).tpe), addr, state);
+    compiler_Value ret = compiler_make_local_value(((*tpe).tpe), addr, state);
     compiler_Insn *load = malloc((sizeof(compiler_Insn)));
     ((*load).kind) = compiler_InsnKind_LOAD;
     (((*load).value).load) = ((compiler_InsnLoad){ .value = ret, .loc = value });
-    _87f75ce3_push_insn(load, state);
+    compiler_push_insn(load, state);
     return ret;
 };
- compiler_Value _87f75ce3_walk_Ptr(parser_Node *node, _87f75ce3_State *state) {
-    compiler_Value value = _87f75ce3_walk_expression((((*node).value).expr), state);
+ compiler_Value _87f75ce3_walk_Ptr(parser_Node *node, compiler_State *state) {
+    compiler_Value value = compiler_walk_expression((((*node).value).expr), state);
     if ((!(value.addr))) {
-        return _87f75ce3_NO_VALUE;
+        return compiler_NO_VALUE;
     }  ;
     return (*(value.addr));
 };
- compiler_Value _87f75ce3_walk_MemberAccess_gep(parser_Node *node, typechecking_Type *tpe, compiler_Value value, Array index, _87f75ce3_State *state) {
-    compiler_Value gep_ret = _87f75ce3_make_local_value(typechecking_pointer(((*node).tpe)), NULL, state);
+ compiler_Value _87f75ce3_walk_MemberAccess_gep(parser_Node *node, typechecking_Type *tpe, compiler_Value value, Array index, compiler_State *state) {
+    compiler_Value gep_ret = compiler_make_local_value(typechecking_pointer(((*node).tpe)), NULL, state);
     compiler_Insn *gep = malloc((sizeof(compiler_Insn)));
     ((*gep).kind) = compiler_InsnKind_GETELEMENTPTR;
     (((*gep).value).gep) = ((compiler_InsnGetElementPtr){ .ret = gep_ret, .tpe = tpe, .value = (*(value.addr)), .index = index });
     compiler_Value *addr = malloc((sizeof(compiler_Value)));
     (*addr) = gep_ret;
-    compiler_Value ret = _87f75ce3_make_local_value(((*node).tpe), addr, state);
+    compiler_Value ret = compiler_make_local_value(((*node).tpe), addr, state);
     compiler_Insn *load = malloc((sizeof(compiler_Insn)));
     ((*load).kind) = compiler_InsnKind_LOAD;
     (((*load).value).load) = ((compiler_InsnLoad){ .value = ret, .loc = gep_ret });
-    _87f75ce3_push_insn(gep, state);
-    _87f75ce3_push_insn(load, state);
+    compiler_push_insn(gep, state);
+    compiler_push_insn(load, state);
     return ret;
 };
- compiler_Value _87f75ce3_walk_MemberAccess(parser_Node *node, _87f75ce3_State *state) {
+ compiler_Value _87f75ce3_walk_MemberAccess(parser_Node *node, compiler_State *state) {
     if ((!((*node).tpe))) {
-        return _87f75ce3_NO_VALUE;
+        return compiler_NO_VALUE;
     }  ;
     parser_Node *left = ((((*node).value).bin_op).left);
     parser_Node *right = ((((*node).value).bin_op).right);
-    compiler_Value value = _87f75ce3_walk_expression(left, state);
+    compiler_Value value = compiler_walk_expression(left, state);
     typechecking_Type *tpe = ((*left).tpe);
     string name = typechecking_last_ident_to_str(right);
     if ((((*tpe).kind) == typechecking_TypeKind_STATIC_ARRAY)) {
         if ((strcmp((name.value), (((Array){5, "size"}).value)) == 0)) {
-            compiler_Value i = _87f75ce3_make_int_value(((*tpe).length));
+            compiler_Value i = compiler_make_int_value(((*tpe).length));
             (i.tpe) = builtins_size_t_;
             return i;
         } else if ((strcmp((name.value), (((Array){6, "value"}).value)) == 0)) {
             Array index = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
-            (((compiler_Value *)index.value)[0]) = _87f75ce3_make_int_value(0);
+            (((compiler_Value *)index.value)[0]) = compiler_make_int_value(0);
             ((((compiler_Value *)index.value)[0]).tpe) = builtins_size_t_;
-            (((compiler_Value *)index.value)[1]) = _87f75ce3_make_int_value(0);
+            (((compiler_Value *)index.value)[1]) = compiler_make_int_value(0);
             ((((compiler_Value *)index.value)[1]).tpe) = builtins_size_t_;
-            compiler_Value gep_ret = _87f75ce3_make_local_value(((*node).tpe), NULL, state);
+            compiler_Value gep_ret = compiler_make_local_value(((*node).tpe), NULL, state);
             compiler_Insn *gep = malloc((sizeof(compiler_Insn)));
             ((*gep).kind) = compiler_InsnKind_GETELEMENTPTR;
             (((*gep).value).gep) = ((compiler_InsnGetElementPtr){ .ret = gep_ret, .tpe = tpe, .value = (*(value.addr)), .index = index });
-            _87f75ce3_push_insn(gep, state);
+            compiler_push_insn(gep, state);
             return gep_ret;
         } else {
             assert(false);
         };
     } else if ((((*tpe).kind) == typechecking_TypeKind_ARRAY)) {
         Array index = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
-        (((compiler_Value *)index.value)[0]) = _87f75ce3_make_int_value(0);
+        (((compiler_Value *)index.value)[0]) = compiler_make_int_value(0);
         if ((strcmp((name.value), (((Array){5, "size"}).value)) == 0)) {
-            (((compiler_Value *)index.value)[1]) = _87f75ce3_make_int_value(0);
+            (((compiler_Value *)index.value)[1]) = compiler_make_int_value(0);
         } else if ((strcmp((name.value), (((Array){6, "value"}).value)) == 0)) {
-            (((compiler_Value *)index.value)[1]) = _87f75ce3_make_int_value(1);
+            (((compiler_Value *)index.value)[1]) = compiler_make_int_value(1);
         } ;
         return _87f75ce3_walk_MemberAccess_gep(node, tpe, value, index, state);
     } else {
         Array index = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
-        (((compiler_Value *)index.value)[0]) = _87f75ce3_make_int_value(0);
+        (((compiler_Value *)index.value)[0]) = compiler_make_int_value(0);
         for (int i = 0;(i < (((*tpe).fields).size));(i += 1)) {
             typechecking_StructMember member = (((typechecking_StructMember *)((*tpe).fields).value)[i]);
             if ((strcmp(((member.name).value), (name.value)) == 0)) {
@@ -646,103 +646,103 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
         return _87f75ce3_walk_MemberAccess_gep(node, tpe, value, index, state);
     };
 };
- compiler_Value _87f75ce3_walk_ArraySubscript(parser_Node *node, _87f75ce3_State *state) {
+ compiler_Value _87f75ce3_walk_ArraySubscript(parser_Node *node, compiler_State *state) {
     if ((!((*node).tpe))) {
-        return _87f75ce3_NO_VALUE;
+        return compiler_NO_VALUE;
     }  ;
     parser_Node *left = ((((*node).value).bin_op).left);
     parser_Node *right = ((((*node).value).bin_op).right);
     typechecking_Type *array_tpe = ((*left).tpe);
-    compiler_Value left_value = _87f75ce3_walk_expression(left, state);
-    compiler_Value right_value = _87f75ce3_walk_expression(right, state);
+    compiler_Value left_value = compiler_walk_expression(left, state);
+    compiler_Value right_value = compiler_walk_expression(right, state);
     if ((((*array_tpe).kind) == typechecking_TypeKind_ARRAY)) {
         Array index1 = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
-        (((compiler_Value *)index1.value)[0]) = _87f75ce3_make_int_value(0);
-        (((compiler_Value *)index1.value)[1]) = _87f75ce3_make_int_value(1);
-        compiler_Value gep_ret1 = _87f75ce3_make_local_value(typechecking_pointer(typechecking_pointer(((*node).tpe))), NULL, state);
+        (((compiler_Value *)index1.value)[0]) = compiler_make_int_value(0);
+        (((compiler_Value *)index1.value)[1]) = compiler_make_int_value(1);
+        compiler_Value gep_ret1 = compiler_make_local_value(typechecking_pointer(typechecking_pointer(((*node).tpe))), NULL, state);
         compiler_Insn *gep1 = malloc((sizeof(compiler_Insn)));
         ((*gep1).kind) = compiler_InsnKind_GETELEMENTPTR;
         (((*gep1).value).gep) = ((compiler_InsnGetElementPtr){ .ret = gep_ret1, .tpe = array_tpe, .value = (*(left_value.addr)), .index = index1 });
-        compiler_Value load1_value = _87f75ce3_make_local_value(typechecking_pointer(((*node).tpe)), NULL, state);
+        compiler_Value load1_value = compiler_make_local_value(typechecking_pointer(((*node).tpe)), NULL, state);
         compiler_Insn *load1 = malloc((sizeof(compiler_Insn)));
         ((*load1).kind) = compiler_InsnKind_LOAD;
         (((*load1).value).load) = ((compiler_InsnLoad){ .value = load1_value, .loc = gep_ret1 });
         Array index2 = ((Array){1, malloc((((int64)(sizeof(compiler_Value))) * ((int64)1)))});
         (((compiler_Value *)index2.value)[0]) = right_value;
-        compiler_Value gep_ret2 = _87f75ce3_make_local_value(typechecking_pointer(((*node).tpe)), NULL, state);
+        compiler_Value gep_ret2 = compiler_make_local_value(typechecking_pointer(((*node).tpe)), NULL, state);
         compiler_Insn *gep2 = malloc((sizeof(compiler_Insn)));
         ((*gep2).kind) = compiler_InsnKind_GETELEMENTPTR;
         (((*gep2).value).gep) = ((compiler_InsnGetElementPtr){ .ret = gep_ret2, .tpe = ((*node).tpe), .value = load1_value, .index = index2 });
         compiler_Value *addr = malloc((sizeof(compiler_Value)));
         (*addr) = gep_ret2;
-        compiler_Value ret = _87f75ce3_make_local_value(((*node).tpe), addr, state);
+        compiler_Value ret = compiler_make_local_value(((*node).tpe), addr, state);
         compiler_Insn *load2 = malloc((sizeof(compiler_Insn)));
         ((*load2).kind) = compiler_InsnKind_LOAD;
         (((*load2).value).load) = ((compiler_InsnLoad){ .value = ret, .loc = gep_ret2 });
-        _87f75ce3_push_insn(gep1, state);
-        _87f75ce3_push_insn(load1, state);
-        _87f75ce3_push_insn(gep2, state);
-        _87f75ce3_push_insn(load2, state);
+        compiler_push_insn(gep1, state);
+        compiler_push_insn(load1, state);
+        compiler_push_insn(gep2, state);
+        compiler_push_insn(load2, state);
         return ret;
     } else if ((((*array_tpe).kind) == typechecking_TypeKind_STATIC_ARRAY)) {
         Array index = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
-        (((compiler_Value *)index.value)[0]) = _87f75ce3_make_int_value(0);
+        (((compiler_Value *)index.value)[0]) = compiler_make_int_value(0);
         (((compiler_Value *)index.value)[1]) = right_value;
-        compiler_Value gep_ret = _87f75ce3_make_local_value(typechecking_pointer(((*node).tpe)), NULL, state);
+        compiler_Value gep_ret = compiler_make_local_value(typechecking_pointer(((*node).tpe)), NULL, state);
         compiler_Insn *gep = malloc((sizeof(compiler_Insn)));
         ((*gep).kind) = compiler_InsnKind_GETELEMENTPTR;
         (((*gep).value).gep) = ((compiler_InsnGetElementPtr){ .ret = gep_ret, .tpe = array_tpe, .value = (*(left_value.addr)), .index = index });
         compiler_Value *addr = malloc((sizeof(compiler_Value)));
         (*addr) = gep_ret;
-        compiler_Value ret = _87f75ce3_make_local_value(((*node).tpe), addr, state);
+        compiler_Value ret = compiler_make_local_value(((*node).tpe), addr, state);
         compiler_Insn *load = malloc((sizeof(compiler_Insn)));
         ((*load).kind) = compiler_InsnKind_LOAD;
         (((*load).value).load) = ((compiler_InsnLoad){ .value = ret, .loc = gep_ret });
-        _87f75ce3_push_insn(gep, state);
-        _87f75ce3_push_insn(load, state);
+        compiler_push_insn(gep, state);
+        compiler_push_insn(load, state);
         return ret;
     }
     else if (typechecking_is_pointer(array_tpe)) {
         Array index = ((Array){1, malloc((((int64)(sizeof(compiler_Value))) * ((int64)1)))});
         (((compiler_Value *)index.value)[0]) = right_value;
-        compiler_Value gep_ret = _87f75ce3_make_local_value(typechecking_pointer(((*node).tpe)), NULL, state);
+        compiler_Value gep_ret = compiler_make_local_value(typechecking_pointer(((*node).tpe)), NULL, state);
         compiler_Insn *gep = malloc((sizeof(compiler_Insn)));
         ((*gep).kind) = compiler_InsnKind_GETELEMENTPTR;
         (((*gep).value).gep) = ((compiler_InsnGetElementPtr){ .ret = gep_ret, .tpe = ((*node).tpe), .value = left_value, .index = index });
         compiler_Value *addr = malloc((sizeof(compiler_Value)));
         (*addr) = gep_ret;
-        compiler_Value ret = _87f75ce3_make_local_value(((*node).tpe), addr, state);
+        compiler_Value ret = compiler_make_local_value(((*node).tpe), addr, state);
         compiler_Insn *load = malloc((sizeof(compiler_Insn)));
         ((*load).kind) = compiler_InsnKind_LOAD;
         (((*load).value).load) = ((compiler_InsnLoad){ .value = ret, .loc = gep_ret });
-        _87f75ce3_push_insn(gep, state);
-        _87f75ce3_push_insn(load, state);
+        compiler_push_insn(gep, state);
+        compiler_push_insn(load, state);
         return ret;
     } else {
         assert(false);
     };
 };
- compiler_Value _87f75ce3_walk_SizeOf(parser_Node *node, _87f75ce3_State *state) {
+ compiler_Value _87f75ce3_walk_SizeOf(parser_Node *node, compiler_State *state) {
     typechecking_Type *tpe = ((*(((*node).value).expr)).tpe);
     if ((!tpe)) {
         typechecking_errorn(node, ((Array){20, "Invalid expression\x0a"""}));
-        return _87f75ce3_NO_VALUE;
+        return compiler_NO_VALUE;
     }  ;
-    compiler_Value value = _87f75ce3_make_int_value(((*tpe).size));
+    compiler_Value value = compiler_make_int_value(((*tpe).size));
     (value.tpe) = builtins_size_t_;
     return value;
 };
- compiler_Value _87f75ce3_walk_AlignOf(parser_Node *node, _87f75ce3_State *state) {
+ compiler_Value _87f75ce3_walk_AlignOf(parser_Node *node, compiler_State *state) {
     typechecking_Type *tpe = ((*(((*node).value).expr)).tpe);
     if ((!tpe)) {
         typechecking_errorn(node, ((Array){20, "Invalid expression\x0a"""}));
-        return _87f75ce3_NO_VALUE;
+        return compiler_NO_VALUE;
     }  ;
-    compiler_Value value = _87f75ce3_make_int_value(((*tpe).align));
+    compiler_Value value = compiler_make_int_value(((*tpe).align));
     (value.tpe) = builtins_size_t_;
     return value;
 };
- compiler_Value _87f75ce3_compare(parser_Node *node, compiler_Value left, compiler_Value right, _87f75ce3_State *state) {
+ compiler_Value _87f75ce3_compare(parser_Node *node, compiler_Value left, compiler_Value right, compiler_State *state) {
     typechecking_Type *tpe = NULL;
     if (typechecking_is_pointer((left.tpe))) {
         left = _87f75ce3_convert_to(node, left, builtins_size_t_, state);
@@ -750,7 +750,7 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
     if (typechecking_is_pointer((right.tpe))) {
         right = _87f75ce3_convert_to(node, right, builtins_size_t_, state);
     }  ;
-    if ((((bool)typechecking_is_arithmetic((left.tpe))) && ((bool)typechecking_is_arithmetic((right.tpe))))) {
+    if ((typechecking_is_arithmetic((left.tpe)) && typechecking_is_arithmetic((right.tpe)))) {
         tpe = typechecking_common_type((left.tpe), (right.tpe));
         left = _87f75ce3_convert_to(node, left, tpe, state);
         right = _87f75ce3_convert_to(node, right, tpe, state);
@@ -836,11 +836,11 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
                 ;
             };
         };
-        compiler_Value ret = _87f75ce3_make_local_value(((*node).tpe), NULL, state);
+        compiler_Value ret = compiler_make_local_value(((*node).tpe), NULL, state);
         compiler_Insn *insn = malloc((sizeof(compiler_Insn)));
         ((*insn).kind) = kind;
         (((*insn).value).cmp) = ((compiler_InsnCmp){ .op = op, .ret = ret, .left = left, .right = right });
-        _87f75ce3_push_insn(insn, state);
+        compiler_push_insn(insn, state);
         return ret;
     } else if (typechecking_equals((left.tpe), (right.tpe))) {
         if (typechecking_equals((left.tpe), builtins_string_)) {
@@ -851,55 +851,55 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
         assert(false);
     };
 };
- compiler_Value _87f75ce3_walk_ComparisionOp(parser_Node *node, _87f75ce3_State *state) {
+ compiler_Value _87f75ce3_walk_ComparisionOp(parser_Node *node, compiler_State *state) {
     parser_Node *left = ((((*node).value).bin_op).left);
     parser_Node *right = ((((*node).value).bin_op).right);
     if ((((bool)(!left)) || ((bool)(!right)))) {
-        return _87f75ce3_NO_VALUE;
+        return compiler_NO_VALUE;
     }  ;
     if ((((bool)(!((*left).tpe))) || ((bool)(!((*right).tpe))))) {
-        return _87f75ce3_NO_VALUE;
+        return compiler_NO_VALUE;
     }  ;
     if (((((*left).kind) >= parser_NodeKind_EQ) && (((*left).kind) <= parser_NodeKind_LEQ))) {
-        compiler_Value value_left = _87f75ce3_walk_expression(left, state);
-        compiler_Value value_leftc = _87f75ce3_walk_expression(((((*left).value).bin_op).right), state);
-        compiler_Value value_rightc = _87f75ce3_walk_expression(right, state);
+        compiler_Value value_left = compiler_walk_expression(left, state);
+        compiler_Value value_leftc = compiler_walk_expression(((((*left).value).bin_op).right), state);
+        compiler_Value value_rightc = compiler_walk_expression(right, state);
         compiler_Value value = _87f75ce3_compare(node, value_leftc, value_rightc, state);
-        compiler_Value ret = _87f75ce3_make_local_value(builtins_bool_, NULL, state);
+        compiler_Value ret = compiler_make_local_value(builtins_bool_, NULL, state);
         compiler_Insn *insn_and = malloc((sizeof(compiler_Insn)));
         ((*insn_and).kind) = compiler_InsnKind_AND;
         (((*insn_and).value).arith) = ((compiler_InsnArithmetic){ .ret = ret, .left = value_left, .right = value });
-        _87f75ce3_push_insn(insn_and, state);
+        compiler_push_insn(insn_and, state);
         return ret;
     }  else {
-        compiler_Value value_left = _87f75ce3_walk_expression(left, state);
-        compiler_Value value_right = _87f75ce3_walk_expression(right, state);
+        compiler_Value value_left = compiler_walk_expression(left, state);
+        compiler_Value value_right = compiler_walk_expression(right, state);
         return _87f75ce3_compare(node, value_left, value_right, state);
     };
 };
- compiler_Value _87f75ce3_walk_PointerOp(parser_Node *node, parser_NodeKind kind, _87f75ce3_State *state) {
-    compiler_Value value_left = _87f75ce3_walk_expression(((((*node).value).bin_op).left), state);
-    compiler_Value value_right = _87f75ce3_walk_expression(((((*node).value).bin_op).right), state);
-    compiler_Value ret_ptrtoint = _87f75ce3_make_local_value(builtins_size_t_, NULL, state);
+ compiler_Value _87f75ce3_walk_PointerOp(parser_Node *node, parser_NodeKind kind, compiler_State *state) {
+    compiler_Value value_left = compiler_walk_expression(((((*node).value).bin_op).left), state);
+    compiler_Value value_right = compiler_walk_expression(((((*node).value).bin_op).right), state);
+    compiler_Value ret_ptrtoint = compiler_make_local_value(builtins_size_t_, NULL, state);
     compiler_Insn *ptrtoint = malloc((sizeof(compiler_Insn)));
     ((*ptrtoint).kind) = compiler_InsnKind_PTRTOINT;
     (((*ptrtoint).value).convert) = ((compiler_InsnConvert){ .ret = ret_ptrtoint, .value = value_left });
-    compiler_Value ret_arith = _87f75ce3_make_local_value(builtins_size_t_, NULL, state);
+    compiler_Value ret_arith = compiler_make_local_value(builtins_size_t_, NULL, state);
     compiler_Insn *arith = malloc((sizeof(compiler_Insn)));
     ((*arith).kind) = kind;
     (((*arith).value).arith) = ((compiler_InsnArithmetic){ .ret = ret_arith, .left = ret_ptrtoint, .right = value_right });
-    compiler_Value ret_inttoptr = _87f75ce3_make_local_value(((*node).tpe), NULL, state);
+    compiler_Value ret_inttoptr = compiler_make_local_value(((*node).tpe), NULL, state);
     compiler_Insn *inttoptr = malloc((sizeof(compiler_Insn)));
     ((*inttoptr).kind) = compiler_InsnKind_INTTOPTR;
     (((*inttoptr).value).convert) = ((compiler_InsnConvert){ .ret = ret_inttoptr, .value = ret_arith });
-    _87f75ce3_push_insn(ptrtoint, state);
-    _87f75ce3_push_insn(arith, state);
-    _87f75ce3_push_insn(inttoptr, state);
+    compiler_push_insn(ptrtoint, state);
+    compiler_push_insn(arith, state);
+    compiler_push_insn(inttoptr, state);
     return ret_inttoptr;
 };
- compiler_Value _87f75ce3_walk_expression(parser_Node *node, _87f75ce3_State *state) {
+DLL_EXPORT compiler_Value compiler_walk_expression(parser_Node *node, compiler_State *state) {
     if ((!node)) {
-        return _87f75ce3_NO_VALUE;
+        return compiler_NO_VALUE;
     }  ;
     switch (((int)((*node).kind))) {
         break;
@@ -990,63 +990,63 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
     }
     ;
 };
- void _87f75ce3_walk_If(parser_Node *node, _87f75ce3_State *state) {
-    compiler_Value cond = _87f75ce3_convert_to(node, _87f75ce3_walk_expression(((((*node).value).if_).cond), state), builtins_bool_, state);
-    compiler_Label entry_label = _87f75ce3_make_label(state);
+ void _87f75ce3_walk_If(parser_Node *node, compiler_State *state) {
+    compiler_Value cond = _87f75ce3_convert_to(node, compiler_walk_expression(((((*node).value).if_).cond), state), builtins_bool_, state);
+    compiler_Label entry_label = compiler_make_label(state);
     compiler_Insn *entry = malloc((sizeof(compiler_Insn)));
     ((*entry).kind) = compiler_InsnKind_BR;
     (((*entry).value).br) = ((compiler_InsnBr){ .cond = cond, .if_true = entry_label });
     compiler_Insn *exit = malloc((sizeof(compiler_Insn)));
     ((*exit).kind) = compiler_InsnKind_BR_UNC;
-    _87f75ce3_push_insn(entry, state);
-    _87f75ce3_push_label(entry_label, state);
+    compiler_push_insn(entry, state);
+    compiler_push_label(entry_label, state);
     for (int i = 0;(i < vector_length(((((*node).value).if_).body)));(i += 1)) {
         parser_Node *stmt = ((parser_Node *)vector_get(((((*node).value).if_).body), i));
-        _87f75ce3_walk(stmt, state);
+        compiler_walk(stmt, state);
     }
     ;
-    _87f75ce3_push_insn(exit, state);
+    compiler_push_insn(exit, state);
     for (int i = 0;(i < vector_length(((((*node).value).if_).else_if)));(i += 1)) {
         parser_Node *else_if = ((parser_Node *)vector_get(((((*node).value).if_).else_if), i));
-        compiler_Value cond = _87f75ce3_walk_expression(((((*else_if).value).else_if).cond), state);
-        compiler_Label br_label = _87f75ce3_make_label(state);
+        compiler_Value cond = compiler_walk_expression(((((*else_if).value).else_if).cond), state);
+        compiler_Label br_label = compiler_make_label(state);
         ((((*entry).value).br).if_false) = br_label;
-        _87f75ce3_push_label(br_label, state);
+        compiler_push_label(br_label, state);
         entry = malloc((sizeof(compiler_Insn)));
         ((*entry).kind) = compiler_InsnKind_BR;
         (((*entry).value).br) = ((compiler_InsnBr){ .cond = cond });
-        _87f75ce3_push_insn(entry, state);
-        compiler_Label entry_label = _87f75ce3_make_label(state);
+        compiler_push_insn(entry, state);
+        compiler_Label entry_label = compiler_make_label(state);
         ((((*entry).value).br).if_true) = entry_label;
-        _87f75ce3_push_label(entry_label, state);
+        compiler_push_label(entry_label, state);
         for (int i = 0;(i < vector_length(((((*else_if).value).else_if).body)));(i += 1)) {
             void *stmt = vector_get(((((*else_if).value).else_if).body), i);
-            _87f75ce3_walk(stmt, state);
+            compiler_walk(stmt, state);
         }
         ;
-        _87f75ce3_push_insn(exit, state);
+        compiler_push_insn(exit, state);
     }
     ;
     parser_Node *else_ = ((((*node).value).if_).else_);
     if (else_) {
-        compiler_Label entry_label = _87f75ce3_make_label(state);
+        compiler_Label entry_label = compiler_make_label(state);
         ((((*entry).value).br).if_false) = entry_label;
-        _87f75ce3_push_label(entry_label, state);
+        compiler_push_label(entry_label, state);
         for (int i = 0;(i < vector_length((((*else_).value).body)));(i += 1)) {
             parser_Node *stmt = ((parser_Node *)vector_get((((*else_).value).body), i));
-            _87f75ce3_walk(stmt, state);
+            compiler_walk(stmt, state);
         }
         ;
-        _87f75ce3_push_insn(exit, state);
+        compiler_push_insn(exit, state);
     }  ;
-    compiler_Label exit_label = _87f75ce3_make_label(state);
+    compiler_Label exit_label = compiler_make_label(state);
     if ((!else_)) {
         ((((*entry).value).br).if_false) = exit_label;
     }  ;
     ((((*exit).value).br_unc).label_) = exit_label;
-    _87f75ce3_push_label(exit_label, state);
+    compiler_push_label(exit_label, state);
 };
- void _87f75ce3_walk_Return(parser_Node *node, _87f75ce3_State *state) {
+ void _87f75ce3_walk_Return(parser_Node *node, compiler_State *state) {
     compiler_Function *current_function = ((*state).current_function);
     if ((!current_function)) {
         return ;
@@ -1055,58 +1055,58 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
     if (((*current_function).multiple_returns)) {
         Array ret_args = ((Array){vector_length((((*node).value).body)), malloc((((int64)(sizeof(compiler_Value))) * ((int64)vector_length((((*node).value).body)))))});
         for (int i = 0;(i < (ret_args.size));(i += 1)) {
-            (((compiler_Value *)ret_args.value)[i]) = _87f75ce3_walk_expression(((parser_Node *)vector_get((((*node).value).body), i)), state);
+            (((compiler_Value *)ret_args.value)[i]) = compiler_walk_expression(((parser_Node *)vector_get((((*node).value).body), i)), state);
         }
         ;
         value = ((compiler_Value){ .kind = compiler_ValueKind_STRUCT, .values = ret_args, .tpe = ((*current_function).ret) });
     }  else {
         void *arg = vector_peek((((*node).value).body));
-        value = _87f75ce3_walk_expression(arg, state);
+        value = compiler_walk_expression(arg, state);
     };
     compiler_Insn *ret = malloc((sizeof(compiler_Insn)));
     ((*ret).kind) = compiler_InsnKind_RET;
     ((((*ret).value).ret).value) = value;
-    _87f75ce3_push_insn(ret, state);
+    compiler_push_insn(ret, state);
     (((*state).counter) += 1);
 };
- void _87f75ce3_walk_Break(parser_Node *node, _87f75ce3_State *state) {
+ void _87f75ce3_walk_Break(parser_Node *node, compiler_State *state) {
     compiler_Insn *break_insn = _87f75ce3_get_break_insn(state);
     if ((!break_insn)) {
         typechecking_errorn(node, ((Array){30, "break used outside of a loop\x0a"""}));
         return ;
     }  ;
-    _87f75ce3_push_insn(break_insn, state);
+    compiler_push_insn(break_insn, state);
     (((*state).counter) += 1);
 };
- void _87f75ce3_walk_Continue(parser_Node *node, _87f75ce3_State *state) {
+ void _87f75ce3_walk_Continue(parser_Node *node, compiler_State *state) {
     compiler_Insn *continue_insn = _87f75ce3_get_continue_insn(state);
     if ((!continue_insn)) {
         typechecking_errorn(node, ((Array){33, "continue used outside of a loop\x0a"""}));
         return ;
     }  ;
-    _87f75ce3_push_insn(continue_insn, state);
+    compiler_push_insn(continue_insn, state);
     (((*state).counter) += 1);
 };
- void _87f75ce3_walk_Loop(parser_Node *node, _87f75ce3_State *state) {
+ void _87f75ce3_walk_Loop(parser_Node *node, compiler_State *state) {
     _87f75ce3_push_loop_state(state);
     compiler_Insn *continue_insn = _87f75ce3_get_continue_insn(state);
     compiler_Insn *break_insn = _87f75ce3_get_break_insn(state);
-    _87f75ce3_push_insn(continue_insn, state);
-    compiler_Label start_label = _87f75ce3_make_label(state);
-    _87f75ce3_push_label(start_label, state);
+    compiler_push_insn(continue_insn, state);
+    compiler_Label start_label = compiler_make_label(state);
+    compiler_push_label(start_label, state);
     for (int i = 0;(i < vector_length((((*node).value).body)));(i += 1)) {
         void *n = vector_get((((*node).value).body), i);
-        _87f75ce3_walk(n, state);
+        compiler_walk(n, state);
     }
     ;
-    _87f75ce3_push_insn(continue_insn, state);
-    compiler_Label end_label = _87f75ce3_make_label(state);
-    _87f75ce3_push_label(end_label, state);
+    compiler_push_insn(continue_insn, state);
+    compiler_Label end_label = compiler_make_label(state);
+    compiler_push_label(end_label, state);
     ((((*continue_insn).value).br_unc).label_) = start_label;
     ((((*break_insn).value).br_unc).label_) = end_label;
     _87f75ce3_pop_loop_state(state);
 };
- void _87f75ce3_walk_VarDecl(parser_Node *node, _87f75ce3_State *state) {
+ void _87f75ce3_walk_VarDecl(parser_Node *node, compiler_State *state) {
     vector_Vector *left = ((((*node).value).var_decl).left);
     vector_Vector *right = ((((*node).value).var_decl).right);
     vector_Vector *assign_left = vector_make();
@@ -1123,7 +1123,7 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
             compiler_Insn *insn = malloc((sizeof(compiler_Insn)));
             ((*insn).kind) = compiler_InsnKind_ALLOCA;
             (((*insn).value).alloca) = ((compiler_InsnAlloca){ .ret = ((compiler_Value){ .kind = compiler_ValueKind_LOCAL, .name = name, .tpe = tpe }) });
-            _87f75ce3_push_insn(insn, state);
+            compiler_push_insn(insn, state);
             vector_push(assign_left, v);
         }  else {
             vector_push(assign_left, (((*n).value).expr));
@@ -1139,7 +1139,7 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
         _87f75ce3_walk_Assign(assign, state);
     }  ;
 };
- void _87f75ce3_walk(parser_Node *node, _87f75ce3_State *state) {
+DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state) {
     if ((!node)) {
         return ;
     }  ;
@@ -1164,11 +1164,11 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
         _87f75ce3_walk_Loop(node, state);
         break;
         default:
-        _87f75ce3_walk_expression(node, state);
+        compiler_walk_expression(node, state);
     }
     ;
 };
- void _87f75ce3_create_function(typechecking_Type *tpe, vector_Vector *body, scope_Scope *scpe, _87f75ce3_State *state) {
+ void _87f75ce3_create_function(typechecking_Type *tpe, vector_Vector *body, scope_Scope *scpe, compiler_State *state) {
     compiler_Function *function = malloc((sizeof(compiler_Function)));
     ((*function).name) = typechecking_mangle_function_name(((*tpe).type_name), ((*tpe).parameter_t));
     ((*function).multiple_returns) = false;
@@ -1177,7 +1177,7 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
         ((*function).forward_declare) = false;
     }  ;
     if ((vector_length(((*tpe).return_t)) > 1)) {
-        typechecking_Type *ret_tpe = typechecking_make_anonymous_type(typechecking_TypeKind_STRUCT, ((*state).module));
+        typechecking_Type *ret_tpe = typechecking_make_anonymous_type(typechecking_TypeKind_STRUCT, ((*((*state).module)).module));
         ((*ret_tpe).packed) = false;
         int length = vector_length(((*tpe).return_t));
         Array fields = ((Array){length, malloc((((int64)(sizeof(typechecking_StructMember))) * ((int64)length)))});
@@ -1224,16 +1224,16 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
             compiler_Insn *alloca = malloc((sizeof(compiler_Insn)));
             ((*alloca).kind) = compiler_InsnKind_ALLOCA;
             (((*alloca).value).alloca) = ((compiler_InsnAlloca){ .ret = ((compiler_Value){ .kind = compiler_ValueKind_LOCAL, .name = name, .tpe = ((*np).value) }) });
-            _87f75ce3_push_insn(alloca, state);
+            compiler_push_insn(alloca, state);
             compiler_Insn *store = malloc((sizeof(compiler_Insn)));
             ((*store).kind) = compiler_InsnKind_STORE;
             (((*store).value).store) = ((compiler_InsnStore){ .value = ((compiler_Value){ .kind = compiler_ValueKind_LOCAL, .name = ((*np).name), .tpe = ((*np).value) }), .loc = ((compiler_Value){ .kind = compiler_ValueKind_LOCAL, .name = name, .tpe = typechecking_pointer(((*np).value)) }) });
-            _87f75ce3_push_insn(store, state);
+            compiler_push_insn(store, state);
         }
         ;
         for (int i = 0;(i < vector_length(body));(i += 1)) {
             parser_Node *node = ((parser_Node *)vector_get(body, i));
-            _87f75ce3_walk(node, state);
+            compiler_walk(node, state);
         }
         ;
         if ((!((*function).ret))) {
@@ -1241,17 +1241,17 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
             if ((((bool)(!last_insn)) || (((*last_insn).kind) != compiler_InsnKind_RET))) {
                 compiler_Insn *ret = malloc((sizeof(compiler_Insn)));
                 ((*ret).kind) = compiler_InsnKind_RET;
-                ((((*ret).value).ret).value) = _87f75ce3_NO_VALUE;
-                _87f75ce3_push_insn(ret, state);
+                ((((*ret).value).ret).value) = compiler_NO_VALUE;
+                compiler_push_insn(ret, state);
             }  ;
         }  ;
     }  ;
     map_put(((*((*state).result)).functions), ((*function).name), function);
 };
- void _87f75ce3_walk_Def(parser_Node *node, _87f75ce3_State *state) {
+ void _87f75ce3_walk_Def(parser_Node *node, compiler_State *state) {
     _87f75ce3_create_function(((*node).tpe), ((((*node).value).def_).body), ((*node).scope), state);
 };
- void _87f75ce3_walk_TypeDecl(parser_Node *node, _87f75ce3_State *state) {
+ void _87f75ce3_walk_TypeDecl(parser_Node *node, compiler_State *state) {
     vector_Vector *left = ((((*node).value).type_decl).left);
     for (int i = 0;(i < vector_length(left));(i += 1)) {
         parser_Node *n = ((parser_Node *)vector_get(left, i));
@@ -1265,7 +1265,7 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
     }
     ;
 };
- void _87f75ce3_walk_top_VarDecl(parser_Node *node, vector_Vector *body, _87f75ce3_State *state) {
+ void _87f75ce3_walk_top_VarDecl(parser_Node *node, vector_Vector *body, compiler_State *state) {
     vector_Vector *left = vector_make();
     for (int i = 0;(i < vector_length(((((*node).value).var_decl).left)));(i += 1)) {
         parser_Node *n = ((parser_Node *)vector_get(((((*node).value).var_decl).left), i));
@@ -1298,7 +1298,7 @@ typedef struct _87f75ce3_State {int counter; string filename; string module; str
     }  ;
 };
 vector_Vector *_87f75ce3_imported_modules;
- void _87f75ce3_walk_top_Import(parser_Node *node, vector_Vector *body, _87f75ce3_State *state) {
+ void _87f75ce3_walk_top_Import(parser_Node *node, vector_Vector *body, compiler_State *state) {
     vector_Vector *imports = (((*node).value).body);
     for (int i = 0;(i < vector_length(imports));(i += 1)) {
         parser_Node *imprt = ((parser_Node *)vector_get(imports, i));
@@ -1326,7 +1326,7 @@ vector_Vector *_87f75ce3_imported_modules;
         ((*arg).tpe) = typechecking_array(builtins_string_);
         vector_push(args, arg);
         int name_size = vector_length((((*name).value).body));
-        Array array = ((Array){(name_size + ((int)1)), malloc((((int64)(sizeof(string))) * ((int64)(name_size + ((int)1)))))});
+        Array array = ((Array){(name_size + 1), malloc((((int64)(sizeof(string))) * ((int64)(name_size + 1))))});
         for (int j = 0;(j < name_size);(j += 1)) {
             (((string *)array.value)[j]) = (*((string *)vector_get((((*name).value).body), j)));
         }
@@ -1348,8 +1348,8 @@ DLL_EXPORT compiler_Result * compiler_compile(toolchain_Module *module) {
     parser_Node *node = ((*module).node);
     assert((((*node).kind) == parser_NodeKind_PROGRAM));
     vector_Vector *body = vector_make();
-    _87f75ce3_State *state = malloc((sizeof(_87f75ce3_State)));
-    (*state) = ((_87f75ce3_State){ .filename = ((*module).filename), .module = ((*module).module), .loops = vector_make(), .result = malloc((sizeof(compiler_Result))) });
+    compiler_State *state = malloc((sizeof(compiler_State)));
+    (*state) = ((compiler_State){ .module = module, .loops = vector_make(), .result = malloc((sizeof(compiler_Result))) });
     (*((*state).result)) = ((compiler_Result){ .functions = map_make(), .structures = map_make(), .globals = map_make() });
     scope_Scope *sc = ((*node).scope);
     if (((*sc).imports)) {
@@ -1359,7 +1359,7 @@ DLL_EXPORT compiler_Result * compiler_compile(toolchain_Module *module) {
             Array keys = map_keys(((*m_scope).fields));
             for (int i = 0;(i < (keys.size));(i += 1)) {
                 scope_Value *value = ((scope_Value *)map_get(((*m_scope).fields), (((string *)keys.value)[i])));
-                if ((((bool)typechecking_is_function(((*value).tpe))) && ((bool)(((int)((*value).share)) & ((int)parser_ShareMarker_EXPORT))))) {
+                if ((typechecking_is_function(((*value).tpe)) && ((bool)(((int)((*value).share)) & parser_ShareMarker_EXPORT)))) {
                     _87f75ce3_create_function(((*value).tpe), NULL, sc, state);
                 }  ;
             }
@@ -1411,7 +1411,7 @@ DLL_EXPORT compiler_Result * compiler_compile(toolchain_Module *module) {
 };
 DLL_EXPORT void compiler_p_main(Array args) {
     ;
-    _87f75ce3_NO_VALUE = ((compiler_Value){ .kind = compiler_ValueKind_NULL, .tpe = NULL });
+    compiler_NO_VALUE = ((compiler_Value){ .kind = compiler_ValueKind_NULL, .tpe = NULL });
     memcpy((compiler_f_ueq.value), (((Array){4, "ueq"}).value), ((sizeof(char)) * (compiler_f_ueq.size)));
     memcpy((compiler_f_ugt.value), (((Array){4, "ugt"}).value), ((sizeof(char)) * (compiler_f_ugt.size)));
     memcpy((compiler_f_uge.value), (((Array){4, "uge"}).value), ((sizeof(char)) * (compiler_f_uge.size)));

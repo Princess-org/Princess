@@ -12,17 +12,19 @@
 typedef enum typechecking_TypeKind {typechecking_TypeKind_TYPE = 0, typechecking_TypeKind_WORD = 1, typechecking_TypeKind_FLOAT = 2, typechecking_TypeKind_BOOL = 3, typechecking_TypeKind_STRUCT = 4, typechecking_TypeKind_UNION = 5, typechecking_TypeKind_ENUM = 6, typechecking_TypeKind_FUNCTION = 7, typechecking_TypeKind_POINTER = 8, typechecking_TypeKind_REFERENCE = 9, typechecking_TypeKind_STATIC_ARRAY = 10, typechecking_TypeKind_ARRAY = 11, typechecking_TypeKind_INT_LITERAL = 12, typechecking_TypeKind_NAMESPACE = 13, typechecking_TypeKind_STUB = 14} typechecking_TypeKind;
 typedef struct typechecking_Type typechecking_Type;
 typedef struct typechecking_StructMember {string name; struct typechecking_Type *tpe; size_t offset;} typechecking_StructMember;
-typedef struct typechecking_Type {enum typechecking_TypeKind kind; string name; string type_name; size_t size; size_t align; bool unsig; size_t length; struct typechecking_Type *tpe; bool packed; Array fields; struct vector_Vector *return_t; struct vector_Vector *parameter_t; uint64 i; int sign;} typechecking_Type;
+typedef struct compiler_State compiler_State;
+typedef struct typechecking_Type {enum typechecking_TypeKind kind; string name; string type_name; size_t size; size_t align; bool unsig; size_t length; struct typechecking_Type *tpe; bool packed; Array fields; struct vector_Vector *return_t; struct vector_Vector *parameter_t; void (*macro)(parser_Node *, compiler_State *); uint64 i; int sign;} typechecking_Type;
 typedef struct typechecking_NamedParameter {string name; struct typechecking_Type *value;} typechecking_NamedParameter;
 typedef struct scope_Scope scope_Scope;
 typedef struct _3700c937_State {string filename; string module; struct scope_Scope *scope; struct vector_Vector *function_stack;} _3700c937_State;
 DLL_EXPORT void typechecking_errorn(parser_Node *node, string msg);
+DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, typechecking_Type *b);
  typechecking_Type * _3700c937_current_function(_3700c937_State *state) {
     int length = vector_length(((*state).function_stack));
     if ((length == 0)) {
         return NULL;
     }  else {
-        return ((typechecking_Type *)vector_get(((*state).function_stack), (length - ((int)1))));
+        return ((typechecking_Type *)vector_get(((*state).function_stack), (length - 1)));
     };
 };
  void _3700c937_push_function(_3700c937_State *state, typechecking_Type *tpe) {
@@ -156,7 +158,9 @@ DLL_EXPORT bool typechecking_equals(typechecking_Type *a, typechecking_Type *b) 
             return false;
         }  ;
         for (int i = 0;(i < vector_length(((*a).parameter_t)));(i += 1)) {
-            if ((!typechecking_equals(vector_get(((*a).parameter_t), i), vector_get(((*b).parameter_t), i)))) {
+            typechecking_NamedParameter *param_a = ((typechecking_NamedParameter *)vector_get(((*a).parameter_t), i));
+            typechecking_NamedParameter *param_b = ((typechecking_NamedParameter *)vector_get(((*b).parameter_t), i));
+            if ((!typechecking_equals(((*param_a).value), ((*param_b).value)))) {
                 return false;
             }  ;
         }
@@ -342,7 +346,8 @@ DLL_EXPORT string typechecking_type_to_str(typechecking_Type *tpe) {
         case typechecking_TypeKind_FUNCTION:
         buffer_append_char((&buf), 'F');
         for (int i = 0;(i < vector_length(((*tpe).parameter_t)));(i += 1)) {
-            buffer_append_str((&buf), typechecking_type_to_str(((typechecking_Type *)vector_get(((*tpe).parameter_t), i))));
+            typechecking_NamedParameter *parameter = ((typechecking_NamedParameter *)vector_get(((*tpe).parameter_t), i));
+            buffer_append_str((&buf), typechecking_type_to_str(((*parameter).value)));
         }
         ;
         buffer_append_char((&buf), '_');
@@ -943,6 +948,7 @@ typechecking_Type *_3700c937_int_literal;
     ((*tpe).align) = (alignof(void *));
     ((*tpe).parameter_t) = parameter_t;
     ((*tpe).return_t) = return_t;
+    ((*tpe).macro) = NULL;
     if (_3700c937_current_function(state)) {
         scope_create_variable(outer_scope, name, share, parser_VarDecl_CONST, tpe, NULL);
     }  else {

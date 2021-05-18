@@ -204,7 +204,7 @@ class FunctionT(Type):
         super().__init__(None, name = name)
 
     def _to_typestring(self, identifier, recursive = False):
-        return (self.return_t[0].to_typestring("") + " (*" + identifier + ")(" + 
+        return ((self.return_t[0].to_typestring("") if len(self.return_t) == 1 else "void") + " (*" + identifier + ")(" + 
             ", ".join(map(lambda t: t.to_typestring(""), self.parameter_t)) + ")")
 
 # Basic types

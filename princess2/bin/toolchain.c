@@ -23,10 +23,10 @@ DLL_EXPORT string toolchain_find_module_file(parser_Node *module);
 #include "parser.c"
 #include "typechecking.c"
 #include "scope.c"
-#include "compiler.c"
 #include "codegen.c"
 #include "debug.c"
 #include "builtins.c"
+#include "compiler.c"
 DLL_EXPORT string toolchain_find_module_file(parser_Node *module) {
     assert((((*module).kind) == parser_NodeKind_IDENTIFIER));
     vector_Vector *ident = (((*module).value).body);
@@ -35,7 +35,7 @@ DLL_EXPORT string toolchain_find_module_file(parser_Node *module) {
     for (int i = 0;(i < len);(i += 1)) {
         string str = (*((string *)vector_get(ident, i)));
         concat((path.value), (((Array){3, "%s"}).value), (str.value));
-        if ((i < (len - ((int)1)))) {
+        if ((i < (len - 1))) {
             concat((path.value), (((Array){3, "%s"}).value), (((Array){2, "/"}).value));
         }  ;
     }
@@ -108,10 +108,10 @@ DLL_EXPORT void toolchain_p_main(Array args) {
     toolchain_error_count = 0;
     typechecking_p_main(args);
     scope_p_main(args);
-    compiler_p_main(args);
     codegen_p_main(args);
     debug_p_main(args);
     builtins_p_main(args);
+    compiler_p_main(args);
 };
 
 

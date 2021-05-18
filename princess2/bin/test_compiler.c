@@ -6,13 +6,13 @@
 #define _test_compiler_H
 #include "buffer.c"
 #include "map.c"
-#include "compiler.c"
 #include "codegen.c"
 #include "lexer.c"
 #include "util.c"
 #include "parser.c"
 #include "scope.c"
 #include "typechecking.c"
+#include "compiler.c"
 #include "toolchain.c"
 bool test_compiler_print_ll;
  string _6dcc03b3_compile(string s) {

@@ -190,6 +190,12 @@ class Scope:
                     value += 1
 
             return types.Enum(tpe, fields)
+        elif isinstance(t, model.FunctionT):
+            assert(len(t.right) <= 1)
+            return types.FunctionT(
+                return_t = list(map(self.type_lookup, t.right)),
+                parameter_t = list(map(self.type_lookup, t.left))
+            )
         
         error("Type not implemented")
 
@@ -526,11 +532,7 @@ class Compiler(AstWalker):
             #for v in node.ast[1:]: TODO This should be working
             #    tpe = common_type(tpe, v.type)
 
-            node.value_type = tpe
             node.type = types.ArrayT(tpe, node.length)
-        else:
-            node.value_type = None
-            node.type = None
 
         return node
 
@@ -790,7 +792,7 @@ class Compiler(AstWalker):
         else:
             tpe = self.scope.type_lookup(node.right)
 
-        if isinstance(node.left, model.StructInit):
+        if isinstance(node.left, (model.StructInit, model.Array)):
             node.left.type = tpe
             return self.walk(node.left)
 

@@ -8,8 +8,8 @@
 #include "buffer.c"
 #include "map.c"
 #include "util.c"
-#include "compiler.c"
 #include "typechecking.c"
+#include "compiler.c"
  string _574f02bf_type_to_str(typechecking_Type *tpe) {
     if ((!tpe)) {
         return ((Array){5, "void"});
@@ -490,7 +490,7 @@
             fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, " "}).value));
             fprintf(fp, (((Array){5, "%s%s"}).value), (((Array){2, "%"}).value), (name.value));
         }  ;
-        if ((i < (len - ((int)1)))) {
+        if ((i < (len - 1))) {
             fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, ", "}).value));
         }  ;
     }

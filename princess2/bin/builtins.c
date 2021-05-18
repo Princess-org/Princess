@@ -5,9 +5,10 @@
 #ifndef _builtins_H
 #define _builtins_H
 #include "parser.c"
-#include "typechecking.c"
 #include "scope.c"
 #include "map.c"
+#include "vector.c"
+#include "typechecking.c"
 scope_Scope *builtins_builtins;
  typechecking_Type * _a69ecad8_create_int_type(string name, int size, bool unsig) {
     parser_Node *ident = parser_make_identifier(((Array){1, (string[1]){ name }}));
@@ -53,6 +54,7 @@ typechecking_Type *builtins_uint16_;
 typechecking_Type *builtins_uint32_;
 typechecking_Type *builtins_uint64_;
 typechecking_Type *builtins_size_t_;
+#include "builtin_functions.c"
 DLL_EXPORT void builtins_p_main(Array args) {
     builtins_builtins = scope_enter_scope(NULL);
     builtins_char_ = _a69ecad8_create_int_type(((Array){5, "char"}), (sizeof(char)), false);
@@ -89,6 +91,7 @@ DLL_EXPORT void builtins_p_main(Array args) {
     builtins_uint32_ = _a69ecad8_create_int_type(((Array){7, "uint32"}), (sizeof(uint32)), true);
     builtins_uint64_ = _a69ecad8_create_int_type(((Array){7, "uint64"}), (sizeof(uint64)), true);
     builtins_size_t_ = _a69ecad8_create_int_type(((Array){7, "size_t"}), (sizeof(size_t)), true);
+    builtin_functions_p_main(args);
 };
 
 

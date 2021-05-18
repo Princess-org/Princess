@@ -1142,65 +1142,58 @@ class PrincessParser(Parser):
         self.name_last_node('@')
 
     @tatsumasu()
-    @nomemo
+    def _type_single_(self):  # noqa
+        self._type_()
+        self.add_last_node_to_name('@')
+
+    @tatsumasu()
     def _type_list_(self):  # noqa
-        with self._choice():
-            with self._option():
-                with self._group():
-                    self._t_oparen_()
-                    self._cut()
+        with self._group():
+            self._t_oparen_()
 
-                    def sep1():
-                        self._token(',')
+            def sep1():
+                self._token(',')
 
-                    def block1():
-                        self._type_list_elem_()
-                    self._gather(block1, sep1)
-                    self.name_last_node('@')
-                    self._t_cparen_()
-            with self._option():
-                self._type_()
-                self.add_last_node_to_name('@')
-            self._error(
-                'expecting one of: '
-                "'(' <t_oparen> '->' <type> <type_list>"
-                "<type_function> 'struct' <type_struct>"
-                "'enum' <type_enum> 'unsigned'"
-                "<type_unsigned> '{' <type_structural>"
-                "'*' <type_ptr> '&' <type_ref> '['"
-                '<type_array_dyn> <type_array_static>'
-                "<type_array> <expr_type_call> 'word'"
-                "<type_word> (?!\\d)\\w+ <t_ident> '::'"
-                '<identifier> <type_3> <type_2> <type_1>'
-            )
+            def block1():
+                self._type_list_elem_()
+            self._gather(block1, sep1)
+            self.name_last_node('@')
+            self._t_cparen_()
 
     @tatsumasu('FunctionT')
-    @nomemo
     def _type_function_(self):  # noqa
         with self._choice():
             with self._option():
                 self._token('->')
                 with self._optional():
-                    self._type_list_()
+                    with self._choice():
+                        with self._option():
+                            self._type_list_()
+                        with self._option():
+                            self._type_single_()
+                        self._error(
+                            'expecting one of: '
+                            '<type_list> <type_single>'
+                        )
                 self.name_last_node('right')
             with self._option():
                 self._type_list_()
                 self.name_last_node('left')
                 self._token('->')
                 with self._optional():
-                    self._type_list_()
+                    with self._choice():
+                        with self._option():
+                            self._type_list_()
+                        with self._option():
+                            self._type_single_()
+                        self._error(
+                            'expecting one of: '
+                            '<type_list> <type_single>'
+                        )
                 self.name_last_node('right')
             self._error(
                 'expecting one of: '
-                "'->' '(' <t_oparen> <type> <type_list>"
-                "<type_function> 'struct' <type_struct>"
-                "'enum' <type_enum> 'unsigned'"
-                "<type_unsigned> '{' <type_structural>"
-                "'*' <type_ptr> '&' <type_ref> '['"
-                '<type_array_dyn> <type_array_static>'
-                "<type_array> <expr_type_call> 'word'"
-                "<type_word> (?!\\d)\\w+ <t_ident> '::'"
-                '<identifier> <type_3> <type_2> <type_1>'
+                "'->' '(' <t_oparen> <type_list>"
             )
         self._define(
             ['left', 'right'],
@@ -1287,7 +1280,7 @@ class PrincessParser(Parser):
             )
 
     @tatsumasu()
-    @leftrec
+    @nomemo
     def _type_(self):  # noqa
         with self._choice():
             with self._option():
@@ -1296,7 +1289,7 @@ class PrincessParser(Parser):
                 self._type_1_()
             self._error(
                 'expecting one of: '
-                "'->' '(' <t_oparen> <type> <type_list>"
+                "'->' '(' <t_oparen> <type_list>"
                 "<type_function> 'struct' <type_struct>"
                 "'enum' <type_enum> 'unsigned'"
                 "<type_unsigned> '{' <type_structural>"
@@ -3543,6 +3536,9 @@ class PrincessSemantics(object):
         return ast
 
     def type_list_elem(self, ast):  # noqa
+        return ast
+
+    def type_single(self, ast):  # noqa
         return ast
 
     def type_list(self, ast):  # noqa
