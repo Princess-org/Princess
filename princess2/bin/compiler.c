@@ -143,7 +143,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
 };
  compiler_Value _87f75ce3_walk_Integer(parser_Node *node, compiler_State *state) {
     typechecking_Type *tpe = ((*node).tpe);
-    compiler_Value value = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = ((*tpe).i), .sign = ((*tpe).sign), .tpe = tpe });
+    compiler_Value value = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = (((*node).value).i), .sign = 1, .tpe = tpe });
     return value;
 };
  compiler_Value _87f75ce3_walk_Float(parser_Node *node, compiler_State *state) {
@@ -153,7 +153,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
 };
  compiler_Value _87f75ce3_walk_Char(parser_Node *node, compiler_State *state) {
     typechecking_Type *tpe = ((*node).tpe);
-    compiler_Value value = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = (((*node).value).i), .tpe = tpe });
+    compiler_Value value = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = (((*node).value).i), .sign = 1, .tpe = tpe });
     return value;
 };
  compiler_Value _87f75ce3_walk_String(parser_Node *node, compiler_State *state) {
@@ -175,7 +175,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     compiler_push_insn(gep, state);
     compiler_Value ret = compiler_make_local_value(builtins_string_, NULL, state);
     Array values = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
-    (((compiler_Value *)values.value)[0]) = ((compiler_Value){ .kind = compiler_ValueKind_INT, .tpe = builtins_size_t_, .i = ((*tpe).length) });
+    (((compiler_Value *)values.value)[0]) = ((compiler_Value){ .kind = compiler_ValueKind_INT, .tpe = builtins_size_t_, .i = ((*tpe).length), .sign = 1 });
     (((compiler_Value *)values.value)[1]) = ((compiler_Value){ .undef = true, .tpe = typechecking_pointer(((*tpe).tpe)) });
     compiler_Value value = ((compiler_Value){ .kind = compiler_ValueKind_STRUCT, .values = values, .tpe = builtins_string_ });
     Array index2 = ((Array){1, malloc((((int64)(sizeof(int))) * ((int64)1)))});
@@ -209,7 +209,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
             compiler_Value ret = compiler_make_local_value(builtins_bool_, NULL, state);
             compiler_Insn *insn = malloc((sizeof(compiler_Insn)));
             ((*insn).kind) = compiler_InsnKind_ICMP;
-            (((*insn).value).cmp) = ((compiler_InsnCmp){ .op = compiler_i_ne, .ret = ret, .left = value, .right = ((compiler_Value){ .kind = compiler_ValueKind_INT, .tpe = (value.tpe), .i = 0 }) });
+            (((*insn).value).cmp) = ((compiler_InsnCmp){ .op = compiler_i_ne, .ret = ret, .left = value, .right = ((compiler_Value){ .kind = compiler_ValueKind_INT, .tpe = (value.tpe), .i = 0, .sign = 1 }) });
             compiler_push_insn(insn, state);
             return ret;
         } else {
@@ -1379,7 +1379,7 @@ vector_Vector *_87f75ce3_imported_modules;
         ((*arg).tpe) = typechecking_array(builtins_string_);
         vector_push(args, arg);
         int name_size = vector_length((((*name).value).body));
-        Array array = ((Array){(name_size + ((int)1)), malloc((((int64)(sizeof(string))) * ((int64)(name_size + ((int)1)))))});
+        Array array = ((Array){(name_size + 1), malloc((((int64)(sizeof(string))) * ((int64)(name_size + 1))))});
         for (int j = 0;(j < name_size);(j += 1)) {
             (((string *)array.value)[j]) = (*((string *)vector_get((((*name).value).body), j)));
         }
@@ -1412,7 +1412,7 @@ DLL_EXPORT compiler_Result * compiler_compile(toolchain_Module *module) {
             Array keys = map_keys(((*m_scope).fields));
             for (int i = 0;(i < (keys.size));(i += 1)) {
                 scope_Value *value = ((scope_Value *)map_get(((*m_scope).fields), (((string *)keys.value)[i])));
-                if ((typechecking_is_function(((*value).tpe)) && ((bool)(((int)((*value).share)) & ((int)parser_ShareMarker_EXPORT))))) {
+                if ((typechecking_is_function(((*value).tpe)) && ((bool)(((int)((*value).share)) & parser_ShareMarker_EXPORT)))) {
                     _87f75ce3_create_function(((*value).tpe), NULL, sc, state);
                 }  ;
             }
