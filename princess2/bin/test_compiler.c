@@ -211,13 +211,19 @@ bool test_compiler_print_ll;
 };
  void _6dcc03b3_test_builtins() {
     printf((((Array){3, "%s"}).value), (((Array){19, ">Test builtins... "}).value));
-    Array str = ((Array){78, "\x0a""        let foo = \"string\"\x0a""        var a = 10\x0a""        //assert(a == 15)\x0a""    "});
+    Array str = ((Array){49, "\x0a""        var a = 10\x0a""        assert(a == 15)\x0a""    "});
+    string res = _6dcc03b3_compile(str);
+    printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
+};
+ void _6dcc03b3_test_string_literal() {
+    printf((((Array){3, "%s"}).value), (((Array){25, ">Test string literal... "}).value));
+    Array str = ((Array){60, "\x0a""        var x: int64 = 20\x0a""        //var a = \"string\" \x0a""    "});
     string res = _6dcc03b3_compile(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
 DLL_EXPORT void test_compiler_test() {
     printf((((Array){3, "%s"}).value), (((Array){30, "Running tests on Compiler...\x0a"""}).value));
-    _6dcc03b3_test_builtins();
+    _6dcc03b3_test_string_literal();
 };
 DLL_EXPORT void test_compiler_p_main(Array args) {
     test_compiler_print_ll = false;

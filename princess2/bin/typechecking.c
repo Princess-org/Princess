@@ -552,6 +552,7 @@ typechecking_Type *_3700c937_int_literal;
     ((*tpe).i) = (((*node).value).i);
     ((*tpe).sign) = 1;
     ((*node).tpe) = tpe;
+    printf((((Array){6, "%lu%s"}).value), ((*tpe).i), (((Array){2, "\x0a"""}).value));
 };
  void _3700c937_walk_Boolean(parser_Node *node, _3700c937_State *state) {
     ((*node).tpe) = builtins_bool_;
@@ -564,7 +565,7 @@ typechecking_Type *_3700c937_int_literal;
     ((*tpe).kind) = typechecking_TypeKind_STATIC_ARRAY;
     ((*tpe).tpe) = builtins_char_;
     ((*tpe).length) = ((((*node).value).str).size);
-    ((*tpe).size) = ((*tpe).length);
+    ((*tpe).size) = (((*tpe).length) * (sizeof(char)));
     ((*node).tpe) = tpe;
 };
  void _3700c937_walk_Char(parser_Node *node, _3700c937_State *state) {

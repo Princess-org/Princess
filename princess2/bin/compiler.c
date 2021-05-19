@@ -16,7 +16,7 @@
 #include "typechecking.c"
 typedef struct compiler_Label {string name;} compiler_Label;
 typedef enum compiler_ValueKind {compiler_ValueKind_NULL = 0, compiler_ValueKind_LOCAL = 1, compiler_ValueKind_GLOBAL = 2, compiler_ValueKind_BOOL = 3, compiler_ValueKind_INT = 4, compiler_ValueKind_FLOAT = 5, compiler_ValueKind_STRING = 6, compiler_ValueKind_ARRAY = 7, compiler_ValueKind_STRUCT = 8, compiler_ValueKind_UNION = 9} compiler_ValueKind;
-typedef struct compiler_Value {enum compiler_ValueKind kind; string name; int sign; uint64 i; double f; string s; bool undef; Array values; struct compiler_Value *addr; struct typechecking_Type *tpe;} compiler_Value;
+typedef struct compiler_Value {enum compiler_ValueKind kind; string name; int sign; uint64 i; double f; string s; bool undef; struct compiler_Value *value; Array values; struct compiler_Value *addr; struct typechecking_Type *tpe;} compiler_Value;
 compiler_Value compiler_NO_VALUE;
 typedef enum compiler_InsnKind {compiler_InsnKind_ADD = 0, compiler_InsnKind_SUB = 1, compiler_InsnKind_MUL = 2, compiler_InsnKind_SREM = 3, compiler_InsnKind_UREM = 4, compiler_InsnKind_SDIV = 5, compiler_InsnKind_UDIV = 6, compiler_InsnKind_FADD = 7, compiler_InsnKind_FSUB = 8, compiler_InsnKind_FMUL = 9, compiler_InsnKind_FREM = 10, compiler_InsnKind_FDIV = 11, compiler_InsnKind_ASHR = 12, compiler_InsnKind_SHL = 13, compiler_InsnKind_AND = 14, compiler_InsnKind_OR = 15, compiler_InsnKind_XOR = 16, compiler_InsnKind_FCMP = 17, compiler_InsnKind_ICMP = 18, compiler_InsnKind_RET = 19, compiler_InsnKind_LOAD = 20, compiler_InsnKind_STORE = 21, compiler_InsnKind_ALLOCA = 22, compiler_InsnKind_INSERTVALUE = 23, compiler_InsnKind_EXTRACTVALUE = 24, compiler_InsnKind_GETELEMENTPTR = 25, compiler_InsnKind_TRUNC = 26, compiler_InsnKind_ZEXT = 27, compiler_InsnKind_SEXT = 28, compiler_InsnKind_FPTRUNC = 29, compiler_InsnKind_FPEXT = 30, compiler_InsnKind_FPTOUI = 31, compiler_InsnKind_FPTOSI = 32, compiler_InsnKind_UITOFP = 33, compiler_InsnKind_SITOFP = 34, compiler_InsnKind_PTRTOINT = 35, compiler_InsnKind_INTTOPTR = 36, compiler_InsnKind_BITCAST = 37, compiler_InsnKind_CALL = 38, compiler_InsnKind_BR_UNC = 39, compiler_InsnKind_BR = 40} compiler_InsnKind;
 ARRAY(compiler_f_ueq, char, 4);
@@ -54,7 +54,7 @@ typedef struct compiler_Block {string label_; struct vector_Vector *insn; struct
 typedef struct compiler_Function {string name; struct vector_Vector *args; struct typechecking_Type *ret; bool multiple_returns; bool forward_declare; struct compiler_Block *block;} compiler_Function;
 typedef struct compiler_Result {struct map_Map *functions; struct map_Map *structures; struct map_Map *globals;} compiler_Result;
 typedef struct _87f75ce3_LoopState {struct compiler_Insn *break_insn; struct compiler_Insn *continue_insn;} _87f75ce3_LoopState;
-typedef struct compiler_State {struct toolchain_Module *module; int counter; struct compiler_Function *current_function; struct compiler_Block *current_block; struct vector_Vector *loops; struct compiler_Result *result;} compiler_State;
+typedef struct compiler_State {struct toolchain_Module *module; int counter; int global_counter; struct compiler_Function *current_function; struct compiler_Block *current_block; struct vector_Vector *loops; struct compiler_Result *result;} compiler_State;
  compiler_Insn * _87f75ce3_get_break_insn(compiler_State *state) {
     if ((vector_length(((*state).loops)) > 0)) {
         return ((*((_87f75ce3_LoopState *)vector_peek(((*state).loops)))).break_insn);
@@ -102,6 +102,22 @@ DLL_EXPORT compiler_Value compiler_make_int_value(int v) {
 DLL_EXPORT compiler_Value compiler_make_local_value(typechecking_Type *tpe, compiler_Value *addr, compiler_State *state) {
     return ((compiler_Value){ .kind = compiler_ValueKind_LOCAL, .name = compiler_make_unique_name(state), .tpe = tpe, .addr = addr });
 };
+DLL_EXPORT compiler_Value compiler_make_global_value(typechecking_Type *tpe, string name, compiler_Value *value, compiler_State *state) {
+    buffer_Buffer buf = buffer_make_buffer();
+    buffer_append_str((&buf), name);
+    buffer_append_char((&buf), '.');
+    buffer_append_str((&buf), util_int_to_str(((*state).global_counter)));
+    name = buffer_to_string((&buf));
+    (((*state).global_counter) += 1);
+    compiler_Value *global = malloc((sizeof(compiler_Value)));
+    ((*global).kind) = compiler_ValueKind_GLOBAL;
+    ((*global).undef) = false;
+    ((*global).name) = name;
+    ((*global).value) = value;
+    ((*global).tpe) = tpe;
+    map_put(((*((*state).result)).globals), ((*global).name), global);
+    return ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = name, .tpe = typechecking_pointer(tpe), .addr = NULL });
+};
 DLL_EXPORT void compiler_push_label(compiler_Label label_, compiler_State *state) {
     compiler_Block *block = malloc((sizeof(compiler_Block)));
     ((*block).label_) = (label_.name);
@@ -139,6 +155,36 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     typechecking_Type *tpe = ((*node).tpe);
     compiler_Value value = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = (((*node).value).i), .tpe = tpe });
     return value;
+};
+ compiler_Value _87f75ce3_walk_String(parser_Node *node, compiler_State *state) {
+    typechecking_Type *tpe = ((*node).tpe);
+    compiler_Value *str_value = malloc((sizeof(compiler_Value)));
+    ((*str_value).kind) = compiler_ValueKind_STRING;
+    ((*str_value).s) = (((*node).value).str);
+    ((*str_value).tpe) = tpe;
+    compiler_Value global = compiler_make_global_value(tpe, ((Array){4, "str"}), str_value, state);
+    compiler_Value local = compiler_make_local_value(typechecking_pointer(((*tpe).tpe)), NULL, state);
+    Array index = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
+    (((compiler_Value *)index.value)[0]) = compiler_make_int_value(0);
+    ((((compiler_Value *)index.value)[0]).tpe) = builtins_size_t_;
+    (((compiler_Value *)index.value)[1]) = compiler_make_int_value(0);
+    ((((compiler_Value *)index.value)[1]).tpe) = builtins_size_t_;
+    compiler_Insn *gep = malloc((sizeof(compiler_Insn)));
+    ((*gep).kind) = compiler_InsnKind_GETELEMENTPTR;
+    (((*gep).value).gep) = ((compiler_InsnGetElementPtr){ .ret = local, .tpe = tpe, .value = global, .index = index });
+    compiler_push_insn(gep, state);
+    compiler_Value ret = compiler_make_local_value(builtins_string_, NULL, state);
+    Array values = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
+    (((compiler_Value *)values.value)[0]) = ((compiler_Value){ .kind = compiler_ValueKind_INT, .tpe = builtins_size_t_, .i = ((*tpe).length) });
+    (((compiler_Value *)values.value)[1]) = ((compiler_Value){ .undef = true, .tpe = typechecking_pointer(((*tpe).tpe)) });
+    compiler_Value value = ((compiler_Value){ .kind = compiler_ValueKind_STRUCT, .values = values, .tpe = builtins_string_ });
+    Array index2 = ((Array){1, malloc((((int64)(sizeof(int))) * ((int64)1)))});
+    (((int *)index2.value)[0]) = 1;
+    compiler_Insn *insert = malloc((sizeof(compiler_Insn)));
+    ((*insert).kind) = compiler_InsnKind_INSERTVALUE;
+    (((*insert).value).insert_value) = ((compiler_InsnInsertValue){ .ret = ret, .value = value, .element = local, .index = index2 });
+    compiler_push_insn(insert, state);
+    return ret;
 };
  compiler_Value _87f75ce3_convert_to(parser_Node *node, compiler_Value value, typechecking_Type *tpe, compiler_State *state) {
     if ((((bool)(!(value.tpe))) || ((bool)(!tpe)))) {
@@ -925,6 +971,9 @@ DLL_EXPORT compiler_Value compiler_walk_expression(parser_Node *node, compiler_S
         case parser_NodeKind_CHAR:
         return _87f75ce3_walk_Char(node, state);
         break;
+        case parser_NodeKind_STRING:
+        return _87f75ce3_walk_String(node, state);
+        break;
         case parser_NodeKind_SIZE_OF:
         return _87f75ce3_walk_SizeOf(node, state);
         break;
@@ -1211,7 +1260,6 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state) {
     if (body) {
         ((*state).current_function) = function;
         ((*state).counter) = 0;
-        ((*state).counter) = 0;
         compiler_Block *block = malloc((sizeof(compiler_Block)));
         ((*block).label_) = ((Array){6, "start"});
         ((*block).insn) = vector_make();
@@ -1284,6 +1332,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state) {
             ((*global).kind) = compiler_ValueKind_GLOBAL;
             ((*global).undef) = false;
             ((*global).name) = name;
+            ((*global).value) = NULL;
             ((*global).tpe) = ((*v).tpe);
             map_put(((*((*state).result)).globals), ((*global).name), global);
             vector_push(left, ((((*n).value).id_decl).value));
@@ -1330,7 +1379,7 @@ vector_Vector *_87f75ce3_imported_modules;
         ((*arg).tpe) = typechecking_array(builtins_string_);
         vector_push(args, arg);
         int name_size = vector_length((((*name).value).body));
-        Array array = ((Array){(name_size + 1), malloc((((int64)(sizeof(string))) * ((int64)(name_size + 1))))});
+        Array array = ((Array){(name_size + ((int)1)), malloc((((int64)(sizeof(string))) * ((int64)(name_size + ((int)1)))))});
         for (int j = 0;(j < name_size);(j += 1)) {
             (((string *)array.value)[j]) = (*((string *)vector_get((((*name).value).body), j)));
         }
@@ -1353,7 +1402,7 @@ DLL_EXPORT compiler_Result * compiler_compile(toolchain_Module *module) {
     assert((((*node).kind) == parser_NodeKind_PROGRAM));
     vector_Vector *body = vector_make();
     compiler_State *state = malloc((sizeof(compiler_State)));
-    (*state) = ((compiler_State){ .module = module, .loops = vector_make(), .result = malloc((sizeof(compiler_Result))) });
+    (*state) = ((compiler_State){ .module = module, .counter = 0, .global_counter = 0, .loops = vector_make(), .result = malloc((sizeof(compiler_Result))) });
     (*((*state).result)) = ((compiler_Result){ .functions = map_make(), .structures = map_make(), .globals = map_make() });
     scope_Scope *sc = ((*node).scope);
     if (((*sc).imports)) {
@@ -1363,7 +1412,7 @@ DLL_EXPORT compiler_Result * compiler_compile(toolchain_Module *module) {
             Array keys = map_keys(((*m_scope).fields));
             for (int i = 0;(i < (keys.size));(i += 1)) {
                 scope_Value *value = ((scope_Value *)map_get(((*m_scope).fields), (((string *)keys.value)[i])));
-                if ((typechecking_is_function(((*value).tpe)) && ((bool)(((int)((*value).share)) & parser_ShareMarker_EXPORT)))) {
+                if ((typechecking_is_function(((*value).tpe)) && ((bool)(((int)((*value).share)) & ((int)parser_ShareMarker_EXPORT))))) {
                     _87f75ce3_create_function(((*value).tpe), NULL, sc, state);
                 }  ;
             }

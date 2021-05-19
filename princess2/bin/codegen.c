@@ -151,14 +151,10 @@
             buffer_append_str((&buf), ((Array){5, "null"}));
             break;
             case compiler_ValueKind_STRING:
-            buffer_append_char((&buf), '{');
-            buffer_append_str((&buf), util_int_to_str(((value.s).size)));
-            buffer_append_str((&buf), ((Array){3, ", "}));
             buffer_append_str((&buf), util_repr((value.s)));
-            buffer_append_char((&buf), '}');
             break;
             default:
-            printf((((Array){5, "%d%s"}).value), (value.kind), (((Array){2, "\x0a"""}).value));
+            fprintf(stderr, (((Array){5, "%d%s"}).value), (value.kind), (((Array){2, "\x0a"""}).value));
             assert(false);
         }
         ;
@@ -497,7 +493,7 @@
             fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, " "}).value));
             fprintf(fp, (((Array){5, "%s%s"}).value), (((Array){2, "%"}).value), (name.value));
         }  ;
-        if ((i < (len - ((int)1)))) {
+        if ((i < (len - 1))) {
             fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, ", "}).value));
         }  ;
     }
@@ -543,7 +539,13 @@
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str((*global)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){11, " = global "}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_type_to_str(((*global).tpe)).value));
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){18, " zeroinitializer\x0a"""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, " "}).value));
+    if (((*global).value)) {
+        fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str((*((*global).value))).value));
+    }  else {
+        fprintf(fp, (((Array){3, "%s"}).value), (((Array){16, "zeroinitializer"}).value));
+    };
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
  void _574f02bf_gen_main_function(void *fp) {
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){43, "define i32 @main(i32 %argc, i8** %argv) {\x0a"""}).value));

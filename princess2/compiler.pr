@@ -33,6 +33,7 @@ export type Value = struct {
     f: double
     s: string
     undef: bool
+    value: *Value
     // Used for both struct and array
     values: [Value]
     // Address of a value
@@ -200,8 +201,9 @@ type LoopState = struct {
 
 export type State = struct {
     module: *toolchain::Module
-    // TODO Make this a stack for nested functions
     counter: int
+    global_counter: int
+    // TODO Make this a stack for nested functions
     current_function: *Function
     current_block: *Block
     // Vector of LoopState 
@@ -278,6 +280,30 @@ export def make_local_value(tpe: *typechecking::Type, addr: *Value, state: *Stat
     } !Value
 }
 
+export def make_global_value(tpe: *typechecking::Type, name: string, value: *Value, state: *State) -> Value {
+    let buf = buffer::make_buffer()
+    buffer::append_str(*buf, name)
+    buffer::append_char(*buf, '.')
+    buffer::append_str(*buf, util::int_to_str((@state).global_counter))
+    name = buffer::to_string(*buf)
+    (@state).global_counter += 1
+
+    let global = allocate(Value)
+    (@global).kind = ValueKind::GLOBAL
+    (@global).undef = false
+    (@global).name = name
+    (@global).value = value
+    (@global).tpe = tpe
+    map::put((@(@state).result).globals, (@global).name, global)
+
+    return {
+        kind = ValueKind::GLOBAL,
+        name = name,
+        tpe = typechecking::pointer(tpe),
+        addr = null
+    } !Value
+}
+
 export def push_label(label_: Label, state: *State) {
     let block = allocate(Block)
     // TODO Might want to use the actual label here
@@ -343,6 +369,68 @@ def walk_Char(node: *parser::Node, state: *State) -> Value {
         tpe = tpe
     } !Value
     return value    
+}
+
+def walk_String(node: *parser::Node, state: *State) -> Value {
+    let tpe = (@node).tpe
+    let str_value = allocate(Value)
+    (@str_value).kind = ValueKind::STRING
+    (@str_value).s = (@node).value.str
+    (@str_value).tpe = tpe
+    let global = make_global_value(tpe, "str", str_value, state)
+
+    let local = make_local_value(typechecking::pointer((@tpe).tpe), null, state)
+
+    let index = allocate(Value, 2)
+    index[0] = make_int_value(0)
+    index[0].tpe = builtins::size_t_
+    index[1] = make_int_value(0)
+    index[1].tpe = builtins::size_t_
+
+    let gep = allocate(Insn)
+    (@gep).kind = InsnKind::GETELEMENTPTR
+    (@gep).value.gep = {
+        ret = local,
+        tpe = tpe,
+        value = global,
+        index = index
+    } !InsnGetElementPtr
+
+    push_insn(gep, state)
+
+    let ret = make_local_value(builtins::string_, null, state)
+
+    let values = allocate(Value, 2)
+    values[0] = {
+        kind = ValueKind::INT,
+        tpe = builtins::size_t_,
+        i = (@tpe).length
+    } !Value
+    values[1] = {
+        undef = true,
+        tpe = typechecking::pointer((@tpe).tpe)
+    }
+
+    let value = {
+        kind = ValueKind::STRUCT,
+        values = values,
+        tpe = builtins::string_
+    } !Value
+
+    let index2 = allocate(int, 1)
+    index2[0] = 1
+    let insert = allocate(Insn)
+    (@insert).kind = InsnKind::INSERTVALUE
+    (@insert).value.insert_value = {
+        ret = ret,
+        value = value,
+        element = local, 
+        index = index2
+    } !InsnInsertValue
+
+    push_insn(insert, state)
+
+    return ret
 }
 
 def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Type, state: *State) -> Value {
@@ -1295,6 +1383,8 @@ export def walk_expression(node: *parser::Node, state: *State) -> Value {
             return walk_Boolean(node, state)
         case parser::NodeKind::CHAR:
             return walk_Char(node, state)
+        case parser::NodeKind::STRING:
+            return walk_String(node, state)
         case parser::NodeKind::SIZE_OF:
             return walk_SizeOf(node, state)
         case parser::NodeKind::ALIGN_OF:
@@ -1593,7 +1683,6 @@ def create_function(tpe: *typechecking::Type, body: *vector::Vector, scpe: *scop
     if body {
         (@state).current_function = function
         (@state).counter = 0
-        (@state).counter = 0
         
         let block = allocate(Block)
         (@block).label_ = "start"
@@ -1701,6 +1790,7 @@ def walk_top_VarDecl(node: *parser::Node, body: *vector::Vector, state: *State) 
             (@global).kind = ValueKind::GLOBAL
             (@global).undef = false
             (@global).name = name
+            (@global).value = null
             (@global).tpe = (@v).tpe
             map::put((@(@state).result).globals, (@global).name, global)
             vector::push(left, (@n).value.id_decl.value)
@@ -1782,6 +1872,8 @@ export def compile(module: *toolchain::Module) -> *Result {
     let state = allocate(State)
     @state = {
         module = module,
+        counter = 0,
+        global_counter = 0,
         loops = vector::make(),
         result = allocate(Result)
     } !State
