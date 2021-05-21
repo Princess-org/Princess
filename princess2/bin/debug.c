@@ -780,7 +780,7 @@ DLL_EXPORT string debug_type_to_str(typechecking_Type *tpe);
     for (int i = 0;(i < len);(i += 1)) {
         typechecking_NamedParameter *param = ((typechecking_NamedParameter *)vector_get(((*tpe).parameter_t), i));
         buffer_append_str((&buf), debug_type_to_str(((*param).value)));
-        if ((i < (len - 1))) {
+        if ((i < (len - ((int)1)))) {
             buffer_append_str((&buf), ((Array){3, " ,"}));
         }  ;
     }
@@ -790,7 +790,7 @@ DLL_EXPORT string debug_type_to_str(typechecking_Type *tpe);
     for (int i = 0;(i < len);(i += 1)) {
         typechecking_Type *ret = ((typechecking_Type *)vector_get(((*tpe).return_t), i));
         buffer_append_str((&buf), debug_type_to_str(ret));
-        if ((i < (len - 1))) {
+        if ((i < (len - ((int)1)))) {
             buffer_append_str((&buf), ((Array){3, ", "}));
         }  ;
     }
@@ -840,6 +840,20 @@ DLL_EXPORT string debug_type_to_str(typechecking_Type *tpe);
     buffer_append_char((&buf), ')');
     return buffer_to_string((&buf));
 };
+ string _ad42f669_tuple_t_to_string(typechecking_Type *tpe) {
+    buffer_Buffer buf = buffer_make_buffer();
+    buffer_append_char((&buf), '(');
+    int len = vector_length(((*tpe).return_t));
+    for (int i = 0;(i < len);(i += 1)) {
+        typechecking_Type *ret = ((typechecking_Type *)vector_get(((*tpe).return_t), i));
+        buffer_append_str((&buf), debug_type_to_str(ret));
+        if ((i < (len - ((int)1)))) {
+            buffer_append_str((&buf), ((Array){3, ", "}));
+        }  ;
+    }
+    ;
+    buffer_append_char((&buf), ')');
+};
 DLL_EXPORT string debug_type_to_str(typechecking_Type *tpe) {
     if ((!tpe)) {
         return ((Array){7, "(null)"});
@@ -851,6 +865,9 @@ DLL_EXPORT string debug_type_to_str(typechecking_Type *tpe) {
         break;
         case typechecking_TypeKind_FUNCTION:
         return _ad42f669_function_t_to_string(tpe);
+        break;
+        case typechecking_TypeKind_TUPLE:
+        return _ad42f669_tuple_t_to_string(tpe);
         break;
         case typechecking_TypeKind_POINTER:
         return _ad42f669_pointer_t_to_string(tpe);

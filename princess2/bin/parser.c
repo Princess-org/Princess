@@ -40,7 +40,7 @@ typedef union parser_NodeValue {struct parser_NodeBinaryOp bin_op; struct parser
 typedef struct parser_SourceLoc {string filename; string module; int line; int column; Array lines;} parser_SourceLoc;
 typedef struct typechecking_Type typechecking_Type;
 typedef struct scope_Scope scope_Scope;
-typedef struct parser_Node {enum parser_NodeKind kind; struct parser_SourceLoc loc; struct typechecking_Type *tpe; struct scope_Scope *scope; union parser_NodeValue value;} parser_Node;
+typedef struct parser_Node {enum parser_NodeKind kind; struct parser_SourceLoc loc; struct typechecking_Type *tpe; struct typechecking_Type *function; struct scope_Scope *scope; union parser_NodeValue value;} parser_Node;
 typedef struct _3643b863_ParseState {string filename; string module; bool has_error; Array lines; struct lexer_TokenList **tokens;} _3643b863_ParseState;
  void _3643b863_errort(lexer_Token token, _3643b863_ParseState *state, string msg);
 DLL_EXPORT parser_Node * parser_make_identifier(Array s) {
@@ -71,7 +71,7 @@ DLL_EXPORT string parser_identifier_to_str(parser_Node *node) {
     int len = vector_length((((*node).value).body));
     for (int i = 0;(i < len);(i += 1)) {
         buffer_append_str((&buf), (*((string *)vector_get((((*node).value).body), i))));
-        if ((i < (len - 1))) {
+        if ((i < (len - ((int)1)))) {
             buffer_append_str((&buf), ((Array){3, "::"}));
         }  ;
     }
@@ -81,6 +81,7 @@ DLL_EXPORT string parser_identifier_to_str(parser_Node *node) {
  parser_Node * _3643b863_make_node(parser_NodeKind kind, int line, int column, _3643b863_ParseState *state) {
     parser_Node *node = malloc((sizeof(parser_Node)));
     ((*node).tpe) = NULL;
+    ((*node).function) = NULL;
     ((*node).scope) = NULL;
     ((*node).kind) = kind;
     ((*node).loc) = ((parser_SourceLoc){ ((*state).filename), ((*state).module), line, column, ((*state).lines) });
@@ -1632,7 +1633,7 @@ DLL_EXPORT parser_Node * parser_parse(lexer_TokenList *list, Array lines, string
         int line = (token.line);
         int column = (token.column);
         fprintf(stderr, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
-        fprintf(stderr, (((Array){13, "%s%s%d%s%d%s"}).value), (filename.value), (((Array){2, "@"}).value), (line + 1), (((Array){2, ":"}).value), (column + 1), (((Array){2, "\x0a"""}).value));
+        fprintf(stderr, (((Array){13, "%s%s%d%s%d%s"}).value), (filename.value), (((Array){2, "@"}).value), (line + ((int)1)), (((Array){2, ":"}).value), (column + ((int)1)), (((Array){2, "\x0a"""}).value));
         fprintf(stderr, (((Array){5, "%s%s"}).value), ((((string *)((*state).lines).value)[line]).value), (((Array){2, "\x0a"""}).value));
         for (int i = 0;(i < column);(i += 1)) {
             fprintf(stderr, (((Array){3, "%s"}).value), (((Array){2, " "}).value));

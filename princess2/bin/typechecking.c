@@ -9,7 +9,7 @@
 #include "parser.c"
 #include "buffer.c"
 #include "util.c"
-typedef enum typechecking_TypeKind {typechecking_TypeKind_TYPE = 0, typechecking_TypeKind_WORD = 1, typechecking_TypeKind_FLOAT = 2, typechecking_TypeKind_BOOL = 3, typechecking_TypeKind_STRUCT = 4, typechecking_TypeKind_UNION = 5, typechecking_TypeKind_ENUM = 6, typechecking_TypeKind_FUNCTION = 7, typechecking_TypeKind_POINTER = 8, typechecking_TypeKind_REFERENCE = 9, typechecking_TypeKind_STATIC_ARRAY = 10, typechecking_TypeKind_ARRAY = 11, typechecking_TypeKind_INT_LITERAL = 12, typechecking_TypeKind_NAMESPACE = 13, typechecking_TypeKind_STUB = 14} typechecking_TypeKind;
+typedef enum typechecking_TypeKind {typechecking_TypeKind_TYPE = 0, typechecking_TypeKind_WORD = 1, typechecking_TypeKind_FLOAT = 2, typechecking_TypeKind_BOOL = 3, typechecking_TypeKind_STRUCT = 4, typechecking_TypeKind_UNION = 5, typechecking_TypeKind_ENUM = 6, typechecking_TypeKind_FUNCTION = 7, typechecking_TypeKind_TUPLE = 8, typechecking_TypeKind_POINTER = 9, typechecking_TypeKind_REFERENCE = 10, typechecking_TypeKind_STATIC_ARRAY = 11, typechecking_TypeKind_ARRAY = 12, typechecking_TypeKind_INT_LITERAL = 13, typechecking_TypeKind_NAMESPACE = 14, typechecking_TypeKind_STUB = 15} typechecking_TypeKind;
 typedef struct typechecking_Type typechecking_Type;
 typedef struct typechecking_StructMember {string name; struct typechecking_Type *tpe; size_t offset;} typechecking_StructMember;
 typedef struct compiler_State compiler_State;
@@ -25,7 +25,7 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
     if ((length == 0)) {
         return NULL;
     }  else {
-        return ((typechecking_Type *)vector_get(((*state).function_stack), (length - 1)));
+        return ((typechecking_Type *)vector_get(((*state).function_stack), (length - ((int)1))));
     };
 };
  void _3700c937_push_function(_3700c937_State *state, typechecking_Type *tpe) {
@@ -584,7 +584,7 @@ typechecking_Type *_3700c937_int_literal;
         parser_Node *value = ((parser_Node *)vector_get(right, i));
         _3700c937_walk(value, state);
         typechecking_Type *tpe = ((*value).tpe);
-        if ((((bool)tpe) && (((*tpe).kind) == typechecking_TypeKind_FUNCTION))) {
+        if ((((bool)tpe) && (((*tpe).kind) == typechecking_TypeKind_TUPLE))) {
             for (int j = 0;(j < vector_length(((*tpe).return_t)));(j += 1)) {
                 typechecking_Type *t = ((typechecking_Type *)vector_get(((*tpe).return_t), j));
                 vector_push(types, t);
@@ -1055,6 +1055,7 @@ typechecking_Type *_3700c937_int_literal;
     }  else {
         typechecking_Type *tpe = ((*function).tpe);
         vector_Vector *parameter_t = ((*tpe).parameter_t);
+        ((*node).function) = tpe;
         for (int i = 0;(i < vector_length(((((*node).value).func_call).args)));(i += 1)) {
             parser_Node *n = ((parser_Node *)vector_get(((((*node).value).func_call).args), i));
             typechecking_Type *rhstpe = ((*((typechecking_NamedParameter *)vector_get(parameter_t, i))).value);
@@ -1077,7 +1078,17 @@ typechecking_Type *_3700c937_int_literal;
             _3700c937_implicit_conversion(arg, rhstpe, NULL);
         }
         ;
-        ((*node).tpe) = tpe;
+        int len = vector_length(((*tpe).return_t));
+        if ((len > 1)) {
+            typechecking_Type *return_tpe = malloc((sizeof(typechecking_Type)));
+            ((*return_tpe).kind) = typechecking_TypeKind_TUPLE;
+            ((*return_tpe).return_t) = ((*tpe).return_t);
+            ((*node).tpe) = return_tpe;
+        } else if ((len == 1)) {
+            ((*node).tpe) = vector_peek(((*tpe).return_t));
+        } else {
+            ((*node).tpe) = NULL;
+        };
     };
 };
  void _3700c937_walk_If(parser_Node *node, _3700c937_State *state) {
@@ -1479,6 +1490,9 @@ DLL_EXPORT void typechecking_errorn(parser_Node *node, string msg) {
 DLL_EXPORT void typechecking_p_main(Array args) {
     ;
     _3700c937_counter = 0;
+    scope_p_main(args);
+    builtins_p_main(args);
+    debug_p_main(args);
     _3700c937_int_literal = typechecking_make_type(typechecking_TypeKind_INT_LITERAL, parser_make_identifier(((Array){1, (Array[1]){ ((Array){12, "int_literal"}) }})));
     ((*_3700c937_int_literal).unsig) = false;
     ((*_3700c937_int_literal).size) = (sizeof(int));
