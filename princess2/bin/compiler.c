@@ -430,9 +430,18 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
         return compiler_NO_VALUE;
     }  ;
     compiler_Value name_v = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = name, .tpe = NULL });
+    compiler_Value addr = compiler_NO_VALUE;
     compiler_Value value = compiler_NO_VALUE;
     if (((*function).ret)) {
-        value = compiler_make_local_value(((*function).ret), NULL, state);
+        addr = compiler_make_local_value(((*function).ret), NULL, state);
+        compiler_Insn *alloca = malloc((sizeof(compiler_Insn)));
+        ((*alloca).kind) = compiler_InsnKind_ALLOCA;
+        (((*alloca).value).alloca) = ((compiler_InsnAlloca){ .ret = addr });
+        compiler_push_insn(alloca, state);
+        (addr.tpe) = typechecking_pointer(((*function).ret));
+        compiler_Value *addrp = malloc((sizeof(compiler_Value)));
+        (*addrp) = addr;
+        value = compiler_make_local_value(((*function).ret), addrp, state);
     }  ;
     Array args = ((Array){vector_length(parameter_t), malloc((((int64)(sizeof(compiler_Value))) * ((int64)vector_length(parameter_t))))});
     for (int i = 0;(i < vector_length(((((*node).value).func_call).args)));(i += 1)) {
@@ -458,6 +467,12 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     ((*insn).kind) = compiler_InsnKind_CALL;
     (((*insn).value).call) = ((compiler_InsnCall){ .name = name_v, .ret = value, .args = args });
     compiler_push_insn(insn, state);
+    if (((*function).ret)) {
+        compiler_Insn *store = malloc((sizeof(compiler_Insn)));
+        ((*store).kind) = compiler_InsnKind_STORE;
+        (((*store).value).store) = ((compiler_InsnStore){ .value = value, .loc = addr });
+        compiler_push_insn(store, state);
+    }  ;
     return value;
 };
  compiler_Value _87f75ce3_walk_Identifier(parser_Node *node, compiler_State *state) {
@@ -647,6 +662,10 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     parser_Node *left = ((((*node).value).bin_op).left);
     parser_Node *right = ((((*node).value).bin_op).right);
     compiler_Value value = compiler_walk_expression(left, state);
+    if ((!(value.addr))) {
+        typechecking_errorn(node, ((Array){52, "Can't use member access, expression has no address\x0a"""}));
+        return compiler_NO_VALUE;
+    }  ;
     typechecking_Type *tpe = ((*left).tpe);
     string name = typechecking_last_ident_to_str(right);
     if ((((*tpe).kind) == typechecking_TypeKind_STATIC_ARRAY)) {
@@ -796,7 +815,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     if (typechecking_is_pointer((right.tpe))) {
         right = _87f75ce3_convert_to(node, right, builtins_size_t_, state);
     }  ;
-    if ((typechecking_is_arithmetic((left.tpe)) && typechecking_is_arithmetic((right.tpe)))) {
+    if ((((bool)typechecking_is_arithmetic((left.tpe))) && ((bool)typechecking_is_arithmetic((right.tpe))))) {
         tpe = typechecking_common_type((left.tpe), (right.tpe));
         left = _87f75ce3_convert_to(node, left, tpe, state);
         right = _87f75ce3_convert_to(node, right, tpe, state);
@@ -1408,7 +1427,7 @@ DLL_EXPORT compiler_Result * compiler_compile(toolchain_Module *module) {
             Array keys = map_keys(((*m_scope).fields));
             for (int i = 0;(i < (keys.size));(i += 1)) {
                 scope_Value *value = ((scope_Value *)map_get(((*m_scope).fields), (((string *)keys.value)[i])));
-                if ((typechecking_is_function(((*value).tpe)) && ((bool)(((int)((*value).share)) & parser_ShareMarker_EXPORT)))) {
+                if ((((bool)typechecking_is_function(((*value).tpe))) && ((bool)(((int)((*value).share)) & ((int)parser_ShareMarker_EXPORT))))) {
                     _87f75ce3_create_function(((*value).tpe), NULL, sc, state);
                 }  ;
             }
@@ -1460,6 +1479,7 @@ DLL_EXPORT compiler_Result * compiler_compile(toolchain_Module *module) {
 };
 DLL_EXPORT void compiler_p_main(Array args) {
     ;
+    debug_p_main(args);
     compiler_NO_VALUE = ((compiler_Value){ .kind = compiler_ValueKind_NULL, .tpe = NULL });
     memcpy((compiler_f_ueq.value), (((Array){4, "ueq"}).value), ((sizeof(char)) * (compiler_f_ueq.size)));
     memcpy((compiler_f_ugt.value), (((Array){4, "ugt"}).value), ((sizeof(char)) * (compiler_f_ugt.size)));
