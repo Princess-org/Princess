@@ -163,9 +163,21 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     return value;
 };
  compiler_Value _87f75ce3_walk_String(parser_Node *node, compiler_State *state) {
+    ;
     typechecking_Type *tpe = ((*node).tpe);
-    compiler_Value ret = ((compiler_Value){ .kind = compiler_ValueKind_STRING, .s = (((*node).value).str), .tpe = tpe });
-    return ret;
+    compiler_Value *str_value = malloc((sizeof(compiler_Value)));
+    ((*str_value).kind) = compiler_ValueKind_STRING;
+    ((*str_value).s) = (((*node).value).str);
+    ((*str_value).tpe) = tpe;
+    compiler_Value global = compiler_make_global_value(tpe, ((Array){4, "str"}), str_value, state);
+    compiler_Value *globalp = malloc((sizeof(compiler_Value)));
+    (*globalp) = global;
+    compiler_Value local = compiler_make_local_value(tpe, globalp, state);
+    compiler_Insn *load = malloc((sizeof(compiler_Insn)));
+    ((*load).kind) = compiler_InsnKind_LOAD;
+    (((*load).value).load) = ((compiler_InsnLoad){ .value = local, .loc = global });
+    compiler_push_insn(load, state);
+    return local;
 };
  compiler_Value _87f75ce3_convert_to(parser_Node *node, compiler_Value value, typechecking_Type *tpe, compiler_State *state) {
     if ((((bool)(!(value.tpe))) || ((bool)(!tpe)))) {
