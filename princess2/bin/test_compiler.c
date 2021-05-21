@@ -217,7 +217,7 @@ bool test_compiler_print_ll;
 };
  void _6dcc03b3_test_string_literal() {
     printf((((Array){3, "%s"}).value), (((Array){25, ">Test string literal... "}).value));
-    Array str = ((Array){28, "\x0a""        var a = \"abc\"\x0a""    "});
+    Array str = ((Array){204, "\x0a""        def function -> [4; char]\x0a""\x0a""        var a: [char] = \"abc\"\x0a""        var b: [char] = function()\x0a""\x0a""        def two_returns -> [4; char], [5; char]\x0a""        var c: [char], d: [char] = two_returns()\x0a""    "});
     string res = _6dcc03b3_compile(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };

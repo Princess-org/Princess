@@ -163,7 +163,6 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     return value;
 };
  compiler_Value _87f75ce3_walk_String(parser_Node *node, compiler_State *state) {
-    ;
     typechecking_Type *tpe = ((*node).tpe);
     compiler_Value *str_value = malloc((sizeof(compiler_Value)));
     ((*str_value).kind) = compiler_ValueKind_STRING;
@@ -188,8 +187,30 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     }  ;
     compiler_InsnKind kind;
     if ((((*tpe).kind) == typechecking_TypeKind_ARRAY)) {
-        if ((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY)) {
-            assert(false);
+        if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && ((bool)typechecking_equals(((*tpe).tpe), ((*(value.tpe)).tpe))))) {
+            printf((((Array){13, "%s%s%s%s%p%s"}).value), (debug_type_to_str(tpe).value), (((Array){2, " "}).value), (debug_type_to_str((value.tpe)).value), (((Array){2, " "}).value), (value.addr), (((Array){2, "\x0a"""}).value));
+            compiler_Value local = compiler_make_local_value(typechecking_pointer(((*tpe).tpe)), NULL, state);
+            Array index = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
+            (((compiler_Value *)index.value)[0]) = compiler_make_int_value(0);
+            ((((compiler_Value *)index.value)[0]).tpe) = builtins_size_t_;
+            (((compiler_Value *)index.value)[1]) = compiler_make_int_value(0);
+            ((((compiler_Value *)index.value)[1]).tpe) = builtins_size_t_;
+            compiler_Insn *gep = malloc((sizeof(compiler_Insn)));
+            ((*gep).kind) = compiler_InsnKind_GETELEMENTPTR;
+            (((*gep).value).gep) = ((compiler_InsnGetElementPtr){ .ret = local, .tpe = (value.tpe), .value = (*(value.addr)), .index = index });
+            compiler_push_insn(gep, state);
+            compiler_Value ret = compiler_make_local_value(tpe, NULL, state);
+            Array values = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
+            (((compiler_Value *)values.value)[0]) = ((compiler_Value){ .kind = compiler_ValueKind_INT, .tpe = builtins_size_t_, .i = ((*(value.tpe)).length), .sign = 1 });
+            (((compiler_Value *)values.value)[1]) = ((compiler_Value){ .undef = true, .tpe = typechecking_pointer(((*tpe).tpe)) });
+            compiler_Value value = ((compiler_Value){ .kind = compiler_ValueKind_STRUCT, .values = values, .tpe = tpe });
+            Array index2 = ((Array){1, malloc((((int64)(sizeof(int))) * ((int64)1)))});
+            (((int *)index2.value)[0]) = 1;
+            compiler_Insn *insert = malloc((sizeof(compiler_Insn)));
+            ((*insert).kind) = compiler_InsnKind_INSERTVALUE;
+            (((*insert).value).insert_value) = ((compiler_InsnInsertValue){ .ret = ret, .value = value, .element = local, .index = index2 });
+            compiler_push_insn(insert, state);
+            return ret;
         }  else {
             typechecking_errorn(node, ((Array){15, "Can't convert "}));
             fprintf(stderr, (((Array){9, "%s%s%s%s"}).value), (debug_type_to_str((value.tpe)).value), (((Array){5, " to "}).value), (debug_type_to_str(tpe).value), (((Array){2, "\x0a"""}).value));
@@ -539,12 +560,12 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
                 compiler_Insn *extract = malloc((sizeof(compiler_Insn)));
                 ((*extract).kind) = compiler_InsnKind_EXTRACTVALUE;
                 (((*extract).value).extract_value) = ((compiler_InsnExtractValue){ .ret = ret, .value = value, .index = index });
+                compiler_push_insn(extract, state);
+                ret = _87f75ce3_convert_to(n, ret, ((*l).tpe), state);
                 compiler_Insn *store = malloc((sizeof(compiler_Insn)));
                 ((*store).kind) = compiler_InsnKind_STORE;
                 (((*store).value).store) = ((compiler_InsnStore){ .value = ret, .loc = (*addr) });
-                compiler_push_insn(extract, state);
                 compiler_push_insn(store, state);
-                ret = _87f75ce3_convert_to(n, ret, ((*l).tpe), state);
                 last_value = ret;
                 (j += 1);
             }
@@ -556,13 +577,14 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
             parser_Node *l = ((parser_Node *)vector_get(left, j));
             compiler_Value *addr = (compiler_walk_expression(l, state).addr);
             if ((!addr)) {
+                typechecking_errorn(l, ((Array){41, "Can't assign, expression has no address\x0a"""}));
                 return compiler_NO_VALUE;
             }  ;
+            value = _87f75ce3_convert_to(n, value, ((*l).tpe), state);
             compiler_Insn *store = malloc((sizeof(compiler_Insn)));
             ((*store).kind) = compiler_InsnKind_STORE;
             (((*store).value).store) = ((compiler_InsnStore){ .value = value, .loc = (*addr) });
             compiler_push_insn(store, state);
-            value = _87f75ce3_convert_to(n, value, ((*l).tpe), state);
             last_value = value;
             (j += 1);
         };
