@@ -223,6 +223,25 @@ bool test_compiler_print_ll;
 };
 DLL_EXPORT void test_compiler_test() {
     printf((((Array){3, "%s"}).value), (((Array){30, "Running tests on Compiler...\x0a"""}).value));
+    _6dcc03b3_test_emit_arithmetic();
+    _6dcc03b3_test_emit_call();
+    _6dcc03b3_test_emit_if();
+    _6dcc03b3_test_emit_loop();
+    _6dcc03b3_test_emit_vardecl();
+    _6dcc03b3_test_emit_globals();
+    _6dcc03b3_test_emit_ptr();
+    _6dcc03b3_test_emit_convert();
+    _6dcc03b3_test_member_access();
+    _6dcc03b3_test_array_subscript();
+    _6dcc03b3_test_struct_lit();
+    _6dcc03b3_test_size_of();
+    _6dcc03b3_test_align_of();
+    _6dcc03b3_test_compare();
+    _6dcc03b3_test_pointer_arithmetic();
+    _6dcc03b3_test_assign_eq();
+    _6dcc03b3_test_import();
+    _6dcc03b3_test_array_size_and_value();
+    _6dcc03b3_test_string_literal();
     _6dcc03b3_test_builtins();
 };
 DLL_EXPORT void test_compiler_p_main(Array args) {

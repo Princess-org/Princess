@@ -37,7 +37,7 @@ DLL_EXPORT map_Map * getopt_parse(Array args, Array options) {
                         if (((((char *)arg.value)[(((option.longop).size) - 1)]) == '=')) {
                             if ((((option.nargs) == 1) && ((option.tpe) == getopt_Type_STRING))) {
                                 string *value = util_copy_string(arg);
-                                (((*value).value) + (((option.longop).size) - 1));
+                                ((*value).value) = ((((*value).value) + (((option.longop).size) - 1)) + 1);
                                 ((*value).size) = (((int64)strlen(((*value).value))) + ((int64)1));
                                 vector_push(passed_args, value);
                             }  else {
@@ -144,7 +144,7 @@ DLL_EXPORT map_Map * getopt_parse(Array args, Array options) {
     ;
     for (int i = 0;(i < (options.size));(i += 1)) {
         getopt_Option opt = (((getopt_Option *)options.value)[i]);
-        if ((((opt.tpe) == getopt_Type_BOOL) && (!map_contains(m, _572fa04a_get_name(opt))))) {
+        if ((((opt.tpe) == getopt_Type_BOOL) && ((bool)(!map_contains(m, _572fa04a_get_name(opt)))))) {
             map_put(m, _572fa04a_get_name(opt), calloc(1, (sizeof(bool))));
         }  ;
     }
