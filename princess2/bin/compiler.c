@@ -1413,6 +1413,10 @@ vector_Vector *_87f75ce3_imported_modules;
     for (int i = 0;(i < vector_length(imports));(i += 1)) {
         parser_Node *imprt = ((parser_Node *)vector_get(imports, i));
         parser_Node *name = ((((*imprt).value).import_module).name);
+        parser_Node *alias = ((((*imprt).value).import_module).alias);
+        if ((!alias)) {
+            alias = name;
+        }  ;
         string filename = toolchain_find_module_file(name);
         if ((((filename.size) - 1) == 0)) {
             continue;
@@ -1444,7 +1448,7 @@ vector_Vector *_87f75ce3_imported_modules;
         (((string *)array.value)[(((int64)(array.size)) - ((int64)1))]) = ((Array){5, "main"});
         parser_Node *ident = parser_make_identifier(array);
         ((*ident).scope) = ((*node).scope);
-        scope_Scope *sc = ((scope_Scope *)((*scope_get(((*node).scope), name)).value));
+        scope_Scope *sc = ((scope_Scope *)((*scope_get(((*node).scope), alias)).value));
         parser_Node *call = malloc((sizeof(parser_Node)));
         ((*call).kind) = parser_NodeKind_FUNC_CALL;
         ((*call).scope) = ((*node).scope);
