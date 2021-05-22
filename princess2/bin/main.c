@@ -45,7 +45,6 @@ DLL_EXPORT void main_p_main(Array args) {
     _fad58de7_includes = ((vector_Vector *)map_get(_fad58de7_res, ((Array){10, "--include"})));
     _fad58de7_outfolder = ((string *)map_get(_fad58de7_res, ((Array){12, "--outfolder"})));
     if (_fad58de7_outfolder) {
-        printf((((Array){5, "%s%s"}).value), ((*_fad58de7_outfolder).value), (((Array){2, "\x0a"""}).value));
         toolchain_outfolder = (*_fad58de7_outfolder);
     }  ;
     if (_fad58de7_includes) {

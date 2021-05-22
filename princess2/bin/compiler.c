@@ -1447,7 +1447,8 @@ vector_Vector *_87f75ce3_imported_modules;
         parser_Node *call = malloc((sizeof(parser_Node)));
         ((*call).kind) = parser_NodeKind_FUNC_CALL;
         ((*call).scope) = ((*node).scope);
-        ((*call).tpe) = ((*((scope_Value *)map_get(((*sc).fields), ((Array){5, "main"})))).tpe);
+        ((*call).tpe) = NULL;
+        ((*call).function) = ((*((scope_Value *)map_get(((*sc).fields), ((Array){5, "main"})))).tpe);
         (((*call).value).func_call) = ((parser_NodeFuncCall){ .left = ident, .args = args, .kwargs = vector_make() });
         vector_push(body, call);
     }
