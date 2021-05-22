@@ -18,7 +18,7 @@ typedef struct compiler_Label {string name;} compiler_Label;
 typedef enum compiler_ValueKind {compiler_ValueKind_NULL = 0, compiler_ValueKind_LOCAL = 1, compiler_ValueKind_GLOBAL = 2, compiler_ValueKind_BOOL = 3, compiler_ValueKind_INT = 4, compiler_ValueKind_FLOAT = 5, compiler_ValueKind_STRING = 6, compiler_ValueKind_ARRAY = 7, compiler_ValueKind_STRUCT = 8, compiler_ValueKind_UNION = 9} compiler_ValueKind;
 typedef struct compiler_Value {enum compiler_ValueKind kind; string name; int sign; uint64 i; double f; string s; bool undef; struct compiler_Value *value; Array values; struct compiler_Value *addr; struct typechecking_Type *tpe;} compiler_Value;
 compiler_Value compiler_NO_VALUE;
-typedef enum compiler_InsnKind {compiler_InsnKind_ADD = 0, compiler_InsnKind_SUB = 1, compiler_InsnKind_MUL = 2, compiler_InsnKind_SREM = 3, compiler_InsnKind_UREM = 4, compiler_InsnKind_SDIV = 5, compiler_InsnKind_UDIV = 6, compiler_InsnKind_FADD = 7, compiler_InsnKind_FSUB = 8, compiler_InsnKind_FMUL = 9, compiler_InsnKind_FREM = 10, compiler_InsnKind_FDIV = 11, compiler_InsnKind_ASHR = 12, compiler_InsnKind_SHL = 13, compiler_InsnKind_AND = 14, compiler_InsnKind_OR = 15, compiler_InsnKind_XOR = 16, compiler_InsnKind_FCMP = 17, compiler_InsnKind_ICMP = 18, compiler_InsnKind_RET = 19, compiler_InsnKind_LOAD = 20, compiler_InsnKind_STORE = 21, compiler_InsnKind_ALLOCA = 22, compiler_InsnKind_INSERTVALUE = 23, compiler_InsnKind_EXTRACTVALUE = 24, compiler_InsnKind_GETELEMENTPTR = 25, compiler_InsnKind_TRUNC = 26, compiler_InsnKind_ZEXT = 27, compiler_InsnKind_SEXT = 28, compiler_InsnKind_FPTRUNC = 29, compiler_InsnKind_FPEXT = 30, compiler_InsnKind_FPTOUI = 31, compiler_InsnKind_FPTOSI = 32, compiler_InsnKind_UITOFP = 33, compiler_InsnKind_SITOFP = 34, compiler_InsnKind_PTRTOINT = 35, compiler_InsnKind_INTTOPTR = 36, compiler_InsnKind_BITCAST = 37, compiler_InsnKind_CALL = 38, compiler_InsnKind_BR_UNC = 39, compiler_InsnKind_BR = 40} compiler_InsnKind;
+typedef enum compiler_InsnKind {compiler_InsnKind_ADD = 0, compiler_InsnKind_SUB = 1, compiler_InsnKind_MUL = 2, compiler_InsnKind_SREM = 3, compiler_InsnKind_UREM = 4, compiler_InsnKind_SDIV = 5, compiler_InsnKind_UDIV = 6, compiler_InsnKind_FADD = 7, compiler_InsnKind_FSUB = 8, compiler_InsnKind_FMUL = 9, compiler_InsnKind_FREM = 10, compiler_InsnKind_FDIV = 11, compiler_InsnKind_ASHR = 12, compiler_InsnKind_SHL = 13, compiler_InsnKind_AND = 14, compiler_InsnKind_OR = 15, compiler_InsnKind_XOR = 16, compiler_InsnKind_FCMP = 17, compiler_InsnKind_ICMP = 18, compiler_InsnKind_RET = 19, compiler_InsnKind_LOAD = 20, compiler_InsnKind_STORE = 21, compiler_InsnKind_ALLOCA = 22, compiler_InsnKind_INSERTVALUE = 23, compiler_InsnKind_EXTRACTVALUE = 24, compiler_InsnKind_GETELEMENTPTR = 25, compiler_InsnKind_TRUNC = 26, compiler_InsnKind_ZEXT = 27, compiler_InsnKind_SEXT = 28, compiler_InsnKind_FPTRUNC = 29, compiler_InsnKind_FPEXT = 30, compiler_InsnKind_FPTOUI = 31, compiler_InsnKind_FPTOSI = 32, compiler_InsnKind_UITOFP = 33, compiler_InsnKind_SITOFP = 34, compiler_InsnKind_PTRTOINT = 35, compiler_InsnKind_INTTOPTR = 36, compiler_InsnKind_BITCAST = 37, compiler_InsnKind_CALL = 38, compiler_InsnKind_BR_UNC = 39, compiler_InsnKind_BR = 40, compiler_InsnKind_UNREACHABLE = 41} compiler_InsnKind;
 ARRAY(compiler_f_ueq, char, 4);
 ARRAY(compiler_f_ugt, char, 4);
 ARRAY(compiler_f_uge, char, 4);
@@ -188,7 +188,6 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     compiler_InsnKind kind;
     if ((((*tpe).kind) == typechecking_TypeKind_ARRAY)) {
         if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && ((bool)typechecking_equals(((*tpe).tpe), ((*(value.tpe)).tpe))))) {
-            printf((((Array){13, "%s%s%s%s%p%s"}).value), (debug_type_to_str(tpe).value), (((Array){2, " "}).value), (debug_type_to_str((value.tpe)).value), (((Array){2, " "}).value), (value.addr), (((Array){2, "\x0a"""}).value));
             compiler_Value local = compiler_make_local_value(typechecking_pointer(((*tpe).tpe)), NULL, state);
             Array index = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
             (((compiler_Value *)index.value)[0]) = compiler_make_int_value(0);
@@ -544,7 +543,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
         }  ;
         if ((((*tpe).kind) == typechecking_TypeKind_TUPLE)) {
             for (int k = 0;(k < vector_length(((*tpe).return_t)));(k += 1)) {
-                void *t = vector_get(((*tpe).return_t), k);
+                typechecking_Type *t = ((typechecking_Type *)vector_get(((*tpe).return_t), k));
                 if ((j >= vector_length(left))) {
                     return compiler_NO_VALUE;
                 }  ;
@@ -554,13 +553,21 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
                     typechecking_errorn(l, ((Array){41, "Can't assign, expression has no address\x0a"""}));
                     return compiler_NO_VALUE;
                 }  ;
-                compiler_Value ret = compiler_make_local_value(t, NULL, state);
-                Array index = ((Array){1, malloc((((int64)(sizeof(int))) * ((int64)1)))});
-                (((int *)index.value)[0]) = k;
-                compiler_Insn *extract = malloc((sizeof(compiler_Insn)));
-                ((*extract).kind) = compiler_InsnKind_EXTRACTVALUE;
-                (((*extract).value).extract_value) = ((compiler_InsnExtractValue){ .ret = ret, .value = value, .index = index });
-                compiler_push_insn(extract, state);
+                compiler_Value gep_ret = compiler_make_local_value(typechecking_pointer(t), NULL, state);
+                Array index = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
+                (((compiler_Value *)index.value)[0]) = compiler_make_int_value(0);
+                (((compiler_Value *)index.value)[1]) = compiler_make_int_value(k);
+                compiler_Insn *gep = malloc((sizeof(compiler_Insn)));
+                ((*gep).kind) = compiler_InsnKind_GETELEMENTPTR;
+                (((*gep).value).gep) = ((compiler_InsnGetElementPtr){ .ret = gep_ret, .tpe = (value.tpe), .value = (*(value.addr)), .index = index });
+                compiler_push_insn(gep, state);
+                compiler_Value *gep_retp = malloc((sizeof(compiler_Value)));
+                (*gep_retp) = gep_ret;
+                compiler_Value ret = compiler_make_local_value(t, gep_retp, state);
+                compiler_Insn *load = malloc((sizeof(compiler_Insn)));
+                ((*load).kind) = compiler_InsnKind_LOAD;
+                (((*load).value).load) = ((compiler_InsnLoad){ .value = ret, .loc = gep_ret });
+                compiler_push_insn(load, state);
                 ret = _87f75ce3_convert_to(n, ret, ((*l).tpe), state);
                 compiler_Insn *store = malloc((sizeof(compiler_Insn)));
                 ((*store).kind) = compiler_InsnKind_STORE;

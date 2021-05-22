@@ -462,6 +462,9 @@
         case compiler_InsnKind_RET:
         _574f02bf_emit_ret(fp, insn);
         break;
+        case compiler_InsnKind_UNREACHABLE:
+        fprintf(fp, (((Array){3, "%s"}).value), (((Array){14, "\x09""unreachable\x0a"""}).value));
+        break;
         default:
         assert(false);
     }
@@ -493,7 +496,7 @@
             fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, " "}).value));
             fprintf(fp, (((Array){5, "%s%s"}).value), (((Array){2, "%"}).value), (name.value));
         }  ;
-        if ((i < (len - 1))) {
+        if ((i < (len - ((int)1)))) {
             fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, ", "}).value));
         }  ;
     }

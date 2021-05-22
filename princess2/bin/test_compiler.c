@@ -209,21 +209,21 @@ bool test_compiler_print_ll;
     string res = _6dcc03b3_compile(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
- void _6dcc03b3_test_builtins() {
-    printf((((Array){3, "%s"}).value), (((Array){19, ">Test builtins... "}).value));
-    Array str = ((Array){49, "\x0a""        var a = 10\x0a""        assert(a == 15)\x0a""    "});
-    string res = _6dcc03b3_compile(str);
-    printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
-};
  void _6dcc03b3_test_string_literal() {
     printf((((Array){3, "%s"}).value), (((Array){25, ">Test string literal... "}).value));
     Array str = ((Array){204, "\x0a""        def function -> [4; char]\x0a""\x0a""        var a: [char] = \"abc\"\x0a""        var b: [char] = function()\x0a""\x0a""        def two_returns -> [4; char], [5; char]\x0a""        var c: [char], d: [char] = two_returns()\x0a""    "});
     string res = _6dcc03b3_compile(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
+ void _6dcc03b3_test_builtins() {
+    printf((((Array){3, "%s"}).value), (((Array){19, ">Test builtins... "}).value));
+    Array str = ((Array){49, "\x0a""        var a = 10\x0a""        assert(a == 15)\x0a""    "});
+    string res = _6dcc03b3_compile(str);
+    printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
+};
 DLL_EXPORT void test_compiler_test() {
     printf((((Array){3, "%s"}).value), (((Array){30, "Running tests on Compiler...\x0a"""}).value));
-    _6dcc03b3_test_string_literal();
+    _6dcc03b3_test_builtins();
 };
 DLL_EXPORT void test_compiler_p_main(Array args) {
     test_compiler_print_ll = false;
