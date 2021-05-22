@@ -556,7 +556,26 @@
     fprintf(fp, (((Array){8, "%s%zu%s"}).value), (((Array){27, "\x09""%size.1 = mul i64 %size, "}).value), (sizeof(string)), (((Array){2, "\x0a"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){40, "\x09""%args = call i8* @malloc(i64 %size.1)\x0a"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){45, "\x09""%args.1 = bitcast i8* %args to {i64, i8*}*\x0a"""}).value));
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){38, "\x09""%args.2 = alloca {i64, {i64, i8*}*}\x0a"""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){63, "\x09""%args.2 = insertvalue {i64, {i64, i8*}*} undef, i64 %size, 0\x0a"""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){75, "\x09""%args.3 = insertvalue {i64, {i64, i8*}*} %args.2, {i64, i8*}* %args.1, 1\x0a"""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){18, "\x09""%i = alloca i32\x0a"""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){17, "\x09""br label %loop\x0a"""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){7, "loop:\x0a"""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){27, "\x09""%i.1 = load i32, i32* %i\x0a"""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){49, "\x09""%arg = getelementptr i8*, i8** %argv, i32 %i.1\x0a"""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){31, "\x09""%arg.1 = load i8*, i8** %arg\x0a"""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){67, "\x09""%arg.2 = getelementptr {i64, i8*}, {i64, i8*}* %args.1, i32 %i.1\x0a"""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){41, "\x09""%arglen = call i64 @strlen(i8* %arg.1)\x0a"""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){33, "\x09""%arglen.1 = add i64 %arglen, 1\x0a"""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){58, "\x09""%arg.3 = insertvalue {i64, i8*} undef, i64 %arglen.1, 0\x0a"""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){56, "\x09""%arg.4 = insertvalue {i64, i8*} %arg.3, i8* %arg.1, 1\x0a"""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){46, "\x09""store {i64, i8*} %arg.4, {i64, i8*}* %arg.2\x0a"""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){34, "\x09""%cond = icmp eq i32 %argc, %i.1\x0a"""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){25, "\x09""%i.2 = add i32 %i.1, 1\x0a"""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){26, "\x09""store i32 %i.2, i32* %i\x0a"""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){39, "\x09""br i1 %cond, label %loop, label %end\x0a"""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){6, "end:\x0a"""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){64, "\x09""call void @\"_F10main::main__AAi8\"({i64, {i64, i8*}*} %args.3)\x0a"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){29, "\x09""call void @free(i8* %args)\x0a"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){12, "\x09""ret i32 0\x0a"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, "}\x0a"""}).value));
@@ -615,6 +634,7 @@ DLL_EXPORT string codegen_gen(toolchain_Module *module) {
     if ((strcmp((((*module).module).value), (((Array){5, "main"}).value)) == 0)) {
         map_put(((*module).imported), ((Array){7, "malloc"}), map_sentinel);
         map_put(((*module).imported), ((Array){5, "free"}), map_sentinel);
+        map_put(((*module).imported), ((Array){7, "strlen"}), map_sentinel);
         _574f02bf_gen_main_function(fp);
     }  ;
     _574f02bf_gen_cstdlib_includes(fp, module);

@@ -80,7 +80,7 @@
     (((compiler_Value *)args.value)[2]) = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = (((*node).loc).line), .tpe = builtins_int_ });
     Array current_function = ((Array){5, "main"});
     if (((*state).current_function)) {
-        current_function = ((*((*state).current_function)).name);
+        current_function = ((*((*state).current_function)).unmangled);
     }  ;
     (((compiler_Value *)args.value)[3]) = _fe23cc40_create_charp(current_function, state);
     compiler_Insn *call = malloc((sizeof(compiler_Insn)));

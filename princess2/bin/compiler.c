@@ -51,7 +51,7 @@ typedef struct compiler_InsnBr {struct compiler_Value cond; struct compiler_Labe
 typedef union compiler_InsnValue {struct compiler_InsnArithmetic arith; struct compiler_InsnReturn ret; struct compiler_InsnStore store; struct compiler_InsnLoad load; struct compiler_InsnAlloca alloca; struct compiler_InsnCall call; struct compiler_InsnBrUnc br_unc; struct compiler_InsnBr br; struct compiler_InsnInsertValue insert_value; struct compiler_InsnExtractValue extract_value; struct compiler_InsnGetElementPtr gep; struct compiler_InsnConvert convert; struct compiler_InsnCmp cmp;} compiler_InsnValue;
 typedef struct compiler_Insn {enum compiler_InsnKind kind; union compiler_InsnValue value;} compiler_Insn;
 typedef struct compiler_Block {string label_; struct vector_Vector *insn; struct compiler_Block *next;} compiler_Block;
-typedef struct compiler_Function {string name; struct vector_Vector *args; struct typechecking_Type *ret; bool multiple_returns; bool forward_declare; struct compiler_Block *block;} compiler_Function;
+typedef struct compiler_Function {string name; string unmangled; struct vector_Vector *args; struct typechecking_Type *ret; bool multiple_returns; bool forward_declare; struct compiler_Block *block;} compiler_Function;
 typedef struct compiler_Result {struct map_Map *functions; struct map_Map *structures; struct map_Map *globals;} compiler_Result;
 typedef struct _87f75ce3_LoopState {struct compiler_Insn *break_insn; struct compiler_Insn *continue_insn;} _87f75ce3_LoopState;
 typedef struct compiler_State {struct toolchain_Module *module; int counter; int global_counter; struct compiler_Function *current_function; struct compiler_Block *current_block; struct vector_Vector *loops; struct compiler_Result *result;} compiler_State;
@@ -1280,6 +1280,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state) {
  void _87f75ce3_create_function(typechecking_Type *tpe, vector_Vector *body, scope_Scope *scpe, compiler_State *state) {
     compiler_Function *function = malloc((sizeof(compiler_Function)));
     ((*function).name) = typechecking_mangle_function_name(((*tpe).type_name), ((*tpe).parameter_t));
+    ((*function).unmangled) = ((*tpe).type_name);
     ((*function).multiple_returns) = false;
     ((*function).forward_declare) = true;
     if (body) {
