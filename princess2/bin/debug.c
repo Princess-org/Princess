@@ -780,7 +780,7 @@ DLL_EXPORT string debug_type_to_str(typechecking_Type *tpe);
     for (int i = 0;(i < len);(i += 1)) {
         typechecking_NamedParameter *param = ((typechecking_NamedParameter *)vector_get(((*tpe).parameter_t), i));
         buffer_append_str((&buf), debug_type_to_str(((*param).value)));
-        if ((i < (len - 1))) {
+        if ((i < (len - ((int)1)))) {
             buffer_append_str((&buf), ((Array){3, " ,"}));
         }  ;
     }
@@ -790,7 +790,7 @@ DLL_EXPORT string debug_type_to_str(typechecking_Type *tpe);
     for (int i = 0;(i < len);(i += 1)) {
         typechecking_Type *ret = ((typechecking_Type *)vector_get(((*tpe).return_t), i));
         buffer_append_str((&buf), debug_type_to_str(ret));
-        if ((i < (len - 1))) {
+        if ((i < (len - ((int)1)))) {
             buffer_append_str((&buf), ((Array){3, ", "}));
         }  ;
     }
@@ -830,16 +830,6 @@ DLL_EXPORT string debug_type_to_str(typechecking_Type *tpe);
     buffer_append_char((&buf), ']');
     return buffer_to_string((&buf));
 };
- string _ad42f669_int_literal_t_to_string(typechecking_Type *tpe) {
-    buffer_Buffer buf = buffer_make_buffer();
-    buffer_append_str((&buf), ((Array){13, "int_literal("}));
-    if ((((*tpe).sign) == (-1))) {
-        buffer_append_char((&buf), '-');
-    }  ;
-    buffer_append_str((&buf), util_int_to_str(((int64)((*tpe).i))));
-    buffer_append_char((&buf), ')');
-    return buffer_to_string((&buf));
-};
  string _ad42f669_tuple_t_to_string(typechecking_Type *tpe) {
     buffer_Buffer buf = buffer_make_buffer();
     buffer_append_char((&buf), '(');
@@ -847,7 +837,7 @@ DLL_EXPORT string debug_type_to_str(typechecking_Type *tpe);
     for (int i = 0;(i < len);(i += 1)) {
         typechecking_Type *ret = ((typechecking_Type *)vector_get(((*tpe).return_t), i));
         buffer_append_str((&buf), debug_type_to_str(ret));
-        if ((i < (len - 1))) {
+        if ((i < (len - ((int)1)))) {
             buffer_append_str((&buf), ((Array){3, ", "}));
         }  ;
     }
@@ -881,10 +871,11 @@ DLL_EXPORT string debug_type_to_str(typechecking_Type *tpe) {
         case typechecking_TypeKind_STATIC_ARRAY:
         return _ad42f669_static_array_t_to_string(tpe);
         break;
-        case typechecking_TypeKind_INT_LITERAL:
-        return _ad42f669_int_literal_t_to_string(tpe);
+        case typechecking_TypeKind_NAMESPACE:
+        return ((*tpe).name);
         break;
         default:
+        fprintf(stderr, (((Array){5, "%d%s"}).value), ((*tpe).kind), (((Array){2, "\x0a"""}).value));
         assert(false);
     }
     ;

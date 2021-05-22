@@ -24,10 +24,6 @@
         buffer_append_char((&buf), 'i');
         buffer_append_str((&buf), util_int_to_str((((int64)((*tpe).size)) * ((int64)8))));
         break;
-        case typechecking_TypeKind_INT_LITERAL:
-        buffer_append_char((&buf), 'i');
-        buffer_append_str((&buf), util_int_to_str((((int64)(sizeof(int))) * ((int64)8))));
-        break;
         case typechecking_TypeKind_FLOAT:
         switch (((*tpe).size)) {
             break;

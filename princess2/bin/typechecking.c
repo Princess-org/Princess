@@ -9,7 +9,7 @@
 #include "parser.c"
 #include "buffer.c"
 #include "util.c"
-typedef enum typechecking_TypeKind {typechecking_TypeKind_TYPE = 0, typechecking_TypeKind_WORD = 1, typechecking_TypeKind_FLOAT = 2, typechecking_TypeKind_BOOL = 3, typechecking_TypeKind_STRUCT = 4, typechecking_TypeKind_UNION = 5, typechecking_TypeKind_ENUM = 6, typechecking_TypeKind_FUNCTION = 7, typechecking_TypeKind_TUPLE = 8, typechecking_TypeKind_POINTER = 9, typechecking_TypeKind_REFERENCE = 10, typechecking_TypeKind_STATIC_ARRAY = 11, typechecking_TypeKind_ARRAY = 12, typechecking_TypeKind_INT_LITERAL = 13, typechecking_TypeKind_NAMESPACE = 14, typechecking_TypeKind_STUB = 15} typechecking_TypeKind;
+typedef enum typechecking_TypeKind {typechecking_TypeKind_TYPE = 0, typechecking_TypeKind_WORD = 1, typechecking_TypeKind_FLOAT = 2, typechecking_TypeKind_BOOL = 3, typechecking_TypeKind_STRUCT = 4, typechecking_TypeKind_UNION = 5, typechecking_TypeKind_ENUM = 6, typechecking_TypeKind_FUNCTION = 7, typechecking_TypeKind_TUPLE = 8, typechecking_TypeKind_POINTER = 9, typechecking_TypeKind_REFERENCE = 10, typechecking_TypeKind_STATIC_ARRAY = 11, typechecking_TypeKind_ARRAY = 12, typechecking_TypeKind_NAMESPACE = 13, typechecking_TypeKind_STUB = 14} typechecking_TypeKind;
 typedef struct typechecking_Type typechecking_Type;
 typedef struct typechecking_StructMember {string name; struct typechecking_Type *tpe; size_t offset;} typechecking_StructMember;
 typedef struct compiler_State compiler_State;
@@ -44,7 +44,7 @@ DLL_EXPORT bool typechecking_is_integer(typechecking_Type *tpe) {
     if ((!tpe)) {
         return false;
     }  ;
-    return (((((*tpe).kind) == typechecking_TypeKind_WORD) || (((*tpe).kind) == typechecking_TypeKind_INT_LITERAL)) || (((*tpe).kind) == typechecking_TypeKind_BOOL));
+    return ((((*tpe).kind) == typechecking_TypeKind_WORD) || (((*tpe).kind) == typechecking_TypeKind_BOOL));
 };
 DLL_EXPORT bool typechecking_is_arithmetic(typechecking_Type *tpe) {
     if ((!tpe)) {
@@ -142,9 +142,6 @@ DLL_EXPORT bool typechecking_equals(typechecking_Type *a, typechecking_Type *b) 
     if (((kind == typechecking_TypeKind_WORD) || (kind == typechecking_TypeKind_FLOAT))) {
         return (((*a).size) == ((*b).size));
     }  ;
-    if ((kind == typechecking_TypeKind_INT_LITERAL)) {
-        return ((((*a).i) == ((*b).i)) && (((*a).sign) == ((*b).sign)));
-    }  ;
     if ((((kind == typechecking_TypeKind_ENUM) || (kind == typechecking_TypeKind_STRUCT)) || (kind == typechecking_TypeKind_UNION))) {
         return (strcmp((((*a).type_name).value), (((*b).type_name).value)) == 0);
     }  ;
@@ -184,52 +181,6 @@ DLL_EXPORT bool typechecking_equals(typechecking_Type *a, typechecking_Type *b) 
         if ((((*b).kind) == typechecking_TypeKind_WORD)) {
             return (((*a).size) >= ((*b).size));
         }  ;
-        if ((((*b).kind) == typechecking_TypeKind_INT_LITERAL)) {
-            if (((*a).unsig)) {
-                uint64 i = (((int64)((*b).i)) * ((int64)((*b).sign)));
-                switch (((*a).size)) {
-                    break;
-                    case 1:
-                    return (i <= util_MAX_UINT8);
-                    break;
-                    case 2:
-                    return (i <= util_MAX_UINT16);
-                    break;
-                    case 4:
-                    return (i <= util_MAX_UINT32);
-                    break;
-                    case 8:
-                    return true;
-                    break;
-                    default:
-                    assert(false);
-                }
-                ;
-            }  else {
-                if ((((*b).i) > util_MAX_INT64)) {
-                    return false;
-                }  ;
-                int64 i = (((int64)((*b).i)) * ((int64)((*b).sign)));
-                switch (((*a).size)) {
-                    break;
-                    case 1:
-                    return ((i >= util_MIN_INT8) && (i <= util_MAX_INT8));
-                    break;
-                    case 2:
-                    return ((i >= util_MIN_INT16) && (i <= util_MAX_INT16));
-                    break;
-                    case 4:
-                    return ((i >= util_MIN_INT32) && (i <= util_MAX_INT32));
-                    break;
-                    case 8:
-                    return true;
-                    break;
-                    default:
-                    assert(false);
-                }
-                ;
-            };
-        }  ;
     }  ;
     if ((((*a).kind) == typechecking_TypeKind_FLOAT)) {
         if (((((*b).kind) == typechecking_TypeKind_WORD) || (((*b).kind) == typechecking_TypeKind_FLOAT))) {
@@ -252,13 +203,6 @@ DLL_EXPORT bool typechecking_equals(typechecking_Type *a, typechecking_Type *b) 
  int _3700c937_convert_type_score(typechecking_Type *a, typechecking_Type *b) {
     if (typechecking_equals(a, b)) {
         return 0;
-    }  ;
-    if ((((((*a).kind) == typechecking_TypeKind_WORD) || (((*a).kind) == typechecking_TypeKind_FLOAT)) && (((*b).kind) == typechecking_TypeKind_INT_LITERAL))) {
-        if (_3700c937_is_assignable(a, b)) {
-            return 0;
-        }  else {
-            return (-1);
-        };
     }  ;
     if ((((((*a).kind) == typechecking_TypeKind_WORD) && (((*b).kind) == typechecking_TypeKind_WORD)) && (((*a).size) >= ((*b).size)))) {
         return (((int)log2(((*a).size))) - ((int)log2(((*b).size))));
@@ -422,12 +366,6 @@ DLL_EXPORT void typechecking_typecheck(toolchain_Module *module);
     }  ;
     return true;
 };
- typechecking_Type * _3700c937_unbox_int_literal(typechecking_Type *tpe) {
-    if ((((bool)tpe) && (((*tpe).kind) == typechecking_TypeKind_INT_LITERAL))) {
-        return builtins_int_;
-    }  ;
-    return tpe;
-};
  typechecking_Type * _3700c937_type_lookup(parser_Node *node, _3700c937_State *state) {
     if ((!node)) {
         return NULL;
@@ -520,8 +458,6 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
         return NULL;
     }  ;
     assert((typechecking_is_arithmetic(a) && typechecking_is_arithmetic(b)));
-    a = _3700c937_unbox_int_literal(a);
-    b = _3700c937_unbox_int_literal(b);
     if (((((*a).kind) == typechecking_TypeKind_FLOAT) && (((*b).kind) == typechecking_TypeKind_WORD))) {
         return a;
     }  ;
@@ -540,7 +476,6 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
     }  ;
 };
  void _3700c937_walk(parser_Node *node, _3700c937_State *state);
-typechecking_Type *_3700c937_int_literal;
  void _3700c937_walk_Null(parser_Node *node, _3700c937_State *state) {
     typechecking_Type *tpe = malloc((sizeof(typechecking_Type)));
     ((*tpe).kind) = typechecking_TypeKind_POINTER;
@@ -548,10 +483,7 @@ typechecking_Type *_3700c937_int_literal;
     ((*node).tpe) = tpe;
 };
  void _3700c937_walk_Integer(parser_Node *node, _3700c937_State *state) {
-    typechecking_Type *tpe = typechecking_copy(_3700c937_int_literal);
-    ((*tpe).i) = (((*node).value).i);
-    ((*tpe).sign) = 1;
-    ((*node).tpe) = tpe;
+    ((*node).tpe) = builtins_int_;
 };
  void _3700c937_walk_Boolean(parser_Node *node, _3700c937_State *state) {
     ((*node).tpe) = builtins_bool_;
@@ -679,7 +611,6 @@ typechecking_Type *_3700c937_int_literal;
             }  else {
                 if ((i < vector_length(types))) {
                     tpe = ((typechecking_Type *)vector_get(types, i));
-                    tpe = _3700c937_unbox_int_literal(tpe);
                 }  else {
                     typechecking_errorn(node, ((Array){24, "Need to specify a type\x0a"""}));
                     continue;
@@ -753,9 +684,6 @@ typechecking_Type *_3700c937_int_literal;
     if ((!typechecking_is_arithmetic(tpe))) {
         typechecking_errorn(node, ((Array){19, "Incompatible type "}));
         fprintf(stderr, (((Array){5, "%s%s"}).value), (debug_type_to_str(tpe).value), (((Array){27, ", must be arithmetic type\x0a"""}).value));
-    }  ;
-    if ((((*tpe).kind) == typechecking_TypeKind_INT_LITERAL)) {
-        ((*tpe).sign) = (-((*tpe).sign));
     }  ;
     ((*node).tpe) = tpe;
 };
@@ -1239,7 +1167,7 @@ typechecking_Type *_3700c937_int_literal;
     for (int i = 0;(i < len);(i += 1)) {
         parser_Node *n = ((parser_Node *)vector_get((((*node).value).body), i));
         _3700c937_walk(n, state);
-        typechecking_Type *t = _3700c937_unbox_int_literal(((*n).tpe));
+        typechecking_Type *t = ((*n).tpe);
         if ((!tpe)) {
             tpe = t;
         }  else {
@@ -1494,10 +1422,6 @@ DLL_EXPORT void typechecking_p_main(Array args) {
     scope_p_main(args);
     builtins_p_main(args);
     debug_p_main(args);
-    _3700c937_int_literal = typechecking_make_type(typechecking_TypeKind_INT_LITERAL, parser_make_identifier(((Array){1, (Array[1]){ ((Array){12, "int_literal"}) }})));
-    ((*_3700c937_int_literal).unsig) = false;
-    ((*_3700c937_int_literal).size) = (sizeof(int));
-    ((*_3700c937_int_literal).align) = (alignof(int));
 };
 
 

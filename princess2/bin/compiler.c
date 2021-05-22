@@ -954,7 +954,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
         }  ;
         assert(false);
     } else {
-        assert(false);
+        return compiler_NO_VALUE;
     };
 };
  compiler_Value _87f75ce3_walk_ComparisionOp(parser_Node *node, compiler_State *state) {
@@ -966,7 +966,6 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     if ((((bool)(!((*left).tpe))) || ((bool)(!((*right).tpe))))) {
         return compiler_NO_VALUE;
     }  ;
-    printf((((Array){9, "%s%s%s%s"}).value), (debug_type_to_str(((*left).tpe)).value), (((Array){2, " "}).value), (debug_type_to_str(((*right).tpe)).value), (((Array){2, "\x0a"""}).value));
     if (((((*left).kind) >= parser_NodeKind_EQ) && (((*left).kind) <= parser_NodeKind_LEQ))) {
         compiler_Value value_left = compiler_walk_expression(left, state);
         compiler_Value value_leftc = compiler_walk_expression(((((*left).value).bin_op).right), state);
