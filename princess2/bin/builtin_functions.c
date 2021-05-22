@@ -48,7 +48,7 @@
     ((*tpe).kind) = typechecking_TypeKind_STATIC_ARRAY;
     ((*tpe).tpe) = builtins_char_;
     ((*tpe).length) = (str.size);
-    ((*tpe).size) = (((*tpe).length) * ((size_t)(sizeof(char))));
+    ((*tpe).size) = (((*tpe).length) * (sizeof(char)));
     ((*tpe).align) = (sizeof(char));
     compiler_Value *value = malloc((sizeof(compiler_Value)));
     (*value) = ((compiler_Value){ .kind = compiler_ValueKind_STRING, .s = str, .tpe = tpe });
@@ -96,7 +96,6 @@
     return compiler_NO_VALUE;
 };
 DLL_EXPORT void builtin_functions_p_main(Array args) {
-    compiler_p_main(args);
     _fe23cc40_create_function(((Array){7, "assert"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){10, "assertion"}), builtins_bool_) }}), ((Array){0, (typechecking_Type[]){  }}), (&_fe23cc40__assert));
 };
 

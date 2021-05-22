@@ -1142,6 +1142,7 @@ class PrincessParser(Parser):
         self.name_last_node('@')
 
     @tatsumasu()
+    @nomemo
     def _type_single_(self):  # noqa
         self._type_()
         self.add_last_node_to_name('@')
@@ -1161,6 +1162,7 @@ class PrincessParser(Parser):
             self._t_cparen_()
 
     @tatsumasu('FunctionT')
+    @nomemo
     def _type_function_(self):  # noqa
         with self._choice():
             with self._option():
@@ -1177,7 +1179,16 @@ class PrincessParser(Parser):
                         )
                 self.name_last_node('right')
             with self._option():
-                self._type_list_()
+                with self._group():
+                    with self._choice():
+                        with self._option():
+                            self._type_list_()
+                        with self._option():
+                            self._type_single_()
+                        self._error(
+                            'expecting one of: '
+                            '<type_list> <type_single>'
+                        )
                 self.name_last_node('left')
                 self._token('->')
                 with self._optional():
@@ -1193,7 +1204,16 @@ class PrincessParser(Parser):
                 self.name_last_node('right')
             self._error(
                 'expecting one of: '
-                "'->' '(' <t_oparen> <type_list>"
+                "'->' '(' <t_oparen> <type_list> <type>"
+                "<type_single> <type_function> 'struct'"
+                "<type_struct> 'enum' <type_enum>"
+                "'unsigned' <type_unsigned> '{'"
+                "<type_structural> '*' <type_ptr> '&'"
+                "<type_ref> '[' <type_array_dyn>"
+                '<type_array_static> <type_array>'
+                "<expr_type_call> 'word' <type_word>"
+                "(?!\\d)\\w+ <t_ident> '::' <identifier>"
+                '<type_3> <type_2> <type_1>'
             )
         self._define(
             ['left', 'right'],
@@ -1280,7 +1300,7 @@ class PrincessParser(Parser):
             )
 
     @tatsumasu()
-    @nomemo
+    @leftrec
     def _type_(self):  # noqa
         with self._choice():
             with self._option():
@@ -1289,15 +1309,16 @@ class PrincessParser(Parser):
                 self._type_1_()
             self._error(
                 'expecting one of: '
-                "'->' '(' <t_oparen> <type_list>"
-                "<type_function> 'struct' <type_struct>"
-                "'enum' <type_enum> 'unsigned'"
-                "<type_unsigned> '{' <type_structural>"
-                "'*' <type_ptr> '&' <type_ref> '['"
-                '<type_array_dyn> <type_array_static>'
-                "<type_array> <expr_type_call> 'word'"
-                "<type_word> (?!\\d)\\w+ <t_ident> '::'"
-                '<identifier> <type_3> <type_2> <type_1>'
+                "'->' '(' <t_oparen> <type_list> <type>"
+                "<type_single> <type_function> 'struct'"
+                "<type_struct> 'enum' <type_enum>"
+                "'unsigned' <type_unsigned> '{'"
+                "<type_structural> '*' <type_ptr> '&'"
+                "<type_ref> '[' <type_array_dyn>"
+                '<type_array_static> <type_array>'
+                "<expr_type_call> 'word' <type_word>"
+                "(?!\\d)\\w+ <t_ident> '::' <identifier>"
+                '<type_3> <type_2> <type_1>'
             )
 
     @tatsumasu('CallArg')
