@@ -36,7 +36,7 @@ DLL_EXPORT string toolchain_find_module_file(parser_Node *module) {
     for (int i = 0;(i < len);(i += 1)) {
         string str = (*((string *)vector_get(ident, i)));
         concat((path.value), (((Array){3, "%s"}).value), (str.value));
-        if ((i < (len - 1))) {
+        if ((i < (len - ((int)1)))) {
             concat((path.value), (((Array){3, "%s"}).value), (((Array){2, "/"}).value));
         }  ;
     }
@@ -94,7 +94,7 @@ DLL_EXPORT void toolchain_compile_main_file(string filename) {
     toolchain_compile_file(filename, ((Array){5, "main"}));
     if ((toolchain_error_count == 0)) {
         buffer_Buffer link_command = buffer_make_buffer();
-        buffer_append_str((&link_command), ((Array){17, "llvm-link -S -o "}));
+        buffer_append_str((&link_command), ((Array){20, "llvm-link-12 -S -o "}));
         buffer_append_str((&link_command), toolchain_outfolder);
         buffer_append_str((&link_command), ((Array){9, "/out.ll "}));
         Array filenames = map_keys(toolchain_modules);
@@ -108,7 +108,7 @@ DLL_EXPORT void toolchain_compile_main_file(string filename) {
         ;
         system((buffer_to_string((&link_command)).value));
         buffer_Buffer compile_command = buffer_make_buffer();
-        buffer_append_str((&compile_command), ((Array){16, "clang --output "}));
+        buffer_append_str((&compile_command), ((Array){19, "clang-12 --output "}));
         buffer_append_str((&compile_command), toolchain_outfile);
         buffer_append_char((&compile_command), ' ');
         buffer_append_str((&compile_command), toolchain_outfolder);

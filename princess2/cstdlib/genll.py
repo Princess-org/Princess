@@ -358,7 +358,7 @@ def main():
     else:
         with open(folder / "header.json", "w") as fp:
             p = subprocess.Popen(
-                ["clang", "-Xclang", "-ast-dump=json", "-fsyntax-only", folder / "header.c"], 
+                ["clang-12", "-Xclang", "-ast-dump=json", "-fsyntax-only", folder / "header.c"], 
                 stdout = fp)
             p.wait()
 
