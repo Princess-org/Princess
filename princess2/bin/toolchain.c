@@ -12,10 +12,11 @@ map_Map *toolchain_modules;
 Array toolchain_include_path;
 ARRAY(toolchain_outfolder, char, 2);
 int toolchain_error_count;
+ARRAY(toolchain_outfile, char, 6);
 typedef struct scope_Scope scope_Scope;
 typedef struct parser_Node parser_Node;
 typedef struct compiler_Result compiler_Result;
-typedef struct toolchain_Module {string filename; string module; struct parser_Node *node; struct scope_Scope *scope; struct compiler_Result *result; struct map_Map *imported;} toolchain_Module;
+typedef struct toolchain_Module {string filename; string llfile; string module; struct parser_Node *node; struct scope_Scope *scope; struct compiler_Result *result; struct map_Map *imported;} toolchain_Module;
 DLL_EXPORT void toolchain_compile_file(string filename, string module);
 DLL_EXPORT toolchain_Module * toolchain_compile_module(parser_Node *module);
 DLL_EXPORT string toolchain_find_module_file(parser_Node *module);
@@ -35,7 +36,7 @@ DLL_EXPORT string toolchain_find_module_file(parser_Node *module) {
     for (int i = 0;(i < len);(i += 1)) {
         string str = (*((string *)vector_get(ident, i)));
         concat((path.value), (((Array){3, "%s"}).value), (str.value));
-        if ((i < (len - 1))) {
+        if ((i < (len - ((int)1)))) {
             concat((path.value), (((Array){3, "%s"}).value), (((Array){2, "/"}).value));
         }  ;
     }
@@ -92,13 +93,27 @@ DLL_EXPORT toolchain_Module * toolchain_compile_module(parser_Node *name) {
 DLL_EXPORT void toolchain_compile_main_file(string filename) {
     toolchain_compile_file(filename, ((Array){5, "main"}));
     if ((toolchain_error_count == 0)) {
+        buffer_Buffer link_command = buffer_make_buffer();
+        buffer_append_str((&link_command), ((Array){17, "llvm-link -S -o "}));
+        buffer_append_str((&link_command), toolchain_outfolder);
+        buffer_append_str((&link_command), ((Array){9, "/out.ll "}));
         Array filenames = map_keys(toolchain_modules);
         for (int i = 0;(i < (filenames.size));(i += 1)) {
             string filename = (((string *)filenames.value)[i]);
             toolchain_Module *module = ((toolchain_Module *)map_get(toolchain_modules, filename));
             codegen_gen(module);
+            buffer_append_str((&link_command), ((*module).llfile));
+            buffer_append_char((&link_command), ' ');
         }
         ;
+        system((buffer_to_string((&link_command)).value));
+        buffer_Buffer compile_command = buffer_make_buffer();
+        buffer_append_str((&compile_command), ((Array){16, "clang --output "}));
+        buffer_append_str((&compile_command), toolchain_outfile);
+        buffer_append_char((&compile_command), ' ');
+        buffer_append_str((&compile_command), toolchain_outfolder);
+        buffer_append_str((&compile_command), ((Array){8, "/out.ll"}));
+        system((buffer_to_string((&compile_command)).value));
     }  ;
 };
 DLL_EXPORT void toolchain_p_main(Array args) {
@@ -106,6 +121,7 @@ DLL_EXPORT void toolchain_p_main(Array args) {
     toolchain_modules = map_make();
     memcpy((toolchain_outfolder.value), (((Array){2, "."}).value), ((sizeof(char)) * (toolchain_outfolder.size)));
     toolchain_error_count = 0;
+    memcpy((toolchain_outfile.value), (((Array){6, "a.out"}).value), ((sizeof(char)) * (toolchain_outfile.size)));
     typechecking_p_main(args);
     scope_p_main(args);
     codegen_p_main(args);

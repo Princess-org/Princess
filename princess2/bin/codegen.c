@@ -587,6 +587,7 @@ DLL_EXPORT string codegen_gen(toolchain_Module *module) {
     buffer_append_str((&buf), util_replace_all(((*module).module), ((Array){3, "::"}), ((Array){2, "."})));
     buffer_append_str((&buf), ((Array){4, ".ll"}));
     string outfile = buffer_to_string((&buf));
+    ((*module).llfile) = outfile;
     FILE* fp = fopen((outfile.value), (((Array){2, "w"}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){79, "; This file was compiled by the grace of your highness Princess Vic Nightfall\x0a"""}).value));
     Array keys_structures = map_keys(((*result).structures));
