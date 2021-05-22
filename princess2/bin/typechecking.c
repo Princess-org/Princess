@@ -25,7 +25,7 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
     if ((length == 0)) {
         return NULL;
     }  else {
-        return ((typechecking_Type *)vector_get(((*state).function_stack), (length - 1)));
+        return ((typechecking_Type *)vector_get(((*state).function_stack), (length - ((int)1))));
     };
 };
  void _3700c937_push_function(_3700c937_State *state, typechecking_Type *tpe) {
@@ -894,7 +894,7 @@ typechecking_Type *_3700c937_int_literal;
     for (int i = 0;(i < vector_length(imports));(i += 1)) {
         parser_Node *imprt = ((parser_Node *)vector_get(imports, i));
         parser_Node *name = ((((*imprt).value).import_module).name);
-        parser_Node *alias = ((((*imprt).value).import_module).name);
+        parser_Node *alias = ((((*imprt).value).import_module).alias);
         if ((!alias)) {
             alias = name;
         }  ;
@@ -1478,7 +1478,7 @@ DLL_EXPORT void typechecking_errorn(parser_Node *node, string msg) {
     int line = (((*node).loc).line);
     int column = (((*node).loc).column);
     fprintf(stderr, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
-    fprintf(stderr, (((Array){13, "%s%s%d%s%d%s"}).value), (filename.value), (((Array){2, "@"}).value), (line + 1), (((Array){2, ":"}).value), (column + 1), (((Array){2, "\x0a"""}).value));
+    fprintf(stderr, (((Array){13, "%s%s%d%s%d%s"}).value), (filename.value), (((Array){2, "@"}).value), (line + ((int)1)), (((Array){2, ":"}).value), (column + ((int)1)), (((Array){2, "\x0a"""}).value));
     fprintf(stderr, (((Array){5, "%s%s"}).value), ((((string *)(((*node).loc).lines).value)[line]).value), (((Array){2, "\x0a"""}).value));
     for (int i = 0;(i < column);(i += 1)) {
         fprintf(stderr, (((Array){3, "%s"}).value), (((Array){2, " "}).value));
@@ -1491,6 +1491,9 @@ DLL_EXPORT void typechecking_errorn(parser_Node *node, string msg) {
 DLL_EXPORT void typechecking_p_main(Array args) {
     ;
     _3700c937_counter = 0;
+    scope_p_main(args);
+    builtins_p_main(args);
+    debug_p_main(args);
     _3700c937_int_literal = typechecking_make_type(typechecking_TypeKind_INT_LITERAL, parser_make_identifier(((Array){1, (Array[1]){ ((Array){12, "int_literal"}) }})));
     ((*_3700c937_int_literal).unsig) = false;
     ((*_3700c937_int_literal).size) = (sizeof(int));
