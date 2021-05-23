@@ -15,6 +15,14 @@
     typechecking_NamedParameter *named = malloc((sizeof(typechecking_NamedParameter)));
     ((*named).name) = name;
     ((*named).value) = tpe;
+    ((*named).varargs) = false;
+    return named;
+};
+ typechecking_NamedParameter * _fe23cc40_varargs(string name, typechecking_Type *tpe) {
+    typechecking_NamedParameter *named = malloc((sizeof(typechecking_NamedParameter)));
+    ((*named).name) = name;
+    ((*named).value) = tpe;
+    ((*named).varargs) = true;
     return named;
 };
  typechecking_Type * _fe23cc40_make_function_type(string name, Array parameter_t, Array return_t, compiler_Value (*macro)(parser_Node *, compiler_State *)) {
@@ -95,8 +103,13 @@
     ((((*br).value).br).if_true) = if_true;
     return compiler_NO_VALUE;
 };
+ compiler_Value _fe23cc40__print(parser_Node *node, compiler_State *state) {
+    return compiler_NO_VALUE;
+};
 DLL_EXPORT void builtin_functions_p_main(Array args) {
+    compiler_p_main(args);
     _fe23cc40_create_function(((Array){7, "assert"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){10, "assertion"}), builtins_bool_) }}), ((Array){0, (typechecking_Type[]){  }}), (&_fe23cc40__assert));
+    _fe23cc40_create_function(((Array){6, "print"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_varargs(((Array){1, ""}), NULL) }}), ((Array){1, (typechecking_Type *[1]){ builtins_int_ }}), (&_fe23cc40__print));
 };
 
 
