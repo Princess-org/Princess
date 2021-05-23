@@ -58,7 +58,10 @@ class IncompleteType(Type):
     
     def to_definition(self) -> str:
         return TAGGED[self.name].to_definition()
-        
+
+class Bool(Type):
+    def __str__(self) -> str:
+        return "i1"   
 
 class Float(Type):
     def __str__(self) -> str:
@@ -224,7 +227,8 @@ PRIMITIVES = {
     ('unsigned', '__int128'): Integer(16),
     ('float'): Float(ctypes.sizeof(ctypes.c_float)),
     ('double'): Float(ctypes.sizeof(ctypes.c_double)),
-    ('long', 'double'): Float(ctypes.sizeof(ctypes.c_longdouble))
+    ('long', 'double'): Float(ctypes.sizeof(ctypes.c_longdouble)),
+    ('_Bool'): Bool(ctypes.sizeof(ctypes.c_bool))
 }
 
 class Walker(NodeWalker):
@@ -343,6 +347,7 @@ def walk(node):
         walk_EnumDecl(node)
 
 TAGGED["__va_list_tag"] = Struct("__va_list_tag", [])
+TYPEDEFS["bool"] = PRIMITIVES["_Bool"]
 
 def main():
     global GLOBALS, TAGGED, TYPEDEFS
