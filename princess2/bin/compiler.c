@@ -45,7 +45,7 @@ typedef struct compiler_InsnLoad {struct compiler_Value value; struct compiler_V
 typedef struct compiler_InsnReturn {struct compiler_Value value;} compiler_InsnReturn;
 typedef struct compiler_InsnArithmetic {struct compiler_Value ret; struct compiler_Value left; struct compiler_Value right;} compiler_InsnArithmetic;
 typedef struct compiler_InsnAlloca {struct compiler_Value ret;} compiler_InsnAlloca;
-typedef struct compiler_InsnCall {struct compiler_Value name; struct compiler_Value ret; Array args;} compiler_InsnCall;
+typedef struct compiler_InsnCall {struct compiler_Value name; struct compiler_Value ret; Array args; Array proto;} compiler_InsnCall;
 typedef struct compiler_InsnBrUnc {struct compiler_Label label_;} compiler_InsnBrUnc;
 typedef struct compiler_InsnBr {struct compiler_Value cond; struct compiler_Label if_true; struct compiler_Label if_false;} compiler_InsnBr;
 typedef union compiler_InsnValue {struct compiler_InsnArithmetic arith; struct compiler_InsnReturn ret; struct compiler_InsnStore store; struct compiler_InsnLoad load; struct compiler_InsnAlloca alloca; struct compiler_InsnCall call; struct compiler_InsnBrUnc br_unc; struct compiler_InsnBr br; struct compiler_InsnInsertValue insert_value; struct compiler_InsnExtractValue extract_value; struct compiler_InsnGetElementPtr gep; struct compiler_InsnConvert convert; struct compiler_InsnCmp cmp;} compiler_InsnValue;
@@ -165,9 +165,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
  compiler_Value _87f75ce3_walk_String(parser_Node *node, compiler_State *state) {
     typechecking_Type *tpe = ((*node).tpe);
     compiler_Value *str_value = malloc((sizeof(compiler_Value)));
-    ((*str_value).kind) = compiler_ValueKind_STRING;
-    ((*str_value).s) = (((*node).value).str);
-    ((*str_value).tpe) = tpe;
+    (*str_value) = ((compiler_Value){ .kind = compiler_ValueKind_STRING, .s = (((*node).value).str), .tpe = tpe });
     compiler_Value global = compiler_make_global_value(tpe, ((Array){4, "str"}), str_value, state);
     compiler_Value *globalp = malloc((sizeof(compiler_Value)));
     (*globalp) = global;
@@ -187,7 +185,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     }  ;
     compiler_InsnKind kind;
     if ((((*tpe).kind) == typechecking_TypeKind_ARRAY)) {
-        if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && typechecking_equals(((*tpe).tpe), ((*(value.tpe)).tpe)))) {
+        if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && ((bool)typechecking_equals(((*tpe).tpe), ((*(value.tpe)).tpe))))) {
             compiler_Value local = compiler_make_local_value(typechecking_pointer(((*tpe).tpe)), NULL, state);
             Array index = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
             (((compiler_Value *)index.value)[0]) = compiler_make_int_value(0);
@@ -856,7 +854,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     if (typechecking_is_pointer((right.tpe))) {
         right = _87f75ce3_convert_to(node, right, builtins_size_t_, state);
     }  ;
-    if ((typechecking_is_arithmetic((left.tpe)) && typechecking_is_arithmetic((right.tpe)))) {
+    if ((((bool)typechecking_is_arithmetic((left.tpe))) && ((bool)typechecking_is_arithmetic((right.tpe))))) {
         tpe = typechecking_common_type((left.tpe), (right.tpe));
         left = _87f75ce3_convert_to(node, left, tpe, state);
         right = _87f75ce3_convert_to(node, right, tpe, state);
@@ -1474,7 +1472,7 @@ DLL_EXPORT compiler_Result * compiler_compile(toolchain_Module *module) {
             Array keys = map_keys(((*m_scope).fields));
             for (int i = 0;(i < (keys.size));(i += 1)) {
                 scope_Value *value = ((scope_Value *)map_get(((*m_scope).fields), (((string *)keys.value)[i])));
-                if ((typechecking_is_function(((*value).tpe)) && ((bool)(((int)((*value).share)) & ((int)parser_ShareMarker_EXPORT))))) {
+                if ((((bool)typechecking_is_function(((*value).tpe))) && ((bool)(((int)((*value).share)) & ((int)parser_ShareMarker_EXPORT))))) {
                     _87f75ce3_create_function(((*value).tpe), NULL, sc, state);
                 }  ;
             }
@@ -1517,6 +1515,7 @@ DLL_EXPORT compiler_Result * compiler_compile(toolchain_Module *module) {
     vector_push(args, named);
     ((*main_tpe).parameter_t) = args;
     ((*main_tpe).return_t) = vector_make();
+    ((*main_tpe).macro) = NULL;
     parser_Node *args_ident = parser_make_identifier(((Array){1, (Array[1]){ ((Array){5, "args"}) }}));
     scope_create_variable(((*node).scope), args_ident, parser_ShareMarker_NONE, parser_VarDecl_VAR, string_array_tpe, NULL);
     scope_Value *value = scope_get(((*node).scope), args_ident);
@@ -1527,6 +1526,7 @@ DLL_EXPORT compiler_Result * compiler_compile(toolchain_Module *module) {
 };
 DLL_EXPORT void compiler_p_main(Array args) {
     ;
+    debug_p_main(args);
     compiler_NO_VALUE = ((compiler_Value){ .kind = compiler_ValueKind_NULL, .tpe = NULL });
     memcpy((compiler_f_ueq.value), (((Array){4, "ueq"}).value), ((sizeof(char)) * (compiler_f_ueq.size)));
     memcpy((compiler_f_ugt.value), (((Array){4, "ugt"}).value), ((sizeof(char)) * (compiler_f_ugt.size)));

@@ -213,7 +213,9 @@ DLL_EXPORT string util_repr(string s) {
     for (int i = 0;(i < (((int64)(s.size)) - ((int64)1)));(i += 1)) {
         char c = (((char *)s.value)[i]);
         if (((c < 32) || (c > 126))) {
-            string esc = util_double_to_hex_str(c);
+            string esc = util_int_to_hex_str(c);
+            (esc.value) = ((esc.value) + 2);
+            (esc.size) = (((int64)strlen((esc.value))) + ((int64)1));
             buffer_append_char((&buf), '\\');
             if ((((esc.size) - 1) == 2)) {
                 buffer_append_str((&buf), esc);

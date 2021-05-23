@@ -186,6 +186,23 @@
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){6, "call "}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_type_to_str((((((*insn).value).call).ret).tpe)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, " "}).value));
+    size_t protosize = (((((*insn).value).call).proto).size);
+    if ((protosize > 0)) {
+        fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "("}).value));
+        for (int i = 0;(i < protosize);(i += 1)) {
+            typechecking_NamedParameter arg = (((typechecking_NamedParameter *)((((*insn).value).call).proto).value)[i]);
+            if ((arg.varargs)) {
+                fprintf(fp, (((Array){3, "%s"}).value), (((Array){4, "..."}).value));
+            }  else {
+                fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_type_to_str((arg.value)).value));
+            };
+            if ((i < (((int64)protosize) - ((int64)1)))) {
+                fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, ", "}).value));
+            }  ;
+        }
+        ;
+        fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, ") "}).value));
+    }  ;
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).call).name)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "("}).value));
     size_t argsize = (((((*insn).value).call).args).size);
@@ -492,7 +509,7 @@
             fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, " "}).value));
             fprintf(fp, (((Array){5, "%s%s"}).value), (((Array){2, "%"}).value), (name.value));
         }  ;
-        if ((i < (len - 1))) {
+        if ((i < (len - ((int)1)))) {
             fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, ", "}).value));
         }  ;
     }

@@ -14,7 +14,7 @@ typedef struct typechecking_Type typechecking_Type;
 typedef struct typechecking_StructMember {string name; struct typechecking_Type *tpe; size_t offset;} typechecking_StructMember;
 typedef struct compiler_State compiler_State;
 typedef struct compiler_Value compiler_Value;
-typedef struct typechecking_Type {enum typechecking_TypeKind kind; string name; string type_name; size_t size; size_t align; bool unsig; size_t length; struct typechecking_Type *tpe; bool packed; Array fields; struct vector_Vector *return_t; struct vector_Vector *parameter_t; compiler_Value (*macro)(parser_Node *, compiler_State *); uint64 i; int sign;} typechecking_Type;
+typedef struct typechecking_Type {enum typechecking_TypeKind kind; string name; string type_name; size_t size; size_t align; bool unsig; size_t length; struct typechecking_Type *tpe; bool packed; Array fields; struct vector_Vector *return_t; struct vector_Vector *parameter_t; compiler_Value (*macro)(parser_Node *, compiler_State *);} typechecking_Type;
 typedef struct typechecking_NamedParameter {string name; struct typechecking_Type *value; bool varargs;} typechecking_NamedParameter;
 typedef struct scope_Scope scope_Scope;
 typedef struct _3700c937_State {string filename; string module; struct scope_Scope *scope; struct vector_Vector *function_stack;} _3700c937_State;
@@ -139,7 +139,10 @@ DLL_EXPORT bool typechecking_equals(typechecking_Type *a, typechecking_Type *b) 
     if ((kind == typechecking_TypeKind_BOOL)) {
         return true;
     }  ;
-    if (((kind == typechecking_TypeKind_WORD) || (kind == typechecking_TypeKind_FLOAT))) {
+    if ((kind == typechecking_TypeKind_WORD)) {
+        return ((((*a).size) == ((*b).size)) && (((*a).unsig) == ((*b).unsig)));
+    }  ;
+    if ((kind == typechecking_TypeKind_FLOAT)) {
         return (((*a).size) == ((*b).size));
     }  ;
     if ((((kind == typechecking_TypeKind_ENUM) || (kind == typechecking_TypeKind_STRUCT)) || (kind == typechecking_TypeKind_UNION))) {

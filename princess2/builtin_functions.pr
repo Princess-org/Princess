@@ -1,10 +1,13 @@
 import vector
+import buffer
 import map
 import builtins
 import parser
 import typechecking
 import compiler
 import scope
+import debug
+import util
 
 def param(name: string, tpe: *typechecking::Type) -> *typechecking::NamedParameter {
     let named = allocate(typechecking::NamedParameter)
@@ -50,8 +53,8 @@ def make_function_type(
 
 def create_function(
     name: string, 
-    parameter_t: [typechecking::NamedParameter],
-    return_t: [typechecking::Type],
+    parameter_t: [*typechecking::NamedParameter],
+    return_t: [*typechecking::Type],
     macro: (*parser::Node, *compiler::State) -> compiler::Value) {
     
     scope::create_function(
@@ -67,7 +70,28 @@ def import_function(state: *compiler::State, function: string) {
     map::put((@(@state).module).imported, function, map::sentinel)
 }
 
-def create_charp(str: string, state: *compiler::State) -> compiler::Value {
+def charp_str(global: *compiler::Value, state: *compiler::State) -> compiler::Value {
+    let local = compiler::make_local_value(typechecking::pointer(builtins::char_), global, state)
+
+    let index = allocate(compiler::Value, 2)
+    index[0] = compiler::make_int_value(0)
+    index[1] = compiler::make_int_value(0)
+
+    let gep = allocate(compiler::Insn)
+    (@gep).kind = compiler::InsnKind::GETELEMENTPTR
+    (@gep).value.gep = {
+        ret = local,
+        tpe = (@(@global).tpe).tpe,
+        value = @global,
+        index = index
+    } !InsnGetElementPtr
+
+    compiler::push_insn(gep, state)
+
+    return local
+}
+
+def charp(str: string, state: *compiler::State) -> compiler::Value {
     let tpe = allocate(typechecking::Type)
     (@tpe).kind = typechecking::TypeKind::STATIC_ARRAY
     (@tpe).tpe = builtins::char_
@@ -85,24 +109,7 @@ def create_charp(str: string, state: *compiler::State) -> compiler::Value {
     let global = compiler::make_global_value(tpe, "str", value, state)
     let globalp = allocate(compiler::Value)
     @globalp = global
-    let local = compiler::make_local_value(typechecking::pointer(builtins::char_), globalp, state)
-
-    let index = allocate(compiler::Value, 2)
-    index[0] = compiler::make_int_value(0)
-    index[1] = compiler::make_int_value(0)
-
-    let gep = allocate(compiler::Insn)
-    (@gep).kind = compiler::InsnKind::GETELEMENTPTR
-    (@gep).value.gep = {
-        ret = local,
-        tpe = tpe,
-        value = global,
-        index = index
-    } !InsnGetElementPtr
-
-    compiler::push_insn(gep, state)
-
-    return local
+    return charp_str(globalp, state)
 }
 
 def _assert(node: *parser::Node, state: *compiler::State) -> compiler::Value {
@@ -123,15 +130,15 @@ def _assert(node: *parser::Node, state: *compiler::State) -> compiler::Value {
 
     let args = allocate(compiler::Value, 4)
     // TODO I think assertions are supposed to only show the assertion and not the whole line
-    args[0] = create_charp((@node).loc.lines[(@node).loc.line], state)
-    args[1] = create_charp((@node).loc.filename, state)
+    args[0] = charp((@node).loc.lines[(@node).loc.line], state)
+    args[1] = charp((@node).loc.filename, state)
     args[2] = { kind = compiler::ValueKind::INT, i = (@node).loc.line, tpe = builtins::int_ } !compiler::Value
 
     var current_function = "main"
     if (@state).current_function {
         current_function = (@(@state).current_function).unmangled
     }
-    args[3] = create_charp(current_function, state)
+    args[3] = charp(current_function, state)
 
     let call = allocate(compiler::Insn)
     (@call).kind = compiler::InsnKind::CALL
@@ -163,8 +170,83 @@ create_function(
     *_assert
 )
 
+def format_str(args: *vector::Vector) -> *string {
+    let buf = buffer::make_buffer()
+    for var i in 0..vector::length(args) {
+        let arg = vector::get(args, i) !*parser::Node
+        let tpe = (@arg).tpe
+        if not tpe { return null }
+
+        // TODO Typedefs of these types don't work
+        // TODO Also do something about other types like structs and arrays
+        if tpe == builtins::size_t_ { buffer::append_str(*buf, "%zu") 
+        } else if tpe == builtins::char_ { buffer::append_str(*buf, "%c")
+        } else if typechecking::equals(tpe, builtins::string_) or
+            typechecking::equals(tpe, typechecking::pointer(builtins::char_)) or
+            ((@tpe).kind == typechecking::TypeKind::STATIC_ARRAY and typechecking::equals((@tpe).tpe, builtins::char_)) { 
+                buffer::append_str(*buf, "%s")
+        } else if typechecking::is_pointer(tpe) { buffer::append_str(*buf, "%p") 
+        } else if typechecking::equals(tpe, builtins::int8_) { buffer::append_str(*buf, "%hhd") 
+        } else if typechecking::equals(tpe, builtins::uint8_) { buffer::append_str(*buf, "%hhu") 
+        } else if typechecking::equals(tpe, builtins::int16_) { buffer::append_str(*buf, "%hd")
+        } else if typechecking::equals(tpe, builtins::uint16_) { buffer::append_str(*buf, "%hu")
+        } else if typechecking::equals(tpe, builtins::int32_) { buffer::append_str(*buf, "%d")
+        } else if typechecking::equals(tpe, builtins::uint32_) { buffer::append_str(*buf, "%u")
+        } else if typechecking::equals(tpe, builtins::int64_) { buffer::append_str(*buf, "%ld")
+        } else if typechecking::equals(tpe, builtins::uint64_) { buffer::append_str(*buf, "%lu")
+        } else if typechecking::equals(tpe, builtins::float32_) { buffer::append_str(*buf, "%f")
+        } else if typechecking::equals(tpe, builtins::float64_) { buffer::append_str(*buf, "%f")
+        } else {
+            typechecking::errorn(arg, "Print type ")
+            error(debug::type_to_str(tpe), " not supported\n")
+            return null
+        }
+    }
+    return util::copy_string(buffer::to_string(*buf))
+}
+
 def _print(node: *parser::Node, state: *compiler::State) -> compiler::Value {
-    return compiler::NO_VALUE
+    import_function(state, "printf")
+    let argsv = (@node).value.func_call.args
+
+    let fmt = format_str(argsv)
+    if not fmt { return compiler::NO_VALUE }
+
+    let args = allocate(compiler::Value, vector::length(argsv) + 1)
+    args[0] = charp(@fmt, state)
+
+    for var i in 0..vector::length(argsv) {
+        let arg = vector::get(argsv, i) !*parser::Node
+        var value = compiler::walk_expression(arg, state)
+        if ((@value.tpe).kind == typechecking::TypeKind::STATIC_ARRAY and 
+            typechecking::equals((@value.tpe).tpe, builtins::char_)) {
+
+            value = charp_str(value.addr, state)
+        } else if typechecking::equals(value.tpe, builtins::string_) {
+            // TODO
+            assert(false)
+        }
+        args[i + 1] = value
+    }
+
+    let ret = compiler::make_local_value(builtins::int_, null, state)
+    let call = allocate(compiler::Insn)
+
+    let proto = allocate(typechecking::NamedParameter, 2)
+    proto[0] = @param("", typechecking::pointer(builtins::char_))
+    proto[1] = @varargs("", null)
+
+    (@call).kind = compiler::InsnKind::CALL
+    (@call).value.call = {
+        name = { kind = compiler::ValueKind::GLOBAL, name = "printf" } !compiler::Value,
+        ret = ret,
+        args = args,
+        proto = proto
+    } !compiler::InsnCall
+
+    compiler::push_insn(call, state)
+
+    return ret
 }
 
 create_function(
