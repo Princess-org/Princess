@@ -35,7 +35,7 @@ bool test_compiler_print_ll;
     FILE* fh = fopen((((Array){14, "./bin/main.ll"}).value), (((Array){2, "r"}).value));
     string buf = util_read_all(fh);
     fclose(fh);
-    int llc = system((((Array){16, "llc bin/main.ll"}).value));
+    int llc = system((((Array){19, "llc-12 bin/main.ll"}).value));
     if (llc) {
         fprintf(stderr, (((Array){3, "%s"}).value), (((Array){25, "LLC compilation failed!\x0a"""}).value));
     }  ;

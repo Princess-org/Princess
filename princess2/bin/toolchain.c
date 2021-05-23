@@ -93,10 +93,17 @@ DLL_EXPORT toolchain_Module * toolchain_compile_module(parser_Node *name) {
 DLL_EXPORT void toolchain_compile_main_file(string filename) {
     toolchain_compile_file(filename, ((Array){5, "main"}));
     if ((toolchain_error_count == 0)) {
+        buffer_Buffer compile_header = buffer_make_buffer();
+        buffer_append_str((&compile_header), ((Array){27, "clang-12 -S -emit-llvm -o "}));
+        buffer_append_str((&compile_header), toolchain_outfolder);
+        buffer_append_str((&compile_header), ((Array){32, "/princess.ll -x c ../princess.h"}));
+        system((buffer_to_string((&compile_header)).value));
         buffer_Buffer link_command = buffer_make_buffer();
         buffer_append_str((&link_command), ((Array){20, "llvm-link-12 -S -o "}));
         buffer_append_str((&link_command), toolchain_outfolder);
         buffer_append_str((&link_command), ((Array){9, "/out.ll "}));
+        buffer_append_str((&link_command), toolchain_outfolder);
+        buffer_append_str((&link_command), ((Array){14, "/princess.ll "}));
         Array filenames = map_keys(toolchain_modules);
         for (int i = 0;(i < (filenames.size));(i += 1)) {
             string filename = (((string *)filenames.value)[i]);
