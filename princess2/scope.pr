@@ -81,22 +81,29 @@ export def exit_scope(scope: *Scope) -> *Scope {
 
 export def get(scope: *Scope, id: *parser::Node) -> *Value
 
-def find_function(v: *Value, parameter_t: *vector::Vector, score: *int) -> *Value {
+def find_function(node: *parser::Node, v: *Value, parameter_t: *vector::Vector, score: *int) -> *Value {
     if not v { return null }
     if not typechecking::is_function((@v).tpe) {
         return null
     }
     var found: *Value = null
+    var d = false
     loop {
-        let s = typechecking::overload_score((@v).tpe, parameter_t)
+        let s = typechecking::overload_score((@v).tpe, parameter_t, false)
         if s >= 0 {
-            if s <= @score {
+            if s < @score {
                 @score = s
                 found = v
+                d = false
+            } else if s == @score {
+                d = true
             }
         }
         v = (@v).next
         if not v { break }
+    }
+    if d {
+        typechecking::errorn(node, "Ambiguous reference\n")
     }
     return found
 }
@@ -106,26 +113,24 @@ export def get_function(scope: *Scope, id: *parser::Node, parameter_t: *vector::
     if vector::length((@id).value.body) == 1 {
         let name = @(vector::get((@id).value.body, 0) !*string)
         var score = util::MAX_INT32 !int
-        let first_value = find_function(map::get((@scope).fields, name), parameter_t, *score)
+        let first_value = find_function(id, map::get((@scope).fields, name) !*Value, parameter_t, *score)
         let first_score = score
         var value = first_value
-        let scores = vector::make()
-        if value {
-            var i = allocate(int)
-            @i = score
-            vector::push(scores, i)
-        }
+        var d = false
         if (@scope).imports {
             for var i in 0..vector::length((@scope).imports) {
                 let module = vector::get((@scope).imports, i) !*toolchain::Module
                 let scope2 = (@module).scope
-                let value2 = find_function(map::get((@scope2).fields, name), parameter_t, *score)
-                if value2 and (@value2).share !int & parser::ShareMarker::EXPORT {
-                    value = value2
-                    // TODO Why don't we stop leaking memory here
-                    var i = allocate(int)
-                    @i = score
-                    vector::push(scores, i)
+                var new_score = util::MAX_INT32 !int
+                let new_value = find_function(id, map::get((@scope2).fields, name) !*Value, parameter_t, *new_score)
+                if new_value and (@new_value).share !int & parser::ShareMarker::EXPORT {
+                    if score == new_score {
+                        d = true 
+                    } else if new_score < score {
+                        score = new_score
+                        value = new_value
+                        d = false
+                    }
                 }
             }
             if first_value and first_score == score {
@@ -133,21 +138,9 @@ export def get_function(scope: *Scope, id: *parser::Node, parameter_t: *vector::
                 // if there are multiple ones with the same score
                 return first_value
             }
-            var found = false
 
-            if vector::length(scores) > 1 {
-                // Check if there was an ambiguous reference 
-                for var i in 0..vector::length(scores) {
-                    var score2 = vector::get(scores, i) !*int
-                    if @score2 == score {
-                        if found {
-                            typechecking::errorn(id, "Ambiguous reference\n")
-                            break   
-                            // TODO I would return null here but that causes another error
-                        }
-                        found = true
-                    }
-                }
+            if d {
+                typechecking::errorn(id, "Ambiguous reference\n")
             }
         }
         if value { return value }
@@ -326,7 +319,7 @@ export def create_function(
         }
         var next = val
         while next {
-            if typechecking::overload_score((@next).tpe, (@tpe).parameter_t) == 0 {
+            if typechecking::overload_score((@next).tpe, (@tpe).parameter_t, true) == 0 {
                 if not (@next).forward_declare {
                     typechecking::errorn(node, "Function ")
                     error("\"", name, "\" was already declared previously (same arguments)\n")

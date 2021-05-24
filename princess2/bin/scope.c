@@ -53,7 +53,7 @@ DLL_EXPORT scope_Scope * scope_exit_scope(scope_Scope *scope) {
     return ((*scope).parent);
 };
 DLL_EXPORT scope_Value * scope_get(scope_Scope *scope, parser_Node *id);
- scope_Value * _31a1fd14_find_function(scope_Value *v, vector_Vector *parameter_t, int *score) {
+ scope_Value * _31a1fd14_find_function(parser_Node *node, scope_Value *v, vector_Vector *parameter_t, int *score) {
     if ((!v)) {
         return NULL;
     }  ;
@@ -61,13 +61,17 @@ DLL_EXPORT scope_Value * scope_get(scope_Scope *scope, parser_Node *id);
         return NULL;
     }  ;
     scope_Value *found = NULL;
+    bool d = false;
     while (true) {
-        int s = typechecking_overload_score(((*v).tpe), parameter_t);
+        int s = typechecking_overload_score(((*v).tpe), parameter_t, false);
         if ((s >= 0)) {
-            if ((s <= (*score))) {
+            if ((s < (*score))) {
                 (*score) = s;
                 found = v;
-            }  ;
+                d = false;
+            } else if ((s == (*score))) {
+                d = true;
+            } ;
         }  ;
         v = ((*v).next);
         if ((!v)) {
@@ -75,6 +79,9 @@ DLL_EXPORT scope_Value * scope_get(scope_Scope *scope, parser_Node *id);
         }  ;
     }
     ;
+    if (d) {
+        typechecking_errorn(node, ((Array){21, "Ambiguous reference\x0a"""}));
+    }  ;
     return found;
 };
 DLL_EXPORT scope_Value * scope_get_function(scope_Scope *scope, parser_Node *id, vector_Vector *parameter_t) {
@@ -82,44 +89,32 @@ DLL_EXPORT scope_Value * scope_get_function(scope_Scope *scope, parser_Node *id,
     if ((vector_length((((*id).value).body)) == 1)) {
         string name = (*((string *)vector_get((((*id).value).body), 0)));
         int score = ((int)util_MAX_INT32);
-        scope_Value *first_value = _31a1fd14_find_function(map_get(((*scope).fields), name), parameter_t, (&score));
+        scope_Value *first_value = _31a1fd14_find_function(id, ((scope_Value *)map_get(((*scope).fields), name)), parameter_t, (&score));
         int first_score = score;
         scope_Value *value = first_value;
-        vector_Vector *scores = vector_make();
-        if (value) {
-            int *i = malloc((sizeof(int)));
-            (*i) = score;
-            vector_push(scores, i);
-        }  ;
+        bool d = false;
         if (((*scope).imports)) {
             for (int i = 0;(i < vector_length(((*scope).imports)));(i += 1)) {
                 toolchain_Module *module = ((toolchain_Module *)vector_get(((*scope).imports), i));
                 scope_Scope *scope2 = ((*module).scope);
-                scope_Value *value2 = _31a1fd14_find_function(map_get(((*scope2).fields), name), parameter_t, (&score));
-                if ((((bool)value2) && ((bool)(((int)((*value2).share)) & ((int)parser_ShareMarker_EXPORT))))) {
-                    value = value2;
-                    int *i = malloc((sizeof(int)));
-                    (*i) = score;
-                    vector_push(scores, i);
+                int new_score = ((int)util_MAX_INT32);
+                scope_Value *new_value = _31a1fd14_find_function(id, ((scope_Value *)map_get(((*scope2).fields), name)), parameter_t, (&new_score));
+                if ((((bool)new_value) && ((bool)(((int)((*new_value).share)) & ((int)parser_ShareMarker_EXPORT))))) {
+                    if ((score == new_score)) {
+                        d = true;
+                    } else if ((new_score < score)) {
+                        score = new_score;
+                        value = new_value;
+                        d = false;
+                    } ;
                 }  ;
             }
             ;
             if ((((bool)first_value) && (first_score == score))) {
                 return first_value;
             }  ;
-            bool found = false;
-            if ((vector_length(scores) > 1)) {
-                for (int i = 0;(i < vector_length(scores));(i += 1)) {
-                    int *score2 = ((int *)vector_get(scores, i));
-                    if (((*score2) == score)) {
-                        if (found) {
-                            typechecking_errorn(id, ((Array){21, "Ambiguous reference\x0a"""}));
-                            break;
-                        }  ;
-                        found = true;
-                    }  ;
-                }
-                ;
+            if (d) {
+                typechecking_errorn(id, ((Array){21, "Ambiguous reference\x0a"""}));
             }  ;
         }  ;
         if (value) {
@@ -289,7 +284,7 @@ DLL_EXPORT void scope_create_function(scope_Scope *scope, parser_Node *node, par
         }  ;
         scope_Value *next = val;
         while (next) {
-            if ((typechecking_overload_score(((*next).tpe), ((*tpe).parameter_t)) == 0)) {
+            if ((typechecking_overload_score(((*next).tpe), ((*tpe).parameter_t), true) == 0)) {
                 if ((!((*next).forward_declare))) {
                     typechecking_errorn(node, ((Array){10, "Function "}));
                     fprintf(stderr, (((Array){7, "%s%s%s"}).value), (((Array){2, "\""}).value), (name.value), (((Array){52, "\" was already declared previously (same arguments)\x0a"""}).value));
@@ -433,6 +428,7 @@ DLL_EXPORT void scope_insert_module(scope_Scope *scope, parser_Node *alias, tool
 };
 DLL_EXPORT void scope_p_main(Array args) {
     ;
+    debug_p_main(args);
 };
 
 

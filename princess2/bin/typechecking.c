@@ -227,7 +227,7 @@ DLL_EXPORT bool typechecking_equals(typechecking_Type *a, typechecking_Type *b) 
     }  ;
     return (-1);
 };
-DLL_EXPORT int typechecking_overload_score(typechecking_Type *a, vector_Vector *param_b) {
+DLL_EXPORT int typechecking_overload_score(typechecking_Type *a, vector_Vector *param_b, bool positional) {
     assert(typechecking_is_function(a));
     vector_Vector *param_a = ((*a).parameter_t);
     if ((vector_length(param_a) > vector_length(param_b))) {
@@ -243,7 +243,7 @@ DLL_EXPORT int typechecking_overload_score(typechecking_Type *a, vector_Vector *
     for (int i = 0;(i < vector_length(param_b));(i += 1)) {
         typechecking_NamedParameter *right = ((typechecking_NamedParameter *)vector_get(param_b, i));
         typechecking_NamedParameter *left = NULL;
-        if ((((((*right).name).size) - 1) > 0)) {
+        if (((((((*right).name).size) - 1) > 0) && (!positional))) {
             for (int i = 0;(i < vector_length(param_a));(i += 1)) {
                 typechecking_NamedParameter *param = ((typechecking_NamedParameter *)vector_get(param_a, i));
                 if ((strcmp((((*right).name).value), (((*param).name).value)) == 0)) {

@@ -459,20 +459,6 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     if ((!function)) {
         return compiler_NO_VALUE;
     }  ;
-    compiler_Value name_v = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = name, .tpe = NULL });
-    compiler_Value addr = compiler_NO_VALUE;
-    compiler_Value value = compiler_NO_VALUE;
-    if (((*function).ret)) {
-        addr = compiler_make_local_value(((*function).ret), NULL, state);
-        compiler_Insn *alloca = malloc((sizeof(compiler_Insn)));
-        ((*alloca).kind) = compiler_InsnKind_ALLOCA;
-        (((*alloca).value).alloca) = ((compiler_InsnAlloca){ .ret = addr });
-        compiler_push_insn(alloca, state);
-        (addr.tpe) = typechecking_pointer(((*function).ret));
-        compiler_Value *addrp = malloc((sizeof(compiler_Value)));
-        (*addrp) = addr;
-        value = compiler_make_local_value(((*function).ret), addrp, state);
-    }  ;
     Array args = ((Array){vector_length(parameter_t), malloc((((int64)(sizeof(compiler_Value))) * ((int64)vector_length(parameter_t))))});
     for (int i = 0;(i < vector_length(((((*node).value).func_call).args)));(i += 1)) {
         parser_Node *n = ((parser_Node *)vector_get(((((*node).value).func_call).args), i));
@@ -498,6 +484,20 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
         ;
     }
     ;
+    compiler_Value name_v = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = name, .tpe = NULL });
+    compiler_Value addr = compiler_NO_VALUE;
+    compiler_Value value = compiler_NO_VALUE;
+    if (((*function).ret)) {
+        addr = compiler_make_local_value(((*function).ret), NULL, state);
+        compiler_Insn *alloca = malloc((sizeof(compiler_Insn)));
+        ((*alloca).kind) = compiler_InsnKind_ALLOCA;
+        (((*alloca).value).alloca) = ((compiler_InsnAlloca){ .ret = addr });
+        compiler_push_insn(alloca, state);
+        (addr.tpe) = typechecking_pointer(((*function).ret));
+        compiler_Value *addrp = malloc((sizeof(compiler_Value)));
+        (*addrp) = addr;
+        value = compiler_make_local_value(((*function).ret), addrp, state);
+    }  ;
     compiler_Insn *insn = malloc((sizeof(compiler_Insn)));
     ((*insn).kind) = compiler_InsnKind_CALL;
     (((*insn).value).call) = ((compiler_InsnCall){ .name = name_v, .ret = value, .args = args });
