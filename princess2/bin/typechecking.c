@@ -978,7 +978,7 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
     ;
     ((*node).tpe) = current_fun;
 };
- void _3700c937_walk_FuncCall(parser_Node *node, _3700c937_State *state) {
+ void _3700c937_walk_Call(parser_Node *node, _3700c937_State *state) {
     vector_Vector *arguments = vector_make();
     for (int i = 0;(i < vector_length(((((*node).value).func_call).args)));(i += 1)) {
         parser_Node *n = ((parser_Node *)vector_get(((((*node).value).func_call).args), i));
@@ -995,7 +995,7 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
         _3700c937_walk(((((*n).value).named_arg).value), state);
         typechecking_NamedParameter *np = malloc((sizeof(typechecking_NamedParameter)));
         ((*np).name) = typechecking_last_ident_to_str(((((*n).value).named_arg).name));
-        ((*np).value) = ((*n).tpe);
+        ((*np).value) = ((*((((*n).value).named_arg).value)).tpe);
         ((*np).varargs) = false;
         vector_push(arguments, np);
     }
@@ -1392,7 +1392,7 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
         _3700c937_walk_Return(node, state);
         break;
         case parser_NodeKind_FUNC_CALL:
-        _3700c937_walk_FuncCall(node, state);
+        _3700c937_walk_Call(node, state);
         break;
         case parser_NodeKind_BREAK ... parser_NodeKind_CONTINUE:
         NULL;

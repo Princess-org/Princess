@@ -476,18 +476,23 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     Array args = ((Array){vector_length(parameter_t), malloc((((int64)(sizeof(compiler_Value))) * ((int64)vector_length(parameter_t))))});
     for (int i = 0;(i < vector_length(((((*node).value).func_call).args)));(i += 1)) {
         parser_Node *n = ((parser_Node *)vector_get(((((*node).value).func_call).args), i));
-        (((compiler_Value *)args.value)[i]) = compiler_walk_expression(n, state);
+        typechecking_NamedParameter *p = ((typechecking_NamedParameter *)vector_get(parameter_t, i));
+        compiler_Value expr = compiler_walk_expression(n, state);
+        expr = _87f75ce3_convert_to(n, expr, ((*p).value), state);
+        (((compiler_Value *)args.value)[i]) = expr;
     }
     ;
     for (int i = 0;(i < vector_length(((((*node).value).func_call).kwargs)));(i += 1)) {
-        parser_Node *n = ((parser_Node *)vector_get(((((*node).value).func_call).args), i));
+        parser_Node *n = ((parser_Node *)vector_get(((((*node).value).func_call).kwargs), i));
         assert((((*n).kind) == parser_NodeKind_NAMED_ARG));
         string name = typechecking_last_ident_to_str(((((*n).value).named_arg).name));
         parser_Node *value = ((((*n).value).named_arg).value);
         for (int j = 0;(j < vector_length(parameter_t));(j += 1)) {
             typechecking_NamedParameter *p = ((typechecking_NamedParameter *)vector_get(parameter_t, j));
             if ((strcmp((((*p).name).value), (name.value)) == 0)) {
-                (((compiler_Value *)args.value)[j]) = compiler_walk_expression(value, state);
+                compiler_Value expr = compiler_walk_expression(value, state);
+                expr = _87f75ce3_convert_to(n, expr, ((*p).value), state);
+                (((compiler_Value *)args.value)[j]) = expr;
             }  ;
         }
         ;
@@ -1311,7 +1316,13 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state) {
     } else {
         ((*function).ret) = NULL;
     };
-    ((*function).args) = ((*tpe).parameter_t);
+    ((*function).args) = vector_make();
+    for (int i = 0;(i < vector_length(((*tpe).parameter_t)));(i += 1)) {
+        typechecking_NamedParameter *np = malloc((sizeof(typechecking_NamedParameter)));
+        (*np) = (*((typechecking_NamedParameter *)vector_get(((*tpe).parameter_t), i)));
+        vector_push(((*function).args), np);
+    }
+    ;
     if (body) {
         ((*state).current_function) = function;
         ((*state).counter) = 0;
@@ -1321,8 +1332,8 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state) {
         ((*block).next) = NULL;
         ((*function).block) = block;
         ((*state).current_block) = block;
-        for (int i = 0;(i < vector_length(((*tpe).parameter_t)));(i += 1)) {
-            typechecking_NamedParameter *np = ((typechecking_NamedParameter *)vector_get(((*tpe).parameter_t), i));
+        for (int i = 0;(i < vector_length(((*function).args)));(i += 1)) {
+            typechecking_NamedParameter *np = ((typechecking_NamedParameter *)vector_get(((*function).args), i));
             string name = ((*scope_get(scpe, parser_make_identifier(((Array){1, (string[1]){ ((*np).name) }})))).assembly_name);
             buffer_Buffer buf = buffer_make_buffer();
             buffer_append_str((&buf), name);
@@ -1526,7 +1537,6 @@ DLL_EXPORT compiler_Result * compiler_compile(toolchain_Module *module) {
 };
 DLL_EXPORT void compiler_p_main(Array args) {
     ;
-    debug_p_main(args);
     compiler_NO_VALUE = ((compiler_Value){ .kind = compiler_ValueKind_NULL, .tpe = NULL });
     memcpy((compiler_f_ueq.value), (((Array){4, "ueq"}).value), ((sizeof(char)) * (compiler_f_ueq.size)));
     memcpy((compiler_f_ugt.value), (((Array){4, "ugt"}).value), ((sizeof(char)) * (compiler_f_ugt.size)));

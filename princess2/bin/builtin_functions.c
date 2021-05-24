@@ -54,7 +54,17 @@
  void _fe23cc40_import_function(compiler_State *state, string function) {
     map_put(((*((*state).module)).imported), function, map_sentinel);
 };
- compiler_Value _fe23cc40_charp_str(compiler_Value *global, compiler_State *state) {
+ compiler_Value _fe23cc40_charp_str(compiler_Value value, compiler_State *state) {
+    compiler_Value local = compiler_make_local_value(typechecking_pointer(builtins_char_), NULL, state);
+    Array index = ((Array){1, malloc((((int64)(sizeof(int))) * ((int64)1)))});
+    (((int *)index.value)[0]) = 1;
+    compiler_Insn *extract = malloc((sizeof(compiler_Insn)));
+    ((*extract).kind) = compiler_InsnKind_EXTRACTVALUE;
+    (((*extract).value).extract_value) = ((compiler_InsnExtractValue){ .ret = local, .value = value, .index = index });
+    compiler_push_insn(extract, state);
+    return local;
+};
+ compiler_Value _fe23cc40_charp_static(compiler_Value *global, compiler_State *state) {
     compiler_Value local = compiler_make_local_value(typechecking_pointer(builtins_char_), global, state);
     Array index = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
     (((compiler_Value *)index.value)[0]) = compiler_make_int_value(0);
@@ -70,14 +80,14 @@
     ((*tpe).kind) = typechecking_TypeKind_STATIC_ARRAY;
     ((*tpe).tpe) = builtins_char_;
     ((*tpe).length) = (str.size);
-    ((*tpe).size) = (((*tpe).length) * ((size_t)(sizeof(char))));
+    ((*tpe).size) = (((*tpe).length) * (sizeof(char)));
     ((*tpe).align) = (sizeof(char));
     compiler_Value *value = malloc((sizeof(compiler_Value)));
     (*value) = ((compiler_Value){ .kind = compiler_ValueKind_STRING, .s = str, .tpe = tpe });
     compiler_Value global = compiler_make_global_value(tpe, ((Array){4, "str"}), value, state);
     compiler_Value *globalp = malloc((sizeof(compiler_Value)));
     (*globalp) = global;
-    return _fe23cc40_charp_str(globalp, state);
+    return _fe23cc40_charp_static(globalp, state);
 };
  compiler_Value _fe23cc40__assert(parser_Node *node, compiler_State *state) {
     _fe23cc40_import_function(state, ((Array){14, "__assert_fail"}));
@@ -122,7 +132,7 @@
         } else if ((tpe == builtins_char_)) {
             buffer_append_str((&buf), ((Array){3, "%c"}));
         }
-        else if (((((bool)typechecking_equals(tpe, builtins_string_)) || ((bool)typechecking_equals(tpe, typechecking_pointer(builtins_char_)))) || ((((*tpe).kind) == typechecking_TypeKind_STATIC_ARRAY) && ((bool)typechecking_equals(((*tpe).tpe), builtins_char_))))) {
+        else if (((typechecking_equals(tpe, builtins_string_) || typechecking_equals(tpe, typechecking_pointer(builtins_char_))) || ((((*tpe).kind) == typechecking_TypeKind_STATIC_ARRAY) && typechecking_equals(((*tpe).tpe), builtins_char_)))) {
             buffer_append_str((&buf), ((Array){3, "%s"}));
         }
         else if (typechecking_is_pointer(tpe)) {
@@ -173,15 +183,15 @@
     if ((!fmt)) {
         return compiler_NO_VALUE;
     }  ;
-    Array args = ((Array){(vector_length(argsv) + ((int)1)), malloc((((int64)(sizeof(compiler_Value))) * ((int64)(vector_length(argsv) + ((int)1)))))});
+    Array args = ((Array){(vector_length(argsv) + 1), malloc((((int64)(sizeof(compiler_Value))) * ((int64)(vector_length(argsv) + 1))))});
     (((compiler_Value *)args.value)[0]) = _fe23cc40_charp((*fmt), state);
     for (int i = 0;(i < vector_length(argsv));(i += 1)) {
         parser_Node *arg = ((parser_Node *)vector_get(argsv, i));
         compiler_Value value = compiler_walk_expression(arg, state);
-        if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && ((bool)typechecking_equals(((*(value.tpe)).tpe), builtins_char_)))) {
-            value = _fe23cc40_charp_str((value.addr), state);
+        if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && typechecking_equals(((*(value.tpe)).tpe), builtins_char_))) {
+            value = _fe23cc40_charp_static((value.addr), state);
         } else if (typechecking_equals((value.tpe), builtins_string_)) {
-            assert(false);
+            value = _fe23cc40_charp_str(value, state);
         } ;
         (((compiler_Value *)args.value)[(i + 1)]) = value;
     }
@@ -197,8 +207,6 @@
     return ret;
 };
 DLL_EXPORT void builtin_functions_p_main(Array args) {
-    compiler_p_main(args);
-    debug_p_main(args);
     _fe23cc40_create_function(((Array){7, "assert"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){10, "assertion"}), builtins_bool_) }}), ((Array){0, (typechecking_Type[]){  }}), (&_fe23cc40__assert));
     _fe23cc40_create_function(((Array){6, "print"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_varargs(((Array){1, ""}), NULL) }}), ((Array){1, (typechecking_Type *[1]){ builtins_int_ }}), (&_fe23cc40__print));
 };
