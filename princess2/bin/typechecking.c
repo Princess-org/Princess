@@ -481,7 +481,9 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
     assert((typechecking_is_arithmetic(a) && typechecking_is_arithmetic(b)));
     if (((((*a).kind) == typechecking_TypeKind_FLOAT) && (((*b).kind) == typechecking_TypeKind_WORD))) {
         return a;
-    }  ;
+    } else if (((((*a).kind) == typechecking_TypeKind_WORD) && (((*b).kind) == typechecking_TypeKind_FLOAT))) {
+        return b;
+    } ;
     if ((((*a).kind) == ((*b).kind))) {
         if ((((*a).size) == ((*b).size))) {
             if (((*b).unsig)) {
@@ -495,6 +497,7 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
             return b;
         };
     }  ;
+    return NULL;
 };
  void _3700c937_walk(parser_Node *node, _3700c937_State *state);
  void _3700c937_walk_Null(parser_Node *node, _3700c937_State *state) {
