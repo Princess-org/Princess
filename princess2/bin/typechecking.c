@@ -14,7 +14,7 @@ typedef struct typechecking_Type typechecking_Type;
 typedef struct typechecking_StructMember {string name; struct typechecking_Type *tpe; size_t offset;} typechecking_StructMember;
 typedef struct compiler_State compiler_State;
 typedef struct compiler_Value compiler_Value;
-typedef struct typechecking_Type {enum typechecking_TypeKind kind; string name; string type_name; size_t size; size_t align; bool unsig; size_t length; struct typechecking_Type *tpe; bool packed; Array fields; struct vector_Vector *return_t; struct vector_Vector *parameter_t; compiler_Value (*macro)(parser_Node *, compiler_State *);} typechecking_Type;
+typedef struct typechecking_Type {enum typechecking_TypeKind kind; string name; string type_name; size_t size; size_t align; bool unsig; size_t length; struct typechecking_Type *tpe; bool packed; Array fields; struct vector_Vector *return_t; struct vector_Vector *parameter_t; compiler_Value (*macro)(parser_Node *, Array, compiler_State *);} typechecking_Type;
 typedef struct typechecking_NamedParameter {string name; struct typechecking_Type *value; bool varargs;} typechecking_NamedParameter;
 typedef struct scope_Scope scope_Scope;
 typedef struct _3700c937_State {string filename; string module; struct scope_Scope *scope; struct vector_Vector *function_stack;} _3700c937_State;

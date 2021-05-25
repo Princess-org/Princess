@@ -449,20 +449,19 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     if ((!tpe)) {
         return compiler_NO_VALUE;
     }  ;
-    if (((*tpe).macro)) {
-        return ((*tpe).macro)(node, state);
-    }  ;
-    string name = ((*tpe).type_name);
     vector_Vector *parameter_t = ((*tpe).parameter_t);
-    name = typechecking_mangle_function_name(name, parameter_t);
-    compiler_Function *function = ((compiler_Function *)map_get(((*((*state).result)).functions), name));
-    if ((!function)) {
-        return compiler_NO_VALUE;
-    }  ;
-    Array args = ((Array){vector_length(parameter_t), malloc((((int64)(sizeof(compiler_Value))) * ((int64)vector_length(parameter_t))))});
+    Array args = ((Array){(vector_length(((((*node).value).func_call).args)) + vector_length(((((*node).value).func_call).kwargs))), malloc((((int64)(sizeof(compiler_Value))) * ((int64)(vector_length(((((*node).value).func_call).args)) + vector_length(((((*node).value).func_call).kwargs))))))});
     for (int i = 0;(i < vector_length(((((*node).value).func_call).args)));(i += 1)) {
         parser_Node *n = ((parser_Node *)vector_get(((((*node).value).func_call).args), i));
-        typechecking_NamedParameter *p = ((typechecking_NamedParameter *)vector_get(parameter_t, i));
+        typechecking_NamedParameter *p = NULL;
+        if ((i < vector_length(parameter_t))) {
+            p = ((typechecking_NamedParameter *)vector_get(parameter_t, i));
+        }  else {
+            p = ((typechecking_NamedParameter *)vector_peek(parameter_t));
+            if ((!((*p).varargs))) {
+                return compiler_NO_VALUE;
+            }  ;
+        };
         compiler_Value expr = compiler_walk_expression(n, state);
         expr = _87f75ce3_convert_to(n, expr, ((*p).value), state);
         (((compiler_Value *)args.value)[i]) = expr;
@@ -484,6 +483,15 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
         ;
     }
     ;
+    if (((*tpe).macro)) {
+        return ((*tpe).macro)(node, args, state);
+    }  ;
+    string name = ((*tpe).type_name);
+    name = typechecking_mangle_function_name(name, parameter_t);
+    compiler_Function *function = ((compiler_Function *)map_get(((*((*state).result)).functions), name));
+    if ((!function)) {
+        return compiler_NO_VALUE;
+    }  ;
     compiler_Value name_v = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = name, .tpe = NULL });
     compiler_Value addr = compiler_NO_VALUE;
     compiler_Value value = compiler_NO_VALUE;
