@@ -31,6 +31,7 @@ export type TypeKind = enum {
 }
 
 export type Type
+export type State
 
 export type StructMember = struct {
     name: string
@@ -40,6 +41,7 @@ export type StructMember = struct {
 
 type compiler::State
 type compiler::Value
+type scope::Scope
 
 export type Type = struct {
     kind: TypeKind
@@ -65,6 +67,10 @@ export type Type = struct {
     parameter_t: *vector::Vector
     // Macro for builtin functions
     macro: (*parser::Node, [compiler::Value], *compiler::State) -> compiler::Value
+    // This calculates the return types for functions 
+    // where the return types depend on the argument types
+    proto: (*vector::Vector, *vector::Vector, *State) -> (*vector::Vector)
+    //          args            kwargs                        return_t
 };
 
 export type NamedParameter = struct {
@@ -74,9 +80,7 @@ export type NamedParameter = struct {
     varargs: bool
 };
 
-type scope::Scope
-
-type State = struct {
+export type State = struct {
     filename: string
     module: string
     scope: *scope::Scope
@@ -85,6 +89,7 @@ type State = struct {
 
 export def errorn(node: *parser::Node, msg: string)
 export def common_type(a: *Type, b: *Type) -> *Type
+export def type_lookup(node: *parser::Node, state: *State) -> *Type
 
 def current_function(state: *State) -> *Type {
     let length = vector::length((@state).function_stack)
@@ -147,6 +152,11 @@ export def is_struct(tpe: *Type) -> bool {
         (@tpe).kind == TypeKind::UNION
 }
 
+export def is_type(tpe: *Type) -> bool {
+    if not tpe { return false }
+    return (@tpe).kind == TypeKind::TYPE
+}
+
 export def pointer(tpe: *Type) -> *Type {
     var t = allocate(Type)
     (@t).kind = TypeKind::POINTER
@@ -191,7 +201,7 @@ def make_unique_name -> string {
     return s
 }
 
-export def make_anonymous_type(kind: TypeKind, module: string) -> *Type {
+export def make_anonymous_type(kind: TypeKind) -> *Type {
     var t = allocate(Type)
     (@t).kind = kind
     (@t).type_name = ""
@@ -199,6 +209,8 @@ export def make_anonymous_type(kind: TypeKind, module: string) -> *Type {
 
     return t
 }
+
+export let type_ = make_anonymous_type(TypeKind::TYPE)
 
 export def copy(a: *Type) -> *Type {
     var t = allocate(Type)
@@ -215,7 +227,7 @@ export def equals(a: *Type, b: *Type) -> bool {
     if (@a).kind != (@b).kind { return false }
 
     let kind = (@a).kind
-    if kind == TypeKind::BOOL { return true }
+    if kind == TypeKind::BOOL or kind == TypeKind::TYPE { return true }
     if kind == TypeKind::WORD {
         return (@a).size == (@b).size and (@a).unsig == (@b).unsig
     }
@@ -507,7 +519,7 @@ def check_is_identifier_assignable(ident: *parser::Node, state: *State) -> bool 
     return true
 }
 
-def type_lookup(node: *parser::Node, state: *State) -> *Type {
+export def type_lookup(node: *parser::Node, state: *State) -> *Type {
     if not node { return null }
     if (@node).kind == parser::NodeKind::IDENTIFIER {
         return scope::get_type((@state).scope, node)
@@ -515,7 +527,7 @@ def type_lookup(node: *parser::Node, state: *State) -> *Type {
         let tpe = type_lookup((@node).value.t_parr.tpe, state)
         return pointer(tpe)
     } else if (@node).kind == parser::NodeKind::STRUCT_T {
-        let tpe = make_anonymous_type(TypeKind::STRUCT, (@node).loc.module)
+        let tpe = make_anonymous_type(TypeKind::STRUCT)
         (@tpe).packed = false
         
         let length = vector::length((@node).value.body)
@@ -551,7 +563,7 @@ def type_lookup(node: *parser::Node, state: *State) -> *Type {
 
         return tpe
     } else if (@node).kind == parser::NodeKind::UNION_T {
-        let tpe = make_anonymous_type(TypeKind::UNION, (@node).loc.module)
+        let tpe = make_anonymous_type(TypeKind::UNION)
 
         let length = vector::length((@node).value.body)
         if length == 0 {
@@ -1014,7 +1026,7 @@ def walk_Cast(node: *parser::Node, state: *State) {
     let right = (@node).value.bin_op.right
     if not left or not right { return }
 
-    walk(right, state)
+    //walk(right, state)
     (@node).tpe = type_lookup(right, state)
     if (@left).kind == parser::NodeKind::STRUCT_LIT {
         (@left).tpe = (@node).tpe
@@ -1095,6 +1107,7 @@ def walk_Def(node: *parser::Node, state: *State) {
     (@tpe).parameter_t = parameter_t
     (@tpe).return_t = return_t
     (@tpe).macro = null
+    (@tpe).proto = null
     if current_function(state) {
         // This is so that we don't create overloaded functions
         // inside of a function
@@ -1253,17 +1266,22 @@ def walk_Call(node: *parser::Node, state: *State) {
             }
             implicit_conversion(arg, rhstpe, null)
         }
-        let len = vector::length((@tpe).return_t) 
+        var return_t = (@tpe).return_t
+        if (@tpe).proto {
+            return_t = (@tpe).proto((@node).value.func_call.args, (@node).value.func_call.kwargs, state)
+        }
+
+        let len = vector::length(return_t) 
         if len > 1 {
             // TODO size and alignment! Same as a struct,
             // also refactor type_lookup and compiler (functions with multiple return types)
             // into a single function for calculating the size and alignmenet of a struct
             let return_tpe = allocate(Type)
             (@return_tpe).kind = TypeKind::TUPLE
-            (@return_tpe).return_t = (@tpe).return_t
+            (@return_tpe).return_t = return_t
             (@node).tpe = return_tpe
         } else if len == 1 {
-            (@node).tpe = vector::peek((@tpe).return_t)
+            (@node).tpe = vector::peek(return_t)
         } else {
             (@node).tpe = null
         }

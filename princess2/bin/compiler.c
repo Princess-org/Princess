@@ -15,8 +15,8 @@
 #include "builtins.c"
 #include "typechecking.c"
 typedef struct compiler_Label {string name;} compiler_Label;
-typedef enum compiler_ValueKind {compiler_ValueKind_NULL = 0, compiler_ValueKind_LOCAL = 1, compiler_ValueKind_GLOBAL = 2, compiler_ValueKind_BOOL = 3, compiler_ValueKind_INT = 4, compiler_ValueKind_FLOAT = 5, compiler_ValueKind_STRING = 6, compiler_ValueKind_ARRAY = 7, compiler_ValueKind_STRUCT = 8, compiler_ValueKind_UNION = 9} compiler_ValueKind;
-typedef struct compiler_Value {enum compiler_ValueKind kind; string name; int sign; uint64 i; double f; string s; bool undef; struct compiler_Value *value; Array values; struct compiler_Value *addr; struct typechecking_Type *tpe;} compiler_Value;
+typedef enum compiler_ValueKind {compiler_ValueKind_NULL = 0, compiler_ValueKind_LOCAL = 1, compiler_ValueKind_GLOBAL = 2, compiler_ValueKind_BOOL = 3, compiler_ValueKind_INT = 4, compiler_ValueKind_FLOAT = 5, compiler_ValueKind_STRING = 6, compiler_ValueKind_ARRAY = 7, compiler_ValueKind_STRUCT = 8, compiler_ValueKind_UNION = 9, compiler_ValueKind_TYPE = 10} compiler_ValueKind;
+typedef struct compiler_Value {enum compiler_ValueKind kind; string name; int sign; uint64 i; double f; string s; bool undef; struct typechecking_Type *value_tpe; struct compiler_Value *value; Array values; struct compiler_Value *addr; struct typechecking_Type *tpe;} compiler_Value;
 compiler_Value compiler_NO_VALUE;
 typedef enum compiler_InsnKind {compiler_InsnKind_ADD = 0, compiler_InsnKind_SUB = 1, compiler_InsnKind_MUL = 2, compiler_InsnKind_SREM = 3, compiler_InsnKind_UREM = 4, compiler_InsnKind_SDIV = 5, compiler_InsnKind_UDIV = 6, compiler_InsnKind_FADD = 7, compiler_InsnKind_FSUB = 8, compiler_InsnKind_FMUL = 9, compiler_InsnKind_FREM = 10, compiler_InsnKind_FDIV = 11, compiler_InsnKind_ASHR = 12, compiler_InsnKind_SHL = 13, compiler_InsnKind_AND = 14, compiler_InsnKind_OR = 15, compiler_InsnKind_XOR = 16, compiler_InsnKind_FCMP = 17, compiler_InsnKind_ICMP = 18, compiler_InsnKind_RET = 19, compiler_InsnKind_LOAD = 20, compiler_InsnKind_STORE = 21, compiler_InsnKind_ALLOCA = 22, compiler_InsnKind_INSERTVALUE = 23, compiler_InsnKind_EXTRACTVALUE = 24, compiler_InsnKind_GETELEMENTPTR = 25, compiler_InsnKind_TRUNC = 26, compiler_InsnKind_ZEXT = 27, compiler_InsnKind_SEXT = 28, compiler_InsnKind_FPTRUNC = 29, compiler_InsnKind_FPEXT = 30, compiler_InsnKind_FPTOUI = 31, compiler_InsnKind_FPTOSI = 32, compiler_InsnKind_UITOFP = 33, compiler_InsnKind_SITOFP = 34, compiler_InsnKind_PTRTOINT = 35, compiler_InsnKind_INTTOPTR = 36, compiler_InsnKind_BITCAST = 37, compiler_InsnKind_CALL = 38, compiler_InsnKind_BR_UNC = 39, compiler_InsnKind_BR = 40, compiler_InsnKind_UNREACHABLE = 41} compiler_InsnKind;
 ARRAY(compiler_f_ueq, char, 4);
@@ -55,6 +55,27 @@ typedef struct compiler_Function {string name; string unmangled; struct vector_V
 typedef struct compiler_Result {struct map_Map *functions; struct map_Map *structures; struct map_Map *globals;} compiler_Result;
 typedef struct _87f75ce3_LoopState {struct compiler_Insn *break_insn; struct compiler_Insn *continue_insn;} _87f75ce3_LoopState;
 typedef struct compiler_State {struct toolchain_Module *module; int counter; int global_counter; struct compiler_Function *current_function; struct compiler_Block *current_block; struct vector_Vector *loops; struct compiler_Result *result;} compiler_State;
+ compiler_Value _87f75ce3_make_value(typechecking_Type *tpe, void *value) {
+    switch (((int)((*tpe).kind))) {
+        break;
+        case typechecking_TypeKind_TYPE:
+        return ((compiler_Value){ .kind = compiler_ValueKind_TYPE, .tpe = typechecking_type_, .value_tpe = ((typechecking_Type *)value) });
+        break;
+        case typechecking_TypeKind_WORD:
+        return ((compiler_Value){ .kind = compiler_ValueKind_INT, .tpe = builtins_int_, .i = (*((uint64 *)value)) });
+        break;
+        case typechecking_TypeKind_FLOAT:
+        return ((compiler_Value){ .kind = compiler_ValueKind_FLOAT, .tpe = builtins_double_, .f = (*((double *)value)) });
+        break;
+        case typechecking_TypeKind_BOOL:
+        return ((compiler_Value){ .kind = compiler_ValueKind_BOOL, .tpe = builtins_bool_, .i = (*((uint64 *)value)) });
+        break;
+        default:
+        fprintf(stderr, (((Array){5, "%d%s"}).value), ((*tpe).kind), (((Array){2, "\x0a"""}).value));
+        assert(false);
+    }
+    ;
+};
  compiler_Insn * _87f75ce3_get_break_insn(compiler_State *state) {
     if ((vector_length(((*state).loops)) > 0)) {
         return ((*((_87f75ce3_LoopState *)vector_peek(((*state).loops)))).break_insn);
@@ -519,11 +540,14 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     return value;
 };
  compiler_Value _87f75ce3_walk_Identifier(parser_Node *node, compiler_State *state) {
-    compiler_Value value = compiler_make_local_value(((*node).tpe), NULL, state);
     scope_Value *val = scope_get(((*node).scope), node);
     if ((!val)) {
         return compiler_NO_VALUE;
     }  ;
+    if (((*val).value)) {
+        return _87f75ce3_make_value(((*val).tpe), ((*val).value));
+    }  ;
+    compiler_Value value = compiler_make_local_value(((*node).tpe), NULL, state);
     string name = ((*val).assembly_name);
     int kind = compiler_ValueKind_LOCAL;
     if (((*val).global)) {
@@ -1298,7 +1322,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state) {
         ((*function).forward_declare) = false;
     }  ;
     if ((vector_length(((*tpe).return_t)) > 1)) {
-        typechecking_Type *ret_tpe = typechecking_make_anonymous_type(typechecking_TypeKind_STRUCT, ((*((*state).module)).module));
+        typechecking_Type *ret_tpe = typechecking_make_anonymous_type(typechecking_TypeKind_STRUCT);
         ((*ret_tpe).packed) = false;
         int length = vector_length(((*tpe).return_t));
         Array fields = ((Array){length, malloc((((int64)(sizeof(typechecking_StructMember))) * ((int64)length)))});
@@ -1535,6 +1559,7 @@ DLL_EXPORT compiler_Result * compiler_compile(toolchain_Module *module) {
     ((*main_tpe).parameter_t) = args;
     ((*main_tpe).return_t) = vector_make();
     ((*main_tpe).macro) = NULL;
+    ((*main_tpe).proto) = NULL;
     parser_Node *args_ident = parser_make_identifier(((Array){1, (Array[1]){ ((Array){5, "args"}) }}));
     scope_create_variable(((*node).scope), args_ident, parser_ShareMarker_NONE, parser_VarDecl_VAR, string_array_tpe, NULL);
     scope_Value *value = scope_get(((*node).scope), args_ident);

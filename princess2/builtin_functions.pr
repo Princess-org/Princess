@@ -1,13 +1,13 @@
 import vector
 import buffer
 import map
-import builtins
+import util
 import parser
 import typechecking
 import compiler
 import scope
 import debug
-import util
+import builtins
 
 def param(name: string, tpe: *typechecking::Type) -> *typechecking::NamedParameter {
     let named = allocate(typechecking::NamedParameter)
@@ -29,7 +29,8 @@ def make_function_type(
     name: string, 
     parameter_t: [*typechecking::NamedParameter],
     return_t: [*typechecking::Type],
-    macro: (*parser::Node, [compiler::Value], *compiler::State) -> compiler::Value) -> *typechecking::Type {
+    macro: (*parser::Node, [compiler::Value], *compiler::State) -> compiler::Value,
+    proto: (*vector::Vector, *vector::Vector, *typechecking::State) -> (*vector::Vector)) -> *typechecking::Type {
     
     let pars = vector::make()
     for var i in 0..parameter_t.size {
@@ -47,6 +48,7 @@ def make_function_type(
     (@tpe).parameter_t = pars
     (@tpe).return_t = rets
     (@tpe).macro = macro
+    (@tpe).proto = proto
 
     return tpe
 }
@@ -55,13 +57,14 @@ def create_function(
     name: string, 
     parameter_t: [*typechecking::NamedParameter],
     return_t: [*typechecking::Type],
-    macro: (*parser::Node, [compiler::Value], *compiler::State) -> compiler::Value) {
+    macro: (*parser::Node, [compiler::Value], *compiler::State) -> compiler::Value,
+    proto: (*vector::Vector, *vector::Vector, *typechecking::State) -> (*vector::Vector)) {
     
     scope::create_function(
         builtins::builtins, 
         parser::make_identifier([name]), 
         parser::ShareMarker::EXPORT, 
-        make_function_type(name, parameter_t, return_t, macro),
+        make_function_type(name, parameter_t, return_t, macro, proto),
         false
     )
 }
@@ -131,6 +134,20 @@ def charp(str: string, state: *compiler::State) -> compiler::Value {
     return charp_static(globalp, state)
 }
 
+def get_arg(args: *vector::Vector, kwargs: *vector::Vector, index: int, name: string) -> *parser::Node {
+    if index < vector::length(args) {
+        return vector::get(args, index) !*parser::Node
+    }
+    for var i in 0..vector::length(kwargs) {
+        let kwarg = vector::get(kwargs, i) !*parser::Node
+        let nname = typechecking::last_ident_to_str((@kwarg).value.named_arg.name)
+        if nname == name {
+            return (@kwarg).value.named_arg.value
+        }
+    }
+    return null
+}
+
 def _assert(node: *parser::Node, argsv: [compiler::Value], state: *compiler::State) -> compiler::Value {
     import_function(state, "__assert_fail")
     let insn = argsv[0]
@@ -187,7 +204,8 @@ create_function(
     [param("assertion", builtins::bool_)],
     // TODO This is ugly...
     [] ![typechecking::Type], 
-    *_assert
+    *_assert,
+    null
 )
 
 // TODO it would make more sense to accept [compiler::Value] here, lets see what we can do about that error message
@@ -271,7 +289,8 @@ create_function(
     "print",
     [varargs("", null)],
     [builtins::int_],
-    *_print
+    *_print,
+    null
 )
 
 def _length(node: *parser::Node, argsv: [compiler::Value], state: *compiler::State) -> compiler::Value {
@@ -309,7 +328,85 @@ def _length(node: *parser::Node, argsv: [compiler::Value], state: *compiler::Sta
 
 create_function(
     "length",
-    [param("array", typechecking::array(builtins::char_))],
+    [param("str", typechecking::array(builtins::char_))],
     [builtins::size_t_],
-    *_length
+    *_length,
+    null
+)
+
+def _allocate_size(node: *parser::Node, argsv: [compiler::Value], state: *compiler::State) -> compiler::Value {
+    import_function(state, "malloc")
+    let arg = argsv[0]
+
+    let args = allocate(compiler::Value, 1)
+    args[0] = arg
+
+    let ret = compiler::make_local_value(typechecking::pointer(null), null, state)
+    let call = allocate(compiler::Insn)
+    (@call).kind = compiler::InsnKind::CALL
+    (@call).value.call = {
+        name = { kind = compiler::ValueKind::GLOBAL, name = "malloc" } !compiler::Value,
+        ret = ret,
+        args = args
+    } !compiler::InsnCall
+    
+    compiler::push_insn(call, state)
+    
+    return ret
+}
+
+create_function(
+    "allocate",
+    [param("size", builtins::size_t_)],
+    [typechecking::pointer(null)],
+    *_allocate_size,
+    null
+)
+
+def _allocate_type(node: *parser::Node, argsv: [compiler::Value], state: *compiler::State) -> compiler::Value {
+    import_function(state, "malloc")
+    let tpe = argsv[0].value_tpe
+
+    let args = allocate(compiler::Value, 1)
+    args[0] = { kind = compiler::ValueKind::INT, i = (@tpe).size, tpe = builtins::size_t_ } !compiler::Value
+    
+    let call_ret = compiler::make_local_value(typechecking::pointer(null), null, state)
+    let call = allocate(compiler::Insn)
+    (@call).kind = compiler::InsnKind::CALL
+    (@call).value.call = {
+        name = { kind = compiler::ValueKind::GLOBAL, name = "malloc" } !compiler::Value,
+        ret = call_ret,
+        args = args
+    } !compiler::InsnCall
+    
+    compiler::push_insn(call, state)
+
+    let ret = compiler::make_local_value(typechecking::pointer(tpe), null, state)
+    let bitcast = allocate(compiler::Insn)
+    (@bitcast).kind = compiler::InsnKind::BITCAST
+    (@bitcast).value.convert = {
+        ret = ret,
+        value = call_ret
+    }
+
+    compiler::push_insn(bitcast, state)
+
+    return ret
+}
+
+def _allocate_type_proto(args: *vector::Vector, kwargs: *vector::Vector, state: *typechecking::State) -> *vector::Vector {
+    let rets = vector::make()
+    let arg = get_arg(args, kwargs, 0, "tpe")
+    if not arg { return rets }
+    let tpe = typechecking::type_lookup(arg, state)
+    vector::push(rets, typechecking::pointer(tpe))
+    return rets
+}
+
+create_function(
+    "allocate",
+    [param("tpe", typechecking::type_)],
+    [typechecking::pointer(null)],
+    *_allocate_type,
+    *_allocate_type_proto
 )
