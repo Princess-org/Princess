@@ -50,8 +50,13 @@
         buffer_append_str((&buf), ((Array){3, "{i"}));
         buffer_append_str((&buf), util_int_to_str((((int64)(sizeof(size_t))) * ((int64)8))));
         buffer_append_str((&buf), ((Array){3, ", "}));
-        buffer_append_str((&buf), _574f02bf_type_to_str(((*tpe).tpe)));
-        buffer_append_str((&buf), ((Array){3, "*}"}));
+        if (((*tpe).tpe)) {
+            buffer_append_str((&buf), _574f02bf_type_to_str(((*tpe).tpe)));
+            buffer_append_char((&buf), '*');
+        }  else {
+            buffer_append_str((&buf), ((Array){4, "i8*"}));
+        };
+        buffer_append_str((&buf), ((Array){2, "}"}));
         break;
         case typechecking_TypeKind_STATIC_ARRAY:
         buffer_append_char((&buf), '[');
@@ -509,7 +514,7 @@
             fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, " "}).value));
             fprintf(fp, (((Array){5, "%s%s"}).value), (((Array){2, "%"}).value), (name.value));
         }  ;
-        if ((i < (len - 1))) {
+        if ((i < (len - ((int)1)))) {
             fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, ", "}).value));
         }  ;
     }

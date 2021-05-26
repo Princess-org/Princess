@@ -206,8 +206,8 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     }  ;
     compiler_InsnKind kind;
     if ((((*tpe).kind) == typechecking_TypeKind_ARRAY)) {
-        if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && ((bool)typechecking_equals(((*tpe).tpe), ((*(value.tpe)).tpe))))) {
-            compiler_Value local = compiler_make_local_value(typechecking_pointer(((*tpe).tpe)), NULL, state);
+        if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && (((bool)(!((*tpe).tpe))) || ((bool)typechecking_equals(((*tpe).tpe), ((*(value.tpe)).tpe)))))) {
+            compiler_Value local = compiler_make_local_value(typechecking_pointer(((*(value.tpe)).tpe)), NULL, state);
             Array index = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
             (((compiler_Value *)index.value)[0]) = compiler_make_int_value(0);
             ((((compiler_Value *)index.value)[0]).tpe) = builtins_size_t_;
@@ -217,6 +217,14 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
             ((*gep).kind) = compiler_InsnKind_GETELEMENTPTR;
             (((*gep).value).gep) = ((compiler_InsnGetElementPtr){ .ret = local, .tpe = (value.tpe), .value = (*(value.addr)), .index = index });
             compiler_push_insn(gep, state);
+            if ((!((*tpe).tpe))) {
+                compiler_Value local1 = local;
+                local = compiler_make_local_value(typechecking_pointer(NULL), NULL, state);
+                compiler_Insn *bitcast = malloc((sizeof(compiler_Insn)));
+                ((*bitcast).kind) = compiler_InsnKind_BITCAST;
+                (((*bitcast).value).convert) = ((compiler_InsnConvert){ .ret = local, .value = local1 });
+                compiler_push_insn(bitcast, state);
+            }  ;
             compiler_Value ret = compiler_make_local_value(tpe, NULL, state);
             Array values = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
             (((compiler_Value *)values.value)[0]) = ((compiler_Value){ .kind = compiler_ValueKind_INT, .tpe = builtins_size_t_, .i = ((*(value.tpe)).length), .sign = 1 });
@@ -229,7 +237,38 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
             (((*insert).value).insert_value) = ((compiler_InsnInsertValue){ .ret = ret, .value = value, .element = local, .index = index2 });
             compiler_push_insn(insert, state);
             return ret;
-        }  else {
+        } else if ((((bool)(!((*tpe).tpe))) && (((*(value.tpe)).kind) == typechecking_TypeKind_ARRAY))) {
+            Array index1 = ((Array){1, malloc((((int64)(sizeof(int))) * ((int64)1)))});
+            (((int *)index1.value)[0]) = 0;
+            compiler_Value size = compiler_make_local_value(builtins_size_t_, NULL, state);
+            compiler_Insn *extract1 = malloc((sizeof(compiler_Insn)));
+            ((*extract1).kind) = compiler_InsnKind_EXTRACTVALUE;
+            (((*extract1).value).extract_value) = ((compiler_InsnExtractValue){ .ret = size, .value = value, .index = index1 });
+            compiler_push_insn(extract1, state);
+            Array index2 = ((Array){1, malloc((((int64)(sizeof(int))) * ((int64)1)))});
+            (((int *)index2.value)[0]) = 1;
+            compiler_Value ptr = compiler_make_local_value(typechecking_pointer(((*(value.tpe)).tpe)), NULL, state);
+            compiler_Insn *extract2 = malloc((sizeof(compiler_Insn)));
+            ((*extract2).kind) = compiler_InsnKind_EXTRACTVALUE;
+            (((*extract2).value).extract_value) = ((compiler_InsnExtractValue){ .ret = ptr, .value = value, .index = index2 });
+            compiler_push_insn(extract2, state);
+            compiler_Value bitcast_ret = compiler_make_local_value(typechecking_pointer(NULL), NULL, state);
+            compiler_Insn *bitcast = malloc((sizeof(compiler_Insn)));
+            ((*bitcast).kind) = compiler_InsnKind_BITCAST;
+            (((*bitcast).value).convert) = ((compiler_InsnConvert){ .ret = bitcast_ret, .value = ptr });
+            compiler_push_insn(bitcast, state);
+            compiler_Value insert1_ret = compiler_make_local_value(tpe, NULL, state);
+            compiler_Insn *insert1 = malloc((sizeof(compiler_Insn)));
+            ((*insert1).kind) = compiler_InsnKind_INSERTVALUE;
+            (((*insert1).value).insert_value) = ((compiler_InsnInsertValue){ .ret = insert1_ret, .value = ((compiler_Value){ .kind = compiler_ValueKind_STRUCT, .undef = true, .tpe = tpe }), .element = size, .index = index1 });
+            compiler_push_insn(insert1, state);
+            compiler_Value insert2_ret = compiler_make_local_value(tpe, NULL, state);
+            compiler_Insn *insert2 = malloc((sizeof(compiler_Insn)));
+            ((*insert2).kind) = compiler_InsnKind_INSERTVALUE;
+            (((*insert2).value).insert_value) = ((compiler_InsnInsertValue){ .ret = insert2_ret, .value = insert1_ret, .element = bitcast_ret, .index = index2 });
+            compiler_push_insn(insert2, state);
+            return insert2_ret;
+        } else {
             typechecking_errorn(node, ((Array){15, "Can't convert "}));
             fprintf(stderr, (((Array){9, "%s%s%s%s"}).value), (debug_type_to_str((value.tpe)).value), (((Array){5, " to "}).value), (debug_type_to_str(tpe).value), (((Array){2, "\x0a"""}).value));
             return value;

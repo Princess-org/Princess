@@ -7,7 +7,7 @@
 int _7f2db423_INITIAL_SIZE;
 typedef struct buffer_Buffer {size_t size; size_t allocated; char *value;} buffer_Buffer;
 DLL_EXPORT buffer_Buffer buffer_make_buffer() {
-    buffer_Buffer buffer = ((buffer_Buffer){ .size = 1, .allocated = _7f2db423_INITIAL_SIZE, .value = malloc((((int64)(sizeof(char))) * ((int64)_7f2db423_INITIAL_SIZE))) });
+    buffer_Buffer buffer = ((buffer_Buffer){ .size = 1, .allocated = _7f2db423_INITIAL_SIZE, .value = ((char *)malloc((((int64)(sizeof(char))) * ((int64)_7f2db423_INITIAL_SIZE)))) });
     ((buffer.value)[0]) = '\x00';
     return buffer;
 };

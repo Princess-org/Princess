@@ -217,7 +217,7 @@ bool test_compiler_print_ll;
 };
  void _6dcc03b3_test_builtins() {
     printf((((Array){3, "%s"}).value), (((Array){19, ">Test builtins... "}).value));
-    Array str = ((Array){49, "\x0a""        var a = 10\x0a""        assert(a == 15)\x0a""    "});
+    Array str = ((Array){242, "\x0a""        var a = 10\x0a""        assert(a == 15)\x0a""        print(a, 10, 10.5, \"string\")\x0a""        let b = allocate(int)\x0a""        let c = allocate(size_of int) !*int\x0a""        let d = allocate(int, 10)\x0a""        free(b)\x0a""        free(c)\x0a""        free(d)\x0a""    "});
     string res = _6dcc03b3_compile(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };

@@ -238,7 +238,7 @@ compiler.builtins.create_function("open", types.FunctionT(c = True, return_t = (
 compiler.builtins.create_function("close", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.FILE_T,), macro = _close))
 compiler.builtins.create_function("write", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.FILE_T, types.void_p, types.size_t), macro = _write))
 compiler.builtins.create_function("read", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.FILE_T, types.void_p, types.size_t), macro = _read))
-compiler.builtins.create_function("rewind", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.void_p,)))
+compiler.builtins.create_function("rewind", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.FILE_T,)))
 compiler.builtins.create_function("write_string", types.FunctionT(c = True, return_t = (types.void,), macro = _write_string))
 compiler.builtins.create_function("read_line", types.FunctionT(c = True, return_t = (types.string,), macro = _read_line))
 compiler.builtins.create_function("scan", types.FunctionT(c = True, return_t = (types.int,), macro = _scan))
