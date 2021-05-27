@@ -81,7 +81,7 @@
     ((*tpe).kind) = typechecking_TypeKind_STATIC_ARRAY;
     ((*tpe).tpe) = builtins_char_;
     ((*tpe).length) = (str.size);
-    ((*tpe).size) = (((*tpe).length) * ((size_t)(sizeof(char))));
+    ((*tpe).size) = (((*tpe).length) * (sizeof(char)));
     ((*tpe).align) = (sizeof(char));
     compiler_Value *value = malloc((sizeof(compiler_Value)));
     (*value) = ((compiler_Value){ .kind = compiler_ValueKind_STRING, .s = str, .tpe = tpe });
@@ -156,7 +156,7 @@
         } else if ((tpe == builtins_char_)) {
             buffer_append_str((&buf), ((Array){3, "%c"}));
         }
-        else if (((((bool)typechecking_equals(tpe, builtins_string_)) || ((bool)typechecking_equals(tpe, typechecking_pointer(builtins_char_)))) || ((((*tpe).kind) == typechecking_TypeKind_STATIC_ARRAY) && ((bool)typechecking_equals(((*tpe).tpe), builtins_char_))))) {
+        else if (((typechecking_equals(tpe, builtins_string_) || typechecking_equals(tpe, typechecking_pointer(builtins_char_))) || ((((*tpe).kind) == typechecking_TypeKind_STATIC_ARRAY) && typechecking_equals(((*tpe).tpe), builtins_char_)))) {
             buffer_append_str((&buf), ((Array){3, "%s"}));
         }
         else if (typechecking_is_pointer(tpe)) {
@@ -213,7 +213,7 @@
         if ((!(value.tpe))) {
             return compiler_NO_VALUE;
         }  ;
-        if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && ((bool)typechecking_equals(((*(value.tpe)).tpe), builtins_char_)))) {
+        if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && typechecking_equals(((*(value.tpe)).tpe), builtins_char_))) {
             value = _fe23cc40_charp_static((value.addr), state);
         } else if (typechecking_equals((value.tpe), builtins_string_)) {
             value = _fe23cc40_charp_str(value, state);
@@ -279,9 +279,6 @@
  vector_Vector * _fe23cc40__allocate_type_proto(vector_Vector *args, vector_Vector *kwargs, typechecking_State *state) {
     vector_Vector *rets = vector_make();
     parser_Node *arg = _fe23cc40_get_arg(args, kwargs, 0, ((Array){4, "tpe"}));
-    if ((!arg)) {
-        return rets;
-    }  ;
     typechecking_Type *tpe = typechecking_type_lookup(arg, state);
     vector_push(rets, typechecking_pointer(tpe));
     return rets;
@@ -329,11 +326,23 @@
  vector_Vector * _fe23cc40__allocate_array_proto(vector_Vector *args, vector_Vector *kwargs, typechecking_State *state) {
     vector_Vector *rets = vector_make();
     parser_Node *arg = _fe23cc40_get_arg(args, kwargs, 0, ((Array){4, "tpe"}));
-    if ((!arg)) {
-        return rets;
-    }  ;
     typechecking_Type *tpe = typechecking_type_lookup(arg, state);
     vector_push(rets, typechecking_array(tpe));
+    return rets;
+};
+ compiler_Value _fe23cc40__reallocate(parser_Node *node, Array argsv, compiler_State *state) {
+    _fe23cc40_import_function(state, ((Array){8, "realloc"}));
+    compiler_Value call_ret = compiler_make_local_value(((((compiler_Value *)argsv.value)[0]).tpe), NULL, state);
+    compiler_Insn *call = malloc((sizeof(compiler_Insn)));
+    ((*call).kind) = compiler_InsnKind_CALL;
+    (((*call).value).call) = ((compiler_InsnCall){ .name = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = ((Array){8, "realloc"}) }), .ret = call_ret, .args = argsv });
+    compiler_push_insn(call, state);
+    return call_ret;
+};
+ vector_Vector * _fe23cc40__reallocate_proto(vector_Vector *args, vector_Vector *kwargs, typechecking_State *state) {
+    vector_Vector *rets = vector_make();
+    parser_Node *arg = _fe23cc40_get_arg(args, kwargs, 0, ((Array){4, "ptr"}));
+    vector_push(rets, ((*arg).tpe));
     return rets;
 };
  compiler_Value _fe23cc40__free_array(parser_Node *node, Array argsv, compiler_State *state) {
@@ -392,6 +401,7 @@ DLL_EXPORT void builtin_functions_p_main(Array args) {
     _fe23cc40_create_function(((Array){9, "allocate"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){5, "size"}), builtins_size_t_) }}), ((Array){1, (typechecking_Type *[1]){ typechecking_pointer(NULL) }}), (&_fe23cc40__allocate_size), NULL);
     _fe23cc40_create_function(((Array){9, "allocate"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){4, "tpe"}), typechecking_type_) }}), ((Array){1, (typechecking_Type *[1]){ typechecking_pointer(NULL) }}), (&_fe23cc40__allocate_type), (&_fe23cc40__allocate_type_proto));
     _fe23cc40_create_function(((Array){9, "allocate"}), ((Array){2, (typechecking_NamedParameter *[2]){ _fe23cc40_param(((Array){4, "tpe"}), typechecking_type_), _fe23cc40_param(((Array){5, "size"}), builtins_size_t_) }}), ((Array){1, (typechecking_Type *[1]){ typechecking_array(NULL) }}), (&_fe23cc40__allocate_array), (&_fe23cc40__allocate_array_proto));
+    _fe23cc40_create_function(((Array){11, "reallocate"}), ((Array){2, (typechecking_NamedParameter *[2]){ _fe23cc40_param(((Array){4, "ptr"}), typechecking_pointer(NULL)), _fe23cc40_param(((Array){5, "size"}), builtins_size_t_) }}), ((Array){1, (typechecking_Type *[1]){ typechecking_pointer(NULL) }}), (&_fe23cc40__reallocate), (&_fe23cc40__reallocate_proto));
     _fe23cc40_create_function(((Array){5, "free"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){6, "value"}), typechecking_array(NULL)) }}), ((Array){0, (typechecking_Type[]){  }}), (&_fe23cc40__free_array), NULL);
     _fe23cc40_create_function(((Array){5, "free"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){6, "value"}), typechecking_pointer(NULL)) }}), ((Array){0, (typechecking_Type[]){  }}), (&_fe23cc40__free_pointer), NULL);
     _fe23cc40_create_function(((Array){5, "open"}), ((Array){2, (typechecking_NamedParameter *[2]){ _fe23cc40_param(((Array){5, "file"}), builtins_string_), _fe23cc40_param(((Array){5, "mode"}), builtins_string_) }}), ((Array){1, (typechecking_Type *[1]){ builtins_File_ }}), (&_fe23cc40__open), NULL);

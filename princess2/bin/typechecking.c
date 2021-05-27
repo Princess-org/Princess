@@ -494,7 +494,6 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
     if ((((bool)(!a)) || ((bool)(!b)))) {
         return NULL;
     }  ;
-    assert((typechecking_is_arithmetic(a) && typechecking_is_arithmetic(b)));
     if (((((*a).kind) == typechecking_TypeKind_FLOAT) && (((*b).kind) == typechecking_TypeKind_WORD))) {
         return a;
     } else if (((((*a).kind) == typechecking_TypeKind_WORD) && (((*b).kind) == typechecking_TypeKind_FLOAT))) {
@@ -555,6 +554,9 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
  void _3700c937_collapse_types(vector_Vector *right, vector_Vector *types, vector_Vector *nodes, typechecking_State *state) {
     for (int i = 0;(i < vector_length(right));(i += 1)) {
         parser_Node *value = ((parser_Node *)vector_get(right, i));
+        if ((!value)) {
+            continue;
+        }  ;
         _3700c937_walk(value, state);
         typechecking_Type *tpe = ((*value).tpe);
         if ((((bool)tpe) && (((*tpe).kind) == typechecking_TypeKind_TUPLE))) {

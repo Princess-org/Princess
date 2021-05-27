@@ -57,7 +57,6 @@ typechecking_Type *builtins_size_t_;
 int _a69ecad8_seek_set;
 int _a69ecad8_seek_cur;
 int _a69ecad8_seek_end;
-parser_Node *_a69ecad8_file_ident;
 typechecking_Type *builtins_File_;
 #include "builtin_functions.c"
 DLL_EXPORT void builtins_p_main(Array args) {
@@ -102,9 +101,8 @@ DLL_EXPORT void builtins_p_main(Array args) {
     scope_create_variable(builtins_builtins, parser_make_identifier(((Array){1, (Array[1]){ ((Array){9, "SEEK_CUR"}) }})), parser_ShareMarker_NONE, parser_VarDecl_CONST, builtins_int_, (&_a69ecad8_seek_cur));
     _a69ecad8_seek_end = SEEK_END;
     scope_create_variable(builtins_builtins, parser_make_identifier(((Array){1, (Array[1]){ ((Array){9, "SEEK_END"}) }})), parser_ShareMarker_NONE, parser_VarDecl_CONST, builtins_int_, (&_a69ecad8_seek_end));
-    _a69ecad8_file_ident = parser_make_identifier(((Array){1, (Array[1]){ ((Array){16, "struct._IO_FILE"}) }}));
-    builtins_File_ = typechecking_pointer(typechecking_make_type(typechecking_TypeKind_STRUCT, _a69ecad8_file_ident));
-    scope_create_type(builtins_builtins, _a69ecad8_file_ident, parser_ShareMarker_NONE, builtins_File_);
+    builtins_File_ = typechecking_pointer(typechecking_make_type(typechecking_TypeKind_STRUCT, parser_make_identifier(((Array){1, (Array[1]){ ((Array){16, "struct._IO_FILE"}) }}))));
+    scope_create_type(builtins_builtins, parser_make_identifier(((Array){1, (Array[1]){ ((Array){5, "File"}) }})), parser_ShareMarker_NONE, builtins_File_);
     builtin_functions_p_main(args);
 };
 
