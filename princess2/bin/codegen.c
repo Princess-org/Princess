@@ -162,7 +162,7 @@
     };
     return buffer_to_string((&buf));
 };
- void _574f02bf_emit_arithmetic(void *fp, string name, compiler_Insn *insn) {
+ void _574f02bf_emit_arithmetic(File fp, string name, compiler_Insn *insn) {
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x09"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).arith).ret)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){4, " = "}).value));
@@ -174,7 +174,7 @@
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).arith).right)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
- void _574f02bf_emit_ret(void *fp, compiler_Insn *insn) {
+ void _574f02bf_emit_ret(File fp, compiler_Insn *insn) {
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){6, "\x09""ret "}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_type_to_str((((((*insn).value).ret).value).tpe)).value));
     if ((((((*insn).value).ret).value).tpe)) {
@@ -182,7 +182,7 @@
     }  ;
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
- void _574f02bf_emit_call(void *fp, compiler_Insn *insn) {
+ void _574f02bf_emit_call(File fp, compiler_Insn *insn) {
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x09"""}).value));
     if ((((((*insn).value).call).ret).tpe)) {
         fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).call).ret)).value));
@@ -222,14 +222,14 @@
     ;
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, ")\x0a"""}).value));
 };
- void _574f02bf_emit_alloca(void *fp, compiler_Insn *insn) {
+ void _574f02bf_emit_alloca(File fp, compiler_Insn *insn) {
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x09"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).alloca).ret)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){11, " = alloca "}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_type_to_str((((((*insn).value).alloca).ret).tpe)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
- void _574f02bf_emit_store(void *fp, compiler_Insn *insn) {
+ void _574f02bf_emit_store(File fp, compiler_Insn *insn) {
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x09"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){7, "store "}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_type_to_str((((((*insn).value).store).value).tpe)).value));
@@ -241,7 +241,7 @@
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).store).loc)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
- void _574f02bf_emit_load(void *fp, compiler_Insn *insn) {
+ void _574f02bf_emit_load(File fp, compiler_Insn *insn) {
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x09"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).load).value)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){9, " = load "}).value));
@@ -252,7 +252,7 @@
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).load).loc)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
- void _574f02bf_emit_br(void *fp, compiler_Insn *insn) {
+ void _574f02bf_emit_br(File fp, compiler_Insn *insn) {
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x09"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){4, "br "}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_type_to_str((((((*insn).value).br).cond).tpe)).value));
@@ -264,13 +264,13 @@
     fprintf(fp, (((Array){3, "%s"}).value), ((((((*insn).value).br).if_false).name).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
- void _574f02bf_emit_br_unc(void *fp, compiler_Insn *insn) {
+ void _574f02bf_emit_br_unc(File fp, compiler_Insn *insn) {
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x09"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){11, "br label %"}).value));
     fprintf(fp, (((Array){3, "%s"}).value), ((((((*insn).value).br_unc).label_).name).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
- void _574f02bf_emit_insert_value(void *fp, compiler_Insn *insn) {
+ void _574f02bf_emit_insert_value(File fp, compiler_Insn *insn) {
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x09"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).insert_value).ret)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){16, " = insertvalue "}).value));
@@ -292,7 +292,7 @@
     ;
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
- void _574f02bf_emit_extract_value(void *fp, compiler_Insn *insn) {
+ void _574f02bf_emit_extract_value(File fp, compiler_Insn *insn) {
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x09"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).extract_value).ret)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){17, " = extractvalue "}).value));
@@ -310,7 +310,7 @@
     ;
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
- void _574f02bf_emit_convert(void *fp, string name, compiler_Insn *insn) {
+ void _574f02bf_emit_convert(File fp, string name, compiler_Insn *insn) {
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x09"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).convert).ret)).value));
     fprintf(fp, (((Array){7, "%s%s%s"}).value), (((Array){4, " = "}).value), (name.value), (((Array){2, " "}).value));
@@ -321,7 +321,7 @@
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_type_to_str((((((*insn).value).convert).ret).tpe)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
- void _574f02bf_emit_gep(void *fp, compiler_Insn *insn) {
+ void _574f02bf_emit_gep(File fp, compiler_Insn *insn) {
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x09"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).gep).ret)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){18, " = getelementptr "}).value));
@@ -343,7 +343,7 @@
     ;
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
- void _574f02bf_emit_compare(void *fp, string name, compiler_Insn *insn) {
+ void _574f02bf_emit_compare(File fp, string name, compiler_Insn *insn) {
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x09"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).cmp).ret)).value));
     fprintf(fp, (((Array){11, "%s%s%s%s%s"}).value), (((Array){4, " = "}).value), (name.value), (((Array){2, " "}).value), (((((*insn).value).cmp).op).value), (((Array){2, " "}).value));
@@ -354,7 +354,7 @@
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).cmp).right)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
- void _574f02bf_emit(void *fp, compiler_Insn *insn) {
+ void _574f02bf_emit(File fp, compiler_Insn *insn) {
     switch (((int)((*insn).kind))) {
         break;
         case compiler_InsnKind_ADD:
@@ -488,7 +488,7 @@
     }
     ;
 };
- void _574f02bf_emit_block(void *fp, compiler_Block *block) {
+ void _574f02bf_emit_block(File fp, compiler_Block *block) {
     fprintf(fp, (((Array){5, "%s%s"}).value), (((*block).label_).value), (((Array){3, ":\x0a"""}).value));
     for (int i = 0;(i < vector_length(((*block).insn)));(i += 1)) {
         compiler_Insn *insn = ((compiler_Insn *)vector_get(((*block).insn), i));
@@ -496,7 +496,7 @@
     }
     ;
 };
- void _574f02bf_emit_function(void *fp, compiler_Function *function) {
+ void _574f02bf_emit_function(File fp, compiler_Function *function) {
     if (((*function).forward_declare)) {
         fprintf(fp, (((Array){3, "%s"}).value), (((Array){9, "declare "}).value));
     }  else {
@@ -533,7 +533,7 @@
         fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
     };
 };
- void _574f02bf_emit_structure(void *fp, typechecking_Type *structure) {
+ void _574f02bf_emit_structure(File fp, typechecking_Type *structure) {
     fprintf(fp, (((Array){7, "%s%s%s"}).value), (((Array){3, "%\""}).value), (((*structure).type_name).value), (((Array){2, "\""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){9, " = type "}).value));
     if (((*structure).packed)) {
@@ -556,7 +556,7 @@
     }  ;
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
- void _574f02bf_emit_global(void *fp, compiler_Value *global) {
+ void _574f02bf_emit_global(File fp, compiler_Value *global) {
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str((*global)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){11, " = global "}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_type_to_str(((*global).tpe)).value));
@@ -568,7 +568,7 @@
     };
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
- void _574f02bf_gen_main_function(void *fp) {
+ void _574f02bf_gen_main_function(File fp) {
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){43, "define i32 @main(i32 %argc, i8** %argv) {\x0a"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){32, "\x09""%size = zext i32 %argc to i64\x0a"""}).value));
     fprintf(fp, (((Array){8, "%s%zu%s"}).value), (((Array){27, "\x09""%size.1 = mul i64 %size, "}).value), (sizeof(string)), (((Array){2, "\x0a"""}).value));
@@ -599,7 +599,7 @@
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, "}\x0a"""}).value));
 };
 #include "toolchain.c"
- void _574f02bf_gen_cstdlib_includes(void *fp, toolchain_Module *module) {
+ void _574f02bf_gen_cstdlib_includes(File fp, toolchain_Module *module) {
     Array keys = map_keys(((*module).imported));
     buffer_Buffer cmd_buffer = buffer_make_buffer();
     buffer_append_str((&cmd_buffer), ((Array){28, "python3.9 cstdlib/genll.py "}));
@@ -610,7 +610,7 @@
     }
     ;
     system((buffer_to_string((&cmd_buffer)).value));
-    FILE* fp2 = fopen((((Array){18, "cstdlib/header.ll"}).value), (((Array){2, "r"}).value));
+    File fp2 = fopen((((Array){18, "cstdlib/header.ll"}).value), (((Array){2, "r"}).value));
     string header = util_read_all(fp2);
     fclose(fp2);
     fprintf(fp, (((Array){3, "%s"}).value), (header.value));
@@ -625,7 +625,7 @@ DLL_EXPORT string codegen_gen(toolchain_Module *module) {
     buffer_append_str((&buf), ((Array){4, ".ll"}));
     string outfile = buffer_to_string((&buf));
     ((*module).llfile) = outfile;
-    FILE* fp = fopen((outfile.value), (((Array){2, "w"}).value));
+    File fp = fopen((outfile.value), (((Array){2, "w"}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){79, "; This file was compiled by the grace of your highness Princess Vic Nightfall\x0a"""}).value));
     Array keys_structures = map_keys(((*result).structures));
     for (int i = 0;(i < (keys_structures.size));(i += 1)) {

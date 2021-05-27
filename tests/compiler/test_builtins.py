@@ -31,7 +31,7 @@ def test_concat_malloc():
 
 def test_file_io_binary():
     prog = """\
-        let fp = open("bin/test_file_io_binary", "wb+")
+        let fp: File = open("bin/test_file_io_binary", "wb+")
 
         write(fp, "This is a test")
         let a = 10
@@ -51,7 +51,7 @@ def test_file_io_binary():
 
 def test_file_io_text():
     prog = """\
-        let fp = open("bin/test_file_io_text", "w+")
+        let fp: File = open("bin/test_file_io_text", "w+")
 
         write_string(fp, "This is a test\n", 10)
 

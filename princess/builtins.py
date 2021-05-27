@@ -277,3 +277,5 @@ compiler.builtins.create_variable(Modifier.Let, "stderr", types.FILE_T)
 compiler.builtins.create_variable(Modifier.Let, "stdin", types.FILE_T)
 
 compiler.builtins.create_variable(Modifier.Let, "args", types.ArrayT(types.string))
+
+compiler.builtins.create_type("File", types.FILE_T)
