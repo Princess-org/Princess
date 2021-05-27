@@ -101,8 +101,10 @@ DLL_EXPORT typechecking_Type * typechecking_array(typechecking_Type *tpe) {
 };
  string _3700c937_append_module(string name, string module) {
     buffer_Buffer buf = buffer_make_buffer();
-    buffer_append_str((&buf), module);
-    buffer_append_str((&buf), ((Array){3, "::"}));
+    if ((((module.size) - 1) > 0)) {
+        buffer_append_str((&buf), module);
+        buffer_append_str((&buf), ((Array){3, "::"}));
+    }  ;
     buffer_append_str((&buf), name);
     return buffer_to_string((&buf));
 };

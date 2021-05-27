@@ -54,7 +54,7 @@ DLL_EXPORT string toolchain_find_module_file(parser_Node *module) {
     return ((Array){1, ""});
 };
 DLL_EXPORT void toolchain_compile_file(string filename, string mod) {
-    FILE* fh = fopen((filename.value), (((Array){3, "rb"}).value));
+    File fh = fopen((filename.value), (((Array){3, "rb"}).value));
     if ((!fh)) {
         fprintf(stderr, (((Array){7, "%s%s%s"}).value), (((Array){7, "File \""}).value), (filename.value), (((Array){17, "\" doesn't exist\x0a"""}).value));
     }  else {
