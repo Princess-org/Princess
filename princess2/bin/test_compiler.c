@@ -104,6 +104,7 @@ bool test_compiler_print_ll;
     string res = _6dcc03b3_compile(str);
     str = ((Array){81, "\x0a""        var i = 0\x0a""        for i in 0..=10 {\x0a""            print(i)\x0a""        }\x0a""    "});
     res = _6dcc03b3_compile(str);
+    printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
  void _6dcc03b3_test_vardecl() {
     printf((((Array){3, "%s"}).value), (((Array){18, ">Test vardecl... "}).value));

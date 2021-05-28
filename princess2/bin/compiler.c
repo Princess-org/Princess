@@ -1026,7 +1026,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
         if (typechecking_equals((left.tpe), builtins_string_)) {
             ;
         }  ;
-        assert(false);
+        return compiler_NO_VALUE;
     } else {
         return compiler_NO_VALUE;
     };

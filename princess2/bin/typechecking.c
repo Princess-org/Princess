@@ -143,11 +143,11 @@ DLL_EXPORT typechecking_Type * typechecking_copy(typechecking_Type *a) {
     return t;
 };
 DLL_EXPORT bool typechecking_equals(typechecking_Type *a, typechecking_Type *b) {
-    if ((((bool)(!a)) || ((bool)(!b)))) {
-        return false;
-    }  ;
     if ((a == b)) {
         return true;
+    }  ;
+    if ((((bool)(!a)) || ((bool)(!b)))) {
+        return false;
     }  ;
     if ((((*a).kind) != ((*b).kind))) {
         return false;
@@ -221,7 +221,7 @@ DLL_EXPORT bool typechecking_equals(typechecking_Type *a, typechecking_Type *b) 
     return false;
 };
  int _3700c937_convert_type_score(typechecking_Type *a, typechecking_Type *b) {
-    if ((!a)) {
+    if ((((bool)(!a)) || ((bool)(!b)))) {
         return 0;
     }  ;
     if (typechecking_equals(a, b)) {
@@ -299,6 +299,9 @@ DLL_EXPORT int typechecking_overload_score(typechecking_Type *a, vector_Vector *
     return sum;
 };
 DLL_EXPORT string typechecking_type_to_str(typechecking_Type *tpe) {
+    if ((!tpe)) {
+        return ((Array){7, "(null)"});
+    }  ;
     buffer_Buffer buf = buffer_make_buffer();
     switch (((int)((*tpe).kind))) {
         break;
@@ -592,7 +595,7 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
     ;
 };
  typechecking_Type * _3700c937_implicit_conversion(parser_Node *node, typechecking_Type *tpe, typechecking_Type *rhstpe) {
-    if (((((((*node).kind) == parser_NodeKind_NULL) && typechecking_is_pointer(tpe)) || ((((*node).kind) == parser_NodeKind_STRUCT_LIT) && typechecking_is_struct(tpe))) || ((((*node).kind) == parser_NodeKind_INTEGER) && typechecking_is_arithmetic(tpe)))) {
+    if (((((((*node).kind) == parser_NodeKind_NULL) && typechecking_is_pointer(tpe)) || ((((*node).kind) == parser_NodeKind_STRUCT_LIT) && typechecking_is_struct(tpe))) || (typechecking_is_arithmetic(tpe) && ((((*node).kind) == parser_NodeKind_INTEGER) || (((((*node).kind) == parser_NodeKind_USUB) || (((*node).kind) == parser_NodeKind_UADD)) && (((*(((*node).value).expr)).kind) == parser_NodeKind_INTEGER)))))) {
         ((*node).tpe) = tpe;
         return tpe;
     }  ;
