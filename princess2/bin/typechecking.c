@@ -1017,7 +1017,7 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
         _3700c937_walk(((((*n).value).named_arg).value), state);
         string name = typechecking_last_ident_to_str(((((*n).value).named_arg).name));
         if (map_contains(parameter_map, name)) {
-            typechecking_errorn(n, ((Array){91, "Cannot have the same parameter name multiple times in a function call. Paramter name was \""}));
+            typechecking_errorn(n, ((Array){92, "Cannot have the same parameter name multiple times in a function call. Parameter name was \""}));
             fprintf(stderr, (((Array){5, "%s%s"}).value), (name.value), (((Array){4, "\".\x0a"""}).value));
             break;
         }  else {
@@ -1133,6 +1133,21 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
     ((*state).scope) = scope_enter_scope(((*state).scope));
     for (int i = 0;(i < vector_length((((*node).value).body)));(i += 1)) {
         void *n = vector_get((((*node).value).body), i);
+        _3700c937_walk(n, state);
+    }
+    ;
+    ((*state).scope) = scope_exit_scope(((*state).scope));
+};
+ void _3700c937_walk_While(parser_Node *node, typechecking_State *state) {
+    parser_Node *expr = ((((*node).value).while_loop).expr);
+    _3700c937_walk(expr, state);
+    if ((!typechecking_is_boolean(((*expr).tpe)))) {
+        typechecking_errorn(node, ((Array){19, "Incompatible type "}));
+        fprintf(stderr, (((Array){5, "%s%s"}).value), (debug_type_to_str(((*expr).tpe)).value), (((Array){24, ", must be boolean type\x0a"""}).value));
+    }  ;
+    ((*state).scope) = scope_enter_scope(((*state).scope));
+    for (int i = 0;(i < vector_length(((((*node).value).while_loop).body)));(i += 1)) {
+        void *n = vector_get(((((*node).value).while_loop).body), i);
         _3700c937_walk(n, state);
     }
     ;
@@ -1355,6 +1370,9 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
         break;
         case parser_NodeKind_LOOP:
         _3700c937_walk_Loop(node, state);
+        break;
+        case parser_NodeKind_WHILE:
+        _3700c937_walk_While(node, state);
         break;
         case parser_NodeKind_IF:
         _3700c937_walk_If(node, state);

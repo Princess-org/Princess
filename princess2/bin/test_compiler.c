@@ -32,7 +32,7 @@ bool test_compiler_print_ll;
     compiler_Result *result = compiler_compile(module);
     ((*module).result) = result;
     codegen_gen(module);
-    File fh = fopen((((Array){14, "./bin/main.ll"}).value), (((Array){2, "r"}).value));
+    FILE* fh = fopen((((Array){14, "./bin/main.ll"}).value), (((Array){2, "r"}).value));
     string buf = util_read_all(fh);
     fclose(fh);
     int llc = system((((Array){19, "llc-12 bin/main.ll"}).value));
@@ -90,6 +90,12 @@ bool test_compiler_print_ll;
     res = _6dcc03b3_compile(str);
     str = ((Array){150, "\x0a""        loop {\x0a""            continue\x0a""            loop {\x0a""                continue\x0a""                break\x0a""            }\x0a""            break\x0a""        }\x0a""    "});
     res = _6dcc03b3_compile(str);
+    printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
+};
+ void _6dcc03b3_test_emit_while() {
+    printf((((Array){3, "%s"}).value), (((Array){26, ">Test while statement... "}).value));
+    Array str = ((Array){76, "\x0a""        var i = 0\x0a""        while i < 10 {\x0a""            i += 1\x0a""        }\x0a""    "});
+    string res = _6dcc03b3_compile(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
  void _6dcc03b3_test_emit_vardecl() {
@@ -217,8 +223,10 @@ bool test_compiler_print_ll;
 };
  void _6dcc03b3_test_builtins() {
     printf((((Array){3, "%s"}).value), (((Array){19, ">Test builtins... "}).value));
-    Array str = ((Array){242, "\x0a""        var a = 10\x0a""        assert(a == 15)\x0a""        print(a, 10, 10.5, \"string\")\x0a""        let b = allocate(int)\x0a""        let c = allocate(size_of int) !*int\x0a""        let d = allocate(int, 10)\x0a""        free(b)\x0a""        free(c)\x0a""        free(d)\x0a""    "});
+    Array str = ((Array){284, "\x0a""        var a = 10\x0a""        assert(a == 15)\x0a""        print(a, 10, 10.5, \"string\")\x0a""        let b = allocate(int)\x0a""        let c = allocate(size_of int) !*int\x0a""        reallocate(c, 10 * (size_of int))\x0a""        let d = allocate(int, 10)\x0a""        free(b)\x0a""        free(c)\x0a""        free(d)\x0a""    "});
     string res = _6dcc03b3_compile(str);
+    str = ((Array){69, "\x0a""        let fp: File = open(\"bin/test\", \"r\")\x0a""        close(fp)\x0a""    "});
+    res = _6dcc03b3_compile(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
 DLL_EXPORT void test_compiler_test() {
@@ -227,6 +235,7 @@ DLL_EXPORT void test_compiler_test() {
     _6dcc03b3_test_emit_call();
     _6dcc03b3_test_emit_if();
     _6dcc03b3_test_emit_loop();
+    _6dcc03b3_test_emit_while();
     _6dcc03b3_test_emit_vardecl();
     _6dcc03b3_test_emit_globals();
     _6dcc03b3_test_emit_ptr();

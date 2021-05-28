@@ -206,7 +206,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     }  ;
     compiler_InsnKind kind;
     if ((((*tpe).kind) == typechecking_TypeKind_ARRAY)) {
-        if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && (((bool)(!((*tpe).tpe))) || typechecking_equals(((*tpe).tpe), ((*(value.tpe)).tpe))))) {
+        if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && (((bool)(!((*tpe).tpe))) || ((bool)typechecking_equals(((*tpe).tpe), ((*(value.tpe)).tpe)))))) {
             compiler_Value local = compiler_make_local_value(typechecking_pointer(((*(value.tpe)).tpe)), NULL, state);
             Array index = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
             (((compiler_Value *)index.value)[0]) = compiler_make_int_value(0);
@@ -930,7 +930,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     if (typechecking_is_pointer((right.tpe))) {
         right = _87f75ce3_convert_to(node, right, builtins_size_t_, state);
     }  ;
-    if ((typechecking_is_arithmetic((left.tpe)) && typechecking_is_arithmetic((right.tpe)))) {
+    if ((((bool)typechecking_is_arithmetic((left.tpe))) && ((bool)typechecking_is_arithmetic((right.tpe))))) {
         tpe = typechecking_common_type((left.tpe), (right.tpe));
         left = _87f75ce3_convert_to(node, left, tpe, state);
         right = _87f75ce3_convert_to(node, right, tpe, state);
@@ -1289,6 +1289,34 @@ DLL_EXPORT compiler_Value compiler_walk_expression(parser_Node *node, compiler_S
     ((((*break_insn).value).br_unc).label_) = end_label;
     _87f75ce3_pop_loop_state(state);
 };
+ void _87f75ce3_walk_While(parser_Node *node, compiler_State *state) {
+    _87f75ce3_push_loop_state(state);
+    compiler_Insn *continue_insn = _87f75ce3_get_continue_insn(state);
+    compiler_Insn *break_insn = _87f75ce3_get_break_insn(state);
+    compiler_push_insn(continue_insn, state);
+    compiler_Label start_label = compiler_make_label(state);
+    compiler_push_label(start_label, state);
+    compiler_Value cond = compiler_walk_expression(((((*node).value).while_loop).expr), state);
+    compiler_Insn *br = malloc((sizeof(compiler_Insn)));
+    ((*br).kind) = compiler_InsnKind_BR;
+    (((*br).value).br) = ((compiler_InsnBr){ .cond = cond });
+    compiler_push_insn(br, state);
+    compiler_Label inner = compiler_make_label(state);
+    compiler_push_label(inner, state);
+    ((((*br).value).br).if_true) = inner;
+    for (int i = 0;(i < vector_length(((((*node).value).while_loop).body)));(i += 1)) {
+        void *n = vector_get(((((*node).value).while_loop).body), i);
+        compiler_walk(n, state);
+    }
+    ;
+    compiler_push_insn(continue_insn, state);
+    compiler_Label end_label = compiler_make_label(state);
+    compiler_push_label(end_label, state);
+    ((((*br).value).br).if_false) = end_label;
+    ((((*continue_insn).value).br_unc).label_) = start_label;
+    ((((*break_insn).value).br_unc).label_) = end_label;
+    _87f75ce3_pop_loop_state(state);
+};
  void _87f75ce3_walk_VarDecl(parser_Node *node, compiler_State *state) {
     vector_Vector *left = ((((*node).value).var_decl).left);
     vector_Vector *right = ((((*node).value).var_decl).right);
@@ -1345,6 +1373,9 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state) {
         break;
         case parser_NodeKind_LOOP:
         _87f75ce3_walk_Loop(node, state);
+        break;
+        case parser_NodeKind_WHILE:
+        _87f75ce3_walk_While(node, state);
         break;
         default:
         compiler_walk_expression(node, state);
@@ -1554,7 +1585,7 @@ DLL_EXPORT compiler_Result * compiler_compile(toolchain_Module *module) {
             Array keys = map_keys(((*m_scope).fields));
             for (int i = 0;(i < (keys.size));(i += 1)) {
                 scope_Value *value = ((scope_Value *)map_get(((*m_scope).fields), (((string *)keys.value)[i])));
-                if ((typechecking_is_function(((*value).tpe)) && ((bool)(((int)((*value).share)) & parser_ShareMarker_EXPORT)))) {
+                if ((((bool)typechecking_is_function(((*value).tpe))) && ((bool)(((int)((*value).share)) & ((int)parser_ShareMarker_EXPORT))))) {
                     _87f75ce3_create_function(((*value).tpe), NULL, sc, state);
                 }  ;
             }
