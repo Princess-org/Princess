@@ -1011,14 +1011,23 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
         vector_push(arguments, np);
     }
     ;
+    map_Map *parameter_map = map_make();
     for (int i = 0;(i < vector_length(((((*node).value).func_call).kwargs)));(i += 1)) {
         parser_Node *n = ((parser_Node *)vector_get(((((*node).value).func_call).kwargs), i));
         _3700c937_walk(((((*n).value).named_arg).value), state);
-        typechecking_NamedParameter *np = malloc((sizeof(typechecking_NamedParameter)));
-        ((*np).name) = typechecking_last_ident_to_str(((((*n).value).named_arg).name));
-        ((*np).value) = ((*((((*n).value).named_arg).value)).tpe);
-        ((*np).varargs) = false;
-        vector_push(arguments, np);
+        string name = typechecking_last_ident_to_str(((((*n).value).named_arg).name));
+        if (map_contains(parameter_map, name)) {
+            typechecking_errorn(n, ((Array){91, "Cannot have the same parameter name multiple times in a function call. Paramter name was \""}));
+            fprintf(stderr, (((Array){5, "%s%s"}).value), (name.value), (((Array){4, "\".\x0a"""}).value));
+            break;
+        }  else {
+            map_put(parameter_map, name, map_sentinel);
+            typechecking_NamedParameter *np = malloc((sizeof(typechecking_NamedParameter)));
+            ((*np).name) = name;
+            ((*np).value) = ((*((((*n).value).named_arg).value)).tpe);
+            ((*np).varargs) = false;
+            vector_push(arguments, np);
+        };
     }
     ;
     parser_Node *left = ((((*node).value).func_call).left);

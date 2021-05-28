@@ -255,8 +255,19 @@ typedef struct _1f7978b0_Result {struct scope_Scope *scope; struct parser_Node *
     typechecking_Type *e = ((*scope_get((res.scope), parser_make_identifier(((Array){1, (Array[1]){ ((Array){2, "e"}) }})))).tpe);
     typechecking_Type *f = ((*scope_get((res.scope), parser_make_identifier(((Array){1, (Array[1]){ ((Array){2, "f"}) }})))).tpe);
     assert(((c == builtins_size_t_) && (e == builtins_size_t_)));
-    assert((typechecking_is_pointer(d) && typechecking_is_pointer(f)));
+    assert((((bool)typechecking_is_pointer(d)) && ((bool)typechecking_is_pointer(f))));
     assert(((((*d).tpe) == builtins_int_) && (((*f).tpe) == builtins_int_)));
+    printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
+};
+ void _1f7978b0_test_call() {
+    printf((((Array){3, "%s"}).value), (((Array){30, ">Testing function calling... "}).value));
+    Array str = ((Array){240, "\x0a""        def demo_function_1\x0a""        def demo_function_2(a: int)\x0a""        demo_function_1() // empty function\x0a""        demo_function_2(42) // function with unnamed parameter\x0a""        demo_function_2(a=42) // function with named parameter\x0a""    "});
+    _1f7978b0_Result res = _1f7978b0_typecheck(str);
+    str = ((Array){117, "\x0a""        def demo_function_2(a: int)\x0a""        demo_function_2(a=42, a=11) // function with named parameter twice\x0a""    "});
+    debug_redirect_stderr();
+    res = _1f7978b0_typecheck(str);
+    vector_Vector *errors = debug_catch_errors();
+    assert((strcmp((_1f7978b0_next_error_msg(errors).value), (((Array){94, "Cannot have the same parameter name multiple times in a function call. Paramter name was \"a\"."}).value)) == 0));
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
 DLL_EXPORT void test_typechecking_test() {
@@ -275,6 +286,7 @@ DLL_EXPORT void test_typechecking_test() {
     _1f7978b0_test_array_subscript();
     _1f7978b0_test_array_lit();
     _1f7978b0_test_array_size_and_value();
+    _1f7978b0_test_call();
 };
 DLL_EXPORT void test_typechecking_p_main(Array args) {
 
