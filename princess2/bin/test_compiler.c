@@ -50,7 +50,7 @@ bool test_compiler_print_ll;
     }  ;
     return buf;
 };
- void _6dcc03b3_test_emit_arithmetic() {
+ void _6dcc03b3_test_arithmetic() {
     printf((((Array){3, "%s"}).value), (((Array){33, ">Test arithmetic instruction... "}).value));
     Array str = ((Array){27, "\x0a""        10 + 10 + 10\x0a""    "});
     string res = _6dcc03b3_compile(str);
@@ -62,7 +62,7 @@ bool test_compiler_print_ll;
     res = _6dcc03b3_compile(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
- void _6dcc03b3_test_emit_call() {
+ void _6dcc03b3_test_call() {
     printf((((Array){3, "%s"}).value), (((Array){27, ">Test call instruction... "}).value));
     Array str = ((Array){102, "\x0a""        def add(a: int, b: int) -> int {\x0a""            return a + b\x0a""        }\x0a""        add(10, 10)\x0a""    "});
     string res = _6dcc03b3_compile(str);
@@ -70,7 +70,7 @@ bool test_compiler_print_ll;
     res = _6dcc03b3_compile(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
- void _6dcc03b3_test_emit_if() {
+ void _6dcc03b3_test_if() {
     printf((((Array){3, "%s"}).value), (((Array){23, ">Test if statement... "}).value));
     Array str = ((Array){82, "\x0a""        def foo\x0a""        if true {\x0a""            foo()\x0a""        }\x0a""        foo()\x0a""    "});
     string res = _6dcc03b3_compile(str);
@@ -82,7 +82,7 @@ bool test_compiler_print_ll;
     res = _6dcc03b3_compile(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
- void _6dcc03b3_test_emit_loop() {
+ void _6dcc03b3_test_loop() {
     printf((((Array){3, "%s"}).value), (((Array){25, ">Test loop statement... "}).value));
     Array str = ((Array){140, "\x0a""        def foo\x0a""        loop {\x0a""            foo()\x0a""            continue\x0a""            foo()\x0a""            break\x0a""            foo()\x0a""        }\x0a""    "});
     string res = _6dcc03b3_compile(str);
@@ -92,13 +92,20 @@ bool test_compiler_print_ll;
     res = _6dcc03b3_compile(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
- void _6dcc03b3_test_emit_while() {
+ void _6dcc03b3_test_while() {
     printf((((Array){3, "%s"}).value), (((Array){26, ">Test while statement... "}).value));
     Array str = ((Array){76, "\x0a""        var i = 0\x0a""        while i < 10 {\x0a""            i += 1\x0a""        }\x0a""    "});
     string res = _6dcc03b3_compile(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
- void _6dcc03b3_test_emit_vardecl() {
+ void _6dcc03b3_test_for() {
+    printf((((Array){3, "%s"}).value), (((Array){24, ">Test for statement... "}).value));
+    Array str = ((Array){66, "\x0a""        for var i in 0..10 {\x0a""            print(i)\x0a""        }\x0a""    "});
+    string res = _6dcc03b3_compile(str);
+    str = ((Array){81, "\x0a""        var i = 0\x0a""        for i in 0..=10 {\x0a""            print(i)\x0a""        }\x0a""    "});
+    res = _6dcc03b3_compile(str);
+};
+ void _6dcc03b3_test_vardecl() {
     printf((((Array){3, "%s"}).value), (((Array){18, ">Test vardecl... "}).value));
     Array str = ((Array){65, "\x0a""        def foo {\x0a""            var a: int, b: int\x0a""        }\x0a""    "});
     string res = _6dcc03b3_compile(str);
@@ -106,7 +113,7 @@ bool test_compiler_print_ll;
     res = _6dcc03b3_compile(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
- void _6dcc03b3_test_emit_globals() {
+ void _6dcc03b3_test_globals() {
     printf((((Array){3, "%s"}).value), (((Array){18, ">Test globals... "}).value));
     Array str = ((Array){30, "\x0a""        var global: int\x0a""    "});
     string res = _6dcc03b3_compile(str);
@@ -122,7 +129,7 @@ bool test_compiler_print_ll;
     res = _6dcc03b3_compile(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
- void _6dcc03b3_test_emit_ptr() {
+ void _6dcc03b3_test_ptr() {
     printf((((Array){3, "%s"}).value), (((Array){19, ">Test pointers... "}).value));
     Array str = ((Array){62, "\x0a""        let a = 20\x0a""        let pa = *a\x0a""        @pa = 40\x0a""    "});
     string res = _6dcc03b3_compile(str);
@@ -130,7 +137,7 @@ bool test_compiler_print_ll;
     res = _6dcc03b3_compile(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
- void _6dcc03b3_test_emit_convert() {
+ void _6dcc03b3_test_convert() {
     printf((((Array){3, "%s"}).value), (((Array){26, ">Test type conversion... "}).value));
     Array str = ((Array){55, "\x0a""        let a = 10 !float\x0a""        let b = a !int\x0a""    "});
     string res = _6dcc03b3_compile(str);
@@ -231,15 +238,16 @@ bool test_compiler_print_ll;
 };
 DLL_EXPORT void test_compiler_test() {
     printf((((Array){3, "%s"}).value), (((Array){30, "Running tests on Compiler...\x0a"""}).value));
-    _6dcc03b3_test_emit_arithmetic();
-    _6dcc03b3_test_emit_call();
-    _6dcc03b3_test_emit_if();
-    _6dcc03b3_test_emit_loop();
-    _6dcc03b3_test_emit_while();
-    _6dcc03b3_test_emit_vardecl();
-    _6dcc03b3_test_emit_globals();
-    _6dcc03b3_test_emit_ptr();
-    _6dcc03b3_test_emit_convert();
+    _6dcc03b3_test_arithmetic();
+    _6dcc03b3_test_call();
+    _6dcc03b3_test_if();
+    _6dcc03b3_test_loop();
+    _6dcc03b3_test_while();
+    _6dcc03b3_test_for();
+    _6dcc03b3_test_vardecl();
+    _6dcc03b3_test_globals();
+    _6dcc03b3_test_ptr();
+    _6dcc03b3_test_convert();
     _6dcc03b3_test_member_access();
     _6dcc03b3_test_array_subscript();
     _6dcc03b3_test_struct_lit();

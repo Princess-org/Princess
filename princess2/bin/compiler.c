@@ -1317,6 +1317,83 @@ DLL_EXPORT compiler_Value compiler_walk_expression(parser_Node *node, compiler_S
     ((((*break_insn).value).br_unc).label_) = end_label;
     _87f75ce3_pop_loop_state(state);
 };
+ void _87f75ce3_walk_For(parser_Node *node, compiler_State *state) {
+    parser_Node *range = ((((*node).value).for_loop).expr);
+    assert(((((*range).kind) == parser_NodeKind_RANGE) || (((*range).kind) == parser_NodeKind_RANGE_INC)));
+    Array op = compiler_i_slt;
+    if ((((*range).kind) == parser_NodeKind_RANGE_INC)) {
+        op = compiler_i_sle;
+    }  ;
+    compiler_Value startv = compiler_walk_expression(((((*range).value).bin_op).left), state);
+    compiler_Value endv = compiler_walk_expression(((((*range).value).bin_op).right), state);
+    parser_Node *iddecl = ((((*node).value).for_loop).iddecl);
+    compiler_Value loc;
+    if ((((*iddecl).kind) == parser_NodeKind_FOR_ID_DECL)) {
+        scope_Value *value = scope_get(((*iddecl).scope), ((((*iddecl).value).for_id_decl).ident));
+        if ((!value)) {
+            return ;
+        }  ;
+        compiler_Insn *alloca = malloc((sizeof(compiler_Insn)));
+        ((*alloca).kind) = compiler_InsnKind_ALLOCA;
+        (((*alloca).value).alloca) = ((compiler_InsnAlloca){ .ret = ((compiler_Value){ .kind = compiler_ValueKind_LOCAL, .name = ((*value).assembly_name), .tpe = ((*iddecl).tpe) }) });
+        compiler_push_insn(alloca, state);
+        loc = ((compiler_Value){ .kind = compiler_ValueKind_LOCAL, .name = ((*value).assembly_name), .tpe = typechecking_pointer(((*iddecl).tpe)) });
+    }  else {
+        compiler_Value *addr = (compiler_walk_expression(iddecl, state).addr);
+        if ((!addr)) {
+            return ;
+        }  ;
+        loc = (*addr);
+    };
+    compiler_Insn *store = malloc((sizeof(compiler_Insn)));
+    ((*store).kind) = compiler_InsnKind_STORE;
+    (((*store).value).store) = ((compiler_InsnStore){ .loc = loc, .value = startv });
+    compiler_push_insn(store, state);
+    _87f75ce3_push_loop_state(state);
+    compiler_Insn *continue_insn = _87f75ce3_get_continue_insn(state);
+    compiler_Insn *break_insn = _87f75ce3_get_break_insn(state);
+    compiler_push_insn(continue_insn, state);
+    compiler_Label start_label = compiler_make_label(state);
+    compiler_push_label(start_label, state);
+    compiler_Value load_ret = compiler_make_local_value(builtins_int_, NULL, state);
+    compiler_Insn *load = malloc((sizeof(compiler_Insn)));
+    ((*load).kind) = compiler_InsnKind_LOAD;
+    (((*load).value).load) = ((compiler_InsnLoad){ .value = load_ret, .loc = loc });
+    compiler_push_insn(load, state);
+    compiler_Value cmp_ret = compiler_make_local_value(builtins_bool_, NULL, state);
+    compiler_Insn *cmp = malloc((sizeof(compiler_Insn)));
+    ((*cmp).kind) = compiler_InsnKind_ICMP;
+    (((*cmp).value).cmp) = ((compiler_InsnCmp){ .op = op, .ret = cmp_ret, .left = load_ret, .right = endv });
+    compiler_push_insn(cmp, state);
+    compiler_Insn *br = malloc((sizeof(compiler_Insn)));
+    ((*br).kind) = compiler_InsnKind_BR;
+    (((*br).value).br) = ((compiler_InsnBr){ .cond = cmp_ret });
+    compiler_push_insn(br, state);
+    compiler_Label inner = compiler_make_label(state);
+    compiler_push_label(inner, state);
+    ((((*br).value).br).if_true) = inner;
+    for (int i = 0;(i < vector_length(((((*node).value).for_loop).body)));(i += 1)) {
+        void *n = vector_get(((((*node).value).for_loop).body), i);
+        compiler_walk(n, state);
+    }
+    ;
+    compiler_Value add_ret = compiler_make_local_value(builtins_int_, NULL, state);
+    compiler_Insn *add = malloc((sizeof(compiler_Insn)));
+    ((*add).kind) = compiler_InsnKind_ADD;
+    (((*add).value).arith) = ((compiler_InsnArithmetic){ .ret = add_ret, .left = load_ret, .right = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = 1, .tpe = builtins_int_ }) });
+    compiler_push_insn(add, state);
+    compiler_Insn *store2 = malloc((sizeof(compiler_Insn)));
+    ((*store2).kind) = compiler_InsnKind_STORE;
+    (((*store2).value).store) = ((compiler_InsnStore){ .loc = loc, .value = add_ret });
+    compiler_push_insn(store2, state);
+    compiler_push_insn(continue_insn, state);
+    compiler_Label end_label = compiler_make_label(state);
+    compiler_push_label(end_label, state);
+    ((((*br).value).br).if_false) = end_label;
+    ((((*continue_insn).value).br_unc).label_) = start_label;
+    ((((*break_insn).value).br_unc).label_) = end_label;
+    _87f75ce3_pop_loop_state(state);
+};
  void _87f75ce3_walk_VarDecl(parser_Node *node, compiler_State *state) {
     vector_Vector *left = ((((*node).value).var_decl).left);
     vector_Vector *right = ((((*node).value).var_decl).right);
@@ -1376,6 +1453,9 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state) {
         break;
         case parser_NodeKind_WHILE:
         _87f75ce3_walk_While(node, state);
+        break;
+        case parser_NodeKind_FOR:
+        _87f75ce3_walk_For(node, state);
         break;
         default:
         compiler_walk_expression(node, state);

@@ -1815,6 +1815,134 @@ def walk_While(node: *parser::Node, state: *State) {
     pop_loop_state(state)
 }
 
+// TODO Allow arrays
+def walk_For(node: *parser::Node, state: *State) {
+    let range = (@node).value.for_loop.expr
+    assert((@range).kind == parser::NodeKind::RANGE or (@range).kind == parser::NodeKind::RANGE_INC)
+    
+    var op = i_slt
+    if (@range).kind == parser::NodeKind::RANGE_INC {
+        op = i_sle
+    }
+
+    let startv = walk_expression((@range).value.bin_op.left, state)
+    let endv = walk_expression((@range).value.bin_op.right, state)
+
+    let iddecl = (@node).value.for_loop.iddecl
+    var loc: Value
+    if (@iddecl).kind == parser::NodeKind::FOR_ID_DECL {
+        let value = scope::get((@iddecl).scope, (@iddecl).value.for_id_decl.ident)
+        if not value { return }
+
+        let alloca = allocate(Insn)
+        (@alloca).kind = InsnKind::ALLOCA
+        (@alloca).value.alloca = {
+            ret = {
+                kind = ValueKind::LOCAL,
+                name = (@value).assembly_name,
+                tpe = (@iddecl).tpe
+            } !Value
+        } !InsnAlloca
+
+        push_insn(alloca, state)
+        
+        loc = {
+            kind = ValueKind::LOCAL,
+            name = (@value).assembly_name,
+            tpe = typechecking::pointer((@iddecl).tpe)
+        } !Value
+    } else {
+        let addr = walk_expression(iddecl, state).addr
+        if not addr { return }
+        loc = @addr
+    }
+    
+    let store = allocate(Insn)
+    (@store).kind = InsnKind::STORE
+    (@store).value.store = {
+        loc = loc,
+        value = startv
+    }
+
+    push_insn(store, state)
+
+    push_loop_state(state)
+    let continue_insn = get_continue_insn(state)
+    let break_insn = get_break_insn(state)
+
+    push_insn(continue_insn, state)
+    let start_label = make_label(state)
+    push_label(start_label, state)
+
+    let load_ret = make_local_value(builtins::int_, null, state)
+    let load = allocate(Insn)
+    (@load).kind = InsnKind::LOAD
+    (@load).value.load = {
+        value = load_ret,
+        loc = loc
+    } !InsnLoad
+
+    push_insn(load, state)
+
+    let cmp_ret = make_local_value(builtins::bool_, null, state)
+    let cmp = allocate(Insn)
+    (@cmp).kind = InsnKind::ICMP
+    (@cmp).value.cmp = {
+        op = op,
+        ret = cmp_ret,
+        left = load_ret,
+        right = endv
+    } !InsnCmp
+
+    push_insn(cmp, state)
+
+    let br = allocate(Insn)
+    (@br).kind = InsnKind::BR
+    (@br).value.br = {
+        cond = cmp_ret
+    } !InsnBr
+    
+    push_insn(br, state)
+
+    let inner = make_label(state)
+    push_label(inner, state)
+    (@br).value.br.if_true = inner
+
+    for var i in 0..vector::length((@node).value.for_loop.body) {
+        let n = vector::get((@node).value.for_loop.body, i)
+        walk(n, state)
+    }
+
+    let add_ret = make_local_value(builtins::int_, null, state)
+    let add = allocate(Insn)
+    (@add).kind = InsnKind::ADD
+    (@add).value.arith = {
+        ret = add_ret,
+        left = load_ret,
+        right = { kind = ValueKind::INT, i = 1, tpe = builtins::int_ } !Value
+    } !InsnArithmetic
+
+    push_insn(add, state)
+
+    let store2 = allocate(Insn)
+    (@store2).kind = InsnKind::STORE
+    (@store2).value.store = {
+        loc = loc,
+        value = add_ret
+    }
+
+    push_insn(store2, state)
+
+    push_insn(continue_insn, state)
+    let end_label = make_label(state)
+    push_label(end_label, state)
+    (@br).value.br.if_false = end_label
+
+    (@continue_insn).value.br_unc.label_ = start_label
+    (@break_insn).value.br_unc.label_ = end_label
+    pop_loop_state(state)
+}
+
 def walk_VarDecl(node: *parser::Node, state: *State) {
     let left = (@node).value.var_decl.left
     let right = (@node).value.var_decl.right
@@ -1878,6 +2006,8 @@ export def walk(node: *parser::Node, state: *State) {
             walk_Loop(node, state)
         case parser::NodeKind::WHILE:
             walk_While(node, state)
+        case parser::NodeKind::FOR:
+            walk_For(node, state)
         case: walk_expression(node, state)
     }
 }

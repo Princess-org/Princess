@@ -514,7 +514,7 @@
             fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, " "}).value));
             fprintf(fp, (((Array){5, "%s%s"}).value), (((Array){2, "%"}).value), (name.value));
         }  ;
-        if ((i < (len - ((int)1)))) {
+        if ((i < (len - 1))) {
             fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, ", "}).value));
         }  ;
     }
@@ -616,6 +616,11 @@
     fprintf(fp, (((Array){3, "%s"}).value), (header.value));
     free((header.value));
 };
+ void _574f02bf_gen_header(File fp, toolchain_Module *module) {
+    fprintf(fp, (((Array){7, "%s%s%s"}).value), (((Array){20, "source_filename = \""}).value), (((*module).filename).value), (((Array){3, "\"\x0a"""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){94, "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128\"\x0a"""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){39, "target triple = \"x86_64-pc-linux-gnu\"\x0a"""}).value));
+};
 DLL_EXPORT string codegen_gen(toolchain_Module *module) {
     compiler_Result *result = ((*module).result);
     buffer_Buffer buf = buffer_make_buffer();
@@ -627,6 +632,7 @@ DLL_EXPORT string codegen_gen(toolchain_Module *module) {
     ((*module).llfile) = outfile;
     File fp = fopen((outfile.value), (((Array){2, "w"}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){79, "; This file was compiled by the grace of your highness Princess Vic Nightfall\x0a"""}).value));
+    _574f02bf_gen_header(fp, module);
     Array keys_structures = map_keys(((*result).structures));
     for (int i = 0;(i < (keys_structures.size));(i += 1)) {
         typechecking_Type *structure = ((typechecking_Type *)map_get(((*result).structures), (((string *)keys_structures.value)[i])));

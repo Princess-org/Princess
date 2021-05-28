@@ -234,7 +234,7 @@ DLL_EXPORT scope_Scope * scope_enter_namespace(scope_Scope *scope, parser_Node *
  scope_Scope * _31a1fd14_create_path(scope_Scope *scope, parser_Node *node) {
     assert((((*node).kind) == parser_NodeKind_IDENTIFIER));
     int length = vector_length((((*node).value).body));
-    for (int i = 0;(i < (length - ((int)1)));(i += 1)) {
+    for (int i = 0;(i < (length - 1));(i += 1)) {
         string *ident = ((string *)vector_get((((*node).value).body), i));
         scope_Value *scope_v = ((scope_Value *)map_get(((*scope).fields), (*ident)));
         if ((!scope_v)) {
@@ -259,7 +259,7 @@ DLL_EXPORT scope_Scope * scope_enter_namespace(scope_Scope *scope, parser_Node *
  string _31a1fd14_last_path_element(parser_Node *node) {
     assert((((*node).kind) == parser_NodeKind_IDENTIFIER));
     int length = vector_length((((*node).value).body));
-    return (*((string *)vector_get((((*node).value).body), (length - ((int)1)))));
+    return (*((string *)vector_get((((*node).value).body), (length - 1))));
 };
 #include "debug.c"
 DLL_EXPORT void scope_create_function(scope_Scope *scope, parser_Node *node, parser_ShareMarker share, typechecking_Type *tpe, bool forward_declare) {
