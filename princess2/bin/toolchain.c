@@ -17,7 +17,7 @@ typedef struct scope_Scope scope_Scope;
 typedef struct parser_Node parser_Node;
 typedef struct compiler_Result compiler_Result;
 typedef struct toolchain_Module {string filename; string llfile; string module; struct parser_Node *node; struct scope_Scope *scope; struct compiler_Result *result; struct map_Map *imported;} toolchain_Module;
-DLL_EXPORT void toolchain_compile_file(string filename, string module);
+DLL_EXPORT toolchain_Module * toolchain_compile_file(string filename, string module);
 DLL_EXPORT toolchain_Module * toolchain_compile_module(parser_Node *module);
 DLL_EXPORT string toolchain_find_module_file(parser_Node *module);
 #include "lexer.c"
@@ -53,7 +53,7 @@ DLL_EXPORT string toolchain_find_module_file(parser_Node *module) {
     ;
     return ((Array){1, ""});
 };
-DLL_EXPORT void toolchain_compile_file(string filename, string mod) {
+DLL_EXPORT toolchain_Module * toolchain_compile_file(string filename, string mod) {
     File fh = fopen((filename.value), (((Array){3, "rb"}).value));
     if ((!fh)) {
         fprintf(stderr, (((Array){7, "%s%s%s"}).value), (((Array){7, "File \""}).value), (filename.value), (((Array){17, "\" doesn't exist\x0a"""}).value));
@@ -75,7 +75,9 @@ DLL_EXPORT void toolchain_compile_file(string filename, string mod) {
         typechecking_typecheck(module);
         compiler_Result *result = compiler_compile(module);
         ((*module).result) = result;
+        return module;
     };
+    return NULL;
 };
 DLL_EXPORT toolchain_Module * toolchain_compile_module(parser_Node *name) {
     string filename = toolchain_find_module_file(name);
@@ -85,14 +87,13 @@ DLL_EXPORT toolchain_Module * toolchain_compile_module(parser_Node *name) {
     }  ;
     toolchain_Module *module = ((toolchain_Module *)map_get(toolchain_modules, filename));
     if ((!module)) {
-        toolchain_compile_file(filename, modulename);
-        module = map_get(toolchain_modules, filename);
+        module = toolchain_compile_file(filename, modulename);
     }  ;
     return module;
 };
 DLL_EXPORT void toolchain_compile_main_file(string filename) {
-    toolchain_compile_file(filename, ((Array){5, "main"}));
-    if ((toolchain_error_count == 0)) {
+    toolchain_Module *module = toolchain_compile_file(filename, ((Array){5, "main"}));
+    if ((((bool)module) && (toolchain_error_count == 0))) {
         buffer_Buffer compile_header = buffer_make_buffer();
         buffer_append_str((&compile_header), ((Array){27, "clang-12 -S -emit-llvm -o "}));
         buffer_append_str((&compile_header), toolchain_outfolder);

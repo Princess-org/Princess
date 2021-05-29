@@ -8,3 +8,6 @@ python3.9 -m princess --codecov -c main.pr -o bin/
 mv main.gcda bin/
 mv main.gcno bin/
 gcov bin/main.c
+
+./bin/main --outfolder=bin --outfile=bin/test test/test.pr
+./bin/test
