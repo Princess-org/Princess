@@ -92,7 +92,9 @@
 };
  void _fe23cc40_convert_to_charp(Array values, compiler_State *state) {
     for (int i = 0;(i < (values.size));(i += 1)) {
-        (((compiler_Value *)values.value)[i]) = _fe23cc40_charp_str((((compiler_Value *)values.value)[i]), state);
+        if (typechecking_equals(((((compiler_Value *)values.value)[i]).tpe), builtins_string_)) {
+            (((compiler_Value *)values.value)[i]) = _fe23cc40_charp_str((((compiler_Value *)values.value)[i]), state);
+        }  ;
     }
     ;
 };
@@ -110,6 +112,17 @@
     ;
     return NULL;
 };
+ compiler_Value _fe23cc40_forward_to_function(Array args, typechecking_Type *tpe, string name, compiler_State *state) {
+    compiler_Value ret = compiler_NO_VALUE;
+    if (tpe) {
+        ret = compiler_make_local_value(tpe, NULL, state);
+    }  ;
+    compiler_Insn *call = malloc((sizeof(compiler_Insn)));
+    ((*call).kind) = compiler_InsnKind_CALL;
+    (((*call).value).call) = ((compiler_InsnCall){ .name = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = name }), .ret = ret, .args = args });
+    compiler_push_insn(call, state);
+    return ret;
+};
  compiler_Value _fe23cc40__assert(parser_Node *node, Array argsv, compiler_State *state) {
     _fe23cc40_import_function(state, ((Array){14, "__assert_fail"}));
     compiler_Value insn = (((compiler_Value *)argsv.value)[0]);
@@ -125,7 +138,7 @@
     Array args = ((Array){4, malloc((((int64)(sizeof(compiler_Value))) * ((int64)4)))});
     (((compiler_Value *)args.value)[0]) = _fe23cc40_charp((((string *)(((*node).loc).lines).value)[(((*node).loc).line)]), state);
     (((compiler_Value *)args.value)[1]) = _fe23cc40_charp((((*node).loc).filename), state);
-    (((compiler_Value *)args.value)[2]) = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = (((*node).loc).line), .tpe = builtins_int_ });
+    (((compiler_Value *)args.value)[2]) = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = (((*node).loc).line), .sign = 1, .tpe = builtins_int_ });
     Array current_function = ((Array){5, "main"});
     if (((*state).current_function)) {
         current_function = ((*((*state).current_function)).unmangled);
@@ -274,7 +287,7 @@
     compiler_Value ret = compiler_make_local_value(builtins_size_t_, NULL, state);
     compiler_Insn *sub = malloc((sizeof(compiler_Insn)));
     ((*sub).kind) = compiler_InsnKind_SUB;
-    (((*sub).value).arith) = ((compiler_InsnArithmetic){ .ret = ret, .left = len, .right = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = 1, .tpe = builtins_size_t_ }) });
+    (((*sub).value).arith) = ((compiler_InsnArithmetic){ .ret = ret, .left = len, .right = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = 1, .sign = 1, .tpe = builtins_size_t_ }) });
     compiler_push_insn(sub, state);
     return ret;
 };
@@ -283,23 +296,14 @@
     compiler_Value arg = (((compiler_Value *)argsv.value)[0]);
     Array args = ((Array){1, malloc((((int64)(sizeof(compiler_Value))) * ((int64)1)))});
     (((compiler_Value *)args.value)[0]) = arg;
-    compiler_Value ret = compiler_make_local_value(typechecking_pointer(NULL), NULL, state);
-    compiler_Insn *call = malloc((sizeof(compiler_Insn)));
-    ((*call).kind) = compiler_InsnKind_CALL;
-    (((*call).value).call) = ((compiler_InsnCall){ .name = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = ((Array){7, "malloc"}) }), .ret = ret, .args = args });
-    compiler_push_insn(call, state);
-    return ret;
+    return _fe23cc40_forward_to_function(args, typechecking_pointer(NULL), ((Array){7, "malloc"}), state);
 };
  compiler_Value _fe23cc40__allocate_type(parser_Node *node, Array argsv, compiler_State *state) {
     _fe23cc40_import_function(state, ((Array){7, "malloc"}));
     typechecking_Type *tpe = ((((compiler_Value *)argsv.value)[0]).value_tpe);
     Array args = ((Array){1, malloc((((int64)(sizeof(compiler_Value))) * ((int64)1)))});
     (((compiler_Value *)args.value)[0]) = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = ((*tpe).size), .tpe = builtins_size_t_ });
-    compiler_Value call_ret = compiler_make_local_value(typechecking_pointer(NULL), NULL, state);
-    compiler_Insn *call = malloc((sizeof(compiler_Insn)));
-    ((*call).kind) = compiler_InsnKind_CALL;
-    (((*call).value).call) = ((compiler_InsnCall){ .name = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = ((Array){7, "malloc"}) }), .ret = call_ret, .args = args });
-    compiler_push_insn(call, state);
+    compiler_Value call_ret = _fe23cc40_forward_to_function(args, typechecking_pointer(NULL), ((Array){7, "malloc"}), state);
     compiler_Value ret = compiler_make_local_value(typechecking_pointer(tpe), NULL, state);
     compiler_Insn *bitcast = malloc((sizeof(compiler_Insn)));
     ((*bitcast).kind) = compiler_InsnKind_BITCAST;
@@ -343,15 +347,11 @@
     compiler_Value sizev = compiler_make_local_value(builtins_size_t_, NULL, state);
     compiler_Insn *mul = malloc((sizeof(compiler_Insn)));
     ((*mul).kind) = compiler_InsnKind_MUL;
-    (((*mul).value).arith) = ((compiler_InsnArithmetic){ .ret = sizev, .left = size, .right = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = ((*tpe).size), .tpe = builtins_size_t_ }) });
+    (((*mul).value).arith) = ((compiler_InsnArithmetic){ .ret = sizev, .left = size, .right = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = ((*tpe).size), .sign = 1, .tpe = builtins_size_t_ }) });
     compiler_push_insn(mul, state);
     Array args = ((Array){1, malloc((((int64)(sizeof(compiler_Value))) * ((int64)1)))});
     (((compiler_Value *)args.value)[0]) = sizev;
-    compiler_Value call_ret = compiler_make_local_value(typechecking_pointer(NULL), NULL, state);
-    compiler_Insn *call = malloc((sizeof(compiler_Insn)));
-    ((*call).kind) = compiler_InsnKind_CALL;
-    (((*call).value).call) = ((compiler_InsnCall){ .name = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = ((Array){7, "malloc"}) }), .ret = call_ret, .args = args });
-    compiler_push_insn(call, state);
+    compiler_Value call_ret = _fe23cc40_forward_to_function(args, typechecking_pointer(NULL), ((Array){7, "malloc"}), state);
     return _fe23cc40_allocate_make_array(call_ret, size, tpe, state);
 };
  vector_Vector * _fe23cc40__allocate_array_proto(vector_Vector *args, vector_Vector *kwargs, typechecking_State *state) {
@@ -363,12 +363,7 @@
 };
  compiler_Value _fe23cc40__reallocate(parser_Node *node, Array argsv, compiler_State *state) {
     _fe23cc40_import_function(state, ((Array){8, "realloc"}));
-    compiler_Value call_ret = compiler_make_local_value(((((compiler_Value *)argsv.value)[0]).tpe), NULL, state);
-    compiler_Insn *call = malloc((sizeof(compiler_Insn)));
-    ((*call).kind) = compiler_InsnKind_CALL;
-    (((*call).value).call) = ((compiler_InsnCall){ .name = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = ((Array){8, "realloc"}) }), .ret = call_ret, .args = argsv });
-    compiler_push_insn(call, state);
-    return call_ret;
+    return _fe23cc40_forward_to_function(argsv, ((((compiler_Value *)argsv.value)[0]).tpe), ((Array){8, "realloc"}), state);
 };
  vector_Vector * _fe23cc40__reallocate_proto(vector_Vector *args, vector_Vector *kwargs, typechecking_State *state) {
     vector_Vector *rets = vector_make();
@@ -388,41 +383,60 @@
     compiler_push_insn(extract, state);
     Array args = ((Array){1, malloc((((int64)(sizeof(compiler_Value))) * ((int64)1)))});
     (((compiler_Value *)args.value)[0]) = ret_extract;
-    compiler_Insn *call = malloc((sizeof(compiler_Insn)));
-    ((*call).kind) = compiler_InsnKind_CALL;
-    (((*call).value).call) = ((compiler_InsnCall){ .name = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = ((Array){5, "free"}) }), .ret = compiler_NO_VALUE, .args = args });
-    compiler_push_insn(call, state);
-    return compiler_NO_VALUE;
+    return _fe23cc40_forward_to_function(args, NULL, ((Array){5, "free"}), state);
 };
  compiler_Value _fe23cc40__free_pointer(parser_Node *node, Array argsv, compiler_State *state) {
     _fe23cc40_import_function(state, ((Array){5, "free"}));
     compiler_Value arg = (((compiler_Value *)argsv.value)[0]);
     Array args = ((Array){1, malloc((((int64)(sizeof(compiler_Value))) * ((int64)1)))});
     (((compiler_Value *)args.value)[0]) = arg;
-    compiler_Insn *call = malloc((sizeof(compiler_Insn)));
-    ((*call).kind) = compiler_InsnKind_CALL;
-    (((*call).value).call) = ((compiler_InsnCall){ .name = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = ((Array){5, "free"}) }), .ret = compiler_NO_VALUE, .args = args });
-    compiler_push_insn(call, state);
-    return compiler_NO_VALUE;
+    return _fe23cc40_forward_to_function(args, NULL, ((Array){5, "free"}), state);
 };
  compiler_Value _fe23cc40__open(parser_Node *node, Array argsv, compiler_State *state) {
     _fe23cc40_import_function(state, ((Array){6, "fopen"}));
     _fe23cc40_convert_to_charp(argsv, state);
-    compiler_Value call_ret = compiler_make_local_value(builtins_File_, NULL, state);
-    compiler_Insn *call = malloc((sizeof(compiler_Insn)));
-    ((*call).kind) = compiler_InsnKind_CALL;
-    (((*call).value).call) = ((compiler_InsnCall){ .name = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = ((Array){6, "fopen"}) }), .ret = call_ret, .args = argsv });
-    compiler_push_insn(call, state);
-    return call_ret;
+    return _fe23cc40_forward_to_function(argsv, builtins_File_, ((Array){6, "fopen"}), state);
 };
  compiler_Value _fe23cc40__close(parser_Node *node, Array argsv, compiler_State *state) {
     _fe23cc40_import_function(state, ((Array){7, "fclose"}));
-    compiler_Value call_ret = compiler_make_local_value(builtins_int_, NULL, state);
-    compiler_Insn *call = malloc((sizeof(compiler_Insn)));
-    ((*call).kind) = compiler_InsnKind_CALL;
-    (((*call).value).call) = ((compiler_InsnCall){ .name = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = ((Array){7, "fclose"}) }), .ret = call_ret, .args = argsv });
-    compiler_push_insn(call, state);
-    return call_ret;
+    return _fe23cc40_forward_to_function(argsv, builtins_int_, ((Array){7, "fclose"}), state);
+};
+ compiler_Value _fe23cc40_read_write(parser_Node *node, Array argsv, string name, compiler_State *state) {
+    parser_Node *arrayn = _fe23cc40_get_arg(((((*node).value).func_call).args), ((((*node).value).func_call).kwargs), 1, ((Array){6, "array"}));
+    compiler_Value size = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = ((*((*((*arrayn).tpe)).tpe)).size), .sign = 1, .tpe = builtins_size_t_ });
+    compiler_Value array = (((compiler_Value *)argsv.value)[1]);
+    compiler_Value len = compiler_make_local_value(builtins_size_t_, NULL, state);
+    Array index = ((Array){1, malloc((((int64)(sizeof(int))) * ((int64)1)))});
+    (((int *)index.value)[0]) = 0;
+    compiler_Insn *extract = malloc((sizeof(compiler_Insn)));
+    ((*extract).kind) = compiler_InsnKind_EXTRACTVALUE;
+    (((*extract).value).extract_value) = ((compiler_InsnExtractValue){ .index = index, .value = array, .ret = len });
+    compiler_push_insn(extract, state);
+    compiler_Value ptr = compiler_make_local_value(typechecking_pointer(NULL), NULL, state);
+    Array index2 = ((Array){1, malloc((((int64)(sizeof(int))) * ((int64)1)))});
+    (((int *)index2.value)[0]) = 1;
+    compiler_Insn *extract2 = malloc((sizeof(compiler_Insn)));
+    ((*extract2).kind) = compiler_InsnKind_EXTRACTVALUE;
+    (((*extract2).value).extract_value) = ((compiler_InsnExtractValue){ .index = index2, .value = array, .ret = ptr });
+    compiler_push_insn(extract2, state);
+    Array args = ((Array){4, malloc((((int64)(sizeof(compiler_Value))) * ((int64)4)))});
+    (((compiler_Value *)args.value)[0]) = ptr;
+    (((compiler_Value *)args.value)[1]) = size;
+    (((compiler_Value *)args.value)[2]) = len;
+    (((compiler_Value *)args.value)[3]) = (((compiler_Value *)argsv.value)[0]);
+    return _fe23cc40_forward_to_function(args, builtins_size_t_, name, state);
+};
+ compiler_Value _fe23cc40__read_array(parser_Node *node, Array argsv, compiler_State *state) {
+    _fe23cc40_import_function(state, ((Array){6, "fread"}));
+    return _fe23cc40_read_write(node, argsv, ((Array){6, "fread"}), state);
+};
+ compiler_Value _fe23cc40__write_array(parser_Node *node, Array argsv, compiler_State *state) {
+    _fe23cc40_import_function(state, ((Array){7, "fwrite"}));
+    return _fe23cc40_read_write(node, argsv, ((Array){7, "fwrite"}), state);
+};
+ compiler_Value _fe23cc40__rewind(parser_Node *node, Array argsv, compiler_State *state) {
+    _fe23cc40_import_function(state, ((Array){7, "rewind"}));
+    return _fe23cc40_forward_to_function(argsv, NULL, ((Array){7, "rewind"}), state);
 };
 DLL_EXPORT void builtin_functions_p_main(Array args) {
     compiler_p_main(args);
@@ -438,6 +452,9 @@ DLL_EXPORT void builtin_functions_p_main(Array args) {
     _fe23cc40_create_function(((Array){5, "free"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){6, "value"}), typechecking_pointer(NULL)) }}), ((Array){0, (typechecking_Type[]){  }}), (&_fe23cc40__free_pointer), NULL);
     _fe23cc40_create_function(((Array){5, "open"}), ((Array){2, (typechecking_NamedParameter *[2]){ _fe23cc40_param(((Array){5, "file"}), builtins_string_), _fe23cc40_param(((Array){5, "mode"}), builtins_string_) }}), ((Array){1, (typechecking_Type *[1]){ builtins_File_ }}), (&_fe23cc40__open), NULL);
     _fe23cc40_create_function(((Array){6, "close"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){3, "fp"}), builtins_File_) }}), ((Array){1, (typechecking_Type *[1]){ builtins_int_ }}), (&_fe23cc40__close), NULL);
+    _fe23cc40_create_function(((Array){5, "read"}), ((Array){2, (typechecking_NamedParameter *[2]){ _fe23cc40_param(((Array){3, "fp"}), builtins_File_), _fe23cc40_param(((Array){6, "array"}), typechecking_array(NULL)) }}), ((Array){1, (typechecking_Type *[1]){ builtins_size_t_ }}), (&_fe23cc40__read_array), NULL);
+    _fe23cc40_create_function(((Array){6, "write"}), ((Array){2, (typechecking_NamedParameter *[2]){ _fe23cc40_param(((Array){3, "fp"}), builtins_File_), _fe23cc40_param(((Array){6, "array"}), typechecking_array(NULL)) }}), ((Array){1, (typechecking_Type *[1]){ builtins_size_t_ }}), (&_fe23cc40__write_array), NULL);
+    _fe23cc40_create_function(((Array){7, "rewind"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){3, "fp"}), builtins_File_) }}), ((Array){0, (typechecking_Type[]){  }}), _fe23cc40__rewind, NULL);
 };
 
 

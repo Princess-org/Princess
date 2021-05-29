@@ -32,7 +32,7 @@ bool test_compiler_print_ll;
     compiler_Result *result = compiler_compile(module);
     ((*module).result) = result;
     codegen_gen(module);
-    File fh = fopen((((Array){14, "./bin/main.ll"}).value), (((Array){2, "r"}).value));
+    FILE* fh = fopen((((Array){14, "./bin/main.ll"}).value), (((Array){2, "r"}).value));
     string buf = util_read_all(fh);
     fclose(fh);
     int llc = system((((Array){19, "llc-12 bin/main.ll"}).value));
@@ -226,6 +226,12 @@ bool test_compiler_print_ll;
  void _6dcc03b3_test_string_literal() {
     printf((((Array){3, "%s"}).value), (((Array){25, ">Test string literal... "}).value));
     Array str = ((Array){204, "\x0a""        def function -> [4; char]\x0a""\x0a""        var a: [char] = \"abc\"\x0a""        var b: [char] = function()\x0a""\x0a""        def two_returns -> [4; char], [5; char]\x0a""        var c: [char], d: [char] = two_returns()\x0a""    "});
+    string res = _6dcc03b3_compile(str);
+    printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
+};
+ void _6dcc03b3_test_boolean_op() {
+    printf((((Array){3, "%s"}).value), (((Array){27, ">Test boolean operator... "}).value));
+    Array str = ((Array){118, "\x0a""        let a = true\x0a""        let b = false\x0a""        let c = a and b\x0a""        let d = a or b\x0a""        let e = not d\x0a""    "});
     string res = _6dcc03b3_compile(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
