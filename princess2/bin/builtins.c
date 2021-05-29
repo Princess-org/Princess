@@ -103,6 +103,9 @@ DLL_EXPORT void builtins_p_main(Array args) {
     scope_create_variable(builtins_builtins, parser_make_identifier(((Array){1, (Array[1]){ ((Array){9, "SEEK_END"}) }})), parser_ShareMarker_NONE, parser_VarDecl_CONST, builtins_int_, (&_a69ecad8_seek_end));
     builtins_File_ = typechecking_pointer(typechecking_make_type(typechecking_TypeKind_STRUCT, parser_make_identifier(((Array){1, (Array[1]){ ((Array){16, "struct._IO_FILE"}) }}))));
     scope_create_type(builtins_builtins, parser_make_identifier(((Array){1, (Array[1]){ ((Array){5, "File"}) }})), parser_ShareMarker_NONE, builtins_File_);
+    scope_create_variable(builtins_builtins, parser_make_identifier(((Array){1, (Array[1]){ ((Array){6, "stdin"}) }})), parser_ShareMarker_NONE, parser_VarDecl_VAR, builtins_File_, NULL);
+    scope_create_variable(builtins_builtins, parser_make_identifier(((Array){1, (Array[1]){ ((Array){7, "stdout"}) }})), parser_ShareMarker_NONE, parser_VarDecl_VAR, builtins_File_, NULL);
+    scope_create_variable(builtins_builtins, parser_make_identifier(((Array){1, (Array[1]){ ((Array){7, "stderr"}) }})), parser_ShareMarker_NONE, parser_VarDecl_VAR, builtins_File_, NULL);
     builtin_functions_p_main(args);
 };
 

@@ -81,7 +81,7 @@
     ((*tpe).kind) = typechecking_TypeKind_STATIC_ARRAY;
     ((*tpe).tpe) = builtins_char_;
     ((*tpe).length) = (str.size);
-    ((*tpe).size) = (((*tpe).length) * (sizeof(char)));
+    ((*tpe).size) = (((*tpe).length) * ((size_t)(sizeof(char))));
     ((*tpe).align) = (sizeof(char));
     compiler_Value *value = malloc((sizeof(compiler_Value)));
     (*value) = ((compiler_Value){ .kind = compiler_ValueKind_STRING, .s = str, .tpe = tpe });
@@ -156,7 +156,7 @@
         } else if ((tpe == builtins_char_)) {
             buffer_append_str((&buf), ((Array){3, "%c"}));
         }
-        else if (((typechecking_equals(tpe, builtins_string_) || typechecking_equals(tpe, typechecking_pointer(builtins_char_))) || ((((*tpe).kind) == typechecking_TypeKind_STATIC_ARRAY) && typechecking_equals(((*tpe).tpe), builtins_char_)))) {
+        else if (((((bool)typechecking_equals(tpe, builtins_string_)) || ((bool)typechecking_equals(tpe, typechecking_pointer(builtins_char_)))) || ((((*tpe).kind) == typechecking_TypeKind_STATIC_ARRAY) && ((bool)typechecking_equals(((*tpe).tpe), builtins_char_))))) {
             buffer_append_str((&buf), ((Array){3, "%s"}));
         }
         else if (typechecking_is_pointer(tpe)) {
@@ -200,6 +200,17 @@
     ;
     return util_copy_string(buffer_to_string((&buf)));
 };
+ compiler_Value _fe23cc40_print_convert_types(compiler_Value value, compiler_State *state) {
+    if ((!(value.tpe))) {
+        return compiler_NO_VALUE;
+    }  ;
+    if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && ((bool)typechecking_equals(((*(value.tpe)).tpe), builtins_char_)))) {
+        return _fe23cc40_charp_static((value.addr), state);
+    } else if (typechecking_equals((value.tpe), builtins_string_)) {
+        return _fe23cc40_charp_str(value, state);
+    } ;
+    return value;
+};
  compiler_Value _fe23cc40__print(parser_Node *node, Array argsv, compiler_State *state) {
     _fe23cc40_import_function(state, ((Array){7, "printf"}));
     string *fmt = _fe23cc40_format_str(((((*node).value).func_call).args));
@@ -209,16 +220,7 @@
     Array args = ((Array){(((int64)(argsv.size)) + ((int64)1)), malloc((((int64)(sizeof(compiler_Value))) * (((int64)(argsv.size)) + ((int64)1))))});
     (((compiler_Value *)args.value)[0]) = _fe23cc40_charp((*fmt), state);
     for (int i = 0;(i < (argsv.size));(i += 1)) {
-        compiler_Value value = (((compiler_Value *)argsv.value)[i]);
-        if ((!(value.tpe))) {
-            return compiler_NO_VALUE;
-        }  ;
-        if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && typechecking_equals(((*(value.tpe)).tpe), builtins_char_))) {
-            value = _fe23cc40_charp_static((value.addr), state);
-        } else if (typechecking_equals((value.tpe), builtins_string_)) {
-            value = _fe23cc40_charp_str(value, state);
-        } ;
-        (((compiler_Value *)args.value)[(i + 1)]) = value;
+        (((compiler_Value *)args.value)[(i + 1)]) = _fe23cc40_print_convert_types((((compiler_Value *)argsv.value)[i]), state);
     }
     ;
     compiler_Value ret = compiler_make_local_value(builtins_int_, NULL, state);
@@ -228,6 +230,35 @@
     (((typechecking_NamedParameter *)proto.value)[1]) = (*_fe23cc40_varargs(((Array){1, ""}), NULL));
     ((*call).kind) = compiler_InsnKind_CALL;
     (((*call).value).call) = ((compiler_InsnCall){ .name = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = ((Array){7, "printf"}) }), .ret = ret, .args = args, .proto = proto });
+    compiler_push_insn(call, state);
+    return ret;
+};
+ compiler_Value _fe23cc40__error(parser_Node *node, Array argsv, compiler_State *state) {
+    _fe23cc40_import_function(state, ((Array){8, "fprintf"}));
+    string *fmt = _fe23cc40_format_str(((((*node).value).func_call).args));
+    if ((!fmt)) {
+        return compiler_NO_VALUE;
+    }  ;
+    compiler_Value load_ret = compiler_make_local_value(builtins_File_, NULL, state);
+    compiler_Insn *load = malloc((sizeof(compiler_Insn)));
+    ((*load).kind) = compiler_InsnKind_LOAD;
+    (((*load).value).load) = ((compiler_InsnLoad){ .value = load_ret, .loc = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = ((Array){7, "stderr"}), .tpe = typechecking_pointer(builtins_File_) }) });
+    compiler_push_insn(load, state);
+    Array args = ((Array){(((int64)(argsv.size)) + ((int64)2)), malloc((((int64)(sizeof(compiler_Value))) * (((int64)(argsv.size)) + ((int64)2))))});
+    (((compiler_Value *)args.value)[0]) = load_ret;
+    (((compiler_Value *)args.value)[1]) = _fe23cc40_charp((*fmt), state);
+    for (int i = 0;(i < (argsv.size));(i += 1)) {
+        (((compiler_Value *)args.value)[(i + 2)]) = _fe23cc40_print_convert_types((((compiler_Value *)argsv.value)[i]), state);
+    }
+    ;
+    compiler_Value ret = compiler_make_local_value(builtins_int_, NULL, state);
+    compiler_Insn *call = malloc((sizeof(compiler_Insn)));
+    Array proto = ((Array){3, malloc((((int64)(sizeof(typechecking_NamedParameter))) * ((int64)3)))});
+    (((typechecking_NamedParameter *)proto.value)[0]) = (*_fe23cc40_param(((Array){1, ""}), builtins_File_));
+    (((typechecking_NamedParameter *)proto.value)[1]) = (*_fe23cc40_param(((Array){1, ""}), typechecking_pointer(builtins_char_)));
+    (((typechecking_NamedParameter *)proto.value)[2]) = (*_fe23cc40_varargs(((Array){1, ""}), NULL));
+    ((*call).kind) = compiler_InsnKind_CALL;
+    (((*call).value).call) = ((compiler_InsnCall){ .name = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = ((Array){8, "fprintf"}) }), .ret = ret, .args = args, .proto = proto });
     compiler_push_insn(call, state);
     return ret;
 };
@@ -394,8 +425,10 @@
     return call_ret;
 };
 DLL_EXPORT void builtin_functions_p_main(Array args) {
+    compiler_p_main(args);
     _fe23cc40_create_function(((Array){7, "assert"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){10, "assertion"}), builtins_bool_) }}), ((Array){0, (typechecking_Type[]){  }}), (&_fe23cc40__assert), NULL);
     _fe23cc40_create_function(((Array){6, "print"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_varargs(((Array){1, ""}), NULL) }}), ((Array){1, (typechecking_Type *[1]){ builtins_int_ }}), (&_fe23cc40__print), NULL);
+    _fe23cc40_create_function(((Array){6, "error"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_varargs(((Array){1, ""}), NULL) }}), ((Array){1, (typechecking_Type *[1]){ builtins_int_ }}), (&_fe23cc40__error), NULL);
     _fe23cc40_create_function(((Array){7, "length"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){4, "str"}), typechecking_array(builtins_char_)) }}), ((Array){1, (typechecking_Type *[1]){ builtins_size_t_ }}), (&_fe23cc40__length), NULL);
     _fe23cc40_create_function(((Array){9, "allocate"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){5, "size"}), builtins_size_t_) }}), ((Array){1, (typechecking_Type *[1]){ typechecking_pointer(NULL) }}), (&_fe23cc40__allocate_size), NULL);
     _fe23cc40_create_function(((Array){9, "allocate"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){4, "tpe"}), typechecking_type_) }}), ((Array){1, (typechecking_Type *[1]){ typechecking_pointer(NULL) }}), (&_fe23cc40__allocate_type), (&_fe23cc40__allocate_type_proto));

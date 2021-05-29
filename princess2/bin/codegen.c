@@ -514,7 +514,7 @@
             fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, " "}).value));
             fprintf(fp, (((Array){5, "%s%s"}).value), (((Array){2, "%"}).value), (name.value));
         }  ;
-        if ((i < (len - 1))) {
+        if ((i < (len - ((int)1)))) {
             fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, ", "}).value));
         }  ;
     }
@@ -655,6 +655,9 @@ DLL_EXPORT string codegen_gen(toolchain_Module *module) {
         _574f02bf_emit_global(fp, global);
     }
     ;
+    map_put(((*module).imported), ((Array){6, "stdin"}), map_sentinel);
+    map_put(((*module).imported), ((Array){7, "stdout"}), map_sentinel);
+    map_put(((*module).imported), ((Array){7, "stderr"}), map_sentinel);
     if ((strcmp((((*module).module).value), (((Array){5, "main"}).value)) == 0)) {
         map_put(((*module).imported), ((Array){7, "malloc"}), map_sentinel);
         map_put(((*module).imported), ((Array){5, "free"}), map_sentinel);
