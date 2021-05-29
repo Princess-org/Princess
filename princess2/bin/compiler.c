@@ -437,6 +437,97 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     compiler_push_insn(insn, state);
     return value;
 };
+ compiler_Value _87f75ce3_walk_Not(parser_Node *node, compiler_State *state) {
+    compiler_Value expr = _87f75ce3_convert_to(node, compiler_walk_expression((((*node).value).expr), state), builtins_bool_, state);
+    compiler_Value ret = compiler_make_local_value(builtins_bool_, NULL, state);
+    compiler_Insn *xor = malloc((sizeof(compiler_Insn)));
+    ((*xor).kind) = compiler_InsnKind_XOR;
+    (((*xor).value).arith) = ((compiler_InsnArithmetic){ .ret = ret, .left = expr, .right = ((compiler_Value){ .kind = compiler_ValueKind_BOOL, .i = 1, .tpe = builtins_bool_ }) });
+    compiler_push_insn(xor, state);
+    return ret;
+};
+ compiler_Value _87f75ce3_walk_And(parser_Node *node, compiler_State *state) {
+    compiler_Value left = _87f75ce3_convert_to(node, compiler_walk_expression(((((*node).value).bin_op).left), state), builtins_bool_, state);
+    compiler_Value ret_alloca = compiler_make_local_value(builtins_bool_, NULL, state);
+    compiler_Insn *alloca = malloc((sizeof(compiler_Insn)));
+    ((*alloca).kind) = compiler_InsnKind_ALLOCA;
+    (((*alloca).value).alloca) = ((compiler_InsnAlloca){ .ret = ret_alloca });
+    (ret_alloca.tpe) = typechecking_pointer(builtins_bool_);
+    compiler_push_insn(alloca, state);
+    compiler_Insn *br = malloc((sizeof(compiler_Insn)));
+    ((*br).kind) = compiler_InsnKind_BR;
+    (((*br).value).br) = ((compiler_InsnBr){ .cond = left });
+    compiler_Insn *to_end = malloc((sizeof(compiler_Insn)));
+    ((*to_end).kind) = compiler_InsnKind_BR_UNC;
+    compiler_push_insn(br, state);
+    compiler_Label if_false = compiler_make_label(state);
+    compiler_push_label(if_false, state);
+    compiler_Insn *store1 = malloc((sizeof(compiler_Insn)));
+    ((*store1).kind) = compiler_InsnKind_STORE;
+    (((*store1).value).store) = ((compiler_InsnStore){ .value = ((compiler_Value){ .kind = compiler_ValueKind_BOOL, .i = 0, .tpe = builtins_bool_ }), .loc = ret_alloca });
+    compiler_push_insn(store1, state);
+    compiler_push_insn(to_end, state);
+    compiler_Label if_true = compiler_make_label(state);
+    compiler_push_label(if_true, state);
+    compiler_Value right = _87f75ce3_convert_to(node, compiler_walk_expression(((((*node).value).bin_op).right), state), builtins_bool_, state);
+    compiler_Insn *store2 = malloc((sizeof(compiler_Insn)));
+    ((*store2).kind) = compiler_InsnKind_STORE;
+    (((*store2).value).store) = ((compiler_InsnStore){ .value = right, .loc = ret_alloca });
+    compiler_push_insn(store2, state);
+    compiler_push_insn(to_end, state);
+    compiler_Label end = compiler_make_label(state);
+    compiler_push_label(end, state);
+    ((((*br).value).br).if_true) = if_true;
+    ((((*br).value).br).if_false) = if_false;
+    ((((*to_end).value).br_unc).label_) = end;
+    compiler_Value ret = compiler_make_local_value(builtins_bool_, NULL, state);
+    compiler_Insn *load = malloc((sizeof(compiler_Insn)));
+    ((*load).kind) = compiler_InsnKind_LOAD;
+    (((*load).value).load) = ((compiler_InsnLoad){ .value = ret, .loc = ret_alloca });
+    compiler_push_insn(load, state);
+    return ret;
+};
+ compiler_Value _87f75ce3_walk_Or(parser_Node *node, compiler_State *state) {
+    compiler_Value left = _87f75ce3_convert_to(node, compiler_walk_expression(((((*node).value).bin_op).left), state), builtins_bool_, state);
+    compiler_Value ret_alloca = compiler_make_local_value(builtins_bool_, NULL, state);
+    compiler_Insn *alloca = malloc((sizeof(compiler_Insn)));
+    ((*alloca).kind) = compiler_InsnKind_ALLOCA;
+    (((*alloca).value).alloca) = ((compiler_InsnAlloca){ .ret = ret_alloca });
+    (ret_alloca.tpe) = typechecking_pointer(builtins_bool_);
+    compiler_push_insn(alloca, state);
+    compiler_Insn *br = malloc((sizeof(compiler_Insn)));
+    ((*br).kind) = compiler_InsnKind_BR;
+    (((*br).value).br) = ((compiler_InsnBr){ .cond = left });
+    compiler_Insn *to_end = malloc((sizeof(compiler_Insn)));
+    ((*to_end).kind) = compiler_InsnKind_BR_UNC;
+    compiler_push_insn(br, state);
+    compiler_Label if_true = compiler_make_label(state);
+    compiler_push_label(if_true, state);
+    compiler_Insn *store1 = malloc((sizeof(compiler_Insn)));
+    ((*store1).kind) = compiler_InsnKind_STORE;
+    (((*store1).value).store) = ((compiler_InsnStore){ .value = ((compiler_Value){ .kind = compiler_ValueKind_BOOL, .i = 1, .tpe = builtins_bool_ }), .loc = ret_alloca });
+    compiler_push_insn(store1, state);
+    compiler_push_insn(to_end, state);
+    compiler_Label if_false = compiler_make_label(state);
+    compiler_push_label(if_false, state);
+    compiler_Value right = _87f75ce3_convert_to(node, compiler_walk_expression(((((*node).value).bin_op).right), state), builtins_bool_, state);
+    compiler_Insn *store2 = malloc((sizeof(compiler_Insn)));
+    ((*store2).kind) = compiler_InsnKind_STORE;
+    (((*store2).value).store) = ((compiler_InsnStore){ .value = right, .loc = ret_alloca });
+    compiler_push_insn(store2, state);
+    compiler_push_insn(to_end, state);
+    compiler_Label end = compiler_make_label(state);
+    compiler_push_label(end, state);
+    ((((*br).value).br).if_true) = if_true;
+    ((((*br).value).br).if_false) = if_false;
+    ((((*to_end).value).br_unc).label_) = end;
+    compiler_Value ret = compiler_make_local_value(builtins_bool_, NULL, state);
+    compiler_Insn *load = malloc((sizeof(compiler_Insn)));
+    ((*load).kind) = compiler_InsnKind_LOAD;
+    (((*load).value).load) = ((compiler_InsnLoad){ .value = ret, .loc = ret_alloca });
+    compiler_push_insn(load, state);
+    return ret;
+};
  compiler_Value _87f75ce3_walk_Add(parser_Node *node, compiler_State *state) {
     typechecking_Type *tpe = ((*node).tpe);
     if ((!tpe)) {
@@ -1112,6 +1203,15 @@ DLL_EXPORT compiler_Value compiler_walk_expression(parser_Node *node, compiler_S
         break;
         case parser_NodeKind_CAST:
         return _87f75ce3_walk_Cast(node, state);
+        break;
+        case parser_NodeKind_NOT:
+        return _87f75ce3_walk_Not(node, state);
+        break;
+        case parser_NodeKind_AND:
+        return _87f75ce3_walk_And(node, state);
+        break;
+        case parser_NodeKind_OR:
+        return _87f75ce3_walk_Or(node, state);
         break;
         case parser_NodeKind_ADD:
         return _87f75ce3_walk_Add(node, state);
