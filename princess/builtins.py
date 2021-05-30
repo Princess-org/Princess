@@ -183,10 +183,7 @@ def _read_line(function, node, compiler: Compiler):
     node.left = ast.Identifier("fgets")
     return node
 
-def _scan(function, node, compiler: Compiler):
-    node.args[:] = [node.args[0]] + [ast.CallArg(value = ast.String("".join(to_c_format_specifier(
-        compiler.scope.type_lookup(a.value.type.type)) for a in node.args[1:])))] + node.args[1:]
-    
+def _scanf(function, node, compiler: Compiler):
     node.left = ast.Identifier("fscanf")
     return node
 
@@ -239,9 +236,9 @@ compiler.builtins.create_function("close", types.FunctionT(c = True, return_t = 
 compiler.builtins.create_function("write", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.FILE_T, types.void_p, types.size_t), macro = _write))
 compiler.builtins.create_function("read", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.FILE_T, types.void_p, types.size_t), macro = _read))
 compiler.builtins.create_function("rewind", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.FILE_T,)))
-compiler.builtins.create_function("write_string", types.FunctionT(c = True, return_t = (types.void,), macro = _write_string))
+compiler.builtins.create_function("write_string", types.FunctionT(c = True, return_t = (types.int,), macro = _write_string))
 compiler.builtins.create_function("read_line", types.FunctionT(c = True, return_t = (types.string,), macro = _read_line))
-compiler.builtins.create_function("scan", types.FunctionT(c = True, return_t = (types.int,), macro = _scan))
+compiler.builtins.create_function("scanf", types.FunctionT(c = True, return_t = (types.int,), macro = _scanf))
 compiler.builtins.create_function("flush", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.FILE_T,), macro = _flush))
 compiler.builtins.create_function("seek", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.FILE_T, types.long, types.int), macro = _seek))
 compiler.builtins.create_function("tell", types.FunctionT(c = True, return_t = (types.int,), parameter_t = (types.FILE_T,), macro = _tell))

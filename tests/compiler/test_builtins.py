@@ -60,7 +60,7 @@ def test_file_io_text():
         var buffer: [20; char]
         read_line(fp, buffer)
         var num: int
-        scan(fp, *num)
+        scanf(fp, "%d", *num)
 
         close(fp)
         return num, buffer
