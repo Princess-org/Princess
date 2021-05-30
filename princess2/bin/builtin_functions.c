@@ -401,8 +401,8 @@
     _fe23cc40_import_function(state, ((Array){7, "fclose"}));
     return _fe23cc40_forward_to_function(argsv, builtins_int_, ((Array){7, "fclose"}), state);
 };
- compiler_Value _fe23cc40_read_write(parser_Node *node, Array argsv, string name, compiler_State *state) {
-    parser_Node *arrayn = _fe23cc40_get_arg(((((*node).value).func_call).args), ((((*node).value).func_call).kwargs), 1, ((Array){6, "array"}));
+ compiler_Value _fe23cc40_read_write_array(parser_Node *node, Array argsv, string name, compiler_State *state) {
+    parser_Node *arrayn = _fe23cc40_get_arg(((((*node).value).func_call).args), ((((*node).value).func_call).kwargs), 1, ((Array){7, "buffer"}));
     compiler_Value size = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = ((*((*((*arrayn).tpe)).tpe)).size), .sign = 1, .tpe = builtins_size_t_ });
     compiler_Value array = (((compiler_Value *)argsv.value)[1]);
     compiler_Value len = compiler_make_local_value(builtins_size_t_, NULL, state);
@@ -428,11 +428,30 @@
 };
  compiler_Value _fe23cc40__read_array(parser_Node *node, Array argsv, compiler_State *state) {
     _fe23cc40_import_function(state, ((Array){6, "fread"}));
-    return _fe23cc40_read_write(node, argsv, ((Array){6, "fread"}), state);
+    return _fe23cc40_read_write_array(node, argsv, ((Array){6, "fread"}), state);
 };
  compiler_Value _fe23cc40__write_array(parser_Node *node, Array argsv, compiler_State *state) {
     _fe23cc40_import_function(state, ((Array){7, "fwrite"}));
-    return _fe23cc40_read_write(node, argsv, ((Array){7, "fwrite"}), state);
+    return _fe23cc40_read_write_array(node, argsv, ((Array){7, "fwrite"}), state);
+};
+ compiler_Value _fe23cc40_read_write_pointer(parser_Node *node, Array argsv, string name, compiler_State *state) {
+    parser_Node *ptrn = _fe23cc40_get_arg(((((*node).value).func_call).args), ((((*node).value).func_call).kwargs), 1, ((Array){4, "ptr"}));
+    compiler_Value size = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = ((*((*((*ptrn).tpe)).tpe)).size), .sign = 1, .tpe = builtins_size_t_ });
+    compiler_Value ptr = (((compiler_Value *)argsv.value)[1]);
+    Array args = ((Array){4, malloc((((int64)(sizeof(compiler_Value))) * ((int64)4)))});
+    (((compiler_Value *)args.value)[0]) = ptr;
+    (((compiler_Value *)args.value)[1]) = size;
+    (((compiler_Value *)args.value)[2]) = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = 1, .sign = 1, .tpe = builtins_size_t_ });
+    (((compiler_Value *)args.value)[3]) = (((compiler_Value *)argsv.value)[0]);
+    return _fe23cc40_forward_to_function(args, builtins_size_t_, name, state);
+};
+ compiler_Value _fe23cc40__read_pointer(parser_Node *node, Array argsv, compiler_State *state) {
+    _fe23cc40_import_function(state, ((Array){6, "fread"}));
+    return _fe23cc40_read_write_pointer(node, argsv, ((Array){6, "fread"}), state);
+};
+ compiler_Value _fe23cc40__write_pointer(parser_Node *node, Array argsv, compiler_State *state) {
+    _fe23cc40_import_function(state, ((Array){7, "fwrite"}));
+    return _fe23cc40_read_write_pointer(node, argsv, ((Array){7, "fwrite"}), state);
 };
  compiler_Value _fe23cc40__rewind(parser_Node *node, Array argsv, compiler_State *state) {
     _fe23cc40_import_function(state, ((Array){7, "rewind"}));
@@ -452,8 +471,10 @@ DLL_EXPORT void builtin_functions_p_main(Array args) {
     _fe23cc40_create_function(((Array){5, "free"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){6, "value"}), typechecking_pointer(NULL)) }}), ((Array){0, (typechecking_Type[]){  }}), (&_fe23cc40__free_pointer), NULL);
     _fe23cc40_create_function(((Array){5, "open"}), ((Array){2, (typechecking_NamedParameter *[2]){ _fe23cc40_param(((Array){5, "file"}), builtins_string_), _fe23cc40_param(((Array){5, "mode"}), builtins_string_) }}), ((Array){1, (typechecking_Type *[1]){ builtins_File_ }}), (&_fe23cc40__open), NULL);
     _fe23cc40_create_function(((Array){6, "close"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){3, "fp"}), builtins_File_) }}), ((Array){1, (typechecking_Type *[1]){ builtins_int_ }}), (&_fe23cc40__close), NULL);
-    _fe23cc40_create_function(((Array){5, "read"}), ((Array){2, (typechecking_NamedParameter *[2]){ _fe23cc40_param(((Array){3, "fp"}), builtins_File_), _fe23cc40_param(((Array){6, "array"}), typechecking_array(NULL)) }}), ((Array){1, (typechecking_Type *[1]){ builtins_size_t_ }}), (&_fe23cc40__read_array), NULL);
-    _fe23cc40_create_function(((Array){6, "write"}), ((Array){2, (typechecking_NamedParameter *[2]){ _fe23cc40_param(((Array){3, "fp"}), builtins_File_), _fe23cc40_param(((Array){6, "array"}), typechecking_array(NULL)) }}), ((Array){1, (typechecking_Type *[1]){ builtins_size_t_ }}), (&_fe23cc40__write_array), NULL);
+    _fe23cc40_create_function(((Array){5, "read"}), ((Array){2, (typechecking_NamedParameter *[2]){ _fe23cc40_param(((Array){3, "fp"}), builtins_File_), _fe23cc40_param(((Array){7, "buffer"}), typechecking_array(NULL)) }}), ((Array){1, (typechecking_Type *[1]){ builtins_size_t_ }}), (&_fe23cc40__read_array), NULL);
+    _fe23cc40_create_function(((Array){6, "write"}), ((Array){2, (typechecking_NamedParameter *[2]){ _fe23cc40_param(((Array){3, "fp"}), builtins_File_), _fe23cc40_param(((Array){7, "buffer"}), typechecking_array(NULL)) }}), ((Array){1, (typechecking_Type *[1]){ builtins_size_t_ }}), (&_fe23cc40__write_array), NULL);
+    _fe23cc40_create_function(((Array){5, "read"}), ((Array){2, (typechecking_NamedParameter *[2]){ _fe23cc40_param(((Array){3, "fp"}), builtins_File_), _fe23cc40_param(((Array){4, "ptr"}), typechecking_pointer(NULL)) }}), ((Array){1, (typechecking_Type *[1]){ builtins_size_t_ }}), (&_fe23cc40__read_pointer), NULL);
+    _fe23cc40_create_function(((Array){6, "write"}), ((Array){2, (typechecking_NamedParameter *[2]){ _fe23cc40_param(((Array){3, "fp"}), builtins_File_), _fe23cc40_param(((Array){4, "ptr"}), typechecking_pointer(NULL)) }}), ((Array){1, (typechecking_Type *[1]){ builtins_size_t_ }}), (&_fe23cc40__write_pointer), NULL);
     _fe23cc40_create_function(((Array){7, "rewind"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){3, "fp"}), builtins_File_) }}), ((Array){0, (typechecking_Type[]){  }}), _fe23cc40__rewind, NULL);
 };
 
