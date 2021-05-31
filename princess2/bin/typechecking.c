@@ -27,7 +27,7 @@ DLL_EXPORT typechecking_Type * typechecking_type_lookup(parser_Node *node, typec
     if ((length == 0)) {
         return NULL;
     }  else {
-        return ((typechecking_Type *)vector_get(((*state).function_stack), (length - 1)));
+        return ((typechecking_Type *)vector_get(((*state).function_stack), (length - ((int)1))));
     };
 };
  void _3700c937_push_function(typechecking_State *state, typechecking_Type *tpe) {
@@ -253,7 +253,7 @@ DLL_EXPORT int typechecking_overload_score(typechecking_Type *a, vector_Vector *
     assert(typechecking_is_function(a));
     vector_Vector *param_a = ((*a).parameter_t);
     if ((vector_length(param_a) > vector_length(param_b))) {
-        if ((vector_length(param_a) == (vector_length(param_b) + 1))) {
+        if ((vector_length(param_a) == (vector_length(param_b) + ((int)1)))) {
             if ((!((*((typechecking_NamedParameter *)vector_peek(param_a))).varargs))) {
                 return (-1);
             }  ;
@@ -1055,7 +1055,17 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
     scope_Value *function = scope_get_function(((*state).scope), left, arguments);
     if ((!function)) {
         typechecking_errorn(left, ((Array){11, "Function \""}));
-        fprintf(stderr, (((Array){5, "%s%s"}).value), (parser_identifier_to_str(left).value), (((Array){13, "\" not found\x0a"""}).value));
+        fprintf(stderr, (((Array){5, "%s%s"}).value), (parser_identifier_to_str(left).value), (((Array){37, "\" not found. Arguments were of type "}).value));
+        int len = vector_length(arguments);
+        for (int i = 0;(i < len);(i += 1)) {
+            typechecking_NamedParameter *arg = ((typechecking_NamedParameter *)vector_get(arguments, i));
+            fprintf(stderr, (((Array){3, "%s"}).value), (debug_type_to_str(((*arg).value)).value));
+            if ((i < (len - ((int)1)))) {
+                fprintf(stderr, (((Array){3, "%s"}).value), (((Array){3, ", "}).value));
+            }  ;
+        }
+        ;
+        fprintf(stderr, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
     }  else {
         typechecking_Type *tpe = ((*function).tpe);
         vector_Vector *parameter_t = ((*tpe).parameter_t);
@@ -1543,7 +1553,7 @@ DLL_EXPORT void typechecking_errorn(parser_Node *node, string msg) {
     int line = (((*node).loc).line);
     int column = (((*node).loc).column);
     fprintf(stderr, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
-    fprintf(stderr, (((Array){13, "%s%s%d%s%d%s"}).value), (filename.value), (((Array){2, "@"}).value), (line + 1), (((Array){2, ":"}).value), (column + 1), (((Array){2, "\x0a"""}).value));
+    fprintf(stderr, (((Array){13, "%s%s%d%s%d%s"}).value), (filename.value), (((Array){2, "@"}).value), (line + ((int)1)), (((Array){2, ":"}).value), (column + ((int)1)), (((Array){2, "\x0a"""}).value));
     fprintf(stderr, (((Array){5, "%s%s"}).value), ((((string *)(((*node).loc).lines).value)[line]).value), (((Array){2, "\x0a"""}).value));
     for (int i = 0;(i < column);(i += 1)) {
         fprintf(stderr, (((Array){3, "%s"}).value), (((Array){2, " "}).value));
@@ -1557,6 +1567,9 @@ DLL_EXPORT void typechecking_p_main(Array args) {
     ;
     _3700c937_counter = 0;
     typechecking_type_ = typechecking_make_anonymous_type(typechecking_TypeKind_TYPE);
+    scope_p_main(args);
+    builtins_p_main(args);
+    debug_p_main(args);
 };
 
 

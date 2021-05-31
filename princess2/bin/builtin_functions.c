@@ -293,9 +293,8 @@
 };
  compiler_Value _fe23cc40__allocate_size(parser_Node *node, Array argsv, compiler_State *state) {
     _fe23cc40_import_function(state, ((Array){7, "malloc"}));
-    compiler_Value arg = (((compiler_Value *)argsv.value)[0]);
     Array args = ((Array){1, malloc((((int64)(sizeof(compiler_Value))) * ((int64)1)))});
-    (((compiler_Value *)args.value)[0]) = arg;
+    (((compiler_Value *)args.value)[0]) = (((compiler_Value *)argsv.value)[0]);
     return _fe23cc40_forward_to_function(args, typechecking_pointer(NULL), ((Array){7, "malloc"}), state);
 };
  compiler_Value _fe23cc40__allocate_type(parser_Node *node, Array argsv, compiler_State *state) {
@@ -360,6 +359,37 @@
     typechecking_Type *tpe = typechecking_type_lookup(arg, state);
     vector_push(rets, typechecking_array(tpe));
     return rets;
+};
+ compiler_Value _fe23cc40__zero_allocate_size(parser_Node *node, Array argsv, compiler_State *state) {
+    _fe23cc40_import_function(state, ((Array){7, "calloc"}));
+    Array args = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
+    (((compiler_Value *)args.value)[0]) = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = 1, .sign = 1, .tpe = builtins_size_t_ });
+    (((compiler_Value *)args.value)[1]) = (((compiler_Value *)argsv.value)[0]);
+    return _fe23cc40_forward_to_function(args, typechecking_pointer(NULL), ((Array){7, "calloc"}), state);
+};
+ compiler_Value _fe23cc40__zero_allocate_type(parser_Node *node, Array argsv, compiler_State *state) {
+    _fe23cc40_import_function(state, ((Array){7, "calloc"}));
+    typechecking_Type *tpe = ((((compiler_Value *)argsv.value)[0]).value_tpe);
+    Array args = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
+    (((compiler_Value *)args.value)[0]) = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = 1, .sign = 1, .tpe = builtins_size_t_ });
+    (((compiler_Value *)args.value)[1]) = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = ((*tpe).size), .tpe = builtins_size_t_ });
+    compiler_Value call_ret = _fe23cc40_forward_to_function(args, typechecking_pointer(NULL), ((Array){7, "calloc"}), state);
+    compiler_Value ret = compiler_make_local_value(typechecking_pointer(tpe), NULL, state);
+    compiler_Insn *bitcast = malloc((sizeof(compiler_Insn)));
+    ((*bitcast).kind) = compiler_InsnKind_BITCAST;
+    (((*bitcast).value).convert) = ((compiler_InsnConvert){ .ret = ret, .value = call_ret });
+    compiler_push_insn(bitcast, state);
+    return ret;
+};
+ compiler_Value _fe23cc40__zero_allocate_array(parser_Node *node, Array argsv, compiler_State *state) {
+    _fe23cc40_import_function(state, ((Array){7, "calloc"}));
+    typechecking_Type *tpe = ((((compiler_Value *)argsv.value)[0]).value_tpe);
+    compiler_Value size = (((compiler_Value *)argsv.value)[1]);
+    Array args = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
+    (((compiler_Value *)args.value)[0]) = size;
+    (((compiler_Value *)args.value)[1]) = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = ((*tpe).size), .tpe = builtins_size_t_ });
+    compiler_Value call_ret = _fe23cc40_forward_to_function(args, typechecking_pointer(NULL), ((Array){7, "calloc"}), state);
+    return _fe23cc40_allocate_make_array(call_ret, size, tpe, state);
 };
  compiler_Value _fe23cc40__reallocate(parser_Node *node, Array argsv, compiler_State *state) {
     _fe23cc40_import_function(state, ((Array){8, "realloc"}));
@@ -438,6 +468,32 @@
  compiler_Value _fe23cc40__write_array(parser_Node *node, Array argsv, compiler_State *state) {
     _fe23cc40_import_function(state, ((Array){7, "fwrite"}));
     return _fe23cc40_read_write_array(node, argsv, ((Array){7, "fwrite"}), state);
+};
+ compiler_Value _fe23cc40_read_write_array_n(parser_Node *node, Array argsv, string name, compiler_State *state) {
+    parser_Node *arrayn = _fe23cc40_get_arg(((((*node).value).func_call).args), ((((*node).value).func_call).kwargs), 1, ((Array){7, "buffer"}));
+    compiler_Value size = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = ((*((*((*arrayn).tpe)).tpe)).size), .sign = 1, .tpe = builtins_size_t_ });
+    compiler_Value array = (((compiler_Value *)argsv.value)[1]);
+    compiler_Value ptr = compiler_make_local_value(typechecking_pointer(NULL), NULL, state);
+    Array index2 = ((Array){1, malloc((((int64)(sizeof(int))) * ((int64)1)))});
+    (((int *)index2.value)[0]) = 1;
+    compiler_Insn *extract2 = malloc((sizeof(compiler_Insn)));
+    ((*extract2).kind) = compiler_InsnKind_EXTRACTVALUE;
+    (((*extract2).value).extract_value) = ((compiler_InsnExtractValue){ .index = index2, .value = array, .ret = ptr });
+    compiler_push_insn(extract2, state);
+    Array args = ((Array){4, malloc((((int64)(sizeof(compiler_Value))) * ((int64)4)))});
+    (((compiler_Value *)args.value)[0]) = ptr;
+    (((compiler_Value *)args.value)[1]) = size;
+    (((compiler_Value *)args.value)[2]) = (((compiler_Value *)argsv.value)[2]);
+    (((compiler_Value *)args.value)[3]) = (((compiler_Value *)argsv.value)[0]);
+    return _fe23cc40_forward_to_function(args, builtins_size_t_, name, state);
+};
+ compiler_Value _fe23cc40__read_array_n(parser_Node *node, Array argsv, compiler_State *state) {
+    _fe23cc40_import_function(state, ((Array){6, "fread"}));
+    return _fe23cc40_read_write_array_n(node, argsv, ((Array){6, "fread"}), state);
+};
+ compiler_Value _fe23cc40__write_array_n(parser_Node *node, Array argsv, compiler_State *state) {
+    _fe23cc40_import_function(state, ((Array){7, "fwrite"}));
+    return _fe23cc40_read_write_array_n(node, argsv, ((Array){7, "fwrite"}), state);
 };
  compiler_Value _fe23cc40_read_write_pointer(parser_Node *node, Array argsv, string name, compiler_State *state) {
     parser_Node *ptrn = _fe23cc40_get_arg(((((*node).value).func_call).args), ((((*node).value).func_call).kwargs), 1, ((Array){4, "ptr"}));
@@ -524,6 +580,51 @@
     _fe23cc40_import_function(state, ((Array){6, "fseek"}));
     return _fe23cc40_forward_to_function(argsv, builtins_int_, ((Array){6, "fseek"}), state);
 };
+ compiler_Value _fe23cc40__tell(parser_Node *node, Array argsv, compiler_State *state) {
+    _fe23cc40_import_function(state, ((Array){6, "ftell"}));
+    return _fe23cc40_forward_to_function(argsv, builtins_long_, ((Array){6, "ftell"}), state);
+};
+ compiler_Value _fe23cc40__strlen(parser_Node *node, Array argsv, compiler_State *state) {
+    _fe23cc40_import_function(state, ((Array){7, "strlen"}));
+    _fe23cc40_convert_to_charp(argsv, state);
+    return _fe23cc40_forward_to_function(argsv, builtins_size_t_, ((Array){7, "strlen"}), state);
+};
+ compiler_Value _fe23cc40__max(parser_Node *node, Array argsv, compiler_State *state) {
+    _fe23cc40_import_function(state, ((Array){5, "fmax"}));
+    return _fe23cc40_forward_to_function(argsv, builtins_double_, ((Array){5, "fmax"}), state);
+};
+ compiler_Value _fe23cc40__min(parser_Node *node, Array argsv, compiler_State *state) {
+    _fe23cc40_import_function(state, ((Array){5, "fmin"}));
+    return _fe23cc40_forward_to_function(argsv, builtins_double_, ((Array){5, "fmin"}), state);
+};
+ compiler_Value _fe23cc40__ceil(parser_Node *node, Array argsv, compiler_State *state) {
+    _fe23cc40_import_function(state, ((Array){5, "ceil"}));
+    return _fe23cc40_forward_to_function(argsv, builtins_double_, ((Array){5, "ceil"}), state);
+};
+ compiler_Value _fe23cc40__floor(parser_Node *node, Array argsv, compiler_State *state) {
+    _fe23cc40_import_function(state, ((Array){6, "floor"}));
+    return _fe23cc40_forward_to_function(argsv, builtins_double_, ((Array){6, "floor"}), state);
+};
+ compiler_Value _fe23cc40__pow(parser_Node *node, Array argsv, compiler_State *state) {
+    _fe23cc40_import_function(state, ((Array){4, "pow"}));
+    return _fe23cc40_forward_to_function(argsv, builtins_double_, ((Array){4, "pow"}), state);
+};
+ compiler_Value _fe23cc40__sqrt(parser_Node *node, Array argsv, compiler_State *state) {
+    _fe23cc40_import_function(state, ((Array){5, "sqrt"}));
+    return _fe23cc40_forward_to_function(argsv, builtins_double_, ((Array){5, "sqrt"}), state);
+};
+ compiler_Value _fe23cc40__log2(parser_Node *node, Array argsv, compiler_State *state) {
+    _fe23cc40_import_function(state, ((Array){5, "log2"}));
+    return _fe23cc40_forward_to_function(argsv, builtins_double_, ((Array){5, "log2"}), state);
+};
+ compiler_Value _fe23cc40__memcopy(parser_Node *node, Array argsv, compiler_State *state) {
+    _fe23cc40_import_function(state, ((Array){7, "memcpy"}));
+    Array args = ((Array){3, malloc((((int64)(sizeof(compiler_Value))) * ((int64)3)))});
+    (((compiler_Value *)args.value)[0]) = (((compiler_Value *)argsv.value)[1]);
+    (((compiler_Value *)args.value)[1]) = (((compiler_Value *)argsv.value)[0]);
+    (((compiler_Value *)args.value)[2]) = (((compiler_Value *)argsv.value)[2]);
+    return _fe23cc40_forward_to_function(args, typechecking_pointer(NULL), ((Array){7, "memcpy"}), state);
+};
 DLL_EXPORT void builtin_functions_p_main(Array args) {
     compiler_p_main(args);
     _fe23cc40_create_function(((Array){7, "assert"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){10, "assertion"}), builtins_bool_) }}), ((Array){0, (typechecking_Type[]){  }}), (&_fe23cc40__assert), NULL);
@@ -533,6 +634,9 @@ DLL_EXPORT void builtin_functions_p_main(Array args) {
     _fe23cc40_create_function(((Array){9, "allocate"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){5, "size"}), builtins_size_t_) }}), ((Array){1, (typechecking_Type *[1]){ typechecking_pointer(NULL) }}), (&_fe23cc40__allocate_size), NULL);
     _fe23cc40_create_function(((Array){9, "allocate"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){4, "tpe"}), typechecking_type_) }}), ((Array){1, (typechecking_Type *[1]){ typechecking_pointer(NULL) }}), (&_fe23cc40__allocate_type), (&_fe23cc40__allocate_type_proto));
     _fe23cc40_create_function(((Array){9, "allocate"}), ((Array){2, (typechecking_NamedParameter *[2]){ _fe23cc40_param(((Array){4, "tpe"}), typechecking_type_), _fe23cc40_param(((Array){5, "size"}), builtins_size_t_) }}), ((Array){1, (typechecking_Type *[1]){ typechecking_array(NULL) }}), (&_fe23cc40__allocate_array), (&_fe23cc40__allocate_array_proto));
+    _fe23cc40_create_function(((Array){14, "zero_allocate"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){5, "size"}), builtins_size_t_) }}), ((Array){1, (typechecking_Type *[1]){ typechecking_pointer(NULL) }}), (&_fe23cc40__zero_allocate_size), NULL);
+    _fe23cc40_create_function(((Array){14, "zero_allocate"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){4, "tpe"}), typechecking_type_) }}), ((Array){1, (typechecking_Type *[1]){ typechecking_pointer(NULL) }}), (&_fe23cc40__zero_allocate_type), (&_fe23cc40__allocate_type_proto));
+    _fe23cc40_create_function(((Array){14, "zero_allocate"}), ((Array){2, (typechecking_NamedParameter *[2]){ _fe23cc40_param(((Array){4, "tpe"}), typechecking_type_), _fe23cc40_param(((Array){5, "size"}), builtins_size_t_) }}), ((Array){1, (typechecking_Type *[1]){ typechecking_array(NULL) }}), (&_fe23cc40__zero_allocate_array), (&_fe23cc40__allocate_array_proto));
     _fe23cc40_create_function(((Array){11, "reallocate"}), ((Array){2, (typechecking_NamedParameter *[2]){ _fe23cc40_param(((Array){4, "ptr"}), typechecking_pointer(NULL)), _fe23cc40_param(((Array){5, "size"}), builtins_size_t_) }}), ((Array){1, (typechecking_Type *[1]){ typechecking_pointer(NULL) }}), (&_fe23cc40__reallocate), (&_fe23cc40__reallocate_proto));
     _fe23cc40_create_function(((Array){5, "free"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){6, "value"}), typechecking_array(NULL)) }}), ((Array){0, (typechecking_Type[]){  }}), (&_fe23cc40__free_array), NULL);
     _fe23cc40_create_function(((Array){5, "free"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){6, "value"}), typechecking_pointer(NULL)) }}), ((Array){0, (typechecking_Type[]){  }}), (&_fe23cc40__free_pointer), NULL);
@@ -541,6 +645,8 @@ DLL_EXPORT void builtin_functions_p_main(Array args) {
     _fe23cc40_create_function(((Array){6, "close"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){3, "fp"}), builtins_File_) }}), ((Array){1, (typechecking_Type *[1]){ builtins_int_ }}), (&_fe23cc40__close), NULL);
     _fe23cc40_create_function(((Array){5, "read"}), ((Array){2, (typechecking_NamedParameter *[2]){ _fe23cc40_param(((Array){3, "fp"}), builtins_File_), _fe23cc40_param(((Array){7, "buffer"}), typechecking_array(NULL)) }}), ((Array){1, (typechecking_Type *[1]){ builtins_size_t_ }}), (&_fe23cc40__read_array), NULL);
     _fe23cc40_create_function(((Array){6, "write"}), ((Array){2, (typechecking_NamedParameter *[2]){ _fe23cc40_param(((Array){3, "fp"}), builtins_File_), _fe23cc40_param(((Array){7, "buffer"}), typechecking_array(NULL)) }}), ((Array){1, (typechecking_Type *[1]){ builtins_size_t_ }}), (&_fe23cc40__write_array), NULL);
+    _fe23cc40_create_function(((Array){5, "read"}), ((Array){3, (typechecking_NamedParameter *[3]){ _fe23cc40_param(((Array){3, "fp"}), builtins_File_), _fe23cc40_param(((Array){7, "buffer"}), typechecking_array(NULL)), _fe23cc40_param(((Array){5, "size"}), builtins_size_t_) }}), ((Array){1, (typechecking_Type *[1]){ builtins_size_t_ }}), (&_fe23cc40__read_array_n), NULL);
+    _fe23cc40_create_function(((Array){6, "write"}), ((Array){3, (typechecking_NamedParameter *[3]){ _fe23cc40_param(((Array){3, "fp"}), builtins_File_), _fe23cc40_param(((Array){7, "buffer"}), typechecking_array(NULL)), _fe23cc40_param(((Array){5, "size"}), builtins_size_t_) }}), ((Array){1, (typechecking_Type *[1]){ builtins_size_t_ }}), (&_fe23cc40__write_array_n), NULL);
     _fe23cc40_create_function(((Array){5, "read"}), ((Array){2, (typechecking_NamedParameter *[2]){ _fe23cc40_param(((Array){3, "fp"}), builtins_File_), _fe23cc40_param(((Array){4, "ptr"}), typechecking_pointer(NULL)) }}), ((Array){1, (typechecking_Type *[1]){ builtins_size_t_ }}), (&_fe23cc40__read_pointer), NULL);
     _fe23cc40_create_function(((Array){6, "write"}), ((Array){2, (typechecking_NamedParameter *[2]){ _fe23cc40_param(((Array){3, "fp"}), builtins_File_), _fe23cc40_param(((Array){4, "ptr"}), typechecking_pointer(NULL)) }}), ((Array){1, (typechecking_Type *[1]){ builtins_size_t_ }}), (&_fe23cc40__write_pointer), NULL);
     _fe23cc40_create_function(((Array){13, "write_string"}), ((Array){2, (typechecking_NamedParameter *[2]){ _fe23cc40_param(((Array){3, "fp"}), builtins_File_), _fe23cc40_varargs(((Array){1, ""}), NULL) }}), ((Array){1, (typechecking_Type *[1]){ builtins_int_ }}), (&_fe23cc40__write_string), NULL);
@@ -548,6 +654,16 @@ DLL_EXPORT void builtin_functions_p_main(Array args) {
     _fe23cc40_create_function(((Array){6, "scanf"}), ((Array){3, (typechecking_NamedParameter *[3]){ _fe23cc40_param(((Array){3, "fp"}), builtins_File_), _fe23cc40_param(((Array){4, "fmt"}), builtins_string_), _fe23cc40_varargs(((Array){1, ""}), NULL) }}), ((Array){1, (typechecking_Type *[1]){ builtins_int_ }}), (&_fe23cc40__scanf), NULL);
     _fe23cc40_create_function(((Array){7, "rewind"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){3, "fp"}), builtins_File_) }}), ((Array){0, (typechecking_Type[]){  }}), (&_fe23cc40__rewind), NULL);
     _fe23cc40_create_function(((Array){5, "seek"}), ((Array){3, (typechecking_NamedParameter *[3]){ _fe23cc40_param(((Array){3, "fp"}), builtins_File_), _fe23cc40_param(((Array){7, "offset"}), builtins_long_), _fe23cc40_param(((Array){7, "whence"}), builtins_int_) }}), ((Array){1, (typechecking_Type *[1]){ builtins_int_ }}), (&_fe23cc40__seek), NULL);
+    _fe23cc40_create_function(((Array){5, "tell"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){3, "fp"}), builtins_File_) }}), ((Array){1, (typechecking_Type *[1]){ builtins_long_ }}), (&_fe23cc40__tell), NULL);
+    _fe23cc40_create_function(((Array){7, "strlen"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){4, "str"}), builtins_string_) }}), ((Array){1, (typechecking_Type *[1]){ builtins_size_t_ }}), (&_fe23cc40__strlen), NULL);
+    _fe23cc40_create_function(((Array){4, "max"}), ((Array){2, (typechecking_NamedParameter *[2]){ _fe23cc40_param(((Array){2, "a"}), builtins_double_), _fe23cc40_param(((Array){2, "b"}), builtins_double_) }}), ((Array){1, (typechecking_Type *[1]){ builtins_double_ }}), (&_fe23cc40__max), NULL);
+    _fe23cc40_create_function(((Array){4, "min"}), ((Array){2, (typechecking_NamedParameter *[2]){ _fe23cc40_param(((Array){2, "a"}), builtins_double_), _fe23cc40_param(((Array){2, "b"}), builtins_double_) }}), ((Array){1, (typechecking_Type *[1]){ builtins_double_ }}), (&_fe23cc40__min), NULL);
+    _fe23cc40_create_function(((Array){5, "ceil"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){6, "value"}), builtins_double_) }}), ((Array){1, (typechecking_Type *[1]){ builtins_double_ }}), (&_fe23cc40__ceil), NULL);
+    _fe23cc40_create_function(((Array){6, "floor"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){6, "value"}), builtins_double_) }}), ((Array){1, (typechecking_Type *[1]){ builtins_double_ }}), (&_fe23cc40__floor), NULL);
+    _fe23cc40_create_function(((Array){4, "pow"}), ((Array){2, (typechecking_NamedParameter *[2]){ _fe23cc40_param(((Array){2, "a"}), builtins_double_), _fe23cc40_param(((Array){2, "b"}), builtins_double_) }}), ((Array){1, (typechecking_Type *[1]){ builtins_double_ }}), (&_fe23cc40__pow), NULL);
+    _fe23cc40_create_function(((Array){5, "sqrt"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){6, "value"}), builtins_double_) }}), ((Array){1, (typechecking_Type *[1]){ builtins_double_ }}), (&_fe23cc40__sqrt), NULL);
+    _fe23cc40_create_function(((Array){5, "log2"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){6, "value"}), builtins_double_) }}), ((Array){1, (typechecking_Type *[1]){ builtins_double_ }}), (&_fe23cc40__log2), NULL);
+    _fe23cc40_create_function(((Array){8, "memcopy"}), ((Array){3, (typechecking_NamedParameter *[3]){ _fe23cc40_param(((Array){4, "src"}), typechecking_pointer(NULL)), _fe23cc40_param(((Array){5, "dest"}), typechecking_pointer(NULL)), _fe23cc40_param(((Array){2, "n"}), builtins_size_t_) }}), ((Array){1, (typechecking_Type *[1]){ typechecking_pointer(NULL) }}), (&_fe23cc40__memcopy), NULL);
 };
 
 

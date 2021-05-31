@@ -107,7 +107,7 @@ DLL_EXPORT Array util_split_lines(string s) {
     (((char *)(((string *)result.value)[line]).value)[(((int64)size) - ((int64)k))]) = '\x00';
     return result;
 };
-DLL_EXPORT string util_read_all(void *fh) {
+DLL_EXPORT string util_read_all(File fh) {
     fseek(fh, 0, SEEK_END);
     int filesize = ftell(fh);
     rewind(fh);
@@ -188,7 +188,7 @@ DLL_EXPORT string util_int_to_str(int64 i) {
     return util_uint_to_str_sign(sign, i);
 };
 DLL_EXPORT bool util_exists(string filename) {
-    FILE* fp = fopen((filename.value), (((Array){2, "r"}).value));
+    File fp = fopen((filename.value), (((Array){2, "r"}).value));
     if (fp) {
         fclose(fp);
         return true;
