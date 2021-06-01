@@ -373,6 +373,7 @@ DLL_EXPORT bool scope_create_type_scope(scope_Scope *scope, parser_Node *node, p
             return false;
         } else if (((((*tpe2).kind) == typechecking_TypeKind_STUB) && (((*tpe).kind) != typechecking_TypeKind_STUB))) {
             (*tpe2) = (*tpe);
+            ((*value).scope) = vscope;
         } ;
     }  else {
         map_put(((*scope).fields), name, v);

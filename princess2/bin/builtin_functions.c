@@ -164,6 +164,9 @@
         if ((!tpe)) {
             return NULL;
         }  ;
+        if (typechecking_is_enum(tpe)) {
+            tpe = ((*tpe).tpe);
+        }  ;
         if ((tpe == builtins_size_t_)) {
             buffer_append_str((&buf), ((Array){4, "%zu"}));
         } else if ((tpe == builtins_char_)) {
