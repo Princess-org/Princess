@@ -85,6 +85,9 @@
             buffer_append_char((&buf), '}');
         };
         break;
+        case typechecking_TypeKind_ENUM:
+        return _574f02bf_type_to_str(((*tpe).tpe));
+        break;
         default:
         assert(false);
     }
@@ -526,7 +529,7 @@
             fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, " "}).value));
             fprintf(fp, (((Array){5, "%s%s"}).value), (((Array){2, "%"}).value), (name.value));
         }  ;
-        if ((i < (len - 1))) {
+        if ((i < (len - ((int)1)))) {
             fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, ", "}).value));
         }  ;
     }
