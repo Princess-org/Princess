@@ -60,6 +60,8 @@ bool test_compiler_print_ll;
     res = _6dcc03b3_compile(str);
     str = ((Array){32, "\x0a""        10 << 1 + 10 >> 2\x0a""    "});
     res = _6dcc03b3_compile(str);
+    str = ((Array){32, "\x0a""        -10\x0a""        -10.5\x0a""    "});
+    res = _6dcc03b3_compile(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
  void _6dcc03b3_test_call() {

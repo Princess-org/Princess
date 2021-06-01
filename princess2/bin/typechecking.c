@@ -138,6 +138,9 @@ DLL_EXPORT typechecking_Type * typechecking_make_anonymous_type(typechecking_Typ
 };
 typechecking_Type *typechecking_type_;
 DLL_EXPORT typechecking_Type * typechecking_copy(typechecking_Type *a) {
+    if ((!a)) {
+        return NULL;
+    }  ;
     typechecking_Type *t = malloc((sizeof(typechecking_Type)));
     (*t) = (*a);
     return t;
@@ -412,6 +415,14 @@ DLL_EXPORT void typechecking_typecheck(toolchain_Module *module);
     }  ;
     return true;
 };
+ void * _3700c937_evaluate_constant(parser_Node *node, typechecking_Type *tpe, typechecking_State *state) {
+    if ((((*node).kind) == parser_NodeKind_INTEGER)) {
+        uint64 *i = malloc((sizeof(uint64)));
+        (*i) = (((*node).value).i);
+        return i;
+    }  ;
+    assert(false);
+};
 DLL_EXPORT typechecking_Type * typechecking_type_lookup(parser_Node *node, typechecking_State *state) {
     if ((!node)) {
         return NULL;
@@ -476,6 +487,18 @@ DLL_EXPORT typechecking_Type * typechecking_type_lookup(parser_Node *node, typec
         ((*tpe).size) = size;
         ((*tpe).align) = align;
         ((*tpe).fields) = fields;
+        return tpe;
+    }
+    else if ((((*node).kind) == parser_NodeKind_ENUM_T)) {
+        typechecking_Type *enum_tpe = builtins_int_;
+        if (((((*node).value).t_enum).tpe)) {
+            enum_tpe = typechecking_type_lookup(((((*node).value).t_enum).tpe), state);
+        }  ;
+        typechecking_Type *tpe = malloc((sizeof(typechecking_Type)));
+        ((*tpe).kind) = typechecking_TypeKind_ENUM;
+        ((*tpe).tpe) = enum_tpe;
+        ((*tpe).size) = ((*enum_tpe).size);
+        ((*tpe).align) = ((*enum_tpe).align);
         return tpe;
     }
     else if ((((*node).kind) == parser_NodeKind_ARRAY_T)) {
@@ -980,11 +1003,33 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
         }  ;
         if (value) {
             tpe = typechecking_copy(typechecking_type_lookup(value, state));
+            if ((!tpe)) {
+                return ;
+            }  ;
             ((*tpe).name) = parser_identifier_to_str(name);
-            if (((((*value).kind) == parser_NodeKind_STRUCT_T) || (((*value).kind) == parser_NodeKind_UNION_T))) {
+            if ((((((*value).kind) == parser_NodeKind_STRUCT_T) || (((*value).kind) == parser_NodeKind_UNION_T)) || (((*value).kind) == parser_NodeKind_ENUM_T))) {
                 ((*tpe).type_name) = _3700c937_append_module(((*tpe).name), (((*node).loc).module));
             }  ;
-            scope_create_type(((*state).scope), name, share, tpe);
+            if ((((*value).kind) == parser_NodeKind_ENUM_T)) {
+                scope_Scope *scpe = scope_enter_namespace(((*state).scope), name);
+                uint64 last_value = 0;
+                for (int i = 0;(i < vector_length(((((*value).value).t_enum).body)));(i += 1)) {
+                    parser_Node *iddecl = ((parser_Node *)vector_get(((((*value).value).t_enum).body), i));
+                    uint64 *constant = NULL;
+                    if (((((*iddecl).value).id_decl_enum).value)) {
+                        constant = ((uint64 *)_3700c937_evaluate_constant(((((*iddecl).value).id_decl_enum).value), ((*tpe).tpe), state));
+                    }  else {
+                        constant = malloc((sizeof(uint64)));
+                        (*constant) = last_value;
+                    };
+                    scope_create_variable(scpe, ((((*iddecl).value).id_decl_enum).ident), parser_ShareMarker_NONE, parser_VarDecl_CONST, tpe, constant);
+                    last_value = (((int64)(*constant)) + ((int64)1));
+                }
+                ;
+                scope_create_type_scope(((*state).scope), name, share, tpe, scpe);
+            }  else {
+                scope_create_type(((*state).scope), name, share, tpe);
+            };
         }  ;
         ((*name).tpe) = tpe;
     }
@@ -1262,9 +1307,6 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
         } else {
             typechecking_errorn(node, ((Array){24, "Expected size or value\x0a"""}));
         };
-    }
-    else if ((((*tpe).kind) == typechecking_TypeKind_ENUM)) {
-        assert(false);
     } else {
         typechecking_errorn(node, ((Array){30, "Expected aggregate type, got "}));
         fprintf(stderr, (((Array){5, "%s%s"}).value), (debug_type_to_str(tpe).value), (((Array){2, "\x0a"""}).value));

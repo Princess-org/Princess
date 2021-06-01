@@ -107,6 +107,10 @@ DLL_EXPORT void lexer_print_token_list(lexer_TokenList *list) {
         return ((char)26);
     }  else {
         char c = (((char *)s.value)[(*i)]);
+        if ((c == '\x0a')) {
+            ((*line) += 1);
+            (*column) = 0;
+        }  ;
         return c;
     };
 };
@@ -690,8 +694,6 @@ DLL_EXPORT lexer_TokenList * lexer_lex(string s) {
         } else if ((c == '\x0a')) {
             token = _9f927900_simple_token(lexer_TokenType_NEW_LINE, line, column);
             (i += 1);
-            column = 0;
-            (line += 1);
         }
         else if ((c == '(')) {
             (depth += 1);

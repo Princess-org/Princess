@@ -733,7 +733,7 @@ DLL_EXPORT vector_Vector * debug_catch_errors() {
         freopen((((Array){9, "/dev/tty"}).value), (((Array){2, "w"}).value), stderr);
     };
     vector_Vector *errors = vector_make();
-    FILE* fh2 = fopen((_ad42f669_file.value), (((Array){3, "rb"}).value));
+    File fh2 = fopen((_ad42f669_file.value), (((Array){3, "rb"}).value));
     if ((!fh2)) {
         return errors;
     }  ;

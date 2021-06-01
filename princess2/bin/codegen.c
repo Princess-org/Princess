@@ -354,8 +354,20 @@
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).cmp).right)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
+ void _574f02bf_emit_fneg(File fp, compiler_Insn *insn) {
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x09"""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).fneg).ret)).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){9, " = fneg "}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_type_to_str((((((*insn).value).fneg).value).tpe)).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, " "}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).fneg).value)).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
+};
  void _574f02bf_emit(File fp, compiler_Insn *insn) {
     switch (((int)((*insn).kind))) {
+        break;
+        case compiler_InsnKind_FNEG:
+        _574f02bf_emit_fneg(fp, insn);
         break;
         case compiler_InsnKind_ADD:
         _574f02bf_emit_arithmetic(fp, ((Array){4, "add"}), insn);

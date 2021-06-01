@@ -11,7 +11,8 @@
 #include "buffer.c"
 #include "util.c"
 #include "toolchain.c"
-typedef struct scope_Value {enum parser_ShareMarker share; enum parser_VarDecl modifier; string name; string assembly_name; struct typechecking_Type *tpe; void *value; struct scope_Value *next; bool forward_declare; bool global;} scope_Value;
+typedef struct scope_Scope scope_Scope;
+typedef struct scope_Value {enum parser_ShareMarker share; enum parser_VarDecl modifier; string name; string assembly_name; struct typechecking_Type *tpe; void *value; struct scope_Scope *scope; struct scope_Value *next; bool forward_declare; bool global;} scope_Value;
 typedef struct scope_Scope {int scope_count; struct scope_Scope *parent; struct map_Map *fields; struct vector_Vector *imports;} scope_Scope;
  int * _31a1fd14_get_scope_count(scope_Scope *scope) {
     if ((!scope)) {
@@ -133,11 +134,11 @@ DLL_EXPORT scope_Value * scope_get_function(scope_Scope *scope, parser_Node *id,
         (((*id_tail).value).body) = tail;
         scope_Value *s = scope_get(scope, id_head);
         if (s) {
-            if ((((*((*s).tpe)).kind) != typechecking_TypeKind_NAMESPACE)) {
+            if ((!((*s).scope))) {
                 typechecking_errorn(id, ((Array){28, "Use of :: on non namespace\x0a"""}));
                 return NULL;
             }  ;
-            return scope_get_function(((scope_Scope *)((*s).value)), id_tail, parameter_t);
+            return scope_get_function(((*s).scope), id_tail, parameter_t);
         }  ;
         return NULL;
     };
@@ -203,11 +204,11 @@ DLL_EXPORT scope_Value * scope_get(scope_Scope *scope, parser_Node *id) {
         (((*id_tail).value).body) = tail;
         scope_Value *s = scope_get(scope, id_head);
         if (s) {
-            if ((((*((*s).tpe)).kind) != typechecking_TypeKind_NAMESPACE)) {
+            if ((!((*s).scope))) {
                 typechecking_errorn(id, ((Array){28, "Use of :: on non namespace\x0a"""}));
                 return NULL;
             }  ;
-            return scope_get(((scope_Scope *)((*s).value)), id_tail);
+            return scope_get(((*s).scope), id_tail);
         }  ;
         return NULL;
     };
@@ -244,12 +245,12 @@ DLL_EXPORT scope_Scope * scope_enter_namespace(scope_Scope *scope, parser_Node *
             (((*n).value).body) = vec;
             scope = scope_enter_namespace(scope, n);
         }  else {
-            if ((((*((*scope_v).tpe)).kind) != typechecking_TypeKind_NAMESPACE)) {
+            if ((!((*scope_v).scope))) {
                 typechecking_errorn(node, ((Array){24, "Illegal declaration of "}));
                 fprintf(stderr, (((Array){5, "%s%s"}).value), (parser_identifier_to_str(node).value), (((Array){2, "\x0a"""}).value));
                 return NULL;
             }  else {
-                scope = ((scope_Scope *)((*scope_v).value));
+                scope = ((*scope_v).scope);
             };
         };
     }
@@ -337,6 +338,7 @@ DLL_EXPORT void scope_create_variable(scope_Scope *scope, parser_Node *node, par
     };
     ((*v).tpe) = tpe;
     ((*v).value) = value;
+    ((*v).scope) = NULL;
     ((*v).next) = NULL;
     ((*v).global) = global;
     if (map_contains(((*scope).fields), name)) {
@@ -346,7 +348,7 @@ DLL_EXPORT void scope_create_variable(scope_Scope *scope, parser_Node *node, par
         map_put(((*scope).fields), name, v);
     };
 };
-DLL_EXPORT bool scope_create_type(scope_Scope *scope, parser_Node *node, parser_ShareMarker share, typechecking_Type *tpe) {
+DLL_EXPORT bool scope_create_type_scope(scope_Scope *scope, parser_Node *node, parser_ShareMarker share, typechecking_Type *tpe, scope_Scope *vscope) {
     scope = _31a1fd14_create_path(scope, node);
     if ((!scope)) {
         return false;
@@ -359,6 +361,7 @@ DLL_EXPORT bool scope_create_type(scope_Scope *scope, parser_Node *node, parser_
     ((*v).assembly_name) = name;
     ((*v).tpe) = typechecking_type_;
     ((*v).value) = tpe;
+    ((*v).scope) = vscope;
     ((*v).next) = NULL;
     ((*v).global) = _31a1fd14_is_global(scope);
     scope_Value *value = ((scope_Value *)map_get(((*scope).fields), name));
@@ -376,6 +379,9 @@ DLL_EXPORT bool scope_create_type(scope_Scope *scope, parser_Node *node, parser_
     };
     return true;
 };
+DLL_EXPORT bool scope_create_type(scope_Scope *scope, parser_Node *node, parser_ShareMarker share, typechecking_Type *tpe) {
+    return scope_create_type_scope(scope, node, share, tpe, NULL);
+};
 DLL_EXPORT scope_Scope * scope_enter_namespace(scope_Scope *scope, parser_Node *node) {
     scope = _31a1fd14_create_path(scope, node);
     if ((!scope)) {
@@ -390,7 +396,8 @@ DLL_EXPORT scope_Scope * scope_enter_namespace(scope_Scope *scope, parser_Node *
     ((*v).name) = name;
     ((*v).assembly_name) = name;
     ((*v).tpe) = tpe;
-    ((*v).value) = scope2;
+    ((*v).value) = NULL;
+    ((*v).scope) = scope2;
     ((*v).next) = NULL;
     ((*v).global) = _31a1fd14_is_global(scope);
     if (map_contains(((*scope).fields), name)) {

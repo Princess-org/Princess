@@ -223,6 +223,7 @@ export def make_anonymous_type(kind: TypeKind) -> *Type {
 export let type_ = make_anonymous_type(TypeKind::TYPE)
 
 export def copy(a: *Type) -> *Type {
+    if not a { return null }
     var t = allocate(Type)
     @t = @a
     return t
@@ -534,6 +535,16 @@ def check_is_identifier_assignable(ident: *parser::Node, state: *State) -> bool 
     return true
 }
 
+//TODO Move this into its own file, along with a more sophisticated execution engine...
+def evaluate_constant(node: *parser::Node, tpe: *Type, state: *State) -> * {
+    if (@node).kind == parser::NodeKind::INTEGER {
+        let i = allocate(uint64)
+        @i = (@node).value.i
+        return i
+    }
+    assert(false)
+}
+
 export def type_lookup(node: *parser::Node, state: *State) -> *Type {
     if not node { return null }
     if (@node).kind == parser::NodeKind::IDENTIFIER {
@@ -607,6 +618,18 @@ export def type_lookup(node: *parser::Node, state: *State) -> *Type {
         (@tpe).size = size
         (@tpe).align = align
         (@tpe).fields = fields
+
+        return tpe
+    } else if (@node).kind == parser::NodeKind::ENUM_T {
+        var enum_tpe = builtins::int_
+        if (@node).value.t_enum.tpe {
+            enum_tpe = type_lookup((@node).value.t_enum.tpe, state)
+        }
+        let tpe = allocate(Type)
+        (@tpe).kind = TypeKind::ENUM
+        (@tpe).tpe = enum_tpe
+        (@tpe).size = (@enum_tpe).size
+        (@tpe).align = (@enum_tpe).align
 
         return tpe
     } else if (@node).kind == parser::NodeKind::ARRAY_T {
@@ -1189,13 +1212,41 @@ def walk_TypeDecl(node: *parser::Node, state: *State) {
         
         if value {
             tpe = copy(type_lookup(value, state))
+            if not tpe { return }
             (@tpe).name = parser::identifier_to_str(name)
             if (@value).kind == parser::NodeKind::STRUCT_T or
-                (@value).kind == parser::NodeKind::UNION_T {
+                (@value).kind == parser::NodeKind::UNION_T or
+                (@value).kind == parser::NodeKind::ENUM_T {
                 // Name anonymous struct or union
                 (@tpe).type_name = append_module((@tpe).name, (@node).loc.module)
             }
-            scope::create_type((@state).scope, name, share, tpe)
+            if (@value).kind == parser::NodeKind::ENUM_T {
+                // Create all the constants
+                let scpe = scope::enter_namespace((@state).scope, name)
+                
+                // TODO Do something about negative values (btw evaluate_constant can't handle them now)
+                var last_value: uint64 = 0
+                for var i in 0..vector::length((@value).value.t_enum.body) {
+                    let iddecl = vector::get((@value).value.t_enum.body, i) !*parser::Node
+
+                    var constant: *uint64 = null
+                    if (@iddecl).value.id_decl_enum.value {
+                        constant = evaluate_constant((@iddecl).value.id_decl_enum.value, (@tpe).tpe, state) !*uint64
+                    } else {
+                        constant = allocate(uint64)
+                        @constant = last_value
+                    }
+
+                    scope::create_variable(scpe, (@iddecl).value.id_decl_enum.ident, 
+                        parser::ShareMarker::NONE, parser::VarDecl::CONST, tpe, constant)
+
+                    last_value = @constant + 1
+                }
+
+                scope::create_type_scope((@state).scope, name, share, tpe, scpe)
+            } else {
+                scope::create_type((@state).scope, name, share, tpe)
+            }
         }
         (@name).tpe = tpe
     }
@@ -1501,9 +1552,7 @@ def walk_MemberAccess(node: *parser::Node, state: *State) {
         } else {
             errorn(node, "Expected size or value\n")
         }
-    } else if (@tpe).kind == TypeKind::ENUM {
-        // TODO
-        assert(false)
+    // TODO Enums might have ordinal and some other information
     } else {
         // TODO obj.method() -> method(obj)
         errorn(node, "Expected aggregate type, got ")
