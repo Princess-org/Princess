@@ -239,8 +239,7 @@
  void _ad42f669_print_case(parser_Node *node, int indent) {
     printf((((Array){3, "%s"}).value), (((Array){8, "Case {\x0a"""}).value));
     _ad42f669_print_indent(indent);
-    printf((((Array){3, "%s"}).value), (((Array){8, "expr = "}).value));
-    _ad42f669_print_node_(((((*node).value).case_).expr), (indent + 1));
+    _ad42f669_print_vector(((Array){5, "expr"}), ((((*node).value).case_).expr), indent);
     printf((((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
     _ad42f669_print_vector(((Array){5, "body"}), ((((*node).value).case_).body), indent);
     printf((((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
@@ -733,7 +732,7 @@ DLL_EXPORT vector_Vector * debug_catch_errors() {
         freopen((((Array){9, "/dev/tty"}).value), (((Array){2, "w"}).value), stderr);
     };
     vector_Vector *errors = vector_make();
-    File fh2 = fopen((_ad42f669_file.value), (((Array){3, "rb"}).value));
+    FILE* fh2 = fopen((_ad42f669_file.value), (((Array){3, "rb"}).value));
     if ((!fh2)) {
         return errors;
     }  ;
@@ -780,7 +779,7 @@ DLL_EXPORT string debug_type_to_str(typechecking_Type *tpe);
     for (int i = 0;(i < len);(i += 1)) {
         typechecking_NamedParameter *param = ((typechecking_NamedParameter *)vector_get(((*tpe).parameter_t), i));
         buffer_append_str((&buf), debug_type_to_str(((*param).value)));
-        if ((i < (len - 1))) {
+        if ((i < (len - ((int)1)))) {
             buffer_append_str((&buf), ((Array){3, " ,"}));
         }  ;
     }
@@ -790,7 +789,7 @@ DLL_EXPORT string debug_type_to_str(typechecking_Type *tpe);
     for (int i = 0;(i < len);(i += 1)) {
         typechecking_Type *ret = ((typechecking_Type *)vector_get(((*tpe).return_t), i));
         buffer_append_str((&buf), debug_type_to_str(ret));
-        if ((i < (len - 1))) {
+        if ((i < (len - ((int)1)))) {
             buffer_append_str((&buf), ((Array){3, ", "}));
         }  ;
     }
@@ -839,7 +838,7 @@ DLL_EXPORT string debug_type_to_str(typechecking_Type *tpe);
     for (int i = 0;(i < len);(i += 1)) {
         typechecking_Type *ret = ((typechecking_Type *)vector_get(((*tpe).return_t), i));
         buffer_append_str((&buf), debug_type_to_str(ret));
-        if ((i < (len - 1))) {
+        if ((i < (len - ((int)1)))) {
             buffer_append_str((&buf), ((Array){3, ", "}));
         }  ;
     }

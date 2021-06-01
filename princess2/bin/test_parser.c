@@ -280,6 +280,9 @@ bool test_parser_print_ast;
     str = ((Array){187, "\x0a""        switch value {\x0a""            case 1:\x0a""                print(foo)\x0a""                print(bar)\x0a""            case 2:\x0a""                print(bar)\x0a""                print(foo)\x0a""        }\x0a""    "});
     res = _0b8ef353_parse(str);
     str = ((Array){142, "\x0a""        switch value {\x0a""            case 1..10:\x0a""                print(foo)\x0a""            case 11..20:\x0a""                print(bar)\x0a""        }\x0a""    "});
+    res = _0b8ef353_parse(str);
+    str = ((Array){137, "\x0a""        switch value {\x0a""            case 10, 20:\x0a""                one\x0a""            case 20..30, 30..40:\x0a""                two\x0a""        }\x0a""    "});
+    res = _0b8ef353_parse(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
  void _0b8ef353_test_def() {

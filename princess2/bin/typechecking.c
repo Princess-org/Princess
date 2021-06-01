@@ -426,7 +426,10 @@ DLL_EXPORT void typechecking_typecheck(toolchain_Module *module);
         uint64 *i = malloc((sizeof(uint64)));
         (*i) = (((*node).value).i);
         return i;
-    }  ;
+    } else if ((((*node).kind) == parser_NodeKind_IDENTIFIER)) {
+        scope_Value *value = scope_get_const_value(((*node).scope), node);
+        return ((*value).value);
+    } ;
     assert(false);
 };
 DLL_EXPORT typechecking_Type * typechecking_type_lookup(parser_Node *node, typechecking_State *state) {
@@ -1166,6 +1169,9 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
         };
     };
 };
+ void _3700c937_walk_Switch(parser_Node *node, typechecking_State *state) {
+    ;
+};
  void _3700c937_walk_If(parser_Node *node, typechecking_State *state) {
     parser_Node *cond = ((((*node).value).if_).cond);
     _3700c937_walk(cond, state);
@@ -1600,7 +1606,7 @@ DLL_EXPORT void typechecking_errorn(parser_Node *node, string msg) {
     int line = (((*node).loc).line);
     int column = (((*node).loc).column);
     fprintf(stderr, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
-    fprintf(stderr, (((Array){13, "%s%s%d%s%d%s"}).value), (filename.value), (((Array){2, "@"}).value), (line + ((int)1)), (((Array){2, ":"}).value), (column + ((int)1)), (((Array){2, "\x0a"""}).value));
+    fprintf(stderr, (((Array){13, "%s%s%d%s%d%s"}).value), (filename.value), (((Array){2, "@"}).value), (line + 1), (((Array){2, ":"}).value), (column + 1), (((Array){2, "\x0a"""}).value));
     fprintf(stderr, (((Array){5, "%s%s"}).value), ((((string *)(((*node).loc).lines).value)[line]).value), (((Array){2, "\x0a"""}).value));
     for (int i = 0;(i < column);(i += 1)) {
         fprintf(stderr, (((Array){3, "%s"}).value), (((Array){2, " "}).value));

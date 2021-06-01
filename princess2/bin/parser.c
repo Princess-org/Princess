@@ -16,7 +16,7 @@ typedef struct parser_NodeDef {enum parser_ShareMarker share; struct parser_Node
 typedef struct parser_NodeParam {enum parser_VarDecl kw; struct parser_Node *name; struct parser_Node *tpe; struct parser_Node *value;} parser_NodeParam;
 typedef struct parser_NodeImportModule {struct parser_Node *name; struct parser_Node *alias;} parser_NodeImportModule;
 typedef struct parser_NodeSwitch {struct parser_Node *expr; struct vector_Vector *body;} parser_NodeSwitch;
-typedef struct parser_NodeCase {struct parser_Node *expr; struct vector_Vector *body;} parser_NodeCase;
+typedef struct parser_NodeCase {struct vector_Vector *expr; struct vector_Vector *body;} parser_NodeCase;
 typedef struct parser_NodeIf {struct parser_Node *cond; struct vector_Vector *body; struct vector_Vector *else_if; struct parser_Node *else_;} parser_NodeIf;
 typedef struct parser_NodeElseIf {struct parser_Node *cond; struct vector_Vector *body;} parser_NodeElseIf;
 typedef struct parser_NodeArrayStaticT {struct parser_Node *n; enum parser_VarDecl kw; struct parser_Node *tpe;} parser_NodeArrayStaticT;
@@ -71,7 +71,7 @@ DLL_EXPORT string parser_identifier_to_str(parser_Node *node) {
     int len = vector_length((((*node).value).body));
     for (int i = 0;(i < len);(i += 1)) {
         buffer_append_str((&buf), (*((string *)vector_get((((*node).value).body), i))));
-        if ((i < (len - 1))) {
+        if ((i < (len - ((int)1)))) {
             buffer_append_str((&buf), ((Array){3, "::"}));
         }  ;
     }
@@ -1412,15 +1412,21 @@ DLL_EXPORT string parser_identifier_to_str(parser_Node *node) {
             int column = (token.column);
             _3643b863_skip_newline(parse_state);
             vector_Vector *body2 = vector_make();
-            parser_Node *expr2 = NULL;
-            token = _3643b863_peek(parse_state);
-            if (((token.tpe) == lexer_TokenType_COLON)) {
-                _3643b863_pop(parse_state);
-            }  else {
-                expr2 = _3643b863_expect_expression(parse_state);
+            vector_Vector *expr2 = vector_make();
+            while (true) {
+                token = _3643b863_peek(parse_state);
+                if (((token.tpe) == lexer_TokenType_COLON)) {
+                    _3643b863_pop(parse_state);
+                    break;
+                } else if (((token.tpe) == lexer_TokenType_COMMA)) {
+                    _3643b863_pop(parse_state);
+                    continue;
+                } else {
+                    vector_push(expr2, _3643b863_expect_expression(parse_state));
+                };
                 _3643b863_skip_newline(parse_state);
-                _3643b863_expect(parse_state, lexer_TokenType_COLON, ((Array){14, "Expected ':'\x0a"""}));
-            };
+            }
+            ;
             _3643b863_skip_newline(parse_state);
             token = _3643b863_peek(parse_state);
             while (((((token.tpe) != lexer_TokenType_K_CASE) && ((token.tpe) != lexer_TokenType_C_BRACE)) && ((token.tpe) != lexer_TokenType_EOF))) {
@@ -1633,7 +1639,7 @@ DLL_EXPORT parser_Node * parser_parse(lexer_TokenList *list, Array lines, string
         int line = (token.line);
         int column = (token.column);
         fprintf(stderr, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
-        fprintf(stderr, (((Array){13, "%s%s%d%s%d%s"}).value), (filename.value), (((Array){2, "@"}).value), (line + 1), (((Array){2, ":"}).value), (column + 1), (((Array){2, "\x0a"""}).value));
+        fprintf(stderr, (((Array){13, "%s%s%d%s%d%s"}).value), (filename.value), (((Array){2, "@"}).value), (line + ((int)1)), (((Array){2, ":"}).value), (column + ((int)1)), (((Array){2, "\x0a"""}).value));
         fprintf(stderr, (((Array){5, "%s%s"}).value), ((((string *)((*state).lines).value)[line]).value), (((Array){2, "\x0a"""}).value));
         for (int i = 0;(i < column);(i += 1)) {
             fprintf(stderr, (((Array){3, "%s"}).value), (((Array){2, " "}).value));
