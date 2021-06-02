@@ -439,6 +439,46 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     ;
     return value;
 };
+ compiler_Value _87f75ce3_walk_ArrayLit(parser_Node *node, compiler_State *state) {
+    typechecking_Type *tpe = ((*node).tpe);
+    int len = vector_length((((*node).value).body));
+    Array values = ((Array){len, malloc((((int64)(sizeof(compiler_Value))) * ((int64)len)))});
+    for (int i = 0;(i < len);(i += 1)) {
+        void *v = vector_get((((*node).value).body), i);
+        (((compiler_Value *)values.value)[i]) = compiler_walk_expression(v, state);
+    }
+    ;
+    compiler_Value value = ((compiler_Value){ .kind = compiler_ValueKind_ARRAY, .values = values, .tpe = tpe });
+    for (int i = 0;(i < len);(i += 1)) {
+        compiler_Value val = (((compiler_Value *)values.value)[i]);
+        if ((((val.kind) == compiler_ValueKind_LOCAL) || ((val.kind) == compiler_ValueKind_GLOBAL))) {
+            (((compiler_Value *)values.value)[i]) = ((compiler_Value){ .undef = true, .tpe = (val.tpe) });
+            compiler_Value ret = compiler_make_local_value(tpe, NULL, state);
+            Array index = ((Array){1, malloc((((int64)(sizeof(int))) * ((int64)1)))});
+            (((int *)index.value)[0]) = i;
+            compiler_Insn *insert = malloc((sizeof(compiler_Insn)));
+            ((*insert).kind) = compiler_InsnKind_INSERTVALUE;
+            (((*insert).value).insert_value) = ((compiler_InsnInsertValue){ .ret = ret, .value = value, .element = val, .index = index });
+            compiler_push_insn(insert, state);
+            value = ret;
+        }  ;
+    }
+    ;
+    compiler_Value ret = compiler_make_local_value(tpe, NULL, state);
+    compiler_Insn *alloca = malloc((sizeof(compiler_Insn)));
+    ((*alloca).kind) = compiler_InsnKind_ALLOCA;
+    (((*alloca).value).alloca) = ((compiler_InsnAlloca){ .ret = ret });
+    compiler_push_insn(alloca, state);
+    (ret.tpe) = typechecking_pointer(tpe);
+    compiler_Value *retp = malloc((sizeof(compiler_Value)));
+    (*retp) = ret;
+    (value.addr) = retp;
+    compiler_Insn *store = malloc((sizeof(compiler_Insn)));
+    ((*store).kind) = compiler_InsnKind_STORE;
+    (((*store).value).store) = ((compiler_InsnStore){ .value = value, .loc = ret });
+    compiler_push_insn(store, state);
+    return value;
+};
  compiler_Value _87f75ce3_walk_ArithmeticOp(parser_Node *node, compiler_InsnKind insn_kind, typechecking_Type *tpe, compiler_State *state) {
     compiler_Value left = _87f75ce3_convert_to(node, compiler_walk_expression(((((*node).value).bin_op).left), state), tpe, state);
     compiler_Value right = _87f75ce3_convert_to(node, compiler_walk_expression(((((*node).value).bin_op).right), state), tpe, state);
@@ -626,6 +666,18 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
  compiler_Value _87f75ce3_walk_Shr(parser_Node *node, compiler_State *state) {
     typechecking_Type *tpe = ((*node).tpe);
     return _87f75ce3_walk_ArithmeticOp(node, compiler_InsnKind_ASHR, tpe, state);
+};
+ compiler_Value _87f75ce3_walk_BAnd(parser_Node *node, compiler_State *state) {
+    typechecking_Type *tpe = ((*node).tpe);
+    return _87f75ce3_walk_ArithmeticOp(node, compiler_InsnKind_AND, tpe, state);
+};
+ compiler_Value _87f75ce3_walk_BOr(parser_Node *node, compiler_State *state) {
+    typechecking_Type *tpe = ((*node).tpe);
+    return _87f75ce3_walk_ArithmeticOp(node, compiler_InsnKind_OR, tpe, state);
+};
+ compiler_Value _87f75ce3_walk_BXor(parser_Node *node, compiler_State *state) {
+    typechecking_Type *tpe = ((*node).tpe);
+    return _87f75ce3_walk_ArithmeticOp(node, compiler_InsnKind_XOR, tpe, state);
 };
  compiler_Value _87f75ce3_walk_Call(parser_Node *node, compiler_State *state) {
     typechecking_Type *tpe = ((*node).function);
@@ -1272,6 +1324,15 @@ DLL_EXPORT compiler_Value compiler_walk_expression(parser_Node *node, compiler_S
         case parser_NodeKind_SHR:
         return _87f75ce3_walk_Shr(node, state);
         break;
+        case parser_NodeKind_BAND:
+        return _87f75ce3_walk_BAnd(node, state);
+        break;
+        case parser_NodeKind_BOR:
+        return _87f75ce3_walk_BOr(node, state);
+        break;
+        case parser_NodeKind_BXOR:
+        return _87f75ce3_walk_BXor(node, state);
+        break;
         case parser_NodeKind_PADD:
         return _87f75ce3_walk_PointerOp(node, compiler_InsnKind_ADD, state);
         break;
@@ -1304,6 +1365,9 @@ DLL_EXPORT compiler_Value compiler_walk_expression(parser_Node *node, compiler_S
         break;
         case parser_NodeKind_STRUCT_LIT:
         return _87f75ce3_walk_StructLit(node, state);
+        break;
+        case parser_NodeKind_ARRAY_LIT:
+        return _87f75ce3_walk_ArrayLit(node, state);
         break;
         default:
         fprintf(stderr, (((Array){5, "%d%s"}).value), ((*node).kind), (((Array){2, "\x0a"""}).value));

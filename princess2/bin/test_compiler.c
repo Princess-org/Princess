@@ -191,6 +191,11 @@ bool test_compiler_print_ll;
  void _6dcc03b3_test_array_lit() {
     printf((((Array){3, "%s"}).value), (((Array){24, ">Test array literal... "}).value));
     Array str = ((Array){35, "\x0a""        let a = [1, 2, 3, 4]\x0a""    "});
+    string res = _6dcc03b3_compile(str);
+    str = ((Array){42, "\x0a""        let a: [int] = [1, 2, 3, 4]\x0a""    "});
+    res = _6dcc03b3_compile(str);
+    str = ((Array){74, "\x0a""        let a = 10\x0a""        let b = [a, 20]\x0a""        let c: [int] = b\x0a""    "});
+    res = _6dcc03b3_compile(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
  void _6dcc03b3_test_compare() {
@@ -272,6 +277,7 @@ DLL_EXPORT void test_compiler_test() {
     _6dcc03b3_test_struct_lit();
     _6dcc03b3_test_size_of();
     _6dcc03b3_test_align_of();
+    _6dcc03b3_test_array_lit();
     _6dcc03b3_test_compare();
     _6dcc03b3_test_pointer_arithmetic();
     _6dcc03b3_test_assign_eq();
