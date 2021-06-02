@@ -22,6 +22,7 @@ typedef struct typechecking_State {string filename; string module; struct scope_
 DLL_EXPORT void typechecking_errorn(parser_Node *node, string msg);
 DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, typechecking_Type *b);
 DLL_EXPORT typechecking_Type * typechecking_type_lookup(parser_Node *node, typechecking_State *state);
+DLL_EXPORT void * typechecking_evaluate_constant(parser_Node *node);
  typechecking_Type * _3700c937_current_function(typechecking_State *state) {
     int length = vector_length(((*state).function_stack));
     if ((length == 0)) {
@@ -95,6 +96,12 @@ DLL_EXPORT bool typechecking_is_array(typechecking_Type *tpe) {
         return false;
     }  ;
     return ((((*tpe).kind) == typechecking_TypeKind_ARRAY) || (((*tpe).kind) == typechecking_TypeKind_STATIC_ARRAY));
+};
+DLL_EXPORT bool typechecking_is_range(typechecking_Type *tpe) {
+    if ((!tpe)) {
+        return false;
+    }  ;
+    return ((((*tpe).kind) == typechecking_TypeKind_RANGE) || (((*tpe).kind) == typechecking_TypeKind_RANGE_INC));
 };
 DLL_EXPORT typechecking_Type * typechecking_pointer(typechecking_Type *tpe) {
     typechecking_Type *t = malloc((sizeof(typechecking_Type)));
@@ -421,7 +428,7 @@ DLL_EXPORT void typechecking_typecheck(toolchain_Module *module);
     }  ;
     return true;
 };
- void * _3700c937_evaluate_constant(parser_Node *node, typechecking_Type *tpe, typechecking_State *state) {
+DLL_EXPORT void * typechecking_evaluate_constant(parser_Node *node) {
     if ((((*node).kind) == parser_NodeKind_INTEGER)) {
         uint64 *i = malloc((sizeof(uint64)));
         (*i) = (((*node).value).i);
@@ -1025,7 +1032,7 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
                     parser_Node *iddecl = ((parser_Node *)vector_get(((((*value).value).t_enum).body), i));
                     uint64 *constant = NULL;
                     if (((((*iddecl).value).id_decl_enum).value)) {
-                        constant = ((uint64 *)_3700c937_evaluate_constant(((((*iddecl).value).id_decl_enum).value), ((*tpe).tpe), state));
+                        constant = ((uint64 *)typechecking_evaluate_constant(((((*iddecl).value).id_decl_enum).value)));
                     }  else {
                         constant = malloc((sizeof(uint64)));
                         (*constant) = last_value;
@@ -1169,7 +1176,34 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
         };
     };
 };
+ void _3700c937_walk_Case(parser_Node *node, typechecking_State *state) {
+    for (int i = 0;(i < vector_length(((((*node).value).case_).expr)));(i += 1)) {
+        parser_Node *expr = ((parser_Node *)vector_get(((((*node).value).case_).expr), i));
+        _3700c937_walk(expr, state);
+        if ((!((typechecking_is_arithmetic(((*expr).tpe)) || typechecking_is_enum(((*expr).tpe))) || typechecking_is_range(((*expr).tpe))))) {
+            typechecking_errorn(expr, ((Array){65, "Incompatible type, expected arithmetic type, range or enum, got "}));
+            fprintf(stderr, (((Array){5, "%s%s"}).value), (debug_type_to_str(((*expr).tpe)).value), (((Array){2, "\x0a"""}).value));
+            return ;
+        }  ;
+    }
+    ;
+    for (int i = 0;(i < vector_length(((((*node).value).case_).body)));(i += 1)) {
+        parser_Node *expr = ((parser_Node *)vector_get(((((*node).value).case_).body), i));
+        _3700c937_walk(expr, state);
+    }
+    ;
+};
  void _3700c937_walk_Switch(parser_Node *node, typechecking_State *state) {
+    parser_Node *expr = ((((*node).value).switch_).expr);
+    _3700c937_walk(expr, state);
+    if ((!(typechecking_is_arithmetic(((*expr).tpe)) || typechecking_is_enum(((*expr).tpe))))) {
+        typechecking_errorn(expr, ((Array){58, "Incompatible type, expected arithmetic type or enum, got "}));
+        fprintf(stderr, (((Array){5, "%s%s"}).value), (debug_type_to_str(((*expr).tpe)).value), (((Array){2, "\x0a"""}).value));
+        return ;
+    }  ;
+    for (int i = 0;(i < vector_length(((((*node).value).switch_).body)));(i += 1)) {
+        _3700c937_walk(((parser_Node *)vector_get(((((*node).value).switch_).body), i)), state);
+    }
     ;
 };
  void _3700c937_walk_If(parser_Node *node, typechecking_State *state) {
@@ -1494,6 +1528,12 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
         case parser_NodeKind_IF:
         _3700c937_walk_If(node, state);
         break;
+        case parser_NodeKind_SWITCH:
+        _3700c937_walk_Switch(node, state);
+        break;
+        case parser_NodeKind_CASE:
+        _3700c937_walk_Case(node, state);
+        break;
         case parser_NodeKind_DEF:
         _3700c937_walk_Def(node, state);
         break;
@@ -1606,7 +1646,7 @@ DLL_EXPORT void typechecking_errorn(parser_Node *node, string msg) {
     int line = (((*node).loc).line);
     int column = (((*node).loc).column);
     fprintf(stderr, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
-    fprintf(stderr, (((Array){13, "%s%s%d%s%d%s"}).value), (filename.value), (((Array){2, "@"}).value), (line + 1), (((Array){2, ":"}).value), (column + 1), (((Array){2, "\x0a"""}).value));
+    fprintf(stderr, (((Array){13, "%s%s%d%s%d%s"}).value), (filename.value), (((Array){2, "@"}).value), (line + ((int)1)), (((Array){2, ":"}).value), (column + ((int)1)), (((Array){2, "\x0a"""}).value));
     fprintf(stderr, (((Array){5, "%s%s"}).value), ((((string *)(((*node).loc).lines).value)[line]).value), (((Array){2, "\x0a"""}).value));
     for (int i = 0;(i < column);(i += 1)) {
         fprintf(stderr, (((Array){3, "%s"}).value), (((Array){2, " "}).value));

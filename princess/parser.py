@@ -3004,6 +3004,9 @@ class PrincessParser(Parser):
         with self._group():
             with self._choice():
                 with self._option():
+                    self._expr_range_incl_()
+                    self.name_last_node('@')
+                with self._option():
                     self._expr_range_()
                     self.name_last_node('@')
                 with self._option():
@@ -3011,7 +3014,7 @@ class PrincessParser(Parser):
                     self.name_last_node('@')
                 self._error(
                     'expecting one of: '
-                    '<expr_range> <value>'
+                    '<expr_range_incl> <expr_range> <value>'
                 )
 
     @tatsumasu('Case')

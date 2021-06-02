@@ -18,7 +18,7 @@ typedef struct compiler_Label {string name;} compiler_Label;
 typedef enum compiler_ValueKind {compiler_ValueKind_NULL = 0, compiler_ValueKind_LOCAL = 1, compiler_ValueKind_GLOBAL = 2, compiler_ValueKind_BOOL = 3, compiler_ValueKind_INT = 4, compiler_ValueKind_FLOAT = 5, compiler_ValueKind_STRING = 6, compiler_ValueKind_ARRAY = 7, compiler_ValueKind_STRUCT = 8, compiler_ValueKind_UNION = 9, compiler_ValueKind_TYPE = 10} compiler_ValueKind;
 typedef struct compiler_Value {enum compiler_ValueKind kind; string name; int sign; uint64 i; double f; string s; bool undef; struct typechecking_Type *value_tpe; struct compiler_Value *value; Array values; struct compiler_Value *addr; struct typechecking_Type *tpe;} compiler_Value;
 compiler_Value compiler_NO_VALUE;
-typedef enum compiler_InsnKind {compiler_InsnKind_ADD = 0, compiler_InsnKind_SUB = 1, compiler_InsnKind_MUL = 2, compiler_InsnKind_SREM = 3, compiler_InsnKind_UREM = 4, compiler_InsnKind_SDIV = 5, compiler_InsnKind_UDIV = 6, compiler_InsnKind_FADD = 7, compiler_InsnKind_FSUB = 8, compiler_InsnKind_FMUL = 9, compiler_InsnKind_FREM = 10, compiler_InsnKind_FDIV = 11, compiler_InsnKind_ASHR = 12, compiler_InsnKind_SHL = 13, compiler_InsnKind_AND = 14, compiler_InsnKind_OR = 15, compiler_InsnKind_XOR = 16, compiler_InsnKind_FCMP = 17, compiler_InsnKind_ICMP = 18, compiler_InsnKind_FNEG = 19, compiler_InsnKind_RET = 20, compiler_InsnKind_LOAD = 21, compiler_InsnKind_STORE = 22, compiler_InsnKind_ALLOCA = 23, compiler_InsnKind_INSERTVALUE = 24, compiler_InsnKind_EXTRACTVALUE = 25, compiler_InsnKind_GETELEMENTPTR = 26, compiler_InsnKind_TRUNC = 27, compiler_InsnKind_ZEXT = 28, compiler_InsnKind_SEXT = 29, compiler_InsnKind_FPTRUNC = 30, compiler_InsnKind_FPEXT = 31, compiler_InsnKind_FPTOUI = 32, compiler_InsnKind_FPTOSI = 33, compiler_InsnKind_UITOFP = 34, compiler_InsnKind_SITOFP = 35, compiler_InsnKind_PTRTOINT = 36, compiler_InsnKind_INTTOPTR = 37, compiler_InsnKind_BITCAST = 38, compiler_InsnKind_CALL = 39, compiler_InsnKind_BR_UNC = 40, compiler_InsnKind_BR = 41, compiler_InsnKind_UNREACHABLE = 42} compiler_InsnKind;
+typedef enum compiler_InsnKind {compiler_InsnKind_ADD = 0, compiler_InsnKind_SUB = 1, compiler_InsnKind_MUL = 2, compiler_InsnKind_SREM = 3, compiler_InsnKind_UREM = 4, compiler_InsnKind_SDIV = 5, compiler_InsnKind_UDIV = 6, compiler_InsnKind_FADD = 7, compiler_InsnKind_FSUB = 8, compiler_InsnKind_FMUL = 9, compiler_InsnKind_FREM = 10, compiler_InsnKind_FDIV = 11, compiler_InsnKind_ASHR = 12, compiler_InsnKind_SHL = 13, compiler_InsnKind_AND = 14, compiler_InsnKind_OR = 15, compiler_InsnKind_XOR = 16, compiler_InsnKind_FCMP = 17, compiler_InsnKind_ICMP = 18, compiler_InsnKind_FNEG = 19, compiler_InsnKind_RET = 20, compiler_InsnKind_LOAD = 21, compiler_InsnKind_STORE = 22, compiler_InsnKind_ALLOCA = 23, compiler_InsnKind_INSERTVALUE = 24, compiler_InsnKind_EXTRACTVALUE = 25, compiler_InsnKind_GETELEMENTPTR = 26, compiler_InsnKind_TRUNC = 27, compiler_InsnKind_ZEXT = 28, compiler_InsnKind_SEXT = 29, compiler_InsnKind_FPTRUNC = 30, compiler_InsnKind_FPEXT = 31, compiler_InsnKind_FPTOUI = 32, compiler_InsnKind_FPTOSI = 33, compiler_InsnKind_UITOFP = 34, compiler_InsnKind_SITOFP = 35, compiler_InsnKind_PTRTOINT = 36, compiler_InsnKind_INTTOPTR = 37, compiler_InsnKind_BITCAST = 38, compiler_InsnKind_SWITCH = 39, compiler_InsnKind_CALL = 40, compiler_InsnKind_BR_UNC = 41, compiler_InsnKind_BR = 42, compiler_InsnKind_UNREACHABLE = 43} compiler_InsnKind;
 ARRAY(compiler_f_ueq, char, 4);
 ARRAY(compiler_f_ugt, char, 4);
 ARRAY(compiler_f_uge, char, 4);
@@ -36,6 +36,8 @@ ARRAY(compiler_i_sge, char, 4);
 ARRAY(compiler_i_slt, char, 4);
 ARRAY(compiler_i_sle, char, 4);
 typedef struct compiler_InsnCmp {string op; struct compiler_Value ret; struct compiler_Value left; struct compiler_Value right;} compiler_InsnCmp;
+typedef struct compiler_SwitchValue {struct compiler_Value value; struct compiler_Label label_;} compiler_SwitchValue;
+typedef struct compiler_InsnSwitch {struct compiler_Value value; struct compiler_Label otherwise; struct vector_Vector *switch_values;} compiler_InsnSwitch;
 typedef struct compiler_InsnFneg {struct compiler_Value ret; struct compiler_Value value;} compiler_InsnFneg;
 typedef struct compiler_InsnInsertValue {struct compiler_Value ret; struct compiler_Value value; struct compiler_Value element; Array index;} compiler_InsnInsertValue;
 typedef struct compiler_InsnGetElementPtr {struct compiler_Value ret; struct typechecking_Type *tpe; struct compiler_Value value; Array index;} compiler_InsnGetElementPtr;
@@ -49,7 +51,7 @@ typedef struct compiler_InsnAlloca {struct compiler_Value ret;} compiler_InsnAll
 typedef struct compiler_InsnCall {struct compiler_Value name; struct compiler_Value ret; Array args; Array proto;} compiler_InsnCall;
 typedef struct compiler_InsnBrUnc {struct compiler_Label label_;} compiler_InsnBrUnc;
 typedef struct compiler_InsnBr {struct compiler_Value cond; struct compiler_Label if_true; struct compiler_Label if_false;} compiler_InsnBr;
-typedef union compiler_InsnValue {struct compiler_InsnArithmetic arith; struct compiler_InsnReturn ret; struct compiler_InsnStore store; struct compiler_InsnLoad load; struct compiler_InsnAlloca alloca; struct compiler_InsnCall call; struct compiler_InsnBrUnc br_unc; struct compiler_InsnBr br; struct compiler_InsnInsertValue insert_value; struct compiler_InsnExtractValue extract_value; struct compiler_InsnGetElementPtr gep; struct compiler_InsnConvert convert; struct compiler_InsnCmp cmp; struct compiler_InsnFneg fneg;} compiler_InsnValue;
+typedef union compiler_InsnValue {struct compiler_InsnArithmetic arith; struct compiler_InsnReturn ret; struct compiler_InsnStore store; struct compiler_InsnLoad load; struct compiler_InsnAlloca alloca; struct compiler_InsnCall call; struct compiler_InsnBrUnc br_unc; struct compiler_InsnBr br; struct compiler_InsnInsertValue insert_value; struct compiler_InsnExtractValue extract_value; struct compiler_InsnGetElementPtr gep; struct compiler_InsnConvert convert; struct compiler_InsnCmp cmp; struct compiler_InsnFneg fneg; struct compiler_InsnSwitch switch_;} compiler_InsnValue;
 typedef struct compiler_Insn {enum compiler_InsnKind kind; union compiler_InsnValue value;} compiler_Insn;
 typedef struct compiler_Block {string label_; struct vector_Vector *insn; struct compiler_Block *next;} compiler_Block;
 typedef struct compiler_Function {string name; string unmangled; struct vector_Vector *args; struct typechecking_Type *ret; bool multiple_returns; bool forward_declare; struct compiler_Block *block;} compiler_Function;
@@ -216,7 +218,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     }  ;
     compiler_InsnKind kind;
     if ((((*tpe).kind) == typechecking_TypeKind_ARRAY)) {
-        if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && (((bool)(!((*tpe).tpe))) || typechecking_equals(((*tpe).tpe), ((*(value.tpe)).tpe))))) {
+        if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && (((bool)(!((*tpe).tpe))) || ((bool)typechecking_equals(((*tpe).tpe), ((*(value.tpe)).tpe)))))) {
             compiler_Value local = compiler_make_local_value(typechecking_pointer(((*(value.tpe)).tpe)), NULL, state);
             Array index = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
             (((compiler_Value *)index.value)[0]) = compiler_make_int_value(0);
@@ -1051,7 +1053,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     if (typechecking_is_pointer((right.tpe))) {
         right = _87f75ce3_convert_to(node, right, builtins_size_t_, state);
     }  ;
-    if ((typechecking_is_arithmetic((left.tpe)) && typechecking_is_arithmetic((right.tpe)))) {
+    if ((((bool)typechecking_is_arithmetic((left.tpe))) && ((bool)typechecking_is_arithmetic((right.tpe))))) {
         tpe = typechecking_common_type((left.tpe), (right.tpe));
         left = _87f75ce3_convert_to(node, left, tpe, state);
         right = _87f75ce3_convert_to(node, right, tpe, state);
@@ -1365,6 +1367,182 @@ DLL_EXPORT compiler_Value compiler_walk_expression(parser_Node *node, compiler_S
     ((((*exit).value).br_unc).label_) = exit_label;
     compiler_push_label(exit_label, state);
 };
+int _87f75ce3_max_cases;
+ void _87f75ce3_walk_Switch(parser_Node *node, compiler_State *state) {
+    compiler_Value swexpr = compiler_walk_expression(((((*node).value).switch_).expr), state);
+    typechecking_Type *tpe = ((*((((*node).value).switch_).expr)).tpe);
+    vector_Vector *switch_values = vector_make();
+    compiler_Insn *swtch = malloc((sizeof(compiler_Insn)));
+    ((*swtch).kind) = compiler_InsnKind_SWITCH;
+    (((*swtch).value).switch_) = ((compiler_InsnSwitch){ .value = swexpr, .switch_values = switch_values });
+    compiler_push_insn(swtch, state);
+    compiler_Insn *end = malloc((sizeof(compiler_Insn)));
+    ((*end).kind) = compiler_InsnKind_BR_UNC;
+    parser_Node *otherwise = NULL;
+    vector_Vector *if_stmts = vector_make();
+    for (int i = 0;(i < vector_length(((((*node).value).switch_).body)));(i += 1)) {
+        parser_Node *cse = ((parser_Node *)vector_get(((((*node).value).switch_).body), i));
+        int len = vector_length(((((*cse).value).case_).expr));
+        if ((len == 0)) {
+            if (otherwise) {
+                typechecking_errorn(cse, ((Array){28, "More than one default case\x0a"""}));
+                return ;
+            }  else {
+                otherwise = cse;
+            };
+        }  else {
+            bool out_of_bounds = false;
+            for (int j = 0;(j < len);(j += 1)) {
+                parser_Node *expr = ((parser_Node *)vector_get(((((*cse).value).case_).expr), j));
+                if (((((*expr).kind) == parser_NodeKind_RANGE) || (((*expr).kind) == parser_NodeKind_RANGE_INC))) {
+                    parser_Node *left = ((((*expr).value).bin_op).left);
+                    parser_Node *right = ((((*expr).value).bin_op).right);
+                    uint64 min = (*((uint64 *)typechecking_evaluate_constant(left)));
+                    uint64 max = (*((uint64 *)typechecking_evaluate_constant(right)));
+                    if (((max >= min) && ((max - min) > _87f75ce3_max_cases))) {
+                        vector_push(if_stmts, cse);
+                        out_of_bounds = true;
+                        break;
+                    }  ;
+                }  ;
+            }
+            ;
+            if ((!out_of_bounds)) {
+                compiler_Label start = compiler_make_label(state);
+                compiler_push_label(start, state);
+                for (int j = 0;(j < len);(j += 1)) {
+                    parser_Node *expr = ((parser_Node *)vector_get(((((*cse).value).case_).expr), j));
+                    if (((((*expr).kind) == parser_NodeKind_RANGE) || (((*expr).kind) == parser_NodeKind_RANGE_INC))) {
+                        parser_Node *left = ((((*expr).value).bin_op).left);
+                        parser_Node *right = ((((*expr).value).bin_op).right);
+                        uint64 min = (*((uint64 *)typechecking_evaluate_constant(left)));
+                        uint64 max = (*((uint64 *)typechecking_evaluate_constant(right)));
+                        if ((max >= min)) {
+                            if ((((*expr).kind) == parser_NodeKind_RANGE_INC)) {
+                                (max += 1);
+                            }  ;
+                            for (uint64 k = min;(k < max);(k += 1)) {
+                                compiler_SwitchValue *svalue = malloc((sizeof(compiler_SwitchValue)));
+                                ((*svalue).label_) = start;
+                                ((*svalue).value) = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = k, .sign = 1, .tpe = tpe });
+                                vector_push(switch_values, svalue);
+                            }
+                            ;
+                        }  else {
+                            typechecking_errorn(expr, ((Array){15, "Invalid range\x0a"""}));
+                            return ;
+                        };
+                    }  else {
+                        uint64 value = (*((uint64 *)typechecking_evaluate_constant(expr)));
+                        compiler_SwitchValue *svalue = malloc((sizeof(compiler_SwitchValue)));
+                        ((*svalue).label_) = start;
+                        ((*svalue).value) = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = value, .sign = 1, .tpe = tpe });
+                        vector_push(switch_values, svalue);
+                    };
+                }
+                ;
+                for (int j = 0;(j < vector_length(((((*cse).value).case_).body)));(j += 1)) {
+                    parser_Node *expr = ((parser_Node *)vector_get(((((*cse).value).case_).body), j));
+                    compiler_walk(expr, state);
+                }
+                ;
+                compiler_push_insn(end, state);
+            }  ;
+        };
+    }
+    ;
+    compiler_Label olabel = compiler_make_label(state);
+    compiler_push_label(olabel, state);
+    for (int i = 0;(i < vector_length(if_stmts));(i += 1)) {
+        parser_Node *cse = ((parser_Node *)vector_get(if_stmts, i));
+        int len = vector_length(((((*cse).value).case_).expr));
+        vector_Vector *brs = vector_make();
+        compiler_Insn *last = NULL;
+        for (int j = 0;(j < len);(j += 1)) {
+            if (last) {
+                compiler_Label lbl = compiler_make_label(state);
+                compiler_push_label(lbl, state);
+                ((((*last).value).br).if_false) = lbl;
+            }  ;
+            parser_Node *expr = ((parser_Node *)vector_get(((((*cse).value).case_).expr), j));
+            if (((((*expr).kind) == parser_NodeKind_RANGE) || (((*expr).kind) == parser_NodeKind_RANGE_INC))) {
+                parser_Node *left = ((((*expr).value).bin_op).left);
+                parser_Node *right = ((((*expr).value).bin_op).right);
+                uint64 min = (*((uint64 *)typechecking_evaluate_constant(left)));
+                uint64 max = (*((uint64 *)typechecking_evaluate_constant(right)));
+                if ((max < min)) {
+                    typechecking_errorn(expr, ((Array){15, "Invalid range\x0a"""}));
+                    return ;
+                }  ;
+                compiler_Value sub_ret = compiler_make_local_value(tpe, NULL, state);
+                compiler_Insn *sub = malloc((sizeof(compiler_Insn)));
+                ((*sub).kind) = compiler_InsnKind_SUB;
+                (((*sub).value).arith) = ((compiler_InsnArithmetic){ .ret = sub_ret, .left = swexpr, .right = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = min, .sign = 1, .tpe = tpe }) });
+                compiler_push_insn(sub, state);
+                Array op = compiler_i_ule;
+                if ((((*expr).kind) == parser_NodeKind_RANGE)) {
+                    op = compiler_i_ult;
+                }  ;
+                compiler_Value cmp_ret = compiler_make_local_value(builtins_bool_, NULL, state);
+                compiler_Insn *cmp = malloc((sizeof(compiler_Insn)));
+                ((*cmp).kind) = compiler_InsnKind_ICMP;
+                (((*cmp).value).cmp) = ((compiler_InsnCmp){ .op = op, .ret = cmp_ret, .left = sub_ret, .right = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = (max - min), .sign = 1, .tpe = tpe }) });
+                compiler_push_insn(cmp, state);
+                compiler_Insn *br = malloc((sizeof(compiler_Insn)));
+                ((*br).kind) = compiler_InsnKind_BR;
+                (((*br).value).br) = ((compiler_InsnBr){ .cond = cmp_ret });
+                compiler_push_insn(br, state);
+                last = br;
+                vector_push(brs, br);
+            }  else {
+                uint64 value = (*((uint64 *)typechecking_evaluate_constant(expr)));
+                compiler_Value cmp_ret = compiler_make_local_value(builtins_bool_, NULL, state);
+                compiler_Insn *cmp = malloc((sizeof(compiler_Insn)));
+                ((*cmp).kind) = compiler_InsnKind_ICMP;
+                (((*cmp).value).cmp) = ((compiler_InsnCmp){ .op = compiler_i_eq, .ret = cmp_ret, .left = swexpr, .right = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = value, .sign = 1, .tpe = tpe }) });
+                compiler_push_insn(cmp, state);
+                compiler_Insn *br = malloc((sizeof(compiler_Insn)));
+                ((*br).kind) = compiler_InsnKind_BR;
+                (((*br).value).br) = ((compiler_InsnBr){ .cond = cmp_ret });
+                compiler_push_insn(br, state);
+                last = br;
+                vector_push(brs, br);
+            };
+        }
+        ;
+        compiler_Label lbl = compiler_make_label(state);
+        compiler_push_label(lbl, state);
+        for (int i = 0;(i < vector_length(brs));(i += 1)) {
+            compiler_Insn *br = ((compiler_Insn *)vector_get(brs, i));
+            ((((*br).value).br).if_true) = lbl;
+        }
+        ;
+        for (int j = 0;(j < vector_length(((((*cse).value).case_).body)));(j += 1)) {
+            parser_Node *expr = ((parser_Node *)vector_get(((((*cse).value).case_).body), j));
+            compiler_walk(expr, state);
+        }
+        ;
+        compiler_push_insn(end, state);
+        if (last) {
+            compiler_Label lbl = compiler_make_label(state);
+            compiler_push_label(lbl, state);
+            ((((*last).value).br).if_false) = lbl;
+        }  ;
+    }
+    ;
+    if (otherwise) {
+        for (int i = 0;(i < vector_length(((((*otherwise).value).case_).body)));(i += 1)) {
+            parser_Node *expr = ((parser_Node *)vector_get(((((*otherwise).value).case_).body), i));
+            compiler_walk(expr, state);
+        }
+        ;
+    }  ;
+    compiler_push_insn(end, state);
+    ((((*swtch).value).switch_).otherwise) = olabel;
+    compiler_Label end_label = compiler_make_label(state);
+    compiler_push_label(end_label, state);
+    ((((*end).value).br_unc).label_) = end_label;
+};
  void _87f75ce3_walk_Return(parser_Node *node, compiler_State *state) {
     compiler_Function *current_function = ((*state).current_function);
     if ((!current_function)) {
@@ -1584,6 +1762,9 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state) {
         case parser_NodeKind_IF:
         _87f75ce3_walk_If(node, state);
         break;
+        case parser_NodeKind_SWITCH:
+        _87f75ce3_walk_Switch(node, state);
+        break;
         case parser_NodeKind_LOOP:
         _87f75ce3_walk_Loop(node, state);
         break;
@@ -1801,7 +1982,7 @@ DLL_EXPORT compiler_Result * compiler_compile(toolchain_Module *module) {
             Array keys = map_keys(((*m_scope).fields));
             for (int i = 0;(i < (keys.size));(i += 1)) {
                 scope_Value *value = ((scope_Value *)map_get(((*m_scope).fields), (((string *)keys.value)[i])));
-                if ((typechecking_is_function(((*value).tpe)) && ((bool)(((int)((*value).share)) & parser_ShareMarker_EXPORT)))) {
+                if ((((bool)typechecking_is_function(((*value).tpe))) && ((bool)(((int)((*value).share)) & ((int)parser_ShareMarker_EXPORT))))) {
                     _87f75ce3_create_function(((*value).tpe), NULL, sc, state);
                 }  ;
             }
@@ -1873,6 +2054,7 @@ DLL_EXPORT void compiler_p_main(Array args) {
     memcpy((compiler_i_sge.value), (((Array){4, "sge"}).value), ((sizeof(char)) * (compiler_i_sge.size)));
     memcpy((compiler_i_slt.value), (((Array){4, "slt"}).value), ((sizeof(char)) * (compiler_i_slt.size)));
     memcpy((compiler_i_sle.value), (((Array){4, "sle"}).value), ((sizeof(char)) * (compiler_i_sle.size)));
+    _87f75ce3_max_cases = 25;
     _87f75ce3_imported_modules = vector_make();
 };
 

@@ -851,7 +851,7 @@ DLL_EXPORT string debug_type_to_str(typechecking_Type *tpe) {
     }  ;
     switch (((int)((*tpe).kind))) {
         break;
-        case typechecking_TypeKind_TYPE ... typechecking_TypeKind_ENUM:
+        case typechecking_TypeKind_TYPE ... (typechecking_TypeKind_ENUM) - 1:
         return ((*tpe).name);
         break;
         case typechecking_TypeKind_FUNCTION:
@@ -874,6 +874,12 @@ DLL_EXPORT string debug_type_to_str(typechecking_Type *tpe) {
         break;
         case typechecking_TypeKind_NAMESPACE:
         return ((*tpe).name);
+        break;
+        case typechecking_TypeKind_RANGE:
+        return ((Array){6, "Range"});
+        break;
+        case typechecking_TypeKind_RANGE_INC:
+        return ((Array){9, "RangeInc"});
         break;
         default:
         fprintf(stderr, (((Array){5, "%d%s"}).value), ((*tpe).kind), (((Array){2, "\x0a"""}).value));

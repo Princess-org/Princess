@@ -1422,7 +1422,7 @@ DLL_EXPORT string parser_identifier_to_str(parser_Node *node) {
                     _3643b863_pop(parse_state);
                     continue;
                 } else {
-                    vector_push(expr2, _3643b863_expect_expression(parse_state));
+                    vector_push(expr2, _3643b863_expect_expression_no_assign(parse_state));
                 };
                 _3643b863_skip_newline(parse_state);
             }

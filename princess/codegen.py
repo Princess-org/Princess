@@ -177,6 +177,8 @@ class CCodeGen(CodeGenerator):
         template = "((Array){{{length}, ({type}){{ {value::, :} }}}})"
 
     class Range(Renderer):
+        template = "{from_} ... ({to}) - 1"
+    class RangeIncl(Renderer):
         template = "{from_} ... {to}"
 
     class CallArg(Renderer):

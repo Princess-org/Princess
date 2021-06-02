@@ -366,6 +366,27 @@
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).fneg).value)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
+ void _574f02bf_emit_switch(File fp, compiler_Insn *insn) {
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){9, "\x09""switch "}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_type_to_str((((((*insn).value).switch_).value).tpe)).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, " "}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).switch_).value)).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){10, ", label %"}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), ((((((*insn).value).switch_).otherwise).name).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){4, " [\x0a"""}).value));
+    for (int i = 0;(i < vector_length(((((*insn).value).switch_).switch_values)));(i += 1)) {
+        compiler_SwitchValue *sw = ((compiler_SwitchValue *)vector_get(((((*insn).value).switch_).switch_values), i));
+        fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, "\x09""\x09"""}).value));
+        fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_type_to_str((((*sw).value).tpe)).value));
+        fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, " "}).value));
+        fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((*sw).value)).value));
+        fprintf(fp, (((Array){3, "%s"}).value), (((Array){10, ", label %"}).value));
+        fprintf(fp, (((Array){3, "%s"}).value), ((((*sw).label_).name).value));
+        fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
+    }
+    ;
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){4, "\x09""]\x0a"""}).value));
+};
  void _574f02bf_emit(File fp, compiler_Insn *insn) {
     switch (((int)((*insn).kind))) {
         break;
@@ -464,6 +485,9 @@
         break;
         case compiler_InsnKind_FCMP:
         _574f02bf_emit_compare(fp, ((Array){5, "fcmp"}), insn);
+        break;
+        case compiler_InsnKind_SWITCH:
+        _574f02bf_emit_switch(fp, insn);
         break;
         case compiler_InsnKind_GETELEMENTPTR:
         _574f02bf_emit_gep(fp, insn);

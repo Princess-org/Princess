@@ -32,7 +32,7 @@ bool test_compiler_print_ll;
     compiler_Result *result = compiler_compile(module);
     ((*module).result) = result;
     codegen_gen(module);
-    File fh = fopen((((Array){14, "./bin/main.ll"}).value), (((Array){2, "r"}).value));
+    FILE* fh = fopen((((Array){14, "./bin/main.ll"}).value), (((Array){2, "r"}).value));
     string buf = util_read_all(fh);
     fclose(fh);
     int llc = system((((Array){19, "llc-12 bin/main.ll"}).value));
@@ -247,6 +247,14 @@ bool test_compiler_print_ll;
     res = _6dcc03b3_compile(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
+ void _6dcc03b3_test_switch() {
+    printf((((Array){3, "%s"}).value), (((Array){30, ">Testing switch statement... "}).value));
+    Array str = ((Array){180, "\x0a""        let a = 20\x0a""        switch a {\x0a""            case 10: print(1)\x0a""            case 11..=19: print(2)\x0a""            case 20, 25: print(3)\x0a""            case: print(4)\x0a""        }\x0a""    "});
+    string res = _6dcc03b3_compile(str);
+    str = ((Array){198, "\x0a""        let a = 20\x0a""        switch a {\x0a""            case 0..=100: print(1)\x0a""            case 101, 102, 103: print(2)\x0a""            case 104..200, 205: print(3)\x0a""            case: print(4)\x0a""        }\x0a""    "});
+    res = _6dcc03b3_compile(str);
+    printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
+};
 DLL_EXPORT void test_compiler_test() {
     printf((((Array){3, "%s"}).value), (((Array){30, "Running tests on Compiler...\x0a"""}).value));
     _6dcc03b3_test_arithmetic();
@@ -271,6 +279,7 @@ DLL_EXPORT void test_compiler_test() {
     _6dcc03b3_test_array_size_and_value();
     _6dcc03b3_test_string_literal();
     _6dcc03b3_test_builtins();
+    _6dcc03b3_test_switch();
 };
 DLL_EXPORT void test_compiler_p_main(Array args) {
     test_compiler_print_ll = false;

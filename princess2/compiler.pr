@@ -53,7 +53,7 @@ export type InsnKind = enum {
     INSERTVALUE; EXTRACTVALUE; GETELEMENTPTR
     TRUNC; ZEXT; SEXT; FPTRUNC; FPEXT
     FPTOUI; FPTOSI; UITOFP; SITOFP
-    PTRTOINT; INTTOPTR; BITCAST
+    PTRTOINT; INTTOPTR; BITCAST; SWITCH
     CALL; BR_UNC; BR; UNREACHABLE
 }
 
@@ -82,6 +82,18 @@ export type InsnCmp = struct {
     ret: Value
     left: Value
     right: Value
+}
+
+export type SwitchValue = struct {
+    value: Value
+    label_: Label
+}
+
+export type InsnSwitch = struct {
+    value: Value
+    otherwise: Label
+    // Vector of SwitchValue
+    switch_values: *vector::Vector
 }
 
 export type InsnFneg = struct {
@@ -171,6 +183,7 @@ export type InsnValue = struct #union {
     convert: InsnConvert
     cmp: InsnCmp
     fneg: InsnFneg
+    switch_: InsnSwitch
 }
 
 export type Insn = struct {
@@ -1833,13 +1846,13 @@ export def walk_expression(node: *parser::Node, state: *State) -> Value {
             return walk_PointerOp(node, InsnKind::ADD, state)
         case parser::NodeKind::PSUB:
             return walk_PointerOp(node, InsnKind::SUB, state)
-        case parser::NodeKind::EQ..parser::NodeKind::LEQ:
+        case parser::NodeKind::EQ..=parser::NodeKind::LEQ:
             return walk_ComparisionOp(node, state)
         case parser::NodeKind::FUNC_CALL:
             return walk_Call(node, state)
         case parser::NodeKind::ASSIGN:
             return walk_Assign(node, state)
-        case parser::NodeKind::PADD_EQ..parser::NodeKind::SHR_EQ:
+        case parser::NodeKind::PADD_EQ..=parser::NodeKind::SHR_EQ:
             return walk_AssignEq(node, state)
         case parser::NodeKind::DEREF:
             return walk_Deref(node, state)
@@ -1923,6 +1936,227 @@ def walk_If(node: *parser::Node, state: *State) {
     }
     (@exit).value.br_unc.label_ = exit_label
     push_label(exit_label, state)
+}
+
+let max_cases = 25
+
+def walk_Switch(node: *parser::Node, state: *State) {
+    let swexpr = walk_expression((@node).value.switch_.expr, state)
+    let tpe = (@(@node).value.switch_.expr).tpe
+    
+    let switch_values = vector::make()
+    let swtch = allocate(Insn)
+    (@swtch).kind = InsnKind::SWITCH
+    (@swtch).value.switch_ = {
+        value = swexpr,
+        switch_values = switch_values
+    } !InsnSwitch
+    push_insn(swtch, state)
+
+    let end = allocate(Insn)
+    (@end).kind = InsnKind::BR_UNC
+
+    var otherwise: *parser::Node = null
+    let if_stmts = vector::make()
+
+    // TODO We need to check if the ranges overlap
+    for var i in 0..vector::length((@node).value.switch_.body) {
+        let cse = vector::get((@node).value.switch_.body, i) !*parser::Node
+        let len = vector::length((@cse).value.case_.expr)
+
+        if len == 0 {
+            if otherwise {
+                typechecking::errorn(cse, "More than one default case\n")
+                return
+            } else {
+                otherwise = cse
+            }
+        } else {
+            var out_of_bounds = false
+            for var j in 0..len {
+                let expr = vector::get((@cse).value.case_.expr, j) !*parser::Node
+                if (@expr).kind == parser::NodeKind::RANGE or
+                    (@expr).kind == parser::NodeKind::RANGE_INC {
+                    let left = (@expr).value.bin_op.left
+                    let right = (@expr).value.bin_op.right
+                    // TODO We might not want to evaluate these twice
+                    let min = @(typechecking::evaluate_constant(left) !*uint64)
+                    let max = @(typechecking::evaluate_constant(right) !*uint64)
+                    if (max >= min) and (max - min > max_cases) {
+                        vector::push(if_stmts, cse)
+                        out_of_bounds = true
+                        break
+                    }
+                }
+            }
+            if not out_of_bounds {
+                let start = make_label(state)
+                push_label(start, state)
+
+                for var j in 0..len {
+                    let expr = vector::get((@cse).value.case_.expr, j) !*parser::Node
+                    if (@expr).kind == parser::NodeKind::RANGE or
+                        (@expr).kind == parser::NodeKind::RANGE_INC {
+                        let left = (@expr).value.bin_op.left
+                        let right = (@expr).value.bin_op.right
+                        let min = @(typechecking::evaluate_constant(left) !*uint64)
+                        let max = @(typechecking::evaluate_constant(right) !*uint64)
+                        if (max >= min) {
+                            if (@expr).kind == parser::NodeKind::RANGE_INC {
+                                max += 1
+                            }
+                            for var k in min..max {
+                                let svalue = allocate(SwitchValue)
+                                (@svalue).label_ = start
+                                (@svalue).value = { kind = ValueKind::INT, i = k, sign = 1, tpe = tpe } !Value
+                                vector::push(switch_values, svalue)
+                            } 
+                        } else {
+                            typechecking::errorn(expr, "Invalid range\n")
+                            return
+                        }
+                    } else {
+                        let value = @(typechecking::evaluate_constant(expr) !*uint64)
+                        let svalue = allocate(SwitchValue)
+                        (@svalue).label_ = start
+                        (@svalue).value = { kind = ValueKind::INT, i = value, sign = 1, tpe = tpe } !Value
+                        vector::push(switch_values, svalue)
+                    }
+                }
+
+                for var j in 0..vector::length((@cse).value.case_.body) {
+                    let expr = vector::get((@cse).value.case_.body, j) !*parser::Node
+                    walk(expr, state)
+                }
+
+                push_insn(end, state)
+            }
+        }  
+    }
+
+    let olabel = make_label(state)
+    push_label(olabel, state)
+
+    for var i in 0..vector::length(if_stmts) {
+        let cse = vector::get(if_stmts, i) !*parser::Node
+        let len = vector::length((@cse).value.case_.expr)
+
+        let brs = vector::make()
+        var last: *Insn = null
+        for var j in 0..len {
+            if last {
+                let lbl = make_label(state)
+                push_label(lbl, state)
+                (@last).value.br.if_false = lbl
+            }
+            let expr = vector::get((@cse).value.case_.expr, j) !*parser::Node
+            if (@expr).kind == parser::NodeKind::RANGE or 
+                (@expr).kind == parser::NodeKind::RANGE_INC {
+                let left = (@expr).value.bin_op.left
+                let right = (@expr).value.bin_op.right
+                let min = @(typechecking::evaluate_constant(left) !*uint64)
+                let max = @(typechecking::evaluate_constant(right) !*uint64)
+
+                if max < min {
+                    typechecking::errorn(expr, "Invalid range\n")
+                    return
+                }
+                
+                let sub_ret = make_local_value(tpe, null, state)
+                let sub = allocate(Insn)
+                (@sub).kind = InsnKind::SUB
+                (@sub).value.arith = {
+                    ret = sub_ret,
+                    left = swexpr,
+                    right = { kind = ValueKind::INT, i = min, sign = 1, tpe = tpe } !Value
+                } !InsnArithmetic
+                push_insn(sub, state)
+
+                var op = i_ule
+                if (@expr).kind == parser::NodeKind::RANGE {
+                    op = i_ult
+                }
+                let cmp_ret = make_local_value(builtins::bool_, null, state)
+                let cmp = allocate(Insn)
+                (@cmp).kind = InsnKind::ICMP
+                (@cmp).value.cmp = {
+                    op = op,
+                    ret = cmp_ret,
+                    left = sub_ret,
+                    right = { kind = ValueKind::INT, i = max - min, sign = 1, tpe = tpe } !Value
+                } !InsnCmp
+                push_insn(cmp, state)
+
+                let br = allocate(Insn)
+                (@br).kind = InsnKind::BR 
+                (@br).value.br = {
+                    cond = cmp_ret
+                } !InsnBr
+                push_insn(br, state)
+                
+                last = br
+                vector::push(brs, br)
+            } else {
+                let value = @(typechecking::evaluate_constant(expr) !*uint64)
+
+                let cmp_ret = make_local_value(builtins::bool_, null, state)
+                let cmp = allocate(Insn)
+                (@cmp).kind = InsnKind::ICMP
+                (@cmp).value.cmp = {
+                    op = i_eq,
+                    ret = cmp_ret,
+                    left = swexpr,
+                    right = { kind = ValueKind::INT, i = value, sign = 1, tpe = tpe } !Value
+                } !InsnCmp
+                push_insn(cmp, state)
+
+                let br = allocate(Insn)
+                (@br).kind = InsnKind::BR 
+                (@br).value.br = {
+                    cond = cmp_ret
+                } !InsnBr
+                push_insn(br, state)
+                
+                last = br
+                vector::push(brs, br)
+            }
+        }
+
+        let lbl = make_label(state)
+        push_label(lbl, state)
+
+        for var i in 0..vector::length(brs) {
+            let br = vector::get(brs, i) !*Insn
+            (@br).value.br.if_true = lbl
+        }
+
+        for var j in 0..vector::length((@cse).value.case_.body) {
+            let expr = vector::get((@cse).value.case_.body, j) !*parser::Node
+            walk(expr, state)
+        }
+
+        push_insn(end, state)
+
+        if last {
+            let lbl = make_label(state)
+            push_label(lbl, state)
+            (@last).value.br.if_false = lbl
+        }
+    }
+
+    if otherwise {
+        for var i in 0..vector::length((@otherwise).value.case_.body) {
+            let expr = vector::get((@otherwise).value.case_.body, i) !*parser::Node
+            walk(expr, state)
+        }
+    }
+
+    push_insn(end, state)
+    (@swtch).value.switch_.otherwise = olabel
+
+    let end_label = make_label(state)
+    push_label(end_label, state)
+    (@end).value.br_unc.label_ = end_label
 }
 
 def walk_Return(node: *parser::Node, state: *State) {
@@ -2219,6 +2453,8 @@ export def walk(node: *parser::Node, state: *State) {
             walk_Continue(node, state)
         case parser::NodeKind::IF:
             walk_If(node, state)
+        case parser::NodeKind::SWITCH:
+            walk_Switch(node, state)
         case parser::NodeKind::LOOP:
             walk_Loop(node, state)
         case parser::NodeKind::WHILE:
