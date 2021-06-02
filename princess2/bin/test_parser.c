@@ -321,25 +321,16 @@ bool test_parser_print_ast;
     res = _0b8ef353_parse(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
+ void _0b8ef353_test_bug_1() {
+    printf((((Array){3, "%s"}).value), (((Array){16, ">Test bug 1... "}).value));
+    Array str = ((Array){90, "\x0a""        type T = struct {\x0a""            a: int\x0a""\x0a""        }\x0a""        type E = struct { }\x0a""    "});
+    parser_Node *res = _0b8ef353_parse(str);
+    printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
+};
 DLL_EXPORT void test_parser_test() {
     printf((((Array){3, "%s"}).value), (((Array){28, "Running tests on Parser...\x0a"""}).value));
-    _0b8ef353_test_operators();
-    _0b8ef353_test_simple_types();
-    _0b8ef353_test_function_types();
-    _0b8ef353_test_pointer_types();
-    _0b8ef353_test_array_types();
-    _0b8ef353_test_vardecl();
-    _0b8ef353_test_typedecl();
-    _0b8ef353_test_func_call();
-    _0b8ef353_test_assign_op();
-    _0b8ef353_test_statements();
-    _0b8ef353_test_struct();
-    _0b8ef353_test_import();
-    _0b8ef353_test_enum();
-    _0b8ef353_test_switch_stmt();
-    _0b8ef353_test_def();
-    _0b8ef353_test_array_literal();
-    _0b8ef353_test_struct_literal();
+    _0b8ef353_test_bug_1();
+    exit(0);
 };
 DLL_EXPORT void test_parser_p_main(Array args) {
     test_parser_print_ast = false;

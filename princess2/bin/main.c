@@ -70,6 +70,7 @@ DLL_EXPORT void main_p_main(Array args) {
         test_compiler_print_ll = _fad58de7_print_ll;
         tests_run_test_suite();
     }  else {
+        toolchain_print_ast = _fad58de7_print_ast;
         if ((((bool)_fad58de7_filenames) && (vector_length(_fad58de7_filenames) > 0))) {
             if ((vector_length(_fad58de7_filenames) > 1)) {
                 fprintf(stderr, (((Array){3, "%s"}).value), (((Array){29, "More than one file specified"}).value));

@@ -13,6 +13,7 @@ Array toolchain_include_path;
 ARRAY(toolchain_outfolder, char, 2);
 int toolchain_error_count;
 ARRAY(toolchain_outfile, char, 6);
+bool toolchain_print_ast;
 typedef struct scope_Scope scope_Scope;
 typedef struct parser_Node parser_Node;
 typedef struct compiler_Result compiler_Result;
@@ -36,7 +37,7 @@ DLL_EXPORT string toolchain_find_module_file(parser_Node *module) {
     for (int i = 0;(i < len);(i += 1)) {
         string str = (*((string *)vector_get(ident, i)));
         concat((path.value), (((Array){3, "%s"}).value), (str.value));
-        if ((i < (len - 1))) {
+        if ((i < (len - ((int)1)))) {
             concat((path.value), (((Array){3, "%s"}).value), (((Array){2, "/"}).value));
         }  ;
     }
@@ -54,7 +55,7 @@ DLL_EXPORT string toolchain_find_module_file(parser_Node *module) {
     return ((Array){1, ""});
 };
 DLL_EXPORT toolchain_Module * toolchain_compile_file(string filename, string mod) {
-    File fh = fopen((filename.value), (((Array){3, "rb"}).value));
+    FILE* fh = fopen((filename.value), (((Array){3, "rb"}).value));
     if ((!fh)) {
         fprintf(stderr, (((Array){7, "%s%s%s"}).value), (((Array){7, "File \""}).value), (filename.value), (((Array){17, "\" doesn't exist\x0a"""}).value));
     }  else {
@@ -64,6 +65,9 @@ DLL_EXPORT toolchain_Module * toolchain_compile_file(string filename, string mod
         lexer_TokenList *tokens = lexer_lex(buf);
         free((buf.value));
         parser_Node *node = parser_parse(tokens, lines, filename, mod);
+        if (toolchain_print_ast) {
+            debug_print_node(node);
+        }  ;
         scope_Scope *sc = scope_enter_function_scope(builtins_builtins);
         toolchain_Module *module = malloc((sizeof(toolchain_Module)));
         ((*module).filename) = filename;
@@ -130,6 +134,7 @@ DLL_EXPORT void toolchain_p_main(Array args) {
     memcpy((toolchain_outfolder.value), (((Array){2, "."}).value), ((sizeof(char)) * (toolchain_outfolder.size)));
     toolchain_error_count = 0;
     memcpy((toolchain_outfile.value), (((Array){6, "a.out"}).value), ((sizeof(char)) * (toolchain_outfile.size)));
+    toolchain_print_ast = false;
     typechecking_p_main(args);
     scope_p_main(args);
     codegen_p_main(args);

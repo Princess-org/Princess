@@ -400,6 +400,9 @@ DLL_EXPORT string typechecking_mangle_function_name(string name, vector_Vector *
     return buffer_to_string((&buf));
 };
 DLL_EXPORT string typechecking_last_ident_to_str(parser_Node *node) {
+    if ((!node)) {
+        return ((Array){1, ""});
+    }  ;
     assert((((*node).kind) == parser_NodeKind_IDENTIFIER));
     if ((vector_length((((*node).value).body)) > 1)) {
         typechecking_errorn(node, ((Array){40, "Expected plain identifier without path\x0a"""}));
