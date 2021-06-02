@@ -129,9 +129,9 @@ def test_switch_complex():
     prog = """\
         let i = 20
         switch i {
-        case 0..10:
+        case 0..=10:
             return 5
-        case 11..20:
+        case 11..=20:
             return 10
         case:
             return 20
