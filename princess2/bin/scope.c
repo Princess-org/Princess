@@ -373,7 +373,7 @@ DLL_EXPORT bool scope_create_type_scope(scope_Scope *scope, parser_Node *node, p
             return false;
         } else if (((((*tpe2).kind) == typechecking_TypeKind_STUB) && (((*tpe).kind) != typechecking_TypeKind_STUB))) {
             (*tpe2) = (*tpe);
-            ((*value).scope) = vscope;
+            (*value) = (*v);
         } ;
     }  else {
         map_put(((*scope).fields), name, v);
@@ -419,7 +419,13 @@ DLL_EXPORT void scope_insert_module(scope_Scope *scope, parser_Node *alias, tool
         }
         ;
     }  ;
-    scope_Scope *ns = scope_enter_namespace(scope, alias);
+    scope_Value *v = scope_get(scope, alias);
+    scope_Scope *ns = NULL;
+    if ((((bool)v) && (((*((*v).tpe)).kind) == typechecking_TypeKind_NAMESPACE))) {
+        ns = ((*v).scope);
+    }  else {
+        ns = scope_enter_namespace(scope, alias);
+    };
     if ((!ns)) {
         return ;
     }  ;
@@ -438,6 +444,7 @@ DLL_EXPORT void scope_insert_module(scope_Scope *scope, parser_Node *alias, tool
 };
 DLL_EXPORT void scope_p_main(Array args) {
     ;
+    debug_p_main(args);
 };
 
 

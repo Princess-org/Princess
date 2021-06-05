@@ -52,7 +52,7 @@ typedef struct _1f7978b0_Result {struct scope_Scope *scope; struct parser_Node *
     str = ((Array){133, "\x0a""        const a, b = 20\x0a""        var c, d = 10, 20, 30\x0a""        var c = 10\x0a""        var e, (c) = 10\x0a""        var f: int = \"string\"\x0a""    "});
     res = _1f7978b0_typecheck(str);
     vector_Vector *errors = debug_catch_errors();
-    assert((strcmp((_1f7978b0_next_error_msg(errors).value), (((Array){37, "Incompatible types int and [7; char]"}).value)) == 0));
+    assert((strcmp((_1f7978b0_next_error_msg(errors).value), (((Array){34, "Incompatible types int and [char]"}).value)) == 0));
     assert((strcmp((_1f7978b0_next_error_msg(errors).value), (((Array){20, "Must assign a value"}).value)) == 0));
     assert((strcmp((_1f7978b0_next_error_msg(errors).value), (((Array){26, "Too many values to assign"}).value)) == 0));
     assert((strcmp((_1f7978b0_next_error_msg(errors).value), (((Array){22, "Unbalanced assignment"}).value)) == 0));
@@ -67,7 +67,7 @@ typedef struct _1f7978b0_Result {struct scope_Scope *scope; struct parser_Node *
     typechecking_Type *v3 = ((*scope_get((res.scope), parser_make_identifier(((Array){1, (Array[1]){ ((Array){3, "v3"}) }})))).tpe);
     typechecking_Type *v4 = ((*scope_get((res.scope), parser_make_identifier(((Array){1, (Array[1]){ ((Array){3, "v4"}) }})))).tpe);
     typechecking_Type *v5 = ((*scope_get((res.scope), parser_make_identifier(((Array){1, (Array[1]){ ((Array){3, "v5"}) }})))).tpe);
-    assert((((*v1).kind) == typechecking_TypeKind_STATIC_ARRAY));
+    assert((((*v1).kind) == typechecking_TypeKind_ARRAY));
     assert((((*v1).tpe) == builtins_char_));
     assert((v2 == builtins_char_));
     assert((v3 == builtins_double_));
@@ -83,7 +83,7 @@ typedef struct _1f7978b0_Result {struct scope_Scope *scope; struct parser_Node *
     str = ((Array){102, "\x0a""        var v\x0a""        let foo = 20\x0a""        foo = 40\x0a""        var bar: int\x0a""        bar = \"string\"\x0a""    "});
     _1f7978b0_typecheck(str);
     vector_Vector *errors = debug_catch_errors();
-    assert((strcmp((_1f7978b0_next_error_msg(errors).value), (((Array){37, "Incompatible types int and [7; char]"}).value)) == 0));
+    assert((strcmp((_1f7978b0_next_error_msg(errors).value), (((Array){34, "Incompatible types int and [char]"}).value)) == 0));
     assert((strcmp((_1f7978b0_next_error_msg(errors).value), (((Array){22, "Assignment to non var"}).value)) == 0));
     assert((strcmp((_1f7978b0_next_error_msg(errors).value), (((Array){23, "Need to specify a type"}).value)) == 0));
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
@@ -110,7 +110,7 @@ typedef struct _1f7978b0_Result {struct scope_Scope *scope; struct parser_Node *
     str = ((Array){118, "\x0a""        var a = 0 !float\x0a""        var b = 1\x0a""        var c = a & b\x0a""        var d = \"string\"\x0a""        var e = not d\x0a""    "});
     res = _1f7978b0_typecheck(str);
     vector_Vector *errors = debug_catch_errors();
-    assert((strcmp((_1f7978b0_next_error_msg(errors).value), (((Array){50, "Incompatible type [7; char], must be boolean type"}).value)) == 0));
+    assert((strcmp((_1f7978b0_next_error_msg(errors).value), (((Array){47, "Incompatible type [char], must be boolean type"}).value)) == 0));
     assert((strcmp((_1f7978b0_next_error_msg(errors).value), (((Array){59, "Invalid operands of type float and int to bitwise operator"}).value)) == 0));
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };

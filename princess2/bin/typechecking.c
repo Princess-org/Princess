@@ -583,13 +583,7 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
     ((*node).tpe) = builtins_double_;
 };
  void _3700c937_walk_String(parser_Node *node, typechecking_State *state) {
-    typechecking_Type *tpe = malloc((sizeof(typechecking_Type)));
-    ((*tpe).kind) = typechecking_TypeKind_STATIC_ARRAY;
-    ((*tpe).tpe) = builtins_char_;
-    ((*tpe).length) = ((((*node).value).str).size);
-    ((*tpe).size) = (((*tpe).length) * (sizeof(char)));
-    ((*tpe).align) = (sizeof(char));
-    ((*node).tpe) = tpe;
+    ((*node).tpe) = builtins_string_;
 };
  void _3700c937_walk_Char(parser_Node *node, typechecking_State *state) {
     ((*node).tpe) = builtins_char_;
