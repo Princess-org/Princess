@@ -389,7 +389,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     }  ;
     vector_Vector *args = ((((*node).value).struct_lit).args);
     vector_Vector *kwargs = ((((*node).value).struct_lit).kwargs);
-    Array values = ((Array){(((*tpe).fields).size), malloc(((sizeof(compiler_Value)) * (((*tpe).fields).size)))});
+    Array values = ((Array){(((*tpe).fields).size), calloc((((*tpe).fields).size), (sizeof(compiler_Value)))});
     for (int i = 0;(i < vector_length(args));(i += 1)) {
         parser_Node *arg = ((parser_Node *)vector_get(args, i));
         compiler_Value value = compiler_walk_expression(arg, state);
@@ -914,6 +914,9 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
  compiler_Value _87f75ce3_walk_Deref(parser_Node *node, compiler_State *state) {
     compiler_Value value = compiler_walk_expression((((*node).value).expr), state);
     typechecking_Type *tpe = (value.tpe);
+    if ((!tpe)) {
+        return compiler_NO_VALUE;
+    }  ;
     compiler_Value *addr = malloc((sizeof(compiler_Value)));
     (*addr) = value;
     compiler_Value ret = compiler_make_local_value(((*tpe).tpe), addr, state);
@@ -1979,7 +1982,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state) {
         vector_push(body, node_assign);
     }  ;
 };
-vector_Vector *_87f75ce3_imported_modules;
+map_Map *_87f75ce3_imported_modules;
  void _87f75ce3_walk_top_Import(parser_Node *node, vector_Vector *body, compiler_State *state) {
     vector_Vector *imports = (((*node).value).body);
     for (int i = 0;(i < vector_length(imports));(i += 1)) {
@@ -1993,19 +1996,9 @@ vector_Vector *_87f75ce3_imported_modules;
         if ((((filename.size) - 1) == 0)) {
             continue;
         }  ;
-        bool found = false;
-        for (int j = 0;(j < vector_length(_87f75ce3_imported_modules));(j += 1)) {
-            string imported = (*((string *)vector_get(_87f75ce3_imported_modules, j)));
-            if ((strcmp((imported.value), (filename.value)) == 0)) {
-                found = true;
-                break;
-            }  ;
-        }
-        ;
-        if (found) {
+        if (map_contains(_87f75ce3_imported_modules, filename)) {
             continue;
         }  ;
-        vector_push(_87f75ce3_imported_modules, util_copy_string(filename));
         vector_Vector *args = vector_make();
         parser_Node *arg = parser_make_identifier(((Array){1, (Array[1]){ ((Array){5, "args"}) }}));
         ((*arg).scope) = ((*node).scope);
@@ -2021,13 +2014,18 @@ vector_Vector *_87f75ce3_imported_modules;
         parser_Node *ident = parser_make_identifier(array);
         ((*ident).scope) = ((*node).scope);
         scope_Scope *sc = ((*scope_get(((*node).scope), alias)).scope);
+        scope_Value *main_value = ((scope_Value *)map_get(((*sc).fields), ((Array){5, "main"})));
+        if ((!main_value)) {
+            continue;
+        }  ;
         parser_Node *call = malloc((sizeof(parser_Node)));
         ((*call).kind) = parser_NodeKind_FUNC_CALL;
         ((*call).scope) = ((*node).scope);
         ((*call).tpe) = NULL;
-        ((*call).function) = ((*((scope_Value *)map_get(((*sc).fields), ((Array){5, "main"})))).tpe);
+        ((*call).function) = ((*main_value).tpe);
         (((*call).value).func_call) = ((parser_NodeFuncCall){ .left = ident, .args = args, .kwargs = vector_make() });
         vector_push(body, call);
+        map_put(_87f75ce3_imported_modules, filename, map_sentinel);
     }
     ;
 };
@@ -2119,7 +2117,7 @@ DLL_EXPORT void compiler_p_main(Array args) {
     memcpy((compiler_i_slt.value), (((Array){4, "slt"}).value), ((sizeof(char)) * (compiler_i_slt.size)));
     memcpy((compiler_i_sle.value), (((Array){4, "sle"}).value), ((sizeof(char)) * (compiler_i_sle.size)));
     _87f75ce3_max_cases = 25;
-    _87f75ce3_imported_modules = vector_make();
+    _87f75ce3_imported_modules = map_make();
 };
 
 

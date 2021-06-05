@@ -732,7 +732,7 @@ DLL_EXPORT vector_Vector * debug_catch_errors() {
         freopen((((Array){9, "/dev/tty"}).value), (((Array){2, "w"}).value), stderr);
     };
     vector_Vector *errors = vector_make();
-    File fh2 = fopen((_ad42f669_file.value), (((Array){3, "rb"}).value));
+    FILE* fh2 = fopen((_ad42f669_file.value), (((Array){3, "rb"}).value));
     if ((!fh2)) {
         return errors;
     }  ;
@@ -779,7 +779,7 @@ DLL_EXPORT string debug_type_to_str(typechecking_Type *tpe);
     for (int i = 0;(i < len);(i += 1)) {
         typechecking_NamedParameter *param = ((typechecking_NamedParameter *)vector_get(((*tpe).parameter_t), i));
         buffer_append_str((&buf), debug_type_to_str(((*param).value)));
-        if ((i < (len - 1))) {
+        if ((i < (len - ((int)1)))) {
             buffer_append_str((&buf), ((Array){3, " ,"}));
         }  ;
     }
@@ -789,7 +789,7 @@ DLL_EXPORT string debug_type_to_str(typechecking_Type *tpe);
     for (int i = 0;(i < len);(i += 1)) {
         typechecking_Type *ret = ((typechecking_Type *)vector_get(((*tpe).return_t), i));
         buffer_append_str((&buf), debug_type_to_str(ret));
-        if ((i < (len - 1))) {
+        if ((i < (len - ((int)1)))) {
             buffer_append_str((&buf), ((Array){3, ", "}));
         }  ;
     }
@@ -838,7 +838,7 @@ DLL_EXPORT string debug_type_to_str(typechecking_Type *tpe);
     for (int i = 0;(i < len);(i += 1)) {
         typechecking_Type *ret = ((typechecking_Type *)vector_get(((*tpe).return_t), i));
         buffer_append_str((&buf), debug_type_to_str(ret));
-        if ((i < (len - 1))) {
+        if ((i < (len - ((int)1)))) {
             buffer_append_str((&buf), ((Array){3, ", "}));
         }  ;
     }
@@ -851,7 +851,7 @@ DLL_EXPORT string debug_type_to_str(typechecking_Type *tpe) {
     }  ;
     switch (((int)((*tpe).kind))) {
         break;
-        case typechecking_TypeKind_TYPE ... (typechecking_TypeKind_ENUM) - 1:
+        case typechecking_TypeKind_TYPE ... typechecking_TypeKind_ENUM:
         return ((*tpe).name);
         break;
         case typechecking_TypeKind_FUNCTION:
@@ -880,6 +880,9 @@ DLL_EXPORT string debug_type_to_str(typechecking_Type *tpe) {
         break;
         case typechecking_TypeKind_RANGE_INC:
         return ((Array){9, "RangeInc"});
+        break;
+        case typechecking_TypeKind_STUB:
+        return ((*tpe).name);
         break;
         default:
         fprintf(stderr, (((Array){5, "%d%s"}).value), ((*tpe).kind), (((Array){2, "\x0a"""}).value));

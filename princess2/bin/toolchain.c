@@ -17,10 +17,11 @@ bool toolchain_print_ast;
 typedef struct scope_Scope scope_Scope;
 typedef struct parser_Node parser_Node;
 typedef struct compiler_Result compiler_Result;
-typedef struct toolchain_Module {string filename; string llfile; string module; struct parser_Node *node; struct scope_Scope *scope; struct compiler_Result *result; struct map_Map *imported;} toolchain_Module;
-DLL_EXPORT toolchain_Module * toolchain_compile_file(string filename, string module);
+typedef struct toolchain_Module {bool forward_declared; string filename; string llfile; string module; struct parser_Node *node; struct scope_Scope *scope; struct compiler_Result *result; struct map_Map *imported;} toolchain_Module;
+DLL_EXPORT toolchain_Module * toolchain_compile_file(string filename, string mod, toolchain_Module *forward_declared);
 DLL_EXPORT toolchain_Module * toolchain_compile_module(parser_Node *module);
 DLL_EXPORT string toolchain_find_module_file(parser_Node *module);
+DLL_EXPORT scope_Scope * toolchain_get_forward_declared_scope(parser_Node *ident);
 #include "lexer.c"
 #include "parser.c"
 #include "typechecking.c"
@@ -29,6 +30,28 @@ DLL_EXPORT string toolchain_find_module_file(parser_Node *module);
 #include "debug.c"
 #include "builtins.c"
 #include "compiler.c"
+DLL_EXPORT scope_Scope * toolchain_get_forward_declared_scope(parser_Node *ident) {
+    buffer_Buffer buf = buffer_make_buffer();
+    int len = (vector_length((((*ident).value).body)) - ((int)1));
+    for (int i = 0;(i < len);(i += 1)) {
+        buffer_append_str((&buf), (*((string *)vector_get((((*ident).value).body), i))));
+        if ((i < (len - ((int)1)))) {
+            buffer_append_str((&buf), ((Array){3, "::"}));
+        }  ;
+    }
+    ;
+    string modulename = buffer_to_string((&buf));
+    toolchain_Module *module = ((toolchain_Module *)map_get(toolchain_modules, modulename));
+    if (module) {
+        return ((*module).scope);
+    }  else {
+        module = malloc((sizeof(toolchain_Module)));
+        ((*module).forward_declared) = true;
+        ((*module).scope) = scope_enter_function_scope(builtins_builtins);
+        map_put(toolchain_modules, modulename, module);
+        return ((*module).scope);
+    };
+};
 DLL_EXPORT string toolchain_find_module_file(parser_Node *module) {
     assert((((*module).kind) == parser_NodeKind_IDENTIFIER));
     vector_Vector *ident = (((*module).value).body);
@@ -54,7 +77,7 @@ DLL_EXPORT string toolchain_find_module_file(parser_Node *module) {
     ;
     return ((Array){1, ""});
 };
-DLL_EXPORT toolchain_Module * toolchain_compile_file(string filename, string mod) {
+DLL_EXPORT toolchain_Module * toolchain_compile_file(string filename, string modulename, toolchain_Module *forward_declared) {
     FILE* fh = fopen((filename.value), (((Array){3, "rb"}).value));
     if ((!fh)) {
         fprintf(stderr, (((Array){7, "%s%s%s"}).value), (((Array){7, "File \""}).value), (filename.value), (((Array){17, "\" doesn't exist\x0a"""}).value));
@@ -64,18 +87,26 @@ DLL_EXPORT toolchain_Module * toolchain_compile_file(string filename, string mod
         Array lines = util_split_lines(buf);
         lexer_TokenList *tokens = lexer_lex(buf);
         free((buf.value));
-        parser_Node *node = parser_parse(tokens, lines, filename, mod);
+        parser_Node *node = parser_parse(tokens, lines, filename, modulename);
         if (toolchain_print_ast) {
             debug_print_node(node);
         }  ;
-        scope_Scope *sc = scope_enter_function_scope(builtins_builtins);
-        toolchain_Module *module = malloc((sizeof(toolchain_Module)));
+        scope_Scope *sc;
+        toolchain_Module *module;
+        if (forward_declared) {
+            module = forward_declared;
+            sc = ((*forward_declared).scope);
+        }  else {
+            module = malloc((sizeof(toolchain_Module)));
+            sc = scope_enter_function_scope(builtins_builtins);
+        };
+        ((*module).forward_declared) = false;
         ((*module).filename) = filename;
-        ((*module).module) = mod;
+        ((*module).module) = modulename;
         ((*module).node) = node;
         ((*module).scope) = sc;
         ((*module).imported) = map_make();
-        map_put(toolchain_modules, filename, module);
+        map_put(toolchain_modules, modulename, module);
         typechecking_typecheck(module);
         compiler_Result *result = compiler_compile(module);
         ((*module).result) = result;
@@ -84,19 +115,19 @@ DLL_EXPORT toolchain_Module * toolchain_compile_file(string filename, string mod
     return NULL;
 };
 DLL_EXPORT toolchain_Module * toolchain_compile_module(parser_Node *name) {
-    string filename = toolchain_find_module_file(name);
     string modulename = parser_identifier_to_str(name);
-    if ((((filename.size) - 1) == 0)) {
-        return NULL;
-    }  ;
-    toolchain_Module *module = ((toolchain_Module *)map_get(toolchain_modules, filename));
-    if ((!module)) {
-        module = toolchain_compile_file(filename, modulename);
+    toolchain_Module *module = ((toolchain_Module *)map_get(toolchain_modules, modulename));
+    if ((((bool)(!module)) || ((*module).forward_declared))) {
+        string filename = toolchain_find_module_file(name);
+        if ((((filename.size) - 1) == 0)) {
+            return NULL;
+        }  ;
+        module = toolchain_compile_file(filename, modulename, module);
     }  ;
     return module;
 };
 DLL_EXPORT void toolchain_compile_main_file(string filename) {
-    toolchain_Module *module = toolchain_compile_file(filename, ((Array){5, "main"}));
+    toolchain_Module *module = toolchain_compile_file(filename, ((Array){5, "main"}), NULL);
     if ((((bool)module) && (toolchain_error_count == 0))) {
         buffer_Buffer compile_header = buffer_make_buffer();
         buffer_append_str((&compile_header), ((Array){27, "clang-12 -S -emit-llvm -o "}));

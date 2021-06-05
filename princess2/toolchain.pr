@@ -22,6 +22,9 @@ type parser::Node
 type compiler::Result
 
 export type Module = struct {
+    // This is true if the module has been forward declared
+    // By use of type module::Type
+    forward_declared: bool
     filename: string
     llfile: string
     module: string
@@ -31,9 +34,10 @@ export type Module = struct {
     imported: *map::Map
 }
 
-export def compile_file(filename: string, module: string) -> *Module
+export def compile_file(filename: string, mod: string, forward_declared: *Module) -> *Module
 export def compile_module(module: *parser::Node) -> *Module
 export def find_module_file(module: *parser::Node) -> string
+export def get_forward_declared_scope(ident: *parser::Node) -> *scope::Scope
 
 import lexer
 import parser
@@ -43,6 +47,32 @@ import codegen
 import debug
 import builtins
 import compiler
+
+export def get_forward_declared_scope(ident: *parser::Node) -> *scope::Scope {
+
+    let buf = buffer::make_buffer()
+    let len = vector::length((@ident).value.body) - 1
+    for var i in 0..len {
+        buffer::append_str(*buf, @(vector::get((@ident).value.body, i) !*string))
+        if i < len - 1 {
+            buffer::append_str(*buf, "::")
+        }
+    }
+    let modulename = buffer::to_string(*buf)
+
+    var module = map::get(modules, modulename) !*Module
+    if module {
+        return (@module).scope
+    } else {
+        module = allocate(Module)
+        (@module).forward_declared = true
+        (@module).scope = scope::enter_function_scope(builtins::builtins)
+
+        map::put(modules, modulename, module)
+
+        return (@module).scope
+    }
+}
 
 export def find_module_file(module: *parser::Node) -> string {
     assert((@module).kind == parser::NodeKind::IDENTIFIER)
@@ -70,7 +100,7 @@ export def find_module_file(module: *parser::Node) -> string {
     return ""
 }
 
-export def compile_file(filename: string, mod: string) -> *Module {
+export def compile_file(filename: string, modulename: string, forward_declared: *Module) -> *Module {
     let fh = open(filename, "rb")
     if not fh {
         error("File \"", filename, "\" doesn't exist\n")
@@ -81,19 +111,29 @@ export def compile_file(filename: string, mod: string) -> *Module {
 
         let tokens = lexer::lex(buf)
         free(buf)
-        let node = parser::parse(tokens, lines, filename, mod)
+        let node = parser::parse(tokens, lines, filename, modulename)
         if print_ast {
             debug::print_node(node)
         }
-        let sc = scope::enter_function_scope(builtins::builtins)
-        let module = allocate(Module)
+        
+        var sc: *scope::Scope
+        var module: *Module
+        if forward_declared { 
+            module = forward_declared 
+            sc = (@forward_declared).scope
+        } else {
+            module = allocate(Module)
+            sc = scope::enter_function_scope(builtins::builtins)
+        }
+
+        (@module).forward_declared = false
         (@module).filename = filename
-        (@module).module = mod
+        (@module).module = modulename
         (@module).node = node
         (@module).scope = sc
         (@module).imported = map::make()
 
-        map::put(modules, filename, module)
+        map::put(modules, modulename, module)
         typechecking::typecheck(module)       
         let result = compiler::compile(module)
         (@module).result = result
@@ -105,21 +145,21 @@ export def compile_file(filename: string, mod: string) -> *Module {
 
 // name is an identifier
 export def compile_module(name: *parser::Node) -> *Module {
-    let filename = find_module_file(name)
     let modulename = parser::identifier_to_str(name)
-    if length(filename) == 0 {
-        return null
-    }
-    var module = map::get(modules, filename) !*Module
-    if not module {
-        module = compile_file(filename, modulename)
+    var module = map::get(modules, modulename) !*Module
+    if not module or (@module).forward_declared {
+        let filename = find_module_file(name)
+        if length(filename) == 0 {
+            return null
+        }
+        module = compile_file(filename, modulename, module)
     }
 
     return module
 }
 
 export def compile_main_file(filename: string) {
-    let module = compile_file(filename, "main")
+    let module = compile_file(filename, "main", null)
 
     if module and error_count == 0 {
         let compile_header = buffer::make_buffer()

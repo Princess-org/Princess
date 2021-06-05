@@ -470,6 +470,7 @@ DLL_EXPORT typechecking_Type * typechecking_type_lookup(parser_Node *node, typec
             string name = typechecking_last_ident_to_str(((((*field).value).id_decl_struct).ident));
             typechecking_Type *tpe = typechecking_type_lookup(((((*field).value).id_decl_struct).tpe), state);
             if ((!tpe)) {
+                (((typechecking_StructMember *)fields.value)[i]) = ((typechecking_StructMember){ ((Array){1, ""}), NULL, 0 });
                 continue;
             }  ;
             offset = ((int)(ceil((((double)offset) / ((double)((*tpe).align)))) * ((double)((*tpe).align))));
@@ -1029,6 +1030,19 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
             value = vector_get(right, i);
         }  ;
         typechecking_Type *tpe = typechecking_make_type(typechecking_TypeKind_STUB, name);
+        if ((vector_length((((*name).value).body)) > 1)) {
+            if (value) {
+                typechecking_errorn(name, ((Array){32, "Can't create type in sub scope\x0a"""}));
+                continue;
+            }  ;
+            scope_Scope *scpe = toolchain_get_forward_declared_scope(name);
+            string *last = ((string *)vector_peek((((*name).value).body)));
+            parser_Node *n = parser_copy_node(name);
+            (((*n).value).body) = vector_make();
+            vector_push((((*n).value).body), last);
+            scope_create_type(scpe, n, share, tpe);
+            tpe = scope_get_type(scpe, n);
+        }  ;
         if ((!scope_create_type(((*state).scope), name, share, tpe))) {
             continue;
         }  ;
@@ -1128,6 +1142,10 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
     }
     ;
     parser_Node *left = ((((*node).value).func_call).left);
+    if ((((bool)(!left)) || (((*left).kind) != parser_NodeKind_IDENTIFIER))) {
+        typechecking_errorn(left, ((Array){23, "Invalid function call\x0a"""}));
+        return ;
+    }  ;
     scope_Value *function = scope_get_function(((*state).scope), left, arguments);
     if ((!function)) {
         typechecking_errorn(left, ((Array){11, "Function \""}));
@@ -1344,7 +1362,7 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
     }  ;
     if (((((*tpe).kind) == typechecking_TypeKind_STRUCT) || (((*tpe).kind) == typechecking_TypeKind_UNION))) {
         string name = typechecking_last_ident_to_str(right);
-        typechecking_Type *rtpe;
+        typechecking_Type *rtpe = NULL;
         for (int i = 0;(i < (((*tpe).fields).size));(i += 1)) {
             typechecking_StructMember member = (((typechecking_StructMember *)((*tpe).fields).value)[i]);
             if ((strcmp(((member.name).value), (name.value)) == 0)) {
@@ -1379,6 +1397,9 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
     _3700c937_walk(left, state);
     _3700c937_walk(right, state);
     typechecking_Type *tpe = ((*left).tpe);
+    if ((!tpe)) {
+        return ;
+    }  ;
     if (((typechecking_is_pointer(tpe) || (((*tpe).kind) == typechecking_TypeKind_ARRAY)) || (((*tpe).kind) == typechecking_TypeKind_STATIC_ARRAY))) {
         ((*node).tpe) = ((*tpe).tpe);
     }  else {

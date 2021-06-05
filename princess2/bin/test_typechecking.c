@@ -139,7 +139,7 @@ typedef struct _1f7978b0_Result {struct scope_Scope *scope; struct parser_Node *
     printf((((Array){3, "%s"}).value), (((Array){19, ">Test typedecl... "}).value));
     Array str = ((Array){68, "\x0a""        type A = int\x0a""        type B = A\x0a""\x0a""        var a: B = 0\x0a""    "});
     _1f7978b0_Result res = _1f7978b0_typecheck(str);
-    str = ((Array){94, "\x0a""        type A\x0a""        type A = int\x0a""        type module::A\x0a""        type module::A = int\x0a""    "});
+    str = ((Array){117, "\x0a""        type A\x0a""        type A = int\x0a""        type module::A\x0a""        //type module::A = int // No longer allowed\x0a""    "});
     res = _1f7978b0_typecheck(str);
     debug_redirect_stderr();
     str = ((Array){89, "\x0a""        type A = int\x0a""        type A = float\x0a""        var B = 0\x0a""        type B = int\x0a""    "});
@@ -255,7 +255,7 @@ typedef struct _1f7978b0_Result {struct scope_Scope *scope; struct parser_Node *
     typechecking_Type *e = ((*scope_get((res.scope), parser_make_identifier(((Array){1, (Array[1]){ ((Array){2, "e"}) }})))).tpe);
     typechecking_Type *f = ((*scope_get((res.scope), parser_make_identifier(((Array){1, (Array[1]){ ((Array){2, "f"}) }})))).tpe);
     assert(((c == builtins_size_t_) && (e == builtins_size_t_)));
-    assert((typechecking_is_pointer(d) && typechecking_is_pointer(f)));
+    assert((((bool)typechecking_is_pointer(d)) && ((bool)typechecking_is_pointer(f))));
     assert(((((*d).tpe) == builtins_int_) && (((*f).tpe) == builtins_int_)));
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
