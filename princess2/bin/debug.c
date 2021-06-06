@@ -778,9 +778,13 @@ DLL_EXPORT string debug_type_to_str(typechecking_Type *tpe);
     int len = vector_length(((*tpe).parameter_t));
     for (int i = 0;(i < len);(i += 1)) {
         typechecking_NamedParameter *param = ((typechecking_NamedParameter *)vector_get(((*tpe).parameter_t), i));
-        buffer_append_str((&buf), debug_type_to_str(((*param).value)));
+        if (((*param).varargs)) {
+            buffer_append_str((&buf), ((Array){4, "..."}));
+        }  else {
+            buffer_append_str((&buf), debug_type_to_str(((*param).value)));
+        };
         if ((i < (len - ((int)1)))) {
-            buffer_append_str((&buf), ((Array){3, " ,"}));
+            buffer_append_str((&buf), ((Array){3, ", "}));
         }  ;
     }
     ;

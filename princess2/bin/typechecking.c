@@ -43,6 +43,12 @@ DLL_EXPORT bool typechecking_is_function(typechecking_Type *tpe) {
     }  ;
     return (((*tpe).kind) == typechecking_TypeKind_FUNCTION);
 };
+DLL_EXPORT bool typechecking_is_function_pointer(typechecking_Type *tpe) {
+    if ((!tpe)) {
+        return false;
+    }  ;
+    return ((((*tpe).kind) == typechecking_TypeKind_POINTER) && typechecking_is_function(((*tpe).tpe)));
+};
 DLL_EXPORT bool typechecking_is_integer(typechecking_Type *tpe) {
     if ((!tpe)) {
         return false;
@@ -754,6 +760,9 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
  void _3700c937_walk_Not(parser_Node *node, typechecking_State *state) {
     _3700c937_walk((((*node).value).expr), state);
     typechecking_Type *tpe = ((*(((*node).value).expr)).tpe);
+    if ((!tpe)) {
+        return ;
+    }  ;
     if ((!typechecking_is_boolean(tpe))) {
         typechecking_errorn(node, ((Array){19, "Incompatible type "}));
         fprintf(stderr, (((Array){5, "%s%s"}).value), (debug_type_to_str(tpe).value), (((Array){24, ", must be boolean type\x0a"""}).value));
@@ -763,6 +772,9 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
  void _3700c937_walk_BNot(parser_Node *node, typechecking_State *state) {
     _3700c937_walk((((*node).value).expr), state);
     typechecking_Type *tpe = ((*(((*node).value).expr)).tpe);
+    if ((!tpe)) {
+        return ;
+    }  ;
     if ((!typechecking_is_integer(tpe))) {
         typechecking_errorn(node, ((Array){19, "Incompatible type "}));
         fprintf(stderr, (((Array){5, "%s%s"}).value), (debug_type_to_str(tpe).value), (((Array){24, ", must be integer type\x0a"""}).value));
@@ -772,6 +784,9 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
  void _3700c937_walk_UAdd(parser_Node *node, typechecking_State *state) {
     _3700c937_walk((((*node).value).expr), state);
     typechecking_Type *tpe = ((*(((*node).value).expr)).tpe);
+    if ((!tpe)) {
+        return ;
+    }  ;
     if ((!typechecking_is_arithmetic(tpe))) {
         typechecking_errorn(node, ((Array){19, "Incompatible type "}));
         fprintf(stderr, (((Array){5, "%s%s"}).value), (debug_type_to_str(tpe).value), (((Array){27, ", must be arithmetic type\x0a"""}).value));
@@ -781,6 +796,9 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
  void _3700c937_walk_USub(parser_Node *node, typechecking_State *state) {
     _3700c937_walk((((*node).value).expr), state);
     typechecking_Type *tpe = ((*(((*node).value).expr)).tpe);
+    if ((!tpe)) {
+        return ;
+    }  ;
     if ((!typechecking_is_arithmetic(tpe))) {
         typechecking_errorn(node, ((Array){19, "Incompatible type "}));
         fprintf(stderr, (((Array){5, "%s%s"}).value), (debug_type_to_str(tpe).value), (((Array){27, ", must be arithmetic type\x0a"""}).value));
@@ -869,6 +887,9 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
     if ((!_3700c937_check_is_identifier_assignable(left, state))) {
         return ;
     }  ;
+    if ((((bool)(!((*left).tpe))) || ((bool)(!((*right).tpe))))) {
+        return ;
+    }  ;
     if ((!typechecking_is_integer(((*right).tpe)))) {
         typechecking_errorn(right, ((Array){42, "Incompatible type, expected integer, got "}));
         fprintf(stderr, (((Array){5, "%s%s"}).value), (debug_type_to_str(((*right).tpe)).value), (((Array){2, "\x0a"""}).value));
@@ -888,6 +909,9 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
     _3700c937_walk(left, state);
     _3700c937_walk(right, state);
     if ((!_3700c937_check_is_identifier_assignable(left, state))) {
+        return ;
+    }  ;
+    if ((((bool)(!((*left).tpe))) || ((bool)(!((*right).tpe))))) {
         return ;
     }  ;
     if ((!typechecking_is_integer(((*right).tpe)))) {
@@ -1140,7 +1164,13 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
         typechecking_errorn(left, ((Array){23, "Invalid function call\x0a"""}));
         return ;
     }  ;
-    scope_Value *function = scope_get_function(((*state).scope), left, arguments);
+    scope_Value *v = scope_get(((*state).scope), left);
+    scope_Value *function = NULL;
+    if ((((bool)v) && typechecking_is_function_pointer(((*v).tpe)))) {
+        function = v;
+    }  else {
+        function = scope_get_function(((*state).scope), left, arguments);
+    };
     if ((!function)) {
         typechecking_errorn(left, ((Array){11, "Function \""}));
         fprintf(stderr, (((Array){5, "%s%s"}).value), (parser_identifier_to_str(left).value), (((Array){37, "\" not found. Arguments were of type "}).value));
@@ -1155,9 +1185,12 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
         ;
         fprintf(stderr, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
     }  else {
+        ((*node).function) = ((*function).tpe);
         typechecking_Type *tpe = ((*function).tpe);
+        if (typechecking_is_function_pointer(tpe)) {
+            tpe = ((*tpe).tpe);
+        }  ;
         vector_Vector *parameter_t = ((*tpe).parameter_t);
-        ((*node).function) = tpe;
         for (int i = 0;(i < vector_length(((((*node).value).func_call).args)));(i += 1)) {
             parser_Node *n = ((parser_Node *)vector_get(((((*node).value).func_call).args), i));
             typechecking_Type *rhstpe;
@@ -1238,6 +1271,9 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
     parser_Node *cond = ((((*node).value).if_).cond);
     _3700c937_walk(cond, state);
     typechecking_Type *tpe = ((*cond).tpe);
+    if ((!tpe)) {
+        return ;
+    }  ;
     if ((!typechecking_is_boolean(tpe))) {
         typechecking_errorn(node, ((Array){19, "Incompatible type "}));
         fprintf(stderr, (((Array){5, "%s%s"}).value), (debug_type_to_str(tpe).value), (((Array){24, ", must be boolean type\x0a"""}).value));

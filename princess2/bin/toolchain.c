@@ -32,10 +32,10 @@ DLL_EXPORT scope_Scope * toolchain_get_forward_declared_scope(parser_Node *ident
 #include "compiler.c"
 DLL_EXPORT scope_Scope * toolchain_get_forward_declared_scope(parser_Node *ident) {
     buffer_Buffer buf = buffer_make_buffer();
-    int len = (vector_length((((*ident).value).body)) - ((int)1));
+    int len = (vector_length((((*ident).value).body)) - 1);
     for (int i = 0;(i < len);(i += 1)) {
         buffer_append_str((&buf), (*((string *)vector_get((((*ident).value).body), i))));
-        if ((i < (len - ((int)1)))) {
+        if ((i < (len - 1))) {
             buffer_append_str((&buf), ((Array){3, "::"}));
         }  ;
     }
@@ -60,7 +60,7 @@ DLL_EXPORT string toolchain_find_module_file(parser_Node *module) {
     for (int i = 0;(i < len);(i += 1)) {
         string str = (*((string *)vector_get(ident, i)));
         concat((path.value), (((Array){3, "%s"}).value), (str.value));
-        if ((i < (len - ((int)1)))) {
+        if ((i < (len - 1))) {
             concat((path.value), (((Array){3, "%s"}).value), (((Array){2, "/"}).value));
         }  ;
     }
@@ -78,7 +78,7 @@ DLL_EXPORT string toolchain_find_module_file(parser_Node *module) {
     return ((Array){1, ""});
 };
 DLL_EXPORT toolchain_Module * toolchain_compile_file(string filename, string modulename, toolchain_Module *forward_declared) {
-    FILE* fh = fopen((filename.value), (((Array){3, "rb"}).value));
+    File fh = fopen((filename.value), (((Array){3, "rb"}).value));
     if ((!fh)) {
         fprintf(stderr, (((Array){7, "%s%s%s"}).value), (((Array){7, "File \""}).value), (filename.value), (((Array){17, "\" doesn't exist\x0a"""}).value));
     }  else {

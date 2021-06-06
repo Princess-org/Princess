@@ -1209,7 +1209,12 @@ def walk_BXor(node: *parser::Node, state: *State) -> Value {
 }
 
 def walk_Call(node: *parser::Node, state: *State) -> Value {
-    let tpe = (@node).function
+    var tpe = (@node).function
+    var is_fp = false
+    if typechecking::is_function_pointer(tpe) {
+        tpe = (@tpe).tpe
+        is_fp = true
+    }
     if not tpe { return NO_VALUE }
     let parameter_t = (@tpe).parameter_t
 
@@ -1251,22 +1256,50 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
         return (@tpe).macro(node, args, state)
     }
 
-    var name = (@tpe).type_name
-    name = typechecking::mangle_function_name(name, parameter_t)
-    
-    let function = map::get((@(@state).result).functions, name) !*Function
-    if not function { return NO_VALUE }
+    var name_v: Value
+    var ret: *typechecking::Type = null
+    if is_fp {
+        // TODO Support multiple return values
+        assert(vector::length((@tpe).return_t) <= 1)
+        ret = vector::peek((@tpe).return_t) !*typechecking::Type
+        let value = scope::get((@node).scope, (@node).value.func_call.left)
+        
+        name_v = make_local_value(typechecking::pointer(tpe), null, state)
 
-    let name_v = {
-        kind = ValueKind::GLOBAL,
-        name = name,
-        tpe = null
-    } !Value
+        var kind = ValueKind::LOCAL
+        if (@value).global {
+            kind = ValueKind::GLOBAL
+        }
+
+        let load = allocate(Insn)
+        (@load).kind = InsnKind::LOAD
+        (@load).value.load = {
+            value = name_v,
+            loc = {
+                kind = kind,
+                name = (@value).assembly_name,
+                tpe = typechecking::pointer(typechecking::pointer(tpe))
+            } !Value
+        } !InsnLoad
+        push_insn(load, state)
+    } else {    
+        var name = (@tpe).type_name
+        name = typechecking::mangle_function_name(name, parameter_t)
+        
+        let function = map::get((@(@state).result).functions, name) !*Function
+        if not function { return NO_VALUE }
+        ret = (@function).ret
+
+        name_v = {
+            kind = ValueKind::GLOBAL,
+            name = name
+        } !Value
+    }
 
     var addr = NO_VALUE
     var value = NO_VALUE
-    if (@function).ret {
-        addr = make_local_value((@function).ret, null, state)
+    if ret {
+        addr = make_local_value(ret, null, state)
         
         let alloca = allocate(Insn)
         (@alloca).kind = InsnKind::ALLOCA
@@ -1275,10 +1308,10 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
         } !InsnAlloca
         push_insn(alloca, state)
         
-        addr.tpe = typechecking::pointer((@function).ret)
+        addr.tpe = typechecking::pointer(ret)
         let addrp = allocate(Value)
         (@addrp) = addr
-        value = make_local_value((@function).ret, addrp, state)
+        value = make_local_value(ret, addrp, state)
     }
 
     let insn = allocate(Insn)
@@ -1291,7 +1324,7 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
 
     push_insn(insn, state)
 
-    if (@function).ret {
+    if ret {
         let store = allocate(Insn)
         (@store).kind = InsnKind::STORE
         (@store).value.store = {
@@ -1310,8 +1343,7 @@ def walk_Identifier(node: *parser::Node, state: *State) -> Value {
     if (@val).value {
         return make_value((@val).tpe, (@val).value)
     }
-
-    let value = make_local_value((@node).tpe, null, state)
+    let tpe = (@node).tpe
 
     let name = (@val).assembly_name
     var kind = ValueKind::LOCAL
@@ -1319,25 +1351,34 @@ def walk_Identifier(node: *parser::Node, state: *State) -> Value {
         kind = ValueKind::GLOBAL
     }
 
-    let loc = {
+    let loc = allocate(Value)
+    (@loc) = {
         kind = kind,
         name = name,
-        tpe = typechecking::pointer((@node).tpe)
+        tpe = typechecking::pointer(tpe)
     } !Value
 
-    let l = allocate(Value)
-    (@l) = loc
-    value.addr = l
-    
-    let insn = allocate(Insn)
-    (@insn).kind = InsnKind::LOAD
-    (@insn).value.load = {
-        value = value,
-        loc = loc
+    if not typechecking::is_function(tpe) {
+        let value = make_local_value(tpe, loc, state)
+        
+        let insn = allocate(Insn)
+        (@insn).kind = InsnKind::LOAD
+        (@insn).value.load = {
+            value = value,
+            loc = @loc
+        }
+        push_insn(insn, state)
+        return value
+    } else {
+        (@loc).name = typechecking::mangle_function_name((@tpe).type_name, (@tpe).parameter_t)
+        let value = { 
+            kind = ValueKind::LOCAL, 
+            name = name, 
+            tpe = tpe, 
+            addr = loc
+        } !Value
+        return value
     }
-
-    push_insn(insn, state)
-    return value
 }
 
 def walk_Assign(node: *parser::Node, state: *State) -> Value {

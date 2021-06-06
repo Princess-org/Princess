@@ -701,6 +701,11 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
 };
  compiler_Value _87f75ce3_walk_Call(parser_Node *node, compiler_State *state) {
     typechecking_Type *tpe = ((*node).function);
+    bool is_fp = false;
+    if (typechecking_is_function_pointer(tpe)) {
+        tpe = ((*tpe).tpe);
+        is_fp = true;
+    }  ;
     if ((!tpe)) {
         return compiler_NO_VALUE;
     }  ;
@@ -741,31 +746,49 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     if (((*tpe).macro)) {
         return ((*tpe).macro)(node, args, state);
     }  ;
-    string name = ((*tpe).type_name);
-    name = typechecking_mangle_function_name(name, parameter_t);
-    compiler_Function *function = ((compiler_Function *)map_get(((*((*state).result)).functions), name));
-    if ((!function)) {
-        return compiler_NO_VALUE;
-    }  ;
-    compiler_Value name_v = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = name, .tpe = NULL });
+    compiler_Value name_v;
+    typechecking_Type *ret = NULL;
+    if (is_fp) {
+        assert((vector_length(((*tpe).return_t)) <= 1));
+        ret = ((typechecking_Type *)vector_peek(((*tpe).return_t)));
+        scope_Value *value = scope_get(((*node).scope), ((((*node).value).func_call).left));
+        name_v = compiler_make_local_value(typechecking_pointer(tpe), NULL, state);
+        int kind = compiler_ValueKind_LOCAL;
+        if (((*value).global)) {
+            kind = compiler_ValueKind_GLOBAL;
+        }  ;
+        compiler_Insn *load = malloc((sizeof(compiler_Insn)));
+        ((*load).kind) = compiler_InsnKind_LOAD;
+        (((*load).value).load) = ((compiler_InsnLoad){ .value = name_v, .loc = ((compiler_Value){ .kind = kind, .name = ((*value).assembly_name), .tpe = typechecking_pointer(typechecking_pointer(tpe)) }) });
+        compiler_push_insn(load, state);
+    }  else {
+        string name = ((*tpe).type_name);
+        name = typechecking_mangle_function_name(name, parameter_t);
+        compiler_Function *function = ((compiler_Function *)map_get(((*((*state).result)).functions), name));
+        if ((!function)) {
+            return compiler_NO_VALUE;
+        }  ;
+        ret = ((*function).ret);
+        name_v = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = name });
+    };
     compiler_Value addr = compiler_NO_VALUE;
     compiler_Value value = compiler_NO_VALUE;
-    if (((*function).ret)) {
-        addr = compiler_make_local_value(((*function).ret), NULL, state);
+    if (ret) {
+        addr = compiler_make_local_value(ret, NULL, state);
         compiler_Insn *alloca = malloc((sizeof(compiler_Insn)));
         ((*alloca).kind) = compiler_InsnKind_ALLOCA;
         (((*alloca).value).alloca) = ((compiler_InsnAlloca){ .ret = addr });
         compiler_push_insn(alloca, state);
-        (addr.tpe) = typechecking_pointer(((*function).ret));
+        (addr.tpe) = typechecking_pointer(ret);
         compiler_Value *addrp = malloc((sizeof(compiler_Value)));
         (*addrp) = addr;
-        value = compiler_make_local_value(((*function).ret), addrp, state);
+        value = compiler_make_local_value(ret, addrp, state);
     }  ;
     compiler_Insn *insn = malloc((sizeof(compiler_Insn)));
     ((*insn).kind) = compiler_InsnKind_CALL;
     (((*insn).value).call) = ((compiler_InsnCall){ .name = name_v, .ret = value, .args = args });
     compiler_push_insn(insn, state);
-    if (((*function).ret)) {
+    if (ret) {
         compiler_Insn *store = malloc((sizeof(compiler_Insn)));
         ((*store).kind) = compiler_InsnKind_STORE;
         (((*store).value).store) = ((compiler_InsnStore){ .value = value, .loc = addr });
@@ -781,21 +804,26 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     if (((*val).value)) {
         return _87f75ce3_make_value(((*val).tpe), ((*val).value));
     }  ;
-    compiler_Value value = compiler_make_local_value(((*node).tpe), NULL, state);
+    typechecking_Type *tpe = ((*node).tpe);
     string name = ((*val).assembly_name);
     int kind = compiler_ValueKind_LOCAL;
     if (((*val).global)) {
         kind = compiler_ValueKind_GLOBAL;
     }  ;
-    compiler_Value loc = ((compiler_Value){ .kind = kind, .name = name, .tpe = typechecking_pointer(((*node).tpe)) });
-    compiler_Value *l = malloc((sizeof(compiler_Value)));
-    (*l) = loc;
-    (value.addr) = l;
-    compiler_Insn *insn = malloc((sizeof(compiler_Insn)));
-    ((*insn).kind) = compiler_InsnKind_LOAD;
-    (((*insn).value).load) = ((compiler_InsnLoad){ .value = value, .loc = loc });
-    compiler_push_insn(insn, state);
-    return value;
+    compiler_Value *loc = malloc((sizeof(compiler_Value)));
+    (*loc) = ((compiler_Value){ .kind = kind, .name = name, .tpe = typechecking_pointer(tpe) });
+    if ((!typechecking_is_function(tpe))) {
+        compiler_Value value = compiler_make_local_value(tpe, loc, state);
+        compiler_Insn *insn = malloc((sizeof(compiler_Insn)));
+        ((*insn).kind) = compiler_InsnKind_LOAD;
+        (((*insn).value).load) = ((compiler_InsnLoad){ .value = value, .loc = (*loc) });
+        compiler_push_insn(insn, state);
+        return value;
+    }  else {
+        ((*loc).name) = typechecking_mangle_function_name(((*tpe).type_name), ((*tpe).parameter_t));
+        compiler_Value value = ((compiler_Value){ .kind = compiler_ValueKind_LOCAL, .name = name, .tpe = tpe, .addr = loc });
+        return value;
+    };
 };
  compiler_Value _87f75ce3_walk_Assign(parser_Node *node, compiler_State *state) {
     ;

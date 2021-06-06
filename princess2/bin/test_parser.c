@@ -327,6 +327,12 @@ bool test_parser_print_ast;
     parser_Node *res = _0b8ef353_parse(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
+ void _0b8ef353_test_bug_2() {
+    printf((((Array){3, "%s"}).value), (((Array){16, ">Test bug 2... "}).value));
+    Array str = ((Array){34, "\x0a""        var a = 20; a += 10\x0a""    "});
+    parser_Node *res = _0b8ef353_parse(str);
+    printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
+};
 DLL_EXPORT void test_parser_test() {
     printf((((Array){3, "%s"}).value), (((Array){28, "Running tests on Parser...\x0a"""}).value));
     _0b8ef353_test_operators();
@@ -347,6 +353,7 @@ DLL_EXPORT void test_parser_test() {
     _0b8ef353_test_array_literal();
     _0b8ef353_test_struct_literal();
     _0b8ef353_test_bug_1();
+    _0b8ef353_test_bug_2();
 };
 DLL_EXPORT void test_parser_p_main(Array args) {
     test_parser_print_ast = false;

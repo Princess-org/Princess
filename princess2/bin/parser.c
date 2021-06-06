@@ -1214,7 +1214,7 @@ DLL_EXPORT string parser_identifier_to_str(parser_Node *node) {
             if (((tok.tpe) == lexer_TokenType_COMMA)) {
                 _3643b863_skip_newline(parse_state);
                 continue;
-            } else if ((((tok.tpe) == lexer_TokenType_NEW_LINE) || ((tok.tpe) == lexer_TokenType_EOF))) {
+            } else if (((((tok.tpe) == lexer_TokenType_NEW_LINE) || ((tok.tpe) == lexer_TokenType_EOF)) || ((tok.tpe) == lexer_TokenType_SEMICOLON))) {
                 _3643b863_unget_token(parse_state, tok);
                 break;
             } ;
