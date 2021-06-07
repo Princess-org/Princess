@@ -388,6 +388,7 @@ DLL_EXPORT string typechecking_type_to_str(typechecking_Type *tpe) {
         buffer_append_str((&buf), typechecking_type_to_str(((*tpe).tpe)));
         break;
         default:
+        fprintf(stderr, (((Array){5, "%d%s"}).value), ((*tpe).kind), (((Array){2, "\x0a"""}).value));
         assert(false);
     }
     ;
@@ -545,6 +546,28 @@ DLL_EXPORT typechecking_Type * typechecking_type_lookup(parser_Node *node, typec
         ((*tpe).size) = (((*tpe).length) * ((*array_tpe).size));
         ((*tpe).align) = ((*array_tpe).align);
         return tpe;
+    }
+    else if ((((*node).kind) == parser_NodeKind_FUNCTION_T)) {
+        typechecking_Type *tpe = malloc((sizeof(typechecking_Type)));
+        ((*tpe).kind) = typechecking_TypeKind_FUNCTION;
+        ((*tpe).size) = (sizeof(void (*)()));
+        ((*tpe).align) = (alignof(void (*)()));
+        ((*tpe).parameter_t) = vector_make();
+        for (int i = 0;(i < vector_length(((((*node).value).t_func).args)));(i += 1)) {
+            parser_Node *arg = ((parser_Node *)vector_get(((((*node).value).t_func).args), i));
+            typechecking_NamedParameter *np = malloc((sizeof(typechecking_NamedParameter)));
+            ((*np).name) = ((Array){1, ""});
+            ((*np).value) = typechecking_type_lookup(arg, state);
+            vector_push(((*tpe).parameter_t), np);
+        }
+        ;
+        ((*tpe).return_t) = vector_make();
+        for (int i = 0;(i < vector_length(((((*node).value).t_func).ret)));(i += 1)) {
+            parser_Node *arg = ((parser_Node *)vector_get(((((*node).value).t_func).ret), i));
+            vector_push(((*tpe).return_t), typechecking_type_lookup(arg, state));
+        }
+        ;
+        return typechecking_pointer(tpe);
     } ;
     return NULL;
 };
