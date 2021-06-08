@@ -58,7 +58,7 @@ int _a69ecad8_seek_set;
 int _a69ecad8_seek_cur;
 int _a69ecad8_seek_end;
 typechecking_Type *builtins_File_;
-bool _a69ecad8_path_max;
+int _a69ecad8_path_max;
 bool _a69ecad8_win32;
 #include "builtin_functions.c"
 DLL_EXPORT void builtins_p_main(Array args) {
@@ -109,7 +109,7 @@ DLL_EXPORT void builtins_p_main(Array args) {
     scope_create_variable(builtins_builtins, parser_make_identifier(((Array){1, (Array[1]){ ((Array){7, "stdout"}) }})), parser_ShareMarker_NONE, parser_VarDecl_VAR, builtins_File_, NULL);
     scope_create_variable(builtins_builtins, parser_make_identifier(((Array){1, (Array[1]){ ((Array){7, "stderr"}) }})), parser_ShareMarker_NONE, parser_VarDecl_VAR, builtins_File_, NULL);
     _a69ecad8_path_max = PATH_MAX;
-    scope_create_variable(builtins_builtins, parser_make_identifier(((Array){1, (Array[1]){ ((Array){9, "PATH_MAX"}) }})), parser_ShareMarker_NONE, parser_VarDecl_CONST, builtins_bool_, (&_a69ecad8_path_max));
+    scope_create_variable(builtins_builtins, parser_make_identifier(((Array){1, (Array[1]){ ((Array){9, "PATH_MAX"}) }})), parser_ShareMarker_NONE, parser_VarDecl_CONST, builtins_int_, (&_a69ecad8_path_max));
     _a69ecad8_win32 = WIN32;
     scope_create_variable(builtins_builtins, parser_make_identifier(((Array){1, (Array[1]){ ((Array){6, "WIN32"}) }})), parser_ShareMarker_NONE, parser_VarDecl_CONST, builtins_bool_, (&_a69ecad8_win32));
     builtin_functions_p_main(args);
