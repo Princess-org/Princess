@@ -142,6 +142,15 @@ DLL_EXPORT typechecking_Type * typechecking_make_type(typechecking_TypeKind kind
     ((*t).name) = name;
     return t;
 };
+DLL_EXPORT typechecking_Type * typechecking_make_static_array(typechecking_Type *array_tpe, int size) {
+    typechecking_Type *tpe = malloc((sizeof(typechecking_Type)));
+    ((*tpe).kind) = typechecking_TypeKind_STATIC_ARRAY;
+    ((*tpe).tpe) = array_tpe;
+    ((*tpe).length) = size;
+    ((*tpe).size) = (((*tpe).length) * ((*array_tpe).size));
+    ((*tpe).align) = ((*array_tpe).align);
+    return tpe;
+};
 int _3700c937_counter;
  string _3700c937_make_unique_name() {
     string s = util_int_to_str(_3700c937_counter);
@@ -539,13 +548,7 @@ DLL_EXPORT typechecking_Type * typechecking_type_lookup(parser_Node *node, typec
     }
     else if ((((*node).kind) == parser_NodeKind_ARRAY_STATIC_T)) {
         typechecking_Type *array_tpe = typechecking_type_lookup(((((*node).value).t_arrs).tpe), state);
-        typechecking_Type *tpe = malloc((sizeof(typechecking_Type)));
-        ((*tpe).kind) = typechecking_TypeKind_STATIC_ARRAY;
-        ((*tpe).tpe) = array_tpe;
-        ((*tpe).length) = (((*((((*node).value).t_arrs).n)).value).i);
-        ((*tpe).size) = (((*tpe).length) * ((*array_tpe).size));
-        ((*tpe).align) = ((*array_tpe).align);
-        return tpe;
+        return typechecking_make_static_array(array_tpe, (((*((((*node).value).t_arrs).n)).value).i));
     }
     else if ((((*node).kind) == parser_NodeKind_FUNCTION_T)) {
         typechecking_Type *tpe = malloc((sizeof(typechecking_Type)));
@@ -956,7 +959,7 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
     typechecking_Type *tpe = typechecking_type_lookup(right, state);
     ((*node).tpe) = tpe;
     if ((((*left).kind) == parser_NodeKind_STRUCT_LIT)) {
-        if ((((*tpe).kind) != typechecking_TypeKind_STRUCT)) {
+        if (((((*tpe).kind) != typechecking_TypeKind_STRUCT) && (((*tpe).kind) != typechecking_TypeKind_UNION))) {
             typechecking_errorn(left, ((Array){14, "Invalid cast\x0a"""}));
             return ;
         }  ;
@@ -1465,16 +1468,63 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
     }  ;
 };
  void _3700c937_walk_StructLit(parser_Node *node, typechecking_State *state) {
+    typechecking_Type *tpe = ((*node).tpe);
+    ((*node).tpe) = NULL;
+    if ((!tpe)) {
+        typechecking_errorn(node, ((Array){43, "Need to specify a type for struct literal\x0a"""}));
+        return ;
+    }  ;
     for (int i = 0;(i < vector_length(((((*node).value).struct_lit).args)));(i += 1)) {
         parser_Node *n = ((parser_Node *)vector_get(((((*node).value).struct_lit).args), i));
+        if ((i > (((*tpe).fields).size))) {
+            typechecking_errorn(n, ((Array){37, "Too many arguments to array literal\x0a"""}));
+            return ;
+        }  ;
         _3700c937_walk(n, state);
+        typechecking_Type *ntpe = ((((typechecking_StructMember *)((*tpe).fields).value)[i]).tpe);
+        ntpe = _3700c937_implicit_conversion(n, ((*n).tpe), ntpe);
+        if ((((bool)(!ntpe)) || ((bool)(!((*n).tpe))))) {
+            continue;
+        }  ;
+        if ((!_3700c937_is_assignable(((*n).tpe), ntpe))) {
+            typechecking_errorn(n, ((Array){20, "Incompatible types "}));
+            fprintf(stderr, (((Array){9, "%s%s%s%s"}).value), (debug_type_to_str(((*n).tpe)).value), (((Array){6, " and "}).value), (debug_type_to_str(ntpe).value), (((Array){2, "\x0a"""}).value));
+            return ;
+        }  ;
     }
     ;
     for (int i = 0;(i < vector_length(((((*node).value).struct_lit).kwargs)));(i += 1)) {
-        parser_Node *n = ((parser_Node *)vector_get(((((*node).value).struct_lit).kwargs), i));
-        _3700c937_walk(((((*n).value).named_arg).value), state);
+        parser_Node *kwarg = ((parser_Node *)vector_get(((((*node).value).struct_lit).kwargs), i));
+        parser_Node *n = ((((*kwarg).value).named_arg).value);
+        _3700c937_walk(n, state);
+        string name = typechecking_last_ident_to_str(((((*kwarg).value).named_arg).name));
+        bool found = false;
+        for (int j = 0;(j < (((*tpe).fields).size));(j += 1)) {
+            typechecking_StructMember field = (((typechecking_StructMember *)((*tpe).fields).value)[j]);
+            if ((strcmp(((field.name).value), (name.value)) == 0)) {
+                found = true;
+                typechecking_Type *ntpe = (field.tpe);
+                ntpe = _3700c937_implicit_conversion(n, ((*n).tpe), ntpe);
+                if ((((bool)(!ntpe)) || ((bool)(!((*n).tpe))))) {
+                    continue;
+                }  ;
+                if ((!_3700c937_is_assignable(((*n).tpe), ntpe))) {
+                    typechecking_errorn(n, ((Array){20, "Incompatible types "}));
+                    fprintf(stderr, (((Array){9, "%s%s%s%s"}).value), (debug_type_to_str(((*n).tpe)).value), (((Array){6, " and "}).value), (debug_type_to_str(ntpe).value), (((Array){2, "\x0a"""}).value));
+                    return ;
+                }  ;
+                break;
+            }  ;
+        }
+        ;
+        if ((!found)) {
+            typechecking_errorn(n, ((Array){16, "Unknown field \""}));
+            fprintf(stderr, (((Array){5, "%s%s"}).value), (name.value), (((Array){2, "\""}).value));
+            return ;
+        }  ;
     }
     ;
+    ((*node).tpe) = tpe;
 };
  void _3700c937_walk_ArrayLit(parser_Node *node, typechecking_State *state) {
     typechecking_Type *tpe = NULL;

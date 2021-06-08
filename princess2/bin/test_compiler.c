@@ -32,7 +32,7 @@ bool test_compiler_print_ll;
     compiler_Result *result = compiler_compile(module);
     ((*module).result) = result;
     codegen_gen(module);
-    File fh = fopen((((Array){14, "./bin/main.ll"}).value), (((Array){2, "r"}).value));
+    FILE* fh = fopen((((Array){14, "./bin/main.ll"}).value), (((Array){2, "r"}).value));
     string buf = util_read_all(fh);
     fclose(fh);
     int llc = system((((Array){19, "llc-12 bin/main.ll"}).value));
@@ -174,6 +174,8 @@ bool test_compiler_print_ll;
     res = _6dcc03b3_compile(str);
     str = ((Array){184, "\x0a""        type A = struct {\x0a""            value: int\x0a""        }\x0a""\x0a""        def ret_a -> A {\x0a""            return {10}\x0a""        }\x0a""\x0a""        let a: A = {10}\x0a""        var b: A\x0a""        b = {10}\x0a""    "});
     res = _6dcc03b3_compile(str);
+    str = ((Array){127, "\x0a""        type A = struct {\x0a""            a: int\x0a""            b: int\x0a""            c: int\x0a""        }\x0a""        let a: A = {a = 10}\x0a""    "});
+    res = _6dcc03b3_compile(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
  void _6dcc03b3_test_size_of() {
@@ -260,6 +262,15 @@ bool test_compiler_print_ll;
     res = _6dcc03b3_compile(str);
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
+ int _6dcc03b3_some_function() {
+    return 20;
+};
+ void _6dcc03b3_test_function_pointers() {
+    printf((((Array){3, "%s"}).value), (((Array){31, ">Testing function pointers... "}).value));
+    int (*a)() = (&_6dcc03b3_some_function);
+    assert((a() == 20));
+    printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
+};
 DLL_EXPORT void test_compiler_test() {
     printf((((Array){3, "%s"}).value), (((Array){30, "Running tests on Compiler...\x0a"""}).value));
     _6dcc03b3_test_arithmetic();
@@ -286,6 +297,7 @@ DLL_EXPORT void test_compiler_test() {
     _6dcc03b3_test_string_literal();
     _6dcc03b3_test_builtins();
     _6dcc03b3_test_switch();
+    _6dcc03b3_test_function_pointers();
 };
 DLL_EXPORT void test_compiler_p_main(Array args) {
     test_compiler_print_ll = false;

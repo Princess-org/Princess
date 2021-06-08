@@ -85,6 +85,17 @@
             buffer_append_char((&buf), '}');
         };
         break;
+        case typechecking_TypeKind_UNION:
+        if ((((((*tpe).type_name).size) - 1) > 0)) {
+            buffer_append_str((&buf), ((Array){3, "%\""}));
+            buffer_append_str((&buf), ((*tpe).type_name));
+            buffer_append_char((&buf), '\"');
+        }  else {
+            buffer_append_str((&buf), ((Array){3, "{["}));
+            buffer_append_str((&buf), util_int_to_str(((*tpe).size)));
+            buffer_append_str((&buf), ((Array){8, " x i8]}"}));
+        };
+        break;
         case typechecking_TypeKind_ENUM:
         return _574f02bf_type_to_str(((*tpe).tpe));
         break;
@@ -101,7 +112,7 @@
         for (int i = 0;(i < len);(i += 1)) {
             typechecking_NamedParameter *param = ((typechecking_NamedParameter *)vector_get(((*tpe).parameter_t), i));
             buffer_append_str((&buf), _574f02bf_type_to_str(((*param).value)));
-            if ((i < (len - 1))) {
+            if ((i < (len - ((int)1)))) {
                 buffer_append_str((&buf), ((Array){3, ", "}));
             }  ;
         }
@@ -170,6 +181,9 @@
             }
             ;
             buffer_append_char((&buf), ']');
+            break;
+            case compiler_ValueKind_ZEROINITIALIZER:
+            buffer_append_str((&buf), ((Array){16, "zeroinitializer"}));
             break;
             case compiler_ValueKind_NULL:
             buffer_append_str((&buf), ((Array){5, "null"}));
@@ -573,7 +587,7 @@
             fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, " "}).value));
             fprintf(fp, (((Array){5, "%s%s"}).value), (((Array){2, "%"}).value), (name.value));
         }  ;
-        if ((i < (len - 1))) {
+        if ((i < (len - ((int)1)))) {
             fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, ", "}).value));
         }  ;
     }
@@ -614,6 +628,12 @@
         fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, ">"}).value));
     }  ;
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
+};
+ void _574f02bf_emit_union(File fp, typechecking_Type *union_) {
+    fprintf(fp, (((Array){7, "%s%s%s"}).value), (((Array){3, "%\""}).value), (((*union_).type_name).value), (((Array){2, "\""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){10, " = type {"}).value));
+    fprintf(fp, (((Array){7, "%s%s%s"}).value), (((Array){2, "["}).value), (util_int_to_str(((*union_).size)).value), (((Array){7, " x i8]"}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, "}\x0a"""}).value));
 };
  void _574f02bf_emit_global(File fp, compiler_Value *global) {
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str((*global)).value));
@@ -698,7 +718,7 @@ DLL_EXPORT string codegen_gen(toolchain_Module *module) {
         if ((((*structure).kind) == typechecking_TypeKind_STRUCT)) {
             _574f02bf_emit_structure(fp, structure);
         }  else {
-            assert(false);
+            _574f02bf_emit_union(fp, structure);
         };
     }
     ;

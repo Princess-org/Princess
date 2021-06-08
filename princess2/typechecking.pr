@@ -221,6 +221,16 @@ export def make_type(kind: TypeKind, node: *parser::Node) -> *Type {
     return t
 }
 
+export def make_static_array(array_tpe: *Type, size: int) -> *Type {
+    let tpe = allocate(Type)
+    (@tpe).kind = TypeKind::STATIC_ARRAY
+    (@tpe).tpe = array_tpe
+    (@tpe).length = size
+    (@tpe).size = (@tpe).length * (@array_tpe).size
+    (@tpe).align = (@array_tpe).align
+    return tpe
+}
+
 var counter = 0
 
 def make_unique_name -> string {
@@ -670,14 +680,8 @@ export def type_lookup(node: *parser::Node, state: *State) -> *Type {
         return tpe
     } else if (@node).kind == parser::NodeKind::ARRAY_STATIC_T {
         let array_tpe = type_lookup((@node).value.t_arrs.tpe, state)
-        let tpe = allocate(Type)
-        (@tpe).kind = TypeKind::STATIC_ARRAY
-        (@tpe).tpe = array_tpe
-        (@tpe).length = (@(@node).value.t_arrs.n).value.i
-        (@tpe).size = (@tpe).length * (@array_tpe).size
-        (@tpe).align = (@array_tpe).align
 
-        return tpe
+        return make_static_array(array_tpe, (@(@node).value.t_arrs.n).value.i)
     } else if (@node).kind == parser::NodeKind::FUNCTION_T {
         let tpe = allocate(Type)
         (@tpe).kind = TypeKind::FUNCTION
@@ -1134,7 +1138,8 @@ def walk_Cast(node: *parser::Node, state: *State) {
     (@node).tpe = tpe
 
     if (@left).kind == parser::NodeKind::STRUCT_LIT {
-        if (@tpe).kind != TypeKind::STRUCT {
+        if (@tpe).kind != TypeKind::STRUCT and
+            (@tpe).kind != TypeKind::UNION {
             errorn(left, "Invalid cast\n")
             return
         }
@@ -1699,14 +1704,65 @@ def walk_ArraySubscript(node: *parser::Node, state: *State) {
 }
 
 def walk_StructLit(node: *parser::Node, state: *State) {
+    let tpe = (@node).tpe
+    // This instructs compile to skip the struct literal completely
+    (@node).tpe = null
+
+    if not tpe {
+        errorn(node, "Need to specify a type for struct literal\n")
+        return
+    }
+
     for var i in 0..vector::length((@node).value.struct_lit.args) {
         let n = vector::get((@node).value.struct_lit.args, i) !*parser::Node
+        if i > (@tpe).fields.size {
+            errorn(n, "Too many arguments to array literal\n")
+            return
+        }
         walk(n, state)
+        
+        var ntpe = (@tpe).fields[i].tpe
+        ntpe = implicit_conversion(n, (@n).tpe, ntpe)
+
+        if not ntpe or not (@n).tpe { continue }
+        if not is_assignable((@n).tpe, ntpe) {
+            errorn(n, "Incompatible types ")
+            error(debug::type_to_str((@n).tpe), " and ", debug::type_to_str(ntpe), "\n")
+            return
+        }
     }
     for var i in 0..vector::length((@node).value.struct_lit.kwargs) {
-        let n = vector::get((@node).value.struct_lit.kwargs, i) !*parser::Node
-        walk((@n).value.named_arg.value, state)
+        let kwarg = vector::get((@node).value.struct_lit.kwargs, i) !*parser::Node
+        let n = (@kwarg).value.named_arg.value
+        walk(n, state)
+        let name = last_ident_to_str((@kwarg).value.named_arg.name)
+
+        var found = false
+        for var j in 0..(@tpe).fields.size {
+            let field = (@tpe).fields[j]
+            if field.name == name {
+                found = true
+
+                var ntpe = field.tpe
+                ntpe = implicit_conversion(n, (@n).tpe, ntpe)
+
+                if not ntpe or not (@n).tpe { continue }
+                if not is_assignable((@n).tpe, ntpe) {
+                    errorn(n, "Incompatible types ")
+                    error(debug::type_to_str((@n).tpe), " and ", debug::type_to_str(ntpe), "\n")
+                    return
+                }
+                break
+            }
+        }
+        if not found {
+            errorn(n, "Unknown field \"")
+            error(name, "\"")
+            return
+        }
     }
+
+    (@node).tpe = tpe
 }
 
 // TODO We might want to allow assignments like

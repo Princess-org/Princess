@@ -20,7 +20,7 @@ export type Label = struct {
 }
 
 export type ValueKind = enum {
-    NULL; LOCAL; GLOBAL;
+    NULL; ZEROINITIALIZER; LOCAL; GLOBAL;
     BOOL; INT; FLOAT; STRING
     ARRAY; STRUCT; UNION; TYPE
 }
@@ -771,45 +771,140 @@ def walk_Cast(node: *parser::Node, state: *State) -> Value {
     return convert_to(node, value, (@node).tpe, state)
 }
 
-def walk_StructLit(node: *parser::Node, state: *State) -> Value {
+def walk_StructLitUnion(node: *parser::Node, state: *State) -> Value {
+    let args = (@node).value.struct_lit.args
+    let kwargs = (@node).value.struct_lit.kwargs
     let tpe = (@node).tpe
 
-    if not tpe {
-        typechecking::errorn(node, "Need to specify a type for struct literal\n")
+    let largs = vector::length(args)
+    let lkwargs = vector::length(kwargs)
+    if largs > 1 or lkwargs > 1 or largs == 1 and lkwargs == 1 {
+        typechecking::errorn(node, "Union initalizer can only have one argument")
         return NO_VALUE
+    } else if largs == 0 and lkwargs == 0 {
+        let arraytpe = typechecking::make_static_array(builtins::char_, (@tpe).size)
+
+        let values = allocate(Value, 1)
+        values[0] = {
+            kind = ValueKind::ZEROINITIALIZER,
+            tpe = arraytpe
+        } !Value
+
+        return {
+            kind = ValueKind::STRUCT,
+            tpe = tpe,
+            values = values
+        } !Value
     }
 
+    var arg: *parser::Node = null
+    var arg_tpe: *typechecking::Type = null
+    if largs == 1 {
+        arg = vector::get(args, 0) !*parser::Node
+        arg_tpe = (@tpe).fields[0].tpe
+    } else {
+        let kwarg = vector::get(kwargs, 0) !*parser::Node
+        arg = (@kwarg).value.named_arg.value
+        let name = typechecking::last_ident_to_str((@kwarg).value.named_arg.name)
+
+        for var j in 0..(@tpe).fields.size {
+            let field = (@tpe).fields[j]
+            if field.name == name {
+                arg_tpe = field.tpe
+                break
+            }
+        }
+    }
+
+    let value = convert_to(arg, walk_expression(arg, state), arg_tpe, state)
+    
+    let alloca_ret = make_local_value(tpe, null, state)
+    let alloca = allocate(Insn)
+    (@alloca).kind = InsnKind::ALLOCA
+    (@alloca).value.alloca = {
+        ret = alloca_ret
+    } !InsnAlloca
+    push_insn(alloca, state)
+
+    alloca_ret.tpe = typechecking::pointer(tpe)
+    
+    let index = allocate(Value, 3)
+    index[0] = make_int_value(0)
+    index[1] = make_int_value(0)
+    index[2] = make_int_value(0)
+    let gep_ret = make_local_value(typechecking::pointer(builtins::char_), null, state)
+    let gep = allocate(Insn)
+    (@gep).kind = InsnKind::GETELEMENTPTR
+    (@gep).value.gep = {
+        ret = gep_ret,
+        tpe = tpe,
+        value = alloca_ret,
+        index = index
+    } !InsnGetElementPtr
+    push_insn(gep, state)
+
+    let bitcast_ret = make_local_value(typechecking::pointer(arg_tpe), null, state)
+    let bitcast = allocate(Insn)
+    (@bitcast).kind = InsnKind::BITCAST
+    (@bitcast).value.convert = {
+        ret = bitcast_ret,
+        value = gep_ret
+    } !InsnConvert
+    push_insn(bitcast, state)
+
+    let store = allocate(Insn)
+    (@store).kind = InsnKind::STORE
+    (@store).value.store = {
+        loc = bitcast_ret,
+        value = value
+    } !InsnStore
+    push_insn(store, state)
+
+    let load_ret = make_local_value(tpe, null, state)
+    let load = allocate(Insn)
+    (@load).kind = InsnKind::LOAD
+    (@load).value.load = {
+        value = load_ret,
+        loc = alloca_ret
+    } !InsnLoad
+    push_insn(load, state)
+
+    return load_ret
+}
+
+def walk_StructLit(node: *parser::Node, state: *State) -> Value {
     let args = (@node).value.struct_lit.args
     let kwargs = (@node).value.struct_lit.kwargs
 
-    let values = zero_allocate(Value, (@tpe).fields.size)
+    let tpe = (@node).tpe
+    if not tpe { return NO_VALUE }
+    if (@tpe).kind == typechecking::TypeKind::UNION {
+        return walk_StructLitUnion(node, state)
+    }
+
+    let values = allocate(Value, (@tpe).fields.size)
+    for var i in 0..values.size {
+        values[i] = {
+            kind = ValueKind::ZEROINITIALIZER,
+            tpe = (@tpe).fields[i].tpe
+        } !Value
+    }
     for var i in 0..vector::length(args) {
         let arg = vector::get(args, i) !*parser::Node
         let value = walk_expression(arg, state)
-        if i > values.size {
-            typechecking::errorn(arg, "Too many arguments to struct literal\n")
-            return NO_VALUE
-        }
-        values[i] = value
+        values[i] = convert_to(arg, value, (@tpe).fields[i].tpe, state)
     }
     for var i in 0..vector::length(kwargs) {
         let kwarg = vector::get(kwargs, i) !*parser::Node
         let name = typechecking::last_ident_to_str((@kwarg).value.named_arg.name)
         let value = walk_expression((@kwarg).value.named_arg.value, state)
         
-        var found = false
         for var j in 0..(@tpe).fields.size {
-            let field_name = (@tpe).fields[j].name
-            if field_name == name {
-                values[j] = value
-                found = true
+            let field = (@tpe).fields[j]
+            if field.name == name {
+                values[j] = convert_to(kwarg, value, field.tpe, state)
                 break
             }
-        }
-        if not found {
-            typechecking::errorn(kwarg, "Unknown field \"")
-            error(name, "\"\n")
-            return NO_VALUE
         }
     }
     var value = {
@@ -1564,6 +1659,7 @@ def walk_MemberAccess_gep(node: *parser::Node, tpe: *typechecking::Type, value: 
         value = @value.addr,
         index = index
     } !InsnGetElementPtr
+    push_insn(gep, state)
 
     let addr = allocate(Value)
     @addr = gep_ret
@@ -1575,8 +1671,6 @@ def walk_MemberAccess_gep(node: *parser::Node, tpe: *typechecking::Type, value: 
         value = ret,
         loc = gep_ret
     } !InsnLoad
-
-    push_insn(gep, state)
     push_insn(load, state)
 
     return ret
@@ -1635,6 +1729,54 @@ def walk_MemberAccess(node: *parser::Node, state: *State) -> Value {
         }
 
         return walk_MemberAccess_gep(node, tpe, value, index, state)
+    } else if (@tpe).kind == typechecking::TypeKind::UNION {
+
+        var member: typechecking::StructMember
+        for var i in 0..(@tpe).fields.size {
+            let m = (@tpe).fields[i]
+            if m.name == name {
+                member = m
+                break
+            }
+        }
+
+        let index = allocate(Value, 3)
+        index[0] = make_int_value(0)
+        index[1] = make_int_value(0)
+        index[2] = make_int_value(0)
+
+        let gep_ret = make_local_value(typechecking::pointer(builtins::char_), null, state)
+        let gep = allocate(Insn)
+        (@gep).kind = InsnKind::GETELEMENTPTR
+        (@gep).value.gep = {
+            ret = gep_ret,
+            tpe = tpe,
+            value = @value.addr,
+            index = index
+        } !InsnGetElementPtr
+        push_insn(gep, state)
+
+        let bitcast_ret = make_local_value(typechecking::pointer(member.tpe), null, state)
+        let bitcast = allocate(Insn)
+        (@bitcast).kind = InsnKind::BITCAST
+        (@bitcast).value.convert = {
+            ret = bitcast_ret,
+            value = gep_ret
+        } !InsnConvert
+        push_insn(bitcast, state)
+
+        let addr = allocate(Value)
+        (@addr) = bitcast_ret
+        let load_ret = make_local_value(member.tpe, addr, state)
+        let load = allocate(Insn)
+        (@load).kind = InsnKind::LOAD
+        (@load).value.load = {
+            value = load_ret,
+            loc = bitcast_ret
+        } !InsnLoad
+        push_insn(load, state)
+
+        return load_ret
     } else {
         let index = allocate(Value, 2)
         index[0] = make_int_value(0)
