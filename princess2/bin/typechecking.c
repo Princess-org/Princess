@@ -9,7 +9,7 @@
 #include "parser.c"
 #include "buffer.c"
 #include "util.c"
-typedef enum typechecking_TypeKind {typechecking_TypeKind_TYPE = 0, typechecking_TypeKind_WORD = 1, typechecking_TypeKind_FLOAT = 2, typechecking_TypeKind_BOOL = 3, typechecking_TypeKind_STRUCT = 4, typechecking_TypeKind_UNION = 5, typechecking_TypeKind_ENUM = 6, typechecking_TypeKind_FUNCTION = 7, typechecking_TypeKind_TUPLE = 8, typechecking_TypeKind_POINTER = 9, typechecking_TypeKind_REFERENCE = 10, typechecking_TypeKind_STATIC_ARRAY = 11, typechecking_TypeKind_ARRAY = 12, typechecking_TypeKind_RANGE = 13, typechecking_TypeKind_RANGE_INC = 14, typechecking_TypeKind_NAMESPACE = 15, typechecking_TypeKind_STUB = 16} typechecking_TypeKind;
+typedef enum typechecking_TypeKind {typechecking_TypeKind_TYPE = 0, typechecking_TypeKind_WORD = 1, typechecking_TypeKind_FLOAT = 2, typechecking_TypeKind_BOOL = 3, typechecking_TypeKind_STRUCT = 4, typechecking_TypeKind_UNION = 5, typechecking_TypeKind_ENUM = 6, typechecking_TypeKind_FUNCTION = 7, typechecking_TypeKind_TUPLE = 8, typechecking_TypeKind_POINTER = 9, typechecking_TypeKind_REFERENCE = 10, typechecking_TypeKind_STATIC_ARRAY = 11, typechecking_TypeKind_ARRAY = 12, typechecking_TypeKind_RANGE = 13, typechecking_TypeKind_RANGE_INC = 14, typechecking_TypeKind_NAMESPACE = 15, typechecking_TypeKind_STUB = 16, typechecking_TypeKind_NULL = 17} typechecking_TypeKind;
 typedef struct typechecking_Type typechecking_Type;
 typedef struct typechecking_State typechecking_State;
 typedef struct typechecking_StructMember {string name; struct typechecking_Type *tpe; size_t offset;} typechecking_StructMember;
@@ -256,6 +256,9 @@ DLL_EXPORT bool typechecking_equals(typechecking_Type *a, typechecking_Type *b) 
         return 0;
     }  ;
     if (typechecking_equals(a, b)) {
+        return 0;
+    }  ;
+    if ((((((*a).kind) == typechecking_TypeKind_POINTER) || (((*a).kind) == typechecking_TypeKind_REFERENCE)) && (((*b).kind) == typechecking_TypeKind_NULL))) {
         return 0;
     }  ;
     if ((((((*a).kind) == typechecking_TypeKind_WORD) && (((*b).kind) == typechecking_TypeKind_WORD)) && (((*a).size) >= ((*b).size)))) {
@@ -601,8 +604,7 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
  void _3700c937_walk(parser_Node *node, typechecking_State *state);
  void _3700c937_walk_Null(parser_Node *node, typechecking_State *state) {
     typechecking_Type *tpe = malloc((sizeof(typechecking_Type)));
-    ((*tpe).kind) = typechecking_TypeKind_POINTER;
-    ((*tpe).tpe) = NULL;
+    ((*tpe).kind) = typechecking_TypeKind_NULL;
     ((*node).tpe) = tpe;
 };
  void _3700c937_walk_Integer(parser_Node *node, typechecking_State *state) {
