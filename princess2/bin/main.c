@@ -74,7 +74,7 @@ DLL_EXPORT void main_p_main(Array args) {
         if ((((bool)_fad58de7_filenames) && (vector_length(_fad58de7_filenames) > 0))) {
             if ((vector_length(_fad58de7_filenames) > 1)) {
                 fprintf(stderr, (((Array){3, "%s"}).value), (((Array){29, "More than one file specified"}).value));
-                return ;
+                exit((-1));
             }  ;
             toolchain_compile_main_file((*((string *)vector_peek(_fad58de7_filenames))));
             if ((toolchain_error_count > 0)) {

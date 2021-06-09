@@ -24,7 +24,7 @@ typedef struct map_Map {size_t size; Array entries;} map_Map;
         return ;
     }  ;
     Array entries = ((*map).entries);
-    Array new_entries = ((Array){(((int64)allocated) * ((int64)2)), calloc((((int64)allocated) * ((int64)2)), (sizeof(_1d78dc8e_Entry)))});
+    Array new_entries = ((Array){(((int64)allocated) * ((int64)2)), calloc((((int64)allocated) * ((int64)2)), (sizeof(_1d78dc8e_Entry *)))});
     for (int i = 0;(i < (entries.size));(i += 1)) {
         _1d78dc8e_Entry *entry = (((_1d78dc8e_Entry **)entries.value)[i]);
         if (entry) {
@@ -49,7 +49,7 @@ typedef struct map_Map {size_t size; Array entries;} map_Map;
 };
 DLL_EXPORT map_Map * map_make_size(size_t size) {
     map_Map *map = malloc((sizeof(map_Map)));
-    ((*map).entries) = ((Array){size, calloc(size, (sizeof(_1d78dc8e_Entry)))});
+    ((*map).entries) = ((Array){size, calloc(size, (sizeof(_1d78dc8e_Entry *)))});
     ((*map).size) = 0;
     return map;
 };

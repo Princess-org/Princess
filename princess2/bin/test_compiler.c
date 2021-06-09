@@ -14,6 +14,7 @@
 #include "typechecking.c"
 #include "compiler.c"
 #include "toolchain.c"
+#include "builtins.c"
 bool test_compiler_print_ll;
  string _6dcc03b3_compile(string s) {
     toolchain_outfolder = ((Array){6, "./bin"});
