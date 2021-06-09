@@ -48,7 +48,7 @@
         printf((((Array){3, "%s"}).value), (((Array){3, "[\x0a"""}).value));
         for (int i = 0;(i < vector_length(vec));(i += 1)) {
             _ad42f669_print_indent((indent + 1));
-            _ad42f669_print_node_(vector_get(vec, i), (indent + 2));
+            _ad42f669_print_node_(((parser_Node *)vector_get(vec, i)), (indent + 2));
             printf((((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
         }
         ;
@@ -413,7 +413,7 @@
         printf((((Array){3, "%s"}).value), (((Array){11, "Program [\x0a"""}).value));
         for (int i = 0;(i < vector_length((((*node).value).body)));(i += 1)) {
             _ad42f669_print_indent(indent);
-            _ad42f669_print_node_(vector_get((((*node).value).body), i), (indent + 1));
+            _ad42f669_print_node_(((parser_Node *)vector_get((((*node).value).body), i)), (indent + 1));
             printf((((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
         }
         ;
@@ -720,7 +720,7 @@ DLL_EXPORT void debug_print_node(parser_Node *node) {
 };
 typedef struct debug_Error {string where; string src; string msg;} debug_Error;
 ARRAY(_ad42f669_file, char, 15);
-void *_ad42f669_fh;
+File _ad42f669_fh;
 DLL_EXPORT void debug_redirect_stderr() {
     _ad42f669_fh = freopen((_ad42f669_file.value), (((Array){2, "w"}).value), stderr);
 };
@@ -732,7 +732,7 @@ DLL_EXPORT vector_Vector * debug_catch_errors() {
         freopen((((Array){9, "/dev/tty"}).value), (((Array){2, "w"}).value), stderr);
     };
     vector_Vector *errors = vector_make();
-    FILE* fh2 = fopen((_ad42f669_file.value), (((Array){3, "rb"}).value));
+    File fh2 = fopen((_ad42f669_file.value), (((Array){3, "rb"}).value));
     if ((!fh2)) {
         return errors;
     }  ;
@@ -775,7 +775,7 @@ DLL_EXPORT string debug_type_to_str(typechecking_Type *tpe);
  string _ad42f669_function_t_to_string(typechecking_Type *tpe) {
     buffer_Buffer buf = buffer_make_buffer();
     buffer_append_char((&buf), '(');
-    int len = vector_length(((*tpe).parameter_t));
+    size_t len = vector_length(((*tpe).parameter_t));
     for (int i = 0;(i < len);(i += 1)) {
         typechecking_NamedParameter *param = ((typechecking_NamedParameter *)vector_get(((*tpe).parameter_t), i));
         if (((*param).varargs)) {
@@ -783,7 +783,7 @@ DLL_EXPORT string debug_type_to_str(typechecking_Type *tpe);
         }  else {
             buffer_append_str((&buf), debug_type_to_str(((*param).value)));
         };
-        if ((i < (len - ((int)1)))) {
+        if ((i < (((int64)len) - ((int64)1)))) {
             buffer_append_str((&buf), ((Array){3, ", "}));
         }  ;
     }
@@ -793,7 +793,7 @@ DLL_EXPORT string debug_type_to_str(typechecking_Type *tpe);
     for (int i = 0;(i < len);(i += 1)) {
         typechecking_Type *ret = ((typechecking_Type *)vector_get(((*tpe).return_t), i));
         buffer_append_str((&buf), debug_type_to_str(ret));
-        if ((i < (len - ((int)1)))) {
+        if ((i < (((int64)len) - ((int64)1)))) {
             buffer_append_str((&buf), ((Array){3, ", "}));
         }  ;
     }
@@ -838,11 +838,11 @@ DLL_EXPORT string debug_type_to_str(typechecking_Type *tpe);
  string _ad42f669_tuple_t_to_string(typechecking_Type *tpe) {
     buffer_Buffer buf = buffer_make_buffer();
     buffer_append_char((&buf), '(');
-    int len = vector_length(((*tpe).return_t));
+    size_t len = vector_length(((*tpe).return_t));
     for (int i = 0;(i < len);(i += 1)) {
         typechecking_Type *ret = ((typechecking_Type *)vector_get(((*tpe).return_t), i));
         buffer_append_str((&buf), debug_type_to_str(ret));
-        if ((i < (len - ((int)1)))) {
+        if ((i < (((int64)len) - ((int64)1)))) {
             buffer_append_str((&buf), ((Array){3, ", "}));
         }  ;
     }

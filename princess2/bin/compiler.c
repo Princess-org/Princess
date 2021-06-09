@@ -230,7 +230,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     ((*strtpe).kind) = typechecking_TypeKind_STATIC_ARRAY;
     ((*strtpe).tpe) = builtins_char_;
     ((*strtpe).length) = ((((*node).value).str).size);
-    ((*strtpe).size) = (((*tpe).length) * ((size_t)(sizeof(char))));
+    ((*strtpe).size) = (((*tpe).length) * (sizeof(char)));
     ((*strtpe).align) = (sizeof(char));
     compiler_Value *str_value = malloc((sizeof(compiler_Value)));
     (*str_value) = ((compiler_Value){ .kind = compiler_ValueKind_STRING, .s = (((*node).value).str), .tpe = tpe });
@@ -440,8 +440,8 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     vector_Vector *args = ((((*node).value).struct_lit).args);
     vector_Vector *kwargs = ((((*node).value).struct_lit).kwargs);
     typechecking_Type *tpe = ((*node).tpe);
-    int largs = vector_length(args);
-    int lkwargs = vector_length(kwargs);
+    size_t largs = vector_length(args);
+    size_t lkwargs = vector_length(kwargs);
     if ((((largs > 1) || (lkwargs > 1)) || ((largs == 1) && (lkwargs == 1)))) {
         typechecking_errorn(node, ((Array){44, "Union initalizer can only have one argument"}));
         return compiler_NO_VALUE;
@@ -556,10 +556,10 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
 };
  compiler_Value _87f75ce3_walk_ArrayLit(parser_Node *node, compiler_State *state) {
     typechecking_Type *tpe = ((*node).tpe);
-    int len = vector_length((((*node).value).body));
-    Array values = ((Array){len, malloc((((int64)(sizeof(compiler_Value))) * ((int64)len)))});
+    size_t len = vector_length((((*node).value).body));
+    Array values = ((Array){len, malloc(((sizeof(compiler_Value)) * len))});
     for (int i = 0;(i < len);(i += 1)) {
-        void *v = vector_get((((*node).value).body), i);
+        parser_Node *v = ((parser_Node *)vector_get((((*node).value).body), i));
         (((compiler_Value *)values.value)[i]) = compiler_walk_expression(v, state);
     }
     ;
@@ -805,7 +805,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
         return compiler_NO_VALUE;
     }  ;
     vector_Vector *parameter_t = ((*tpe).parameter_t);
-    Array args = ((Array){(vector_length(((((*node).value).func_call).args)) + vector_length(((((*node).value).func_call).kwargs))), malloc((((int64)(sizeof(compiler_Value))) * ((int64)(vector_length(((((*node).value).func_call).args)) + vector_length(((((*node).value).func_call).kwargs))))))});
+    Array args = ((Array){(vector_length(((((*node).value).func_call).args)) + vector_length(((((*node).value).func_call).kwargs))), malloc(((sizeof(compiler_Value)) * (vector_length(((((*node).value).func_call).args)) + vector_length(((((*node).value).func_call).kwargs)))))});
     for (int i = 0;(i < vector_length(((((*node).value).func_call).args)));(i += 1)) {
         parser_Node *n = ((parser_Node *)vector_get(((((*node).value).func_call).args), i));
         typechecking_NamedParameter *p = NULL;
@@ -1097,7 +1097,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     string name = typechecking_last_ident_to_str(right);
     if ((((*tpe).kind) == typechecking_TypeKind_STATIC_ARRAY)) {
         if ((strcmp((name.value), (((Array){5, "size"}).value)) == 0)) {
-            compiler_Value i = compiler_make_int_value(((*tpe).length));
+            compiler_Value i = compiler_make_int_value(((int)((*tpe).length)));
             (i.tpe) = builtins_size_t_;
             return i;
         } else if ((strcmp((name.value), (((Array){6, "value"}).value)) == 0)) {
@@ -1253,7 +1253,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
         typechecking_errorn(node, ((Array){20, "Invalid expression\x0a"""}));
         return compiler_NO_VALUE;
     }  ;
-    compiler_Value value = compiler_make_int_value(((*tpe).size));
+    compiler_Value value = compiler_make_int_value(((int)((*tpe).size)));
     (value.tpe) = builtins_size_t_;
     return value;
 };
@@ -1263,7 +1263,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
         typechecking_errorn(node, ((Array){20, "Invalid expression\x0a"""}));
         return compiler_NO_VALUE;
     }  ;
-    compiler_Value value = compiler_make_int_value(((*tpe).align));
+    compiler_Value value = compiler_make_int_value(((int)((*tpe).align)));
     (value.tpe) = builtins_size_t_;
     return value;
 };
@@ -1439,7 +1439,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
         return _87f75ce3_compare(node, value_left, value_right, state);
     };
 };
- compiler_Value _87f75ce3_walk_PointerOp(parser_Node *node, parser_NodeKind kind, compiler_State *state) {
+ compiler_Value _87f75ce3_walk_PointerOp(parser_Node *node, compiler_InsnKind kind, compiler_State *state) {
     compiler_Value value_left = compiler_walk_expression(((((*node).value).bin_op).left), state);
     compiler_Value value_right = compiler_walk_expression(((((*node).value).bin_op).right), state);
     compiler_Value ret_ptrtoint = compiler_make_local_value(builtins_size_t_, NULL, state);
@@ -1615,7 +1615,7 @@ DLL_EXPORT compiler_Value compiler_walk_expression(parser_Node *node, compiler_S
         ((((*entry).value).br).if_true) = entry_label;
         compiler_push_label(entry_label, state);
         for (int i = 0;(i < vector_length(((((*else_if).value).else_if).body)));(i += 1)) {
-            void *stmt = vector_get(((((*else_if).value).else_if).body), i);
+            parser_Node *stmt = ((parser_Node *)vector_get(((((*else_if).value).else_if).body), i));
             compiler_walk(stmt, state);
         }
         ;
@@ -1656,7 +1656,7 @@ int _87f75ce3_max_cases;
     vector_Vector *if_stmts = vector_make();
     for (int i = 0;(i < vector_length(((((*node).value).switch_).body)));(i += 1)) {
         parser_Node *cse = ((parser_Node *)vector_get(((((*node).value).switch_).body), i));
-        int len = vector_length(((((*cse).value).case_).expr));
+        size_t len = vector_length(((((*cse).value).case_).expr));
         if ((len == 0)) {
             if (otherwise) {
                 typechecking_errorn(cse, ((Array){28, "More than one default case\x0a"""}));
@@ -1729,7 +1729,7 @@ int _87f75ce3_max_cases;
     compiler_push_label(olabel, state);
     for (int i = 0;(i < vector_length(if_stmts));(i += 1)) {
         parser_Node *cse = ((parser_Node *)vector_get(if_stmts, i));
-        int len = vector_length(((((*cse).value).case_).expr));
+        size_t len = vector_length(((((*cse).value).case_).expr));
         vector_Vector *brs = vector_make();
         compiler_Insn *last = NULL;
         for (int j = 0;(j < len);(j += 1)) {
@@ -1824,14 +1824,14 @@ int _87f75ce3_max_cases;
     }  ;
     compiler_Value value;
     if (((*current_function).multiple_returns)) {
-        Array ret_args = ((Array){vector_length((((*node).value).body)), malloc((((int64)(sizeof(compiler_Value))) * ((int64)vector_length((((*node).value).body)))))});
+        Array ret_args = ((Array){vector_length((((*node).value).body)), malloc(((sizeof(compiler_Value)) * vector_length((((*node).value).body))))});
         for (int i = 0;(i < (ret_args.size));(i += 1)) {
             (((compiler_Value *)ret_args.value)[i]) = compiler_walk_expression(((parser_Node *)vector_get((((*node).value).body), i)), state);
         }
         ;
         value = ((compiler_Value){ .kind = compiler_ValueKind_STRUCT, .values = ret_args, .tpe = ((*current_function).ret) });
     }  else {
-        void *arg = vector_peek((((*node).value).body));
+        parser_Node *arg = ((parser_Node *)vector_peek((((*node).value).body)));
         value = compiler_walk_expression(arg, state);
     };
     compiler_Insn *ret = malloc((sizeof(compiler_Insn)));
@@ -1866,7 +1866,7 @@ int _87f75ce3_max_cases;
     compiler_Label start_label = compiler_make_label(state);
     compiler_push_label(start_label, state);
     for (int i = 0;(i < vector_length((((*node).value).body)));(i += 1)) {
-        void *n = vector_get((((*node).value).body), i);
+        parser_Node *n = ((parser_Node *)vector_get((((*node).value).body), i));
         compiler_walk(n, state);
     }
     ;
@@ -1893,7 +1893,7 @@ int _87f75ce3_max_cases;
     compiler_push_label(inner, state);
     ((((*br).value).br).if_true) = inner;
     for (int i = 0;(i < vector_length(((((*node).value).while_loop).body)));(i += 1)) {
-        void *n = vector_get(((((*node).value).while_loop).body), i);
+        parser_Node *n = ((parser_Node *)vector_get(((((*node).value).while_loop).body), i));
         compiler_walk(n, state);
     }
     ;
@@ -1961,7 +1961,7 @@ int _87f75ce3_max_cases;
     compiler_push_label(inner, state);
     ((((*br).value).br).if_true) = inner;
     for (int i = 0;(i < vector_length(((((*node).value).for_loop).body)));(i += 1)) {
-        void *n = vector_get(((((*node).value).for_loop).body), i);
+        parser_Node *n = ((parser_Node *)vector_get(((((*node).value).for_loop).body), i));
         compiler_walk(n, state);
     }
     ;
@@ -2065,15 +2065,15 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state) {
     if ((vector_length(((*tpe).return_t)) > 1)) {
         typechecking_Type *ret_tpe = typechecking_make_anonymous_type(typechecking_TypeKind_STRUCT);
         ((*ret_tpe).packed) = false;
-        int length = vector_length(((*tpe).return_t));
-        Array fields = ((Array){length, malloc((((int64)(sizeof(typechecking_StructMember))) * ((int64)length)))});
+        size_t length = vector_length(((*tpe).return_t));
+        Array fields = ((Array){length, malloc(((sizeof(typechecking_StructMember)) * length))});
         int offset = 0;
         int align = 1;
         for (int i = 0;(i < length);(i += 1)) {
             typechecking_Type *t = ((typechecking_Type *)vector_get(((*tpe).return_t), i));
             string name = util_int_to_str(i);
             offset = ((int)(ceil((((double)offset) / ((double)((*t).align)))) * ((double)((*tpe).align))));
-            align = util_lcm(align, ((*t).align));
+            align = util_lcm(align, ((int)((*t).align)));
             (((typechecking_StructMember *)fields.value)[i]) = ((typechecking_StructMember){ name, t, offset });
             (offset += ((*t).size));
         }
@@ -2211,8 +2211,8 @@ map_Map *_87f75ce3_imported_modules;
         ((*arg).scope) = ((*node).scope);
         ((*arg).tpe) = typechecking_array(builtins_string_);
         vector_push(args, arg);
-        int name_size = vector_length((((*name).value).body));
-        Array array = ((Array){(name_size + ((int)1)), malloc((((int64)(sizeof(string))) * ((int64)(name_size + ((int)1)))))});
+        size_t name_size = vector_length((((*name).value).body));
+        Array array = ((Array){(((int64)name_size) + ((int64)1)), malloc((((int64)(sizeof(string))) * (((int64)name_size) + ((int64)1))))});
         for (int j = 0;(j < name_size);(j += 1)) {
             (((string *)array.value)[j]) = (*((string *)vector_get((((*name).value).body), j)));
         }

@@ -20,7 +20,7 @@ int64 util_MAX_INT64;
 DLL_EXPORT string * util_copy_string(string str) {
     string *res = malloc((sizeof(string)));
     ((*res).size) = (str.size);
-    ((*res).value) = malloc(((sizeof(char)) * (str.size)));
+    ((*res).value) = ((char *)malloc(((sizeof(char)) * (str.size))));
     memcpy(((*res).value), (str.value), (str.size));
     return res;
 };
@@ -60,7 +60,7 @@ DLL_EXPORT string util_replace_all(string str, string search, string replace) {
         buffer_append_str((&buf), before);
         buffer_append_str((&buf), replace);
         free((before.value));
-        i = (((int64)j) + ((int64)((search.size) - 1)));
+        i = (j + ((int)((search.size) - 1)));
         j = util_find_substr(str, search, i);
     }
     ;
@@ -119,7 +119,7 @@ DLL_EXPORT string util_read_all(File fh) {
 DLL_EXPORT string util_int_to_hex_str(uint64 n) {
     Array digits = ((Array){17, "0123456789ABCDEF"});
     string str;
-    (str.value) = calloc(1, (((int64)(sizeof(char))) * ((int64)19)));
+    (str.value) = ((char *)calloc(1, (((int64)(sizeof(char))) * ((int64)19))));
     (((char *)str.value)[0]) = '0';
     (((char *)str.value)[1]) = 'x';
     int i = 2;
@@ -150,7 +150,7 @@ DLL_EXPORT string util_double_to_hex_str(double f) {
 DLL_EXPORT string util_uint_to_str_sign(int sign, uint64 n) {
     Array digits = ((Array){11, "0123456789"});
     string str;
-    (str.value) = calloc(1, (((int64)(sizeof(char))) * ((int64)22)));
+    (str.value) = ((char *)calloc(1, (((int64)(sizeof(char))) * ((int64)22))));
     if ((n == 0)) {
         (((char *)str.value)[0]) = '0';
         (str.size) = 2;

@@ -108,18 +108,22 @@
             buffer_append_str((&buf), ((Array){5, "void"}));
         };
         buffer_append_str((&buf), ((Array){3, " ("}));
-        int len = vector_length(((*tpe).parameter_t));
+        size_t len = vector_length(((*tpe).parameter_t));
         for (int i = 0;(i < len);(i += 1)) {
             typechecking_NamedParameter *param = ((typechecking_NamedParameter *)vector_get(((*tpe).parameter_t), i));
             buffer_append_str((&buf), _574f02bf_type_to_str(((*param).value)));
-            if ((i < (len - ((int)1)))) {
+            if ((i < (((int64)len) - ((int64)1)))) {
                 buffer_append_str((&buf), ((Array){3, ", "}));
             }  ;
         }
         ;
         buffer_append_str((&buf), ((Array){2, ")"}));
         break;
+        case typechecking_TypeKind_NULL:
+        buffer_append_str((&buf), ((Array){5, "null"}));
+        break;
         default:
+        fprintf(stderr, (((Array){5, "%d%s"}).value), ((*tpe).kind), (((Array){2, "\x0a"""}).value));
         assert(false);
     }
     ;
@@ -577,7 +581,7 @@
     };
     fprintf(fp, (((Array){5, "%s%s"}).value), (_574f02bf_type_to_str(((*function).ret)).value), (((Array){2, " "}).value));
     fprintf(fp, (((Array){7, "%s%s%s"}).value), (((Array){3, "@\""}).value), (((*function).name).value), (((Array){3, "\"("}).value));
-    int len = vector_length(((*function).args));
+    size_t len = vector_length(((*function).args));
     for (int i = 0;(i < len);(i += 1)) {
         typechecking_NamedParameter *np = ((typechecking_NamedParameter *)vector_get(((*function).args), i));
         typechecking_Type *tpe = ((*np).value);
@@ -587,7 +591,7 @@
             fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, " "}).value));
             fprintf(fp, (((Array){5, "%s%s"}).value), (((Array){2, "%"}).value), (name.value));
         }  ;
-        if ((i < (len - ((int)1)))) {
+        if ((i < (((int64)len) - ((int64)1)))) {
             fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, ", "}).value));
         }  ;
     }

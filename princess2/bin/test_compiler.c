@@ -33,7 +33,7 @@ bool test_compiler_print_ll;
     compiler_Result *result = compiler_compile(module);
     ((*module).result) = result;
     codegen_gen(module);
-    FILE* fh = fopen((((Array){14, "./bin/main.ll"}).value), (((Array){2, "r"}).value));
+    File fh = fopen((((Array){14, "./bin/main.ll"}).value), (((Array){2, "r"}).value));
     string buf = util_read_all(fh);
     fclose(fh);
     int llc = system((((Array){19, "llc-12 bin/main.ll"}).value));

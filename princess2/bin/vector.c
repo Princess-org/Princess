@@ -6,11 +6,11 @@
 #define _vector_H
 int _6ba8844d_INITIAL_SIZE;
 typedef struct vector_Vector {size_t length; size_t allocated; void **data;} vector_Vector;
- int _6ba8844d_roundup(int n) {
+ size_t _6ba8844d_roundup(size_t n) {
     if ((n == 0)) {
         return 0;
     }  ;
-    int r = 1;
+    size_t r = 1;
     while ((n > r)) {
         (r *= 2);
     }
@@ -21,7 +21,7 @@ DLL_EXPORT vector_Vector * vector_make() {
     vector_Vector *vec = malloc((sizeof(vector_Vector)));
     ((*vec).length) = 0;
     ((*vec).allocated) = _6ba8844d_INITIAL_SIZE;
-    ((*vec).data) = malloc((((int64)(sizeof(void *))) * ((int64)_6ba8844d_INITIAL_SIZE)));
+    ((*vec).data) = ((void **)malloc((((int64)(sizeof(void *))) * ((int64)_6ba8844d_INITIAL_SIZE))));
     return vec;
 };
  void _6ba8844d_extend(vector_Vector *vec, int delta) {
@@ -32,14 +32,14 @@ DLL_EXPORT vector_Vector * vector_make() {
     ((*vec).data) = realloc(((*vec).data), (((int64)(sizeof(void *))) * ((int64)nelem)));
     ((*vec).allocated) = nelem;
 };
-DLL_EXPORT int vector_length(vector_Vector *vec) {
+DLL_EXPORT size_t vector_length(vector_Vector *vec) {
     return ((*vec).length);
 };
-DLL_EXPORT void * vector_get(vector_Vector *vec, int index) {
+DLL_EXPORT void * vector_get(vector_Vector *vec, size_t index) {
     assert(((index >= 0) && (index < ((*vec).length))));
     return (((*vec).data)[index]);
 };
-DLL_EXPORT void vector_set(vector_Vector *vec, int index, void *val) {
+DLL_EXPORT void vector_set(vector_Vector *vec, size_t index, void *val) {
     assert(((index >= 0) && (index < ((*vec).length))));
     (((*vec).data)[index]) = val;
 };

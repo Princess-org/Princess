@@ -32,10 +32,10 @@ DLL_EXPORT scope_Scope * toolchain_get_forward_declared_scope(parser_Node *ident
 #include "compiler.c"
 DLL_EXPORT scope_Scope * toolchain_get_forward_declared_scope(parser_Node *ident) {
     buffer_Buffer buf = buffer_make_buffer();
-    int len = (vector_length((((*ident).value).body)) - 1);
+    int64 len = (((int64)vector_length((((*ident).value).body))) - ((int64)1));
     for (int i = 0;(i < len);(i += 1)) {
         buffer_append_str((&buf), (*((string *)vector_get((((*ident).value).body), i))));
-        if ((i < (len - 1))) {
+        if ((i < (len - ((int64)1)))) {
             buffer_append_str((&buf), ((Array){3, "::"}));
         }  ;
     }
@@ -56,11 +56,11 @@ DLL_EXPORT string toolchain_find_module_file(parser_Node *module) {
     assert((((*module).kind) == parser_NodeKind_IDENTIFIER));
     vector_Vector *ident = (((*module).value).body);
     Array path = ((Array){PATH_MAX, calloc(PATH_MAX, (sizeof(char)))});
-    int len = vector_length(ident);
+    size_t len = vector_length(ident);
     for (int i = 0;(i < len);(i += 1)) {
         string str = (*((string *)vector_get(ident, i)));
         concat((path.value), (((Array){3, "%s"}).value), (str.value));
-        if ((i < (len - 1))) {
+        if ((i < (((int64)len) - ((int64)1)))) {
             concat((path.value), (((Array){3, "%s"}).value), (((Array){2, "/"}).value));
         }  ;
     }

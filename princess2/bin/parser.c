@@ -68,10 +68,10 @@ DLL_EXPORT parser_Node * parser_copy_node(parser_Node *node) {
 DLL_EXPORT string parser_identifier_to_str(parser_Node *node) {
     assert((((*node).kind) == parser_NodeKind_IDENTIFIER));
     buffer_Buffer buf = buffer_make_buffer();
-    int len = vector_length((((*node).value).body));
+    size_t len = vector_length((((*node).value).body));
     for (int i = 0;(i < len);(i += 1)) {
         buffer_append_str((&buf), (*((string *)vector_get((((*node).value).body), i))));
-        if ((i < (len - 1))) {
+        if ((i < (((int64)len) - ((int64)1)))) {
             buffer_append_str((&buf), ((Array){3, "::"}));
         }  ;
     }
@@ -489,7 +489,7 @@ DLL_EXPORT string parser_identifier_to_str(parser_Node *node) {
         return NULL;
     }
     else if ((vector_length(args) == 1)) {
-        return vector_get(args, 0);
+        return ((parser_Node *)vector_get(args, 0));
     } else {
         return NULL;
     };
@@ -1015,7 +1015,7 @@ DLL_EXPORT string parser_identifier_to_str(parser_Node *node) {
     ;
     if (((token.tpe) != lexer_TokenType_OP_ASSIGN)) {
         if ((vector_length(left) == 1)) {
-            return vector_get(left, 0);
+            return ((parser_Node *)vector_get(left, 0));
         }  ;
     }  else {
         _3643b863_pop(parse_state);

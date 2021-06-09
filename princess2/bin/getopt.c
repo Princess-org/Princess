@@ -100,7 +100,7 @@ DLL_EXPORT map_Map * getopt_parse(Array args, Array options) {
                     if ((!v)) {
                         v = vector_make();
                     }  ;
-                    vector_push(v, element);
+                    vector_push(((vector_Vector *)v), element);
                     map_put(m, _572fa04a_get_name(option), v);
                 }  else {
                     map_put(m, _572fa04a_get_name(option), element);
@@ -122,7 +122,7 @@ DLL_EXPORT map_Map * getopt_parse(Array args, Array options) {
             vector_Vector *passed_args = vector_make();
             int n = (opt.nargs);
             if ((n == getopt_ARGS_ANY)) {
-                n = (((int64)(args.size)) - ((int64)j));
+                n = (((int)(args.size)) - j);
             }  ;
             for (int i = 0;(i < n);(i += 1)) {
                 if ((j < (args.size))) {

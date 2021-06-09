@@ -24,11 +24,11 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
 DLL_EXPORT typechecking_Type * typechecking_type_lookup(parser_Node *node, typechecking_State *state);
 DLL_EXPORT void * typechecking_evaluate_constant(parser_Node *node);
  typechecking_Type * _3700c937_current_function(typechecking_State *state) {
-    int length = vector_length(((*state).function_stack));
+    size_t length = vector_length(((*state).function_stack));
     if ((length == 0)) {
         return NULL;
     }  else {
-        return ((typechecking_Type *)vector_get(((*state).function_stack), (length - ((int)1))));
+        return ((typechecking_Type *)vector_get(((*state).function_stack), (((int64)length) - ((int64)1))));
     };
 };
  void _3700c937_push_function(typechecking_State *state, typechecking_Type *tpe) {
@@ -142,7 +142,7 @@ DLL_EXPORT typechecking_Type * typechecking_make_type(typechecking_TypeKind kind
     ((*t).name) = name;
     return t;
 };
-DLL_EXPORT typechecking_Type * typechecking_make_static_array(typechecking_Type *array_tpe, int size) {
+DLL_EXPORT typechecking_Type * typechecking_make_static_array(typechecking_Type *array_tpe, size_t size) {
     typechecking_Type *tpe = malloc((sizeof(typechecking_Type)));
     ((*tpe).kind) = typechecking_TypeKind_STATIC_ARRAY;
     ((*tpe).tpe) = array_tpe;
@@ -215,7 +215,7 @@ DLL_EXPORT bool typechecking_equals(typechecking_Type *a, typechecking_Type *b) 
         }
         ;
         for (int i = 0;(i < vector_length(((*a).return_t)));(i += 1)) {
-            if ((!typechecking_equals(vector_get(((*a).return_t), i), vector_get(((*b).return_t), i)))) {
+            if ((!typechecking_equals(((typechecking_Type *)vector_get(((*a).return_t), i)), ((typechecking_Type *)vector_get(((*b).return_t), i))))) {
                 return false;
             }  ;
         }
@@ -290,7 +290,7 @@ DLL_EXPORT int typechecking_overload_score(typechecking_Type *a, vector_Vector *
     assert(typechecking_is_function(a));
     vector_Vector *param_a = ((*a).parameter_t);
     if ((vector_length(param_a) > vector_length(param_b))) {
-        if ((vector_length(param_a) == (vector_length(param_b) + ((int)1)))) {
+        if ((vector_length(param_a) == (((int64)vector_length(param_b)) + ((int64)1)))) {
             if ((!((*((typechecking_NamedParameter *)vector_peek(param_a))).varargs))) {
                 return (-1);
             }  ;
@@ -478,12 +478,12 @@ DLL_EXPORT typechecking_Type * typechecking_type_lookup(parser_Node *node, typec
     else if ((((*node).kind) == parser_NodeKind_STRUCT_T)) {
         typechecking_Type *tpe = typechecking_make_anonymous_type(typechecking_TypeKind_STRUCT);
         ((*tpe).packed) = false;
-        int length = vector_length((((*node).value).body));
+        size_t length = vector_length((((*node).value).body));
         if ((length == 0)) {
             typechecking_errorn(node, ((Array){26, "Empty struct not allowed\x0a"""}));
             return NULL;
         }  ;
-        Array fields = ((Array){length, malloc((((int64)(sizeof(typechecking_StructMember))) * ((int64)length)))});
+        Array fields = ((Array){length, malloc(((sizeof(typechecking_StructMember)) * ((size_t)length)))});
         int offset = 0;
         int align = 1;
         for (int i = 0;(i < length);(i += 1)) {
@@ -496,7 +496,7 @@ DLL_EXPORT typechecking_Type * typechecking_type_lookup(parser_Node *node, typec
                 continue;
             }  ;
             offset = ((int)(ceil((((double)offset) / ((double)((*tpe).align)))) * ((double)((*tpe).align))));
-            align = util_lcm(align, ((*tpe).align));
+            align = util_lcm(align, ((int)((*tpe).align)));
             (((typechecking_StructMember *)fields.value)[i]) = ((typechecking_StructMember){ name, tpe, offset });
             (offset += ((*tpe).size));
         }
@@ -509,12 +509,12 @@ DLL_EXPORT typechecking_Type * typechecking_type_lookup(parser_Node *node, typec
     }
     else if ((((*node).kind) == parser_NodeKind_UNION_T)) {
         typechecking_Type *tpe = typechecking_make_anonymous_type(typechecking_TypeKind_UNION);
-        int length = vector_length((((*node).value).body));
+        size_t length = vector_length((((*node).value).body));
         if ((length == 0)) {
             typechecking_errorn(node, ((Array){25, "Empty union not allowed\x0a"""}));
             return NULL;
         }  ;
-        Array fields = ((Array){length, malloc((((int64)(sizeof(typechecking_StructMember))) * ((int64)length)))});
+        Array fields = ((Array){length, malloc(((sizeof(typechecking_StructMember)) * ((size_t)length)))});
         int size = 0;
         int align = 1;
         for (int i = 0;(i < length);(i += 1)) {
@@ -606,7 +606,7 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
 };
  void _3700c937_walk(parser_Node *node, typechecking_State *state);
  void _3700c937_walk_PtrT(parser_Node *node, typechecking_State *state) {
-    _3700c937_walk(((((*node).value).t_parr).tpe));
+    _3700c937_walk(((((*node).value).t_parr).tpe), state);
     ((*node).tpe) = typechecking_type_;
 };
  void _3700c937_walk_Null(parser_Node *node, typechecking_State *state) {
@@ -966,6 +966,9 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
         return ;
     }  ;
     typechecking_Type *tpe = typechecking_type_lookup(right, state);
+    if ((!tpe)) {
+        return ;
+    }  ;
     ((*node).tpe) = tpe;
     if ((((*left).kind) == parser_NodeKind_STRUCT_LIT)) {
         if (((((*tpe).kind) != typechecking_TypeKind_STRUCT) && (((*tpe).kind) != typechecking_TypeKind_UNION))) {
@@ -1080,7 +1083,7 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
         parser_Node *name = ((parser_Node *)vector_get(left, i));
         parser_Node *value = NULL;
         if ((i < vector_length(right))) {
-            value = vector_get(right, i);
+            value = ((parser_Node *)vector_get(right, i));
         }  ;
         typechecking_Type *tpe = typechecking_make_type(typechecking_TypeKind_STUB, name);
         if ((vector_length((((*name).value).body)) > 1)) {
@@ -1204,11 +1207,11 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
             if ((!function)) {
                 typechecking_errorn(left, ((Array){11, "Function \""}));
                 fprintf(stderr, (((Array){5, "%s%s"}).value), (parser_identifier_to_str(left).value), (((Array){37, "\" not found. Arguments were of type "}).value));
-                int len = vector_length(arguments);
+                size_t len = vector_length(arguments);
                 for (int i = 0;(i < len);(i += 1)) {
                     typechecking_NamedParameter *arg = ((typechecking_NamedParameter *)vector_get(arguments, i));
                     fprintf(stderr, (((Array){3, "%s"}).value), (debug_type_to_str(((*arg).value)).value));
-                    if ((i < (len - ((int)1)))) {
+                    if ((i < (((int64)len) - ((int64)1)))) {
                         fprintf(stderr, (((Array){3, "%s"}).value), (((Array){3, ", "}).value));
                     }  ;
                 }
@@ -1260,14 +1263,14 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
     if (((*tpe).proto)) {
         return_t = ((*tpe).proto)(((((*node).value).func_call).args), ((((*node).value).func_call).kwargs), state);
     }  ;
-    int len = vector_length(return_t);
+    size_t len = vector_length(return_t);
     if ((len > 1)) {
         typechecking_Type *return_tpe = malloc((sizeof(typechecking_Type)));
         ((*return_tpe).kind) = typechecking_TypeKind_TUPLE;
         ((*return_tpe).return_t) = return_t;
         ((*node).tpe) = return_tpe;
     } else if ((len == 1)) {
-        ((*node).tpe) = vector_peek(return_t);
+        ((*node).tpe) = ((typechecking_Type *)vector_peek(return_t));
     } else {
         ((*node).tpe) = NULL;
     };
@@ -1331,7 +1334,7 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
         }  ;
         ((*state).scope) = scope_enter_scope(((*state).scope));
         for (int i = 0;(i < vector_length(((((*n).value).else_if).body)));(i += 1)) {
-            void *n2 = vector_get(((((*n).value).else_if).body), i);
+            parser_Node *n2 = ((parser_Node *)vector_get(((((*n).value).else_if).body), i));
             _3700c937_walk(n2, state);
         }
         ;
@@ -1352,7 +1355,7 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
  void _3700c937_walk_Loop(parser_Node *node, typechecking_State *state) {
     ((*state).scope) = scope_enter_scope(((*state).scope));
     for (int i = 0;(i < vector_length((((*node).value).body)));(i += 1)) {
-        void *n = vector_get((((*node).value).body), i);
+        parser_Node *n = ((parser_Node *)vector_get((((*node).value).body), i));
         _3700c937_walk(n, state);
     }
     ;
@@ -1367,7 +1370,7 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
     }  ;
     ((*state).scope) = scope_enter_scope(((*state).scope));
     for (int i = 0;(i < vector_length(((((*node).value).while_loop).body)));(i += 1)) {
-        void *n = vector_get(((((*node).value).while_loop).body), i);
+        parser_Node *n = ((parser_Node *)vector_get(((((*node).value).while_loop).body), i));
         _3700c937_walk(n, state);
     }
     ;
@@ -1394,7 +1397,7 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
         }  ;
     };
     for (int i = 0;(i < vector_length(((((*node).value).for_loop).body)));(i += 1)) {
-        void *n = vector_get(((((*node).value).for_loop).body), i);
+        parser_Node *n = ((parser_Node *)vector_get(((((*node).value).for_loop).body), i));
         _3700c937_walk(n, state);
     }
     ;
@@ -1540,7 +1543,7 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
     if (((*node).tpe)) {
         tpe = ((*((*node).tpe)).tpe);
     }  ;
-    int len = vector_length((((*node).value).body));
+    size_t len = vector_length((((*node).value).body));
     for (int i = 0;(i < len);(i += 1)) {
         parser_Node *n = ((parser_Node *)vector_get((((*node).value).body), i));
         _3700c937_walk(n, state);
