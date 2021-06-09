@@ -367,6 +367,67 @@ export def push_insn(insn: *Insn, state: *State) {
     vector::push((@(@state).current_block).insn, insn)
 }
 
+export def charp_str(value: Value, state: *State) -> Value {
+    let local = make_local_value(typechecking::pointer(builtins::char_), null, state)
+
+    let index = allocate(int, 1)
+    index[0] = 1
+
+    let extract = allocate(Insn)
+    (@extract).kind = InsnKind::EXTRACTVALUE
+    (@extract).value.extract_value = {
+        ret = local,
+        value = value,
+        index = index
+    } !InsnExtractValue
+
+    push_insn(extract, state)
+
+    return local
+}
+
+export def charp_static(global: *Value, state: *State) -> Value {
+    let local = make_local_value(typechecking::pointer(builtins::char_), global, state)
+
+    let index = allocate(Value, 2)
+    index[0] = make_int_value(0)
+    index[1] = make_int_value(0)
+
+    let gep = allocate(Insn)
+    (@gep).kind = InsnKind::GETELEMENTPTR
+    (@gep).value.gep = {
+        ret = local,
+        tpe = (@(@global).tpe).tpe,
+        value = @global,
+        index = index
+    } !InsnGetElementPtr
+
+    push_insn(gep, state)
+
+    return local
+}
+
+export def charp(str: string, state: *State) -> Value {
+    let tpe = allocate(typechecking::Type)
+    (@tpe).kind = typechecking::TypeKind::STATIC_ARRAY
+    (@tpe).tpe = builtins::char_
+    (@tpe).length = str.size
+    (@tpe).size = (@tpe).length * (size_of char)
+    (@tpe).align = size_of char
+
+    let value = allocate(Value)
+    @value = {
+        kind = ValueKind::STRING,
+        s = str,
+        tpe = tpe
+    } !Value
+
+    let global = make_global_value(tpe, "str", value, state)
+    let globalp = allocate(Value)
+    @globalp = global
+    return charp_static(globalp, state)
+}
+
 export def walk_expression(node: *parser::Node, state: *State) -> Value
 export def walk(node: *parser::Node, state: *State)
 
@@ -684,7 +745,7 @@ def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Type, stat
                     i = 0,
                     sign = 1
                 } !Value
-            }
+            } !InsnCmp
             push_insn(insn, state)
             return ret
         } else {
@@ -1990,8 +2051,8 @@ def compare(node: *parser::Node, left: Value, right: Value, state: *State) -> Va
                     case parser::NodeKind::NEQ: op = i_ne
                     case parser::NodeKind::GT:  op = i_ugt
                     case parser::NodeKind::LT:  op = i_ult
-                    case parser::NodeKind::GEQ: op = f_uge
-                    case parser::NodeKind::LEQ: op = f_ule
+                    case parser::NodeKind::GEQ: op = i_uge
+                    case parser::NodeKind::LEQ: op = i_ule
                     case: assert(false)
                 }
             } else {
@@ -2023,13 +2084,56 @@ def compare(node: *parser::Node, left: Value, right: Value, state: *State) -> Va
         return ret
     } else if typechecking::equals(left.tpe, right.tpe) { 
         if typechecking::equals(left.tpe, builtins::string_) {
-            // TODO Compare strings
+            map::put((@(@state).module).imported, "strcmp", map::sentinel)
+
+            let args = allocate(Value, 2)
+            args[0] = charp_str(left, state)
+            args[1] = charp_str(right, state)
+
+            let call_ret = make_local_value(builtins::int_, null, state)
+            let call = allocate(Insn)
+            (@call).kind = InsnKind::CALL
+            (@call).value.call = {
+                name = {
+                    kind = ValueKind::GLOBAL,
+                    name = "strcmp"
+                } !Value,
+                ret = call_ret,
+                args = args
+            } !InsnCall
+            push_insn(call, state)
+
+            var op: string
+            switch (@node).kind !int {
+                case parser::NodeKind::EQ:  op = i_eq
+                case parser::NodeKind::NEQ: op = i_ne
+                case parser::NodeKind::GT:  op = i_ugt
+                case parser::NodeKind::LT:  op = i_ult
+                case parser::NodeKind::GEQ: op = i_uge
+                case parser::NodeKind::LEQ: op = i_ule
+                case: assert(false)
+            }
+
+            let cmp_ret = make_local_value(builtins::bool_, null, state)
+            let cmp = allocate(Insn)
+            (@cmp).kind = InsnKind::ICMP
+            (@cmp).value.cmp = {
+                op = op,
+                ret = cmp_ret,
+                left = call_ret,
+                right = {
+                    kind = ValueKind::INT,
+                    tpe = builtins::int_,
+                    i = 0,
+                    sign = 1
+                } !Value
+            } !InsnCmp
+            push_insn(cmp, state)
+
+            return cmp_ret
         }
-        return NO_VALUE
-    } else {
-        // TODO Compare arrays that aren't of equal type
-        return NO_VALUE
     }
+    return NO_VALUE
 }
 
 def walk_ComparisionOp(node: *parser::Node, state: *State) -> Value {

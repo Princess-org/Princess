@@ -243,6 +243,9 @@ DLL_EXPORT bool typechecking_equals(typechecking_Type *a, typechecking_Type *b) 
             return typechecking_equals(((*a).tpe), ((*b).tpe));
         }  ;
     }  ;
+    if ((((((*a).kind) == typechecking_TypeKind_POINTER) || (((*a).kind) == typechecking_TypeKind_REFERENCE)) && (((*b).kind) == typechecking_TypeKind_NULL))) {
+        return true;
+    }  ;
     if (((((*a).kind) == typechecking_TypeKind_POINTER) && (((*a).tpe) == NULL))) {
         return (((*b).kind) == typechecking_TypeKind_POINTER);
     }  ;

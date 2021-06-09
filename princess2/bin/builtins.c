@@ -10,7 +10,7 @@
 #include "vector.c"
 #include "typechecking.c"
 scope_Scope *builtins_builtins;
- typechecking_Type * _a69ecad8_create_int_type(string name, int size, bool unsig) {
+ typechecking_Type * _a69ecad8_create_int_type(string name, size_t size, bool unsig) {
     parser_Node *ident = parser_make_identifier(((Array){1, (string[1]){ name }}));
     typechecking_Type *tpe = typechecking_make_type(typechecking_TypeKind_WORD, ident);
     ((*tpe).size) = size;
@@ -19,7 +19,7 @@ scope_Scope *builtins_builtins;
     scope_create_type(builtins_builtins, ident, parser_ShareMarker_NONE, tpe);
     return tpe;
 };
- typechecking_Type * _a69ecad8_create_float_type(string name, int size) {
+ typechecking_Type * _a69ecad8_create_float_type(string name, size_t size) {
     parser_Node *ident = parser_make_identifier(((Array){1, (string[1]){ name }}));
     typechecking_Type *tpe = typechecking_make_type(typechecking_TypeKind_FLOAT, ident);
     ((*tpe).size) = size;

@@ -162,6 +162,41 @@ DLL_EXPORT void compiler_push_label(compiler_Label label_, compiler_State *state
 DLL_EXPORT void compiler_push_insn(compiler_Insn *insn, compiler_State *state) {
     vector_push(((*((*state).current_block)).insn), insn);
 };
+DLL_EXPORT compiler_Value compiler_charp_str(compiler_Value value, compiler_State *state) {
+    compiler_Value local = compiler_make_local_value(typechecking_pointer(builtins_char_), NULL, state);
+    Array index = ((Array){1, malloc((((int64)(sizeof(int))) * ((int64)1)))});
+    (((int *)index.value)[0]) = 1;
+    compiler_Insn *extract = malloc((sizeof(compiler_Insn)));
+    ((*extract).kind) = compiler_InsnKind_EXTRACTVALUE;
+    (((*extract).value).extract_value) = ((compiler_InsnExtractValue){ .ret = local, .value = value, .index = index });
+    compiler_push_insn(extract, state);
+    return local;
+};
+DLL_EXPORT compiler_Value compiler_charp_static(compiler_Value *global, compiler_State *state) {
+    compiler_Value local = compiler_make_local_value(typechecking_pointer(builtins_char_), global, state);
+    Array index = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
+    (((compiler_Value *)index.value)[0]) = compiler_make_int_value(0);
+    (((compiler_Value *)index.value)[1]) = compiler_make_int_value(0);
+    compiler_Insn *gep = malloc((sizeof(compiler_Insn)));
+    ((*gep).kind) = compiler_InsnKind_GETELEMENTPTR;
+    (((*gep).value).gep) = ((compiler_InsnGetElementPtr){ .ret = local, .tpe = ((*((*global).tpe)).tpe), .value = (*global), .index = index });
+    compiler_push_insn(gep, state);
+    return local;
+};
+DLL_EXPORT compiler_Value compiler_charp(string str, compiler_State *state) {
+    typechecking_Type *tpe = malloc((sizeof(typechecking_Type)));
+    ((*tpe).kind) = typechecking_TypeKind_STATIC_ARRAY;
+    ((*tpe).tpe) = builtins_char_;
+    ((*tpe).length) = (str.size);
+    ((*tpe).size) = (((*tpe).length) * ((size_t)(sizeof(char))));
+    ((*tpe).align) = (sizeof(char));
+    compiler_Value *value = malloc((sizeof(compiler_Value)));
+    (*value) = ((compiler_Value){ .kind = compiler_ValueKind_STRING, .s = str, .tpe = tpe });
+    compiler_Value global = compiler_make_global_value(tpe, ((Array){4, "str"}), value, state);
+    compiler_Value *globalp = malloc((sizeof(compiler_Value)));
+    (*globalp) = global;
+    return compiler_charp_static(globalp, state);
+};
 DLL_EXPORT compiler_Value compiler_walk_expression(parser_Node *node, compiler_State *state);
 DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
  compiler_Value _87f75ce3_walk_Null(parser_Node *node, compiler_State *state) {
@@ -1299,10 +1334,10 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
                     op = compiler_i_ult;
                     break;
                     case parser_NodeKind_GEQ:
-                    op = compiler_f_uge;
+                    op = compiler_i_uge;
                     break;
                     case parser_NodeKind_LEQ:
-                    op = compiler_f_ule;
+                    op = compiler_i_ule;
                     break;
                     default:
                     assert(false);
@@ -1343,12 +1378,49 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
         return ret;
     } else if (typechecking_equals((left.tpe), (right.tpe))) {
         if (typechecking_equals((left.tpe), builtins_string_)) {
+            map_put(((*((*state).module)).imported), ((Array){7, "strcmp"}), map_sentinel);
+            Array args = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
+            (((compiler_Value *)args.value)[0]) = compiler_charp_str(left, state);
+            (((compiler_Value *)args.value)[1]) = compiler_charp_str(right, state);
+            compiler_Value call_ret = compiler_make_local_value(builtins_int_, NULL, state);
+            compiler_Insn *call = malloc((sizeof(compiler_Insn)));
+            ((*call).kind) = compiler_InsnKind_CALL;
+            (((*call).value).call) = ((compiler_InsnCall){ .name = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = ((Array){7, "strcmp"}) }), .ret = call_ret, .args = args });
+            compiler_push_insn(call, state);
+            string op;
+            switch (((int)((*node).kind))) {
+                break;
+                case parser_NodeKind_EQ:
+                op = compiler_i_eq;
+                break;
+                case parser_NodeKind_NEQ:
+                op = compiler_i_ne;
+                break;
+                case parser_NodeKind_GT:
+                op = compiler_i_ugt;
+                break;
+                case parser_NodeKind_LT:
+                op = compiler_i_ult;
+                break;
+                case parser_NodeKind_GEQ:
+                op = compiler_i_uge;
+                break;
+                case parser_NodeKind_LEQ:
+                op = compiler_i_ule;
+                break;
+                default:
+                assert(false);
+            }
             ;
+            compiler_Value cmp_ret = compiler_make_local_value(builtins_bool_, NULL, state);
+            compiler_Insn *cmp = malloc((sizeof(compiler_Insn)));
+            ((*cmp).kind) = compiler_InsnKind_ICMP;
+            (((*cmp).value).cmp) = ((compiler_InsnCmp){ .op = op, .ret = cmp_ret, .left = call_ret, .right = ((compiler_Value){ .kind = compiler_ValueKind_INT, .tpe = builtins_int_, .i = 0, .sign = 1 }) });
+            compiler_push_insn(cmp, state);
+            return cmp_ret;
         }  ;
-        return compiler_NO_VALUE;
-    } else {
-        return compiler_NO_VALUE;
-    };
+    } ;
+    return compiler_NO_VALUE;
 };
  compiler_Value _87f75ce3_walk_ComparisionOp(parser_Node *node, compiler_State *state) {
     parser_Node *left = ((((*node).value).bin_op).left);
