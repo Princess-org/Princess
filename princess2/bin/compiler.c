@@ -56,6 +56,7 @@ typedef struct compiler_Insn {enum compiler_InsnKind kind; union compiler_InsnVa
 typedef struct compiler_Block {string label_; struct vector_Vector *insn; struct compiler_Block *next;} compiler_Block;
 typedef struct compiler_Function {string name; string unmangled; struct vector_Vector *args; struct typechecking_Type *ret; bool multiple_returns; bool forward_declare; struct compiler_Block *block;} compiler_Function;
 typedef struct compiler_Result {struct map_Map *functions; struct map_Map *structures; struct map_Map *globals;} compiler_Result;
+typedef struct compiler_Global {bool external; string name; struct typechecking_Type *tpe; struct compiler_Value *value;} compiler_Global;
 typedef struct _87f75ce3_LoopState {struct compiler_Insn *break_insn; struct compiler_Insn *continue_insn;} _87f75ce3_LoopState;
 typedef struct compiler_State {struct toolchain_Module *module; int counter; int global_counter; struct compiler_Function *current_function; struct compiler_Block *current_block; struct vector_Vector *loops; struct compiler_Result *result;} compiler_State;
  compiler_Value _87f75ce3_make_value(typechecking_Type *tpe, void *value) {
@@ -142,12 +143,11 @@ DLL_EXPORT compiler_Value compiler_make_global_value(typechecking_Type *tpe, str
     buffer_append_str((&buf), util_int_to_str(((*state).global_counter)));
     name = buffer_to_string((&buf));
     (((*state).global_counter) += 1);
-    compiler_Value *global = malloc((sizeof(compiler_Value)));
-    ((*global).kind) = compiler_ValueKind_GLOBAL;
-    ((*global).undef) = false;
+    compiler_Global *global = malloc((sizeof(compiler_Global)));
+    ((*global).external) = false;
     ((*global).name) = name;
-    ((*global).value) = value;
     ((*global).tpe) = tpe;
+    ((*global).value) = value;
     map_put(((*((*state).result)).globals), ((*global).name), global);
     return ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = name, .tpe = typechecking_pointer(tpe), .addr = NULL });
 };
@@ -2167,12 +2167,11 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state) {
                 continue;
             }  ;
             string name = ((*value).assembly_name);
-            compiler_Value *global = malloc((sizeof(compiler_Value)));
-            ((*global).kind) = compiler_ValueKind_GLOBAL;
-            ((*global).undef) = false;
+            compiler_Global *global = malloc((sizeof(compiler_Global)));
+            ((*global).external) = false;
             ((*global).name) = name;
-            ((*global).value) = NULL;
             ((*global).tpe) = ((*v).tpe);
+            ((*global).value) = NULL;
             map_put(((*((*state).result)).globals), ((*global).name), global);
             vector_push(left, ((((*n).value).id_decl).value));
         }  else {
@@ -2259,7 +2258,12 @@ DLL_EXPORT compiler_Result * compiler_compile(toolchain_Module *module) {
                         if (typechecking_is_struct(tpe)) {
                             map_put(((*((*state).result)).structures), ((*tpe).type_name), tpe);
                         }  ;
-                    } ;
+                    } else {
+                        string name = ((*value).assembly_name);
+                        compiler_Global *global = malloc((sizeof(compiler_Global)));
+                        (*global) = ((compiler_Global){ .name = name, .tpe = ((*value).tpe), .external = true });
+                        map_put(((*((*state).result)).globals), name, global);
+                    };
                 }  ;
             }
             ;

@@ -313,7 +313,7 @@ DLL_EXPORT void scope_create_variable(scope_Scope *scope, parser_Node *node, par
     ((*v).modifier) = modifier;
     ((*v).name) = name;
     if (global) {
-        ((*v).assembly_name) = name;
+        ((*v).assembly_name) = typechecking_append_module(name, (((*node).loc).module));
     }  else {
         ((*v).assembly_name) = _31a1fd14_append_scope_count(scope, name);
     };

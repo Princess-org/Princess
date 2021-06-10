@@ -639,16 +639,20 @@
     fprintf(fp, (((Array){7, "%s%s%s"}).value), (((Array){2, "["}).value), (util_int_to_str(((*union_).size)).value), (((Array){7, " x i8]"}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, "}\x0a"""}).value));
 };
- void _574f02bf_emit_global(File fp, compiler_Value *global) {
-    fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str((*global)).value));
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){11, " = global "}).value));
+ void _574f02bf_emit_global(File fp, compiler_Global *global) {
+    fprintf(fp, (((Array){7, "%s%s%s"}).value), (((Array){3, "@\""}).value), (((*global).name).value), (((Array){2, "\""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){4, " = "}).value));
+    if (((*global).external)) {
+        fprintf(fp, (((Array){3, "%s"}).value), (((Array){10, "external "}).value));
+    }  ;
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){8, "global "}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_type_to_str(((*global).tpe)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, " "}).value));
     if (((*global).value)) {
         fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str((*((*global).value))).value));
-    }  else {
+    } else if ((!((*global).external))) {
         fprintf(fp, (((Array){3, "%s"}).value), (((Array){16, "zeroinitializer"}).value));
-    };
+    } ;
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
  void _574f02bf_gen_main_function(File fp) {
@@ -734,7 +738,7 @@ DLL_EXPORT string codegen_gen(toolchain_Module *module) {
     ;
     Array keys_globals = map_keys(((*result).globals));
     for (int i = 0;(i < (keys_globals.size));(i += 1)) {
-        compiler_Value *global = ((compiler_Value *)map_get(((*result).globals), (((string *)keys_globals.value)[i])));
+        compiler_Global *global = ((compiler_Global *)map_get(((*result).globals), (((string *)keys_globals.value)[i])));
         _574f02bf_emit_global(fp, global);
     }
     ;

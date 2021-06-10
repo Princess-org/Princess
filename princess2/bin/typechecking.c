@@ -124,7 +124,7 @@ DLL_EXPORT typechecking_Type * typechecking_array(typechecking_Type *tpe) {
     ((*t).size) = (sizeof(string));
     ((*t).align) = (alignof(string));
 };
- string _3700c937_append_module(string name, string module) {
+DLL_EXPORT string typechecking_append_module(string name, string module) {
     buffer_Buffer buf = buffer_make_buffer();
     if ((((module.size) - 1) > 0)) {
         buffer_append_str((&buf), module);
@@ -138,7 +138,7 @@ DLL_EXPORT typechecking_Type * typechecking_make_type(typechecking_TypeKind kind
     string name = parser_identifier_to_str(node);
     typechecking_Type *t = malloc((sizeof(typechecking_Type)));
     ((*t).kind) = kind;
-    ((*t).type_name) = _3700c937_append_module(name, (((*node).loc).module));
+    ((*t).type_name) = typechecking_append_module(name, (((*node).loc).module));
     ((*t).name) = name;
     return t;
 };
@@ -1109,7 +1109,7 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
             }  ;
             ((*tpe).name) = parser_identifier_to_str(name);
             if ((((((*value).kind) == parser_NodeKind_STRUCT_T) || (((*value).kind) == parser_NodeKind_UNION_T)) || (((*value).kind) == parser_NodeKind_ENUM_T))) {
-                ((*tpe).type_name) = _3700c937_append_module(((*tpe).name), (((*node).loc).module));
+                ((*tpe).type_name) = typechecking_append_module(((*tpe).name), (((*node).loc).module));
             }  ;
             if ((((*value).kind) == parser_NodeKind_ENUM_T)) {
                 scope_Scope *scpe = scope_enter_scope(((*state).scope));
