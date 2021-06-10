@@ -105,21 +105,19 @@ DLL_EXPORT void lexer_print_token_list(lexer_TokenList *list) {
     ((*column) += 1);
     if (((*i) >= ((s.size) - 1))) {
         return ((char)26);
-    }  else {
-        char c = (((char *)s.value)[(*i)]);
-        if ((c == '\x0a')) {
-            ((*line) += 1);
-            (*column) = 0;
-        }  ;
-        return c;
-    };
+    }  ;
+    char c = (((char *)s.value)[(*i)]);
+    if ((c == '\x0a')) {
+        ((*line) += 1);
+        (*column) = 0;
+    }  ;
+    return c;
 };
  char _9f927900_peek_char(string s, int *i, int n) {
     if ((((*i) + n) >= ((s.size) - 1))) {
         return ((char)26);
-    }  else {
-        return (((char *)s.value)[((*i) + n)]);
-    };
+    }  ;
+    return (((char *)s.value)[((*i) + n)]);
 };
  lexer_Token _9f927900_parse_string(string s, int *i, int *line, int *column) {
     int start_line = (*line);
@@ -189,13 +187,12 @@ DLL_EXPORT void lexer_print_token_list(lexer_TokenList *list) {
     ;
     if ((!end_of_string)) {
         return _9f927900_error_token(((Array){53, "Unexpected end of file while parsing string literal\x0a"""}), start_line, start_column);
-    }  else {
-        _9f927900_next_char(s, i, line, column);
-        string str = buffer_to_string((&buf));
-        lexer_Token tok = ((lexer_Token){ lexer_TokenType_STRING, start_line, start_column });
-        ((tok.value).str) = str;
-        return tok;
-    };
+    }  ;
+    _9f927900_next_char(s, i, line, column);
+    string str = buffer_to_string((&buf));
+    lexer_Token tok = ((lexer_Token){ lexer_TokenType_STRING, start_line, start_column });
+    ((tok.value).str) = str;
+    return tok;
 };
  lexer_Token _9f927900_parse_char(string s, int *i, int *line, int *column) {
     int start_line = (*line);
@@ -402,9 +399,8 @@ DLL_EXPORT void lexer_print_token_list(lexer_TokenList *list) {
     ;
     if (is_float) {
         return _9f927900_parse_float(s, i, line, column);
-    }  else {
-        return _9f927900_parse_int(s, i, line, column);
-    };
+    }  ;
+    return _9f927900_parse_int(s, i, line, column);
 };
  lexer_Token _9f927900_parse_identifier(string s, int *i, int *line, int *column) {
     int start_line = (*line);
@@ -658,13 +654,12 @@ DLL_EXPORT void lexer_print_token_list(lexer_TokenList *list) {
     if ((tt == lexer_TokenType_ERROR)) {
         _9f927900_next_char(s, i, line, column);
         return _9f927900_error_token(((Array){16, "Invalid symbol\x0a"""}), start_line, start_column);
-    }  else {
-        for (int j = 0;(j < length);(j += 1)) {
-            _9f927900_next_char(s, i, line, column);
-        }
-        ;
-        return _9f927900_simple_token(tt, start_line, start_column);
-    };
+    }  ;
+    for (int j = 0;(j < length);(j += 1)) {
+        _9f927900_next_char(s, i, line, column);
+    }
+    ;
+    return _9f927900_simple_token(tt, start_line, start_column);
 };
  bool _9f927900_is_whitespace(char c) {
     return (((c == ' ') || (c == '\x09')) || (c == '\x0d'));

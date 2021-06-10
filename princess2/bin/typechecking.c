@@ -1221,7 +1221,7 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
             }  ;
             tpe = ((*function).tpe);
         }  else {
-            typechecking_errorn(left, ((Array){22, "Can't call expression"}));
+            typechecking_errorn(left, ((Array){23, "Can't call expression\x0a"""}));
             return ;
         };
     }  ;

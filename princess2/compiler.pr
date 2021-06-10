@@ -807,7 +807,12 @@ def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Type, stat
             return value
         }
     } else if typechecking::is_pointer(tpe) {
-        if typechecking::is_pointer(value.tpe) or (@value.tpe).kind == typechecking::TypeKind::NULL {
+        if (@value.tpe).kind == typechecking::TypeKind::NULL {
+            return { 
+                kind = ValueKind::NULL, 
+                tpe = tpe 
+            } !Value
+        } else if typechecking::is_pointer(value.tpe) or (@value.tpe).kind == typechecking::TypeKind::NULL {
             kind = InsnKind::BITCAST
         } else if typechecking::is_integer(value.tpe) {
             kind = InsnKind::INTTOPTR
@@ -2020,6 +2025,14 @@ def compare(node: *parser::Node, left: Value, right: Value, state: *State) -> Va
     if typechecking::is_pointer(right.tpe) {
         right = convert_to(node, right, builtins::size_t_, state)
     }
+    if (@left.tpe).kind == typechecking::TypeKind::NULL {
+        left = make_int_value(0)
+        left.tpe = builtins::size_t_
+    }
+    if (@right.tpe).kind == typechecking::TypeKind::NULL {
+        right = make_int_value(0)
+        right.tpe = builtins::size_t_
+    }
     if typechecking::is_arithmetic(left.tpe) and typechecking::is_arithmetic(right.tpe) {
         tpe = typechecking::common_type(left.tpe, right.tpe)
 
@@ -2318,12 +2331,12 @@ def walk_If(node: *parser::Node, state: *State) {
     push_insn(exit, state)
 
     for var i in 0..vector::length((@node).value.if_.else_if) {
-        let else_if = vector::get((@node).value.if_.else_if, i) !*parser::Node
-        let cond = walk_expression((@else_if).value.else_if.cond, state)
-
         let br_label = make_label(state)
         (@entry).value.br.if_false = br_label
         push_label(br_label, state)
+        
+        let else_if = vector::get((@node).value.if_.else_if, i) !*parser::Node
+        let cond = walk_expression((@else_if).value.else_if.cond, state)
 
         entry = allocate(Insn)
         (@entry).kind = InsnKind::BR
@@ -2588,11 +2601,13 @@ def walk_Return(node: *parser::Node, state: *State) {
     let current_function = (@state).current_function
     if not current_function { return }
 
-    var value: Value
+    var value = NO_VALUE
     if (@current_function).multiple_returns {
         let ret_args = allocate(Value, vector::length((@node).value.body))
         for var i in 0..ret_args.size {
-            ret_args[i] = walk_expression(vector::get((@node).value.body, i) !*parser::Node, state)
+            let n = vector::get((@node).value.body, i) !*parser::Node
+            let tpe = (@(@current_function).ret).fields[i].tpe
+            ret_args[i] = convert_to(n, walk_expression(n, state), tpe, state)
         }
         value = {
             kind = ValueKind::STRUCT,
@@ -2600,8 +2615,11 @@ def walk_Return(node: *parser::Node, state: *State) {
             tpe = (@current_function).ret
         } !Value
     } else {
-        let arg = vector::peek((@node).value.body) !*parser::Node
-        value = walk_expression(arg, state)
+        let tpe = (@current_function).ret
+        if tpe {
+            let arg = vector::peek((@node).value.body) !*parser::Node
+            value = convert_to(arg, walk_expression(arg, state), tpe, state)
+        }
     }
 
     let ret = allocate(Insn)
@@ -2945,6 +2963,8 @@ def create_function(tpe: *typechecking::Type, body: *vector::Vector, scpe: *scop
         vector::push((@function).args, np)
     }
 
+    map::put((@(@state).result).functions, (@function).name, function)
+
     if body {
         (@state).current_function = function
         (@state).counter = 0
@@ -3009,18 +3029,23 @@ def create_function(tpe: *typechecking::Type, body: *vector::Vector, scpe: *scop
         }
 
         // TODO Make another compiler pass that checks for missing return statements and dead code
-        if not (@function).ret {
-            // Check for missing return statement
-            let last_insn = vector::peek((@(@state).current_block).insn) !*Insn
-            if not last_insn or (@last_insn).kind != InsnKind::RET {
-                let ret = allocate(Insn)
-                (@ret).kind = InsnKind::RET
-                (@ret).value.ret.value = NO_VALUE
-                push_insn(ret, state)
+        // Check for missing return statement
+        let last_insn = vector::peek((@(@state).current_block).insn) !*Insn
+        if not last_insn or (@last_insn).kind != InsnKind::RET {
+            var value = NO_VALUE
+            if (@function).ret {
+                value = {
+                    tpe = (@function).ret,
+                    undef = true
+                } !Value
             }
+            
+            let ret = allocate(Insn)
+            (@ret).kind = InsnKind::RET
+            (@ret).value.ret.value = value
+            push_insn(ret, state)
         }
     }
-    map::put((@(@state).result).functions, (@function).name, function)
 }
 
 def walk_Def(node: *parser::Node, state: *State){
