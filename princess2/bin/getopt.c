@@ -13,9 +13,8 @@ typedef struct getopt_Option {enum getopt_Type tpe; string shortop; string longo
  string _572fa04a_get_name(getopt_Option option) {
     if (((((option.longop).size) - 1) > 0)) {
         return (option.longop);
-    }  else {
-        return (option.shortop);
-    };
+    }  ;
+    return (option.shortop);
 };
  void _572fa04a_print_help(Array options) {
     ;
@@ -144,7 +143,7 @@ DLL_EXPORT map_Map * getopt_parse(Array args, Array options) {
     ;
     for (int i = 0;(i < (options.size));(i += 1)) {
         getopt_Option opt = (((getopt_Option *)options.value)[i]);
-        if ((((opt.tpe) == getopt_Type_BOOL) && (!map_contains(m, _572fa04a_get_name(opt))))) {
+        if ((((opt.tpe) == getopt_Type_BOOL) && ((bool)(!map_contains(m, _572fa04a_get_name(opt)))))) {
             map_put(m, _572fa04a_get_name(opt), calloc(1, (sizeof(bool))));
         }  ;
     }

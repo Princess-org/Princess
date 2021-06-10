@@ -645,6 +645,9 @@
     if (((*global).external)) {
         fprintf(fp, (((Array){3, "%s"}).value), (((Array){10, "external "}).value));
     }  ;
+    if (((*global).private)) {
+        fprintf(fp, (((Array){3, "%s"}).value), (((Array){9, "private "}).value));
+    }  ;
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){8, "global "}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_type_to_str(((*global).tpe)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, " "}).value));

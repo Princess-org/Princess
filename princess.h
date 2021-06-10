@@ -61,6 +61,12 @@ typedef Array string;
     $type _##$name[$size];         \
     Array $name = {$size, _##$name}
 
+// For some reason we have to declare prototypes for 
+// clang to output stuff into the json files
+bool starts_with(const char *str, const char *pre);
+int concat(char *str, const char *fmt, ...);
+void absolute_path(const char *pathname, char *resolved);
+
 bool starts_with(const char *str, const char *pre) {
     return strncmp(pre, str, strlen(pre)) == 0;
 }

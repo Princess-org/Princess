@@ -56,7 +56,7 @@ typedef struct compiler_Insn {enum compiler_InsnKind kind; union compiler_InsnVa
 typedef struct compiler_Block {string label_; struct vector_Vector *insn; struct compiler_Block *next;} compiler_Block;
 typedef struct compiler_Function {string name; string unmangled; struct vector_Vector *args; struct typechecking_Type *ret; bool multiple_returns; bool forward_declare; struct compiler_Block *block;} compiler_Function;
 typedef struct compiler_Result {struct map_Map *functions; struct map_Map *structures; struct map_Map *globals;} compiler_Result;
-typedef struct compiler_Global {bool external; string name; struct typechecking_Type *tpe; struct compiler_Value *value;} compiler_Global;
+typedef struct compiler_Global {bool external; bool private; string name; struct typechecking_Type *tpe; struct compiler_Value *value;} compiler_Global;
 typedef struct _87f75ce3_LoopState {struct compiler_Insn *break_insn; struct compiler_Insn *continue_insn;} _87f75ce3_LoopState;
 typedef struct compiler_State {struct toolchain_Module *module; int counter; int global_counter; struct compiler_Function *current_function; struct compiler_Block *current_block; struct vector_Vector *loops; struct compiler_Result *result;} compiler_State;
  compiler_Value _87f75ce3_make_value(typechecking_Type *tpe, void *value) {
@@ -144,10 +144,7 @@ DLL_EXPORT compiler_Value compiler_make_global_value(typechecking_Type *tpe, str
     name = buffer_to_string((&buf));
     (((*state).global_counter) += 1);
     compiler_Global *global = malloc((sizeof(compiler_Global)));
-    ((*global).external) = false;
-    ((*global).name) = name;
-    ((*global).tpe) = tpe;
-    ((*global).value) = value;
+    (*global) = ((compiler_Global){ .private = true, .name = name, .tpe = tpe, .value = value });
     map_put(((*((*state).result)).globals), ((*global).name), global);
     return ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = name, .tpe = typechecking_pointer(tpe), .addr = NULL });
 };
@@ -1269,6 +1266,12 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
 };
  compiler_Value _87f75ce3_compare(parser_Node *node, compiler_Value left, compiler_Value right, compiler_State *state) {
     typechecking_Type *tpe = NULL;
+    if (typechecking_is_enum((left.tpe))) {
+        (left.tpe) = ((*(left.tpe)).tpe);
+    }  ;
+    if (typechecking_is_enum((right.tpe))) {
+        (right.tpe) = ((*(right.tpe)).tpe);
+    }  ;
     if (typechecking_is_pointer((left.tpe))) {
         left = _87f75ce3_convert_to(node, left, builtins_size_t_, state);
     }  ;
@@ -2171,10 +2174,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state) {
             }  ;
             string name = ((*value).assembly_name);
             compiler_Global *global = malloc((sizeof(compiler_Global)));
-            ((*global).external) = false;
-            ((*global).name) = name;
-            ((*global).tpe) = ((*v).tpe);
-            ((*global).value) = NULL;
+            (*global) = ((compiler_Global){ .name = name, .tpe = ((*v).tpe) });
             map_put(((*((*state).result)).globals), ((*global).name), global);
             vector_push(left, ((((*n).value).id_decl).value));
         }  else {
@@ -2238,6 +2238,45 @@ map_Map *_87f75ce3_imported_modules;
     }
     ;
 };
+ void _87f75ce3_import_structures(typechecking_Type *tpe, compiler_State *state) {
+    if ((!tpe)) {
+        return ;
+    }  ;
+    switch (((int)((*tpe).kind))) {
+        break;
+        case typechecking_TypeKind_STRUCT ... typechecking_TypeKind_UNION:
+        if ((!map_contains(((*((*state).result)).structures), ((*tpe).type_name)))) {
+            map_put(((*((*state).result)).structures), ((*tpe).type_name), tpe);
+            for (int i = 0;(i < (((*tpe).fields).size));(i += 1)) {
+                typechecking_StructMember field = (((typechecking_StructMember *)((*tpe).fields).value)[i]);
+                _87f75ce3_import_structures((field.tpe), state);
+            }
+            ;
+        }  ;
+        break;
+        case typechecking_TypeKind_ARRAY:
+        _87f75ce3_import_structures(((*tpe).tpe), state);
+        break;
+        case typechecking_TypeKind_STATIC_ARRAY:
+        _87f75ce3_import_structures(((*tpe).tpe), state);
+        break;
+        case typechecking_TypeKind_POINTER:
+        _87f75ce3_import_structures(((*tpe).tpe), state);
+        break;
+        case typechecking_TypeKind_FUNCTION:
+        for (int i = 0;(i < vector_length(((*tpe).parameter_t)));(i += 1)) {
+            typechecking_NamedParameter *param = ((typechecking_NamedParameter *)vector_get(((*tpe).parameter_t), i));
+            _87f75ce3_import_structures(((*param).value), state);
+        }
+        ;
+        for (int i = 0;(i < vector_length(((*tpe).return_t)));(i += 1)) {
+            typechecking_Type *t = ((typechecking_Type *)vector_get(((*tpe).return_t), i));
+            _87f75ce3_import_structures(t, state);
+        }
+        ;
+    }
+    ;
+};
 DLL_EXPORT compiler_Result * compiler_compile(toolchain_Module *module) {
     parser_Node *node = ((*module).node);
     assert((((*node).kind) == parser_NodeKind_PROGRAM));
@@ -2259,7 +2298,7 @@ DLL_EXPORT compiler_Result * compiler_compile(toolchain_Module *module) {
                     } else if (typechecking_is_type(((*value).tpe))) {
                         typechecking_Type *tpe = ((typechecking_Type *)((*value).value));
                         if (typechecking_is_struct(tpe)) {
-                            map_put(((*((*state).result)).structures), ((*tpe).type_name), tpe);
+                            _87f75ce3_import_structures(tpe, state);
                         }  ;
                     } else {
                         string name = ((*value).assembly_name);

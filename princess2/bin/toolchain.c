@@ -44,13 +44,12 @@ DLL_EXPORT scope_Scope * toolchain_get_forward_declared_scope(parser_Node *ident
     toolchain_Module *module = ((toolchain_Module *)map_get(toolchain_modules, modulename));
     if (module) {
         return ((*module).scope);
-    }  else {
-        module = malloc((sizeof(toolchain_Module)));
-        ((*module).forward_declared) = true;
-        ((*module).scope) = scope_enter_function_scope(builtins_builtins);
-        map_put(toolchain_modules, modulename, module);
-        return ((*module).scope);
-    };
+    }  ;
+    module = malloc((sizeof(toolchain_Module)));
+    ((*module).forward_declared) = true;
+    ((*module).scope) = scope_enter_function_scope(builtins_builtins);
+    map_put(toolchain_modules, modulename, module);
+    return ((*module).scope);
 };
 DLL_EXPORT string toolchain_find_module_file(parser_Node *module) {
     assert((((*module).kind) == parser_NodeKind_IDENTIFIER));

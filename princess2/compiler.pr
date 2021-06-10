@@ -219,6 +219,7 @@ export type Result = struct {
 
 export type Global = struct {
     external: bool
+    private: bool
     name: string
     tpe: *typechecking::Type
     value: *Value
@@ -345,10 +346,12 @@ export def make_global_value(tpe: *typechecking::Type, name: string, value: *Val
     (@state).global_counter += 1
 
     let global = allocate(Global)
-    (@global).external = false
-    (@global).name = name
-    (@global).tpe = tpe
-    (@global).value = value
+    @global = {
+        private = true,
+        name = name,
+        tpe = tpe,
+        value = value
+    } !Global
     map::put((@(@state).result).globals, (@global).name, global)
 
     return {
@@ -2004,6 +2007,12 @@ def walk_AlignOf(node: *parser::Node, state: *State) -> Value {
 
 def compare(node: *parser::Node, left: Value, right: Value, state: *State) -> Value {
     var tpe: *typechecking::Type = null
+    if typechecking::is_enum(left.tpe) {
+        left.tpe = (@left.tpe).tpe
+    }
+    if typechecking::is_enum(right.tpe) {
+        right.tpe = (@right.tpe).tpe
+    }
     if typechecking::is_pointer(left.tpe) {
         // TODO We need something like intptr_t, but for now size_t will suffice
         left = convert_to(node, left, builtins::size_t_, state)
@@ -3043,10 +3052,10 @@ def walk_top_VarDecl(node: *parser::Node, body: *vector::Vector, state: *State) 
             let name = (@value).assembly_name
             
             let global = allocate(Global)
-            (@global).external = false
-            (@global).name = name
-            (@global).tpe = (@v).tpe
-            (@global).value = null
+            @global = {
+                name = name,
+                tpe = (@v).tpe
+            } !Global
             map::put((@(@state).result).globals, (@global).name, global)
             vector::push(left, (@n).value.id_decl.value)
         } else {
@@ -3121,6 +3130,36 @@ def walk_top_Import(node: *parser::Node, body: *vector::Vector, state: *State) {
     }
 }
 
+def import_structures(tpe: *typechecking::Type, state: *State) {
+    if not tpe { return }
+    switch (@tpe).kind !int {
+        case typechecking::TypeKind::STRUCT..=typechecking::TypeKind::UNION:
+            if not map::contains((@(@state).result).structures, (@tpe).type_name) {
+                map::put((@(@state).result).structures, (@tpe).type_name, tpe)
+
+                for var i in 0..(@tpe).fields.size {
+                    let field = (@tpe).fields[i]
+                    import_structures(field.tpe, state)
+                }
+            }
+        case typechecking::TypeKind::ARRAY:
+            import_structures((@tpe).tpe, state)
+        case typechecking::TypeKind::STATIC_ARRAY:
+            import_structures((@tpe).tpe, state)
+        case typechecking::TypeKind::POINTER:
+            import_structures((@tpe).tpe, state)
+        case typechecking::TypeKind::FUNCTION:
+            for var i in 0..vector::length((@tpe).parameter_t) {
+                let param = vector::get((@tpe).parameter_t, i) !*typechecking::NamedParameter
+                import_structures((@param).value, state)
+            }
+            for var i in 0..vector::length((@tpe).return_t) {
+                let t = vector::get((@tpe).return_t, i) !*typechecking::Type
+                import_structures(t, state)
+            }
+    }
+}
+
 export def compile(module: *toolchain::Module) -> *Result {
     let node = (@module).node
 
@@ -3158,7 +3197,7 @@ export def compile(module: *toolchain::Module) -> *Result {
                     } else if typechecking::is_type((@value).tpe) {
                         let tpe = (@value).value !*typechecking::Type
                         if typechecking::is_struct(tpe) {
-                            map::put((@(@state).result).structures, (@tpe).type_name, tpe)
+                            import_structures(tpe, state)
                         }
                     } else {
                         let name = (@value).assembly_name
