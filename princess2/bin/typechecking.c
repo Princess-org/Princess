@@ -561,10 +561,13 @@ DLL_EXPORT typechecking_Type * typechecking_type_lookup(parser_Node *node, typec
         ((*tpe).kind) = typechecking_TypeKind_FUNCTION;
         ((*tpe).size) = (sizeof(void (*)()));
         ((*tpe).align) = (alignof(void (*)()));
+        ((*tpe).macro) = NULL;
+        ((*tpe).proto) = NULL;
         ((*tpe).parameter_t) = vector_make();
         for (int i = 0;(i < vector_length(((((*node).value).t_func).args)));(i += 1)) {
             parser_Node *arg = ((parser_Node *)vector_get(((((*node).value).t_func).args), i));
             typechecking_NamedParameter *np = malloc((sizeof(typechecking_NamedParameter)));
+            ((*np).varargs) = false;
             ((*np).name) = ((Array){1, ""});
             ((*np).value) = typechecking_type_lookup(arg, state);
             vector_push(((*tpe).parameter_t), np);

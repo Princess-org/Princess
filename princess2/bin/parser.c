@@ -1639,7 +1639,7 @@ DLL_EXPORT parser_Node * parser_parse(lexer_TokenList *list, Array lines, string
         int line = (token.line);
         int column = (token.column);
         fprintf(stderr, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
-        fprintf(stderr, (((Array){13, "%s%s%d%s%d%s"}).value), (filename.value), (((Array){2, "@"}).value), (line + 1), (((Array){2, ":"}).value), (column + 1), (((Array){2, "\x0a"""}).value));
+        fprintf(stderr, (((Array){13, "%s%s%d%s%d%s"}).value), (filename.value), (((Array){2, "@"}).value), (line + ((int)1)), (((Array){2, ":"}).value), (column + ((int)1)), (((Array){2, "\x0a"""}).value));
         fprintf(stderr, (((Array){5, "%s%s"}).value), ((((string *)((*state).lines).value)[line]).value), (((Array){2, "\x0a"""}).value));
         for (int i = 0;(i < column);(i += 1)) {
             fprintf(stderr, (((Array){3, "%s"}).value), (((Array){2, " "}).value));
@@ -1651,8 +1651,12 @@ DLL_EXPORT parser_Node * parser_parse(lexer_TokenList *list, Array lines, string
         (toolchain_error_count += 1);
     }  ;
 };
+#include "typechecking.c"
+#include "scope.c"
 DLL_EXPORT void parser_p_main(Array args) {
     lexer_p_main(args);
+    typechecking_p_main(args);
+    scope_p_main(args);
 };
 
 

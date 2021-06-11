@@ -10,6 +10,7 @@
 #include "util.c"
 #include "typechecking.c"
 #include "compiler.c"
+#include "scope.c"
  string _574f02bf_type_to_str(typechecking_Type *tpe) {
     if ((!tpe)) {
         return ((Array){5, "void"});
@@ -639,6 +640,10 @@
     fprintf(fp, (((Array){7, "%s%s%s"}).value), (((Array){2, "["}).value), (util_int_to_str(((*union_).size)).value), (((Array){7, " x i8]"}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, "}\x0a"""}).value));
 };
+ void _574f02bf_emit_stub(File fp, typechecking_Type *stub) {
+    fprintf(fp, (((Array){7, "%s%s%s"}).value), (((Array){3, "%\""}).value), (((*stub).type_name).value), (((Array){2, "\""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){16, " = type opaque\x0a"""}).value));
+};
  void _574f02bf_emit_global(File fp, compiler_Global *global) {
     fprintf(fp, (((Array){7, "%s%s%s"}).value), (((Array){3, "@\""}).value), (((*global).name).value), (((Array){2, "\""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){4, " = "}).value));
@@ -711,8 +716,83 @@
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){94, "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128\"\x0a"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){39, "target triple = \"x86_64-pc-linux-gnu\"\x0a"""}).value));
 };
+typedef struct _574f02bf_State {struct map_Map *structures; struct map_Map *cached; struct toolchain_Module *module;} _574f02bf_State;
+#include "debug.c"
+ void _574f02bf_import_structures(typechecking_Type *tpe, _574f02bf_State *state);
+ void _574f02bf_import_structure(typechecking_Type *tpe, _574f02bf_State *state) {
+    if ((!map_contains(((*state).cached), ((*tpe).type_name)))) {
+        map_put(((*state).cached), ((*tpe).type_name), map_sentinel);
+        size_t size = (((*tpe).fields).size);
+        if ((size > 0)) {
+            map_put(((*state).structures), ((*tpe).type_name), tpe);
+            for (int i = 0;(i < size);(i += 1)) {
+                typechecking_StructMember field = (((typechecking_StructMember *)((*tpe).fields).value)[i]);
+                _574f02bf_import_structures((field.tpe), state);
+            }
+            ;
+        }  ;
+    }  ;
+};
+ void _574f02bf_import_structures(typechecking_Type *tpe, _574f02bf_State *state) {
+    if ((!tpe)) {
+        return ;
+    }  ;
+    switch (((int)((*tpe).kind))) {
+        break;
+        case typechecking_TypeKind_STRUCT ... typechecking_TypeKind_UNION:
+        _574f02bf_import_structure(tpe, state);
+        break;
+        case typechecking_TypeKind_ARRAY:
+        _574f02bf_import_structures(((*tpe).tpe), state);
+        break;
+        case typechecking_TypeKind_STATIC_ARRAY:
+        _574f02bf_import_structures(((*tpe).tpe), state);
+        break;
+        case typechecking_TypeKind_POINTER:
+        _574f02bf_import_structures(((*tpe).tpe), state);
+        break;
+        case typechecking_TypeKind_FUNCTION:
+        for (int i = 0;(i < vector_length(((*tpe).parameter_t)));(i += 1)) {
+            typechecking_NamedParameter *param = ((typechecking_NamedParameter *)vector_get(((*tpe).parameter_t), i));
+            _574f02bf_import_structures(((*param).value), state);
+        }
+        ;
+        for (int i = 0;(i < vector_length(((*tpe).return_t)));(i += 1)) {
+            typechecking_Type *t = ((typechecking_Type *)vector_get(((*tpe).return_t), i));
+            _574f02bf_import_structures(t, state);
+        }
+        ;
+        break;
+        case typechecking_TypeKind_STUB:
+        if ((!map_contains(((*state).structures), ((*tpe).type_name)))) {
+            map_put(((*state).structures), ((*tpe).type_name), tpe);
+        }  ;
+    }
+    ;
+};
+ void _574f02bf_import_top_level_structures(scope_Scope *sc, _574f02bf_State *state) {
+    Array keys = map_keys(((*sc).fields));
+    for (int i = 0;(i < (keys.size));(i += 1)) {
+        string key = (((string *)keys.value)[i]);
+        scope_Value *value = ((scope_Value *)map_get(((*sc).fields), key));
+        if ((((*((*value).tpe)).kind) == typechecking_TypeKind_NAMESPACE)) {
+            _574f02bf_import_top_level_structures(((*value).scope), state);
+        } else if (typechecking_is_function(((*value).tpe))) {
+            _574f02bf_import_structures(((*value).tpe), state);
+        }
+        else if (typechecking_is_type(((*value).tpe))) {
+            typechecking_Type *tpe = ((typechecking_Type *)((*value).value));
+            _574f02bf_import_structures(tpe, state);
+        } else {
+            _574f02bf_import_structures(((*value).tpe), state);
+        };
+    }
+    ;
+};
 DLL_EXPORT string codegen_gen(toolchain_Module *module) {
     compiler_Result *result = ((*module).result);
+    _574f02bf_State state = ((_574f02bf_State){ ((*result).structures), map_make(), module });
+    _574f02bf_import_top_level_structures(((*module).scope), (&state));
     buffer_Buffer buf = buffer_make_buffer();
     buffer_append_str((&buf), toolchain_outfolder);
     buffer_append_char((&buf), '/');
@@ -726,11 +806,18 @@ DLL_EXPORT string codegen_gen(toolchain_Module *module) {
     Array keys_structures = map_keys(((*result).structures));
     for (int i = 0;(i < (keys_structures.size));(i += 1)) {
         typechecking_Type *structure = ((typechecking_Type *)map_get(((*result).structures), (((string *)keys_structures.value)[i])));
-        if ((((*structure).kind) == typechecking_TypeKind_STRUCT)) {
+        switch (((int)((*structure).kind))) {
+            break;
+            case typechecking_TypeKind_STRUCT:
             _574f02bf_emit_structure(fp, structure);
-        }  else {
+            break;
+            case typechecking_TypeKind_UNION:
             _574f02bf_emit_union(fp, structure);
-        };
+            break;
+            case typechecking_TypeKind_STUB:
+            _574f02bf_emit_stub(fp, structure);
+        }
+        ;
     }
     ;
     Array keys_functions = map_keys(((*result).functions));

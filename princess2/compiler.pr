@@ -2180,18 +2180,9 @@ def walk_ComparisionOp(node: *parser::Node, state: *State) -> Value {
 }
 
 def walk_PointerOp(node: *parser::Node, kind: InsnKind, state: *State) -> Value {
-    let value_left = walk_expression((@node).value.bin_op.left, state)
-    let value_right = walk_expression((@node).value.bin_op.right, state)
-
     // TODO This is not the correct type
-    let ret_ptrtoint = make_local_value(builtins::size_t_, null, state)
-
-    let ptrtoint = allocate(Insn)
-    (@ptrtoint).kind = InsnKind::PTRTOINT
-    (@ptrtoint).value.convert = {
-        ret = ret_ptrtoint,
-        value = value_left
-    } !InsnConvert
+    let value_left = convert_to(node, walk_expression((@node).value.bin_op.left, state), builtins::size_t_, state)
+    let value_right = convert_to(node, walk_expression((@node).value.bin_op.right, state), builtins::size_t_, state)
 
     let ret_arith = make_local_value(builtins::size_t_, null, state)
 
@@ -2199,9 +2190,10 @@ def walk_PointerOp(node: *parser::Node, kind: InsnKind, state: *State) -> Value 
     (@arith).kind = kind
     (@arith).value.arith = {
         ret = ret_arith,
-        left = ret_ptrtoint,
+        left = value_left,
         right = value_right
     } !InsnArithmetic
+    push_insn(arith, state)
 
     let ret_inttoptr = make_local_value((@node).tpe, null, state)
 
@@ -2211,9 +2203,6 @@ def walk_PointerOp(node: *parser::Node, kind: InsnKind, state: *State) -> Value 
         ret = ret_inttoptr,
         value = ret_arith
     } !InsnConvert
-
-    push_insn(ptrtoint, state)
-    push_insn(arith, state)
     push_insn(inttoptr, state)
 
     return ret_inttoptr
@@ -2680,7 +2669,7 @@ def walk_While(node: *parser::Node, state: *State) {
     let start_label = make_label(state)
     push_label(start_label, state)
 
-    let cond = walk_expression((@node).value.while_loop.expr, state)
+    let cond = convert_to(node, walk_expression((@node).value.while_loop.expr, state), builtins::bool_, state)
     
     let br = allocate(Insn)
     (@br).kind = InsnKind::BR
@@ -2718,11 +2707,14 @@ def walk_For(node: *parser::Node, state: *State) {
     if (@range).kind == parser::NodeKind::RANGE_INC {
         op = i_sle
     }
-
-    let startv = walk_expression((@range).value.bin_op.left, state)
-    let endv = walk_expression((@range).value.bin_op.right, state)
-
     let iddecl = (@node).value.for_loop.iddecl
+    let tpe = (@iddecl).tpe
+
+    let left = (@range).value.bin_op.left
+    let right = (@range).value.bin_op.right
+    let startv = convert_to(left, walk_expression((@range).value.bin_op.left, state), tpe, state)
+    let endv = convert_to(right, walk_expression(right, state), tpe, state)
+
     var loc: Value
     if (@iddecl).kind == parser::NodeKind::FOR_ID_DECL {
         let value = scope::get((@iddecl).scope, (@iddecl).value.for_id_decl.ident)
@@ -2734,7 +2726,7 @@ def walk_For(node: *parser::Node, state: *State) {
             ret = {
                 kind = ValueKind::LOCAL,
                 name = (@value).assembly_name,
-                tpe = (@iddecl).tpe
+                tpe = tpe
             } !Value
         } !InsnAlloca
 
@@ -2743,7 +2735,7 @@ def walk_For(node: *parser::Node, state: *State) {
         loc = {
             kind = ValueKind::LOCAL,
             name = (@value).assembly_name,
-            tpe = typechecking::pointer((@iddecl).tpe)
+            tpe = typechecking::pointer(tpe)
         } !Value
     } else {
         let addr = walk_expression(iddecl, state).addr
@@ -2778,9 +2770,9 @@ def walk_For(node: *parser::Node, state: *State) {
 
     push_insn(load, state)
 
-    let tpe = typechecking::common_type(load_ret.tpe, endv.tpe)
-    let left = convert_to(node, load_ret, tpe, state)
-    let right = convert_to(node, endv, tpe, state)
+    let tpe2 = typechecking::common_type(load_ret.tpe, endv.tpe)
+    let left2 = convert_to(node, load_ret, tpe2, state)
+    let right2 = convert_to(node, endv, tpe2, state)
 
     let cmp_ret = make_local_value(builtins::bool_, null, state)
     let cmp = allocate(Insn)
@@ -2788,8 +2780,8 @@ def walk_For(node: *parser::Node, state: *State) {
     (@cmp).value.cmp = {
         op = op,
         ret = cmp_ret,
-        left = left,
-        right = right
+        left = left2,
+        right = right2
     } !InsnCmp
 
     push_insn(cmp, state)
@@ -3060,7 +3052,6 @@ def walk_TypeDecl(node: *parser::Node, state: *State) {
         if not tpe { continue }
         if (@tpe).kind == typechecking::TypeKind::STRUCT or
             (@tpe).kind == typechecking::TypeKind::UNION {
-            
             map::put((@(@state).result).structures, (@tpe).type_name, tpe)
         }
     }
@@ -3155,36 +3146,6 @@ def walk_top_Import(node: *parser::Node, body: *vector::Vector, state: *State) {
     }
 }
 
-def import_structures(tpe: *typechecking::Type, state: *State) {
-    if not tpe { return }
-    switch (@tpe).kind !int {
-        case typechecking::TypeKind::STRUCT..=typechecking::TypeKind::UNION:
-            if not map::contains((@(@state).result).structures, (@tpe).type_name) {
-                map::put((@(@state).result).structures, (@tpe).type_name, tpe)
-
-                for var i in 0..(@tpe).fields.size {
-                    let field = (@tpe).fields[i]
-                    import_structures(field.tpe, state)
-                }
-            }
-        case typechecking::TypeKind::ARRAY:
-            import_structures((@tpe).tpe, state)
-        case typechecking::TypeKind::STATIC_ARRAY:
-            import_structures((@tpe).tpe, state)
-        case typechecking::TypeKind::POINTER:
-            import_structures((@tpe).tpe, state)
-        case typechecking::TypeKind::FUNCTION:
-            for var i in 0..vector::length((@tpe).parameter_t) {
-                let param = vector::get((@tpe).parameter_t, i) !*typechecking::NamedParameter
-                import_structures((@param).value, state)
-            }
-            for var i in 0..vector::length((@tpe).return_t) {
-                let t = vector::get((@tpe).return_t, i) !*typechecking::Type
-                import_structures(t, state)
-            }
-    }
-}
-
 export def compile(module: *toolchain::Module) -> *Result {
     let node = (@module).node
 
@@ -3219,12 +3180,7 @@ export def compile(module: *toolchain::Module) -> *Result {
                 if (@value).share !int & parser::ShareMarker::EXPORT !int {
                     if typechecking::is_function((@value).tpe) {
                         create_function((@value).tpe, null, sc, state)
-                    } else if typechecking::is_type((@value).tpe) {
-                        let tpe = (@value).value !*typechecking::Type
-                        if typechecking::is_struct(tpe) {
-                            import_structures(tpe, state)
-                        }
-                    } else {
+                    } else if not typechecking::is_type((@value).tpe) {
                         let name = (@value).assembly_name
                         let global = allocate(Global)
                         (@global) = {
@@ -3287,6 +3243,6 @@ export def compile(module: *toolchain::Module) -> *Result {
 
     scope::create_function((@node).scope, ident, parser::ShareMarker::EXPORT, main_tpe, false)
     create_function(main_tpe, body, (@node).scope, state)
-
+    
     return (@state).result
 }

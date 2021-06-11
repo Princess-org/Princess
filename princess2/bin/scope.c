@@ -51,7 +51,12 @@ DLL_EXPORT scope_Scope * scope_enter_function_scope(scope_Scope *scope) {
     return s;
 };
 DLL_EXPORT scope_Scope * scope_exit_scope(scope_Scope *scope) {
-    return ((*scope).parent);
+    scope_Scope *parent = ((*scope).parent);
+    int *scope_count = _31a1fd14_get_scope_count(parent);
+    if (scope_count) {
+        ((*scope_count) += 1);
+    }  ;
+    return parent;
 };
 DLL_EXPORT scope_Value * scope_get(scope_Scope *scope, parser_Node *id);
  scope_Value * _31a1fd14_find_function(parser_Node *node, scope_Value *v, vector_Vector *parameter_t, int *score) {
@@ -425,6 +430,7 @@ DLL_EXPORT void scope_insert_module(scope_Scope *scope, parser_Node *alias, tool
 };
 DLL_EXPORT void scope_p_main(Array args) {
     ;
+    debug_p_main(args);
 };
 
 

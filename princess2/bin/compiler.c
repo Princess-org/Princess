@@ -185,7 +185,7 @@ DLL_EXPORT compiler_Value compiler_charp(string str, compiler_State *state) {
     ((*tpe).kind) = typechecking_TypeKind_STATIC_ARRAY;
     ((*tpe).tpe) = builtins_char_;
     ((*tpe).length) = (str.size);
-    ((*tpe).size) = (((*tpe).length) * ((size_t)(sizeof(char))));
+    ((*tpe).size) = (((*tpe).length) * (sizeof(char)));
     ((*tpe).align) = (sizeof(char));
     compiler_Value *value = malloc((sizeof(compiler_Value)));
     (*value) = ((compiler_Value){ .kind = compiler_ValueKind_STRING, .s = str, .tpe = tpe });
@@ -270,7 +270,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     }  ;
     compiler_InsnKind kind;
     if ((((*tpe).kind) == typechecking_TypeKind_ARRAY)) {
-        if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && (((bool)(!((*tpe).tpe))) || ((bool)typechecking_equals(((*tpe).tpe), ((*(value.tpe)).tpe)))))) {
+        if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && (((bool)(!((*tpe).tpe))) || typechecking_equals(((*tpe).tpe), ((*(value.tpe)).tpe))))) {
             compiler_Value local = compiler_make_local_value(typechecking_pointer(((*(value.tpe)).tpe)), NULL, state);
             Array index = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
             (((compiler_Value *)index.value)[0]) = compiler_make_int_value(0);
@@ -410,7 +410,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     else if (typechecking_is_pointer(tpe)) {
         if ((((*(value.tpe)).kind) == typechecking_TypeKind_NULL)) {
             return ((compiler_Value){ .kind = compiler_ValueKind_NULL, .tpe = tpe });
-        } else if ((((bool)typechecking_is_pointer((value.tpe))) || (((*(value.tpe)).kind) == typechecking_TypeKind_NULL))) {
+        } else if ((typechecking_is_pointer((value.tpe)) || (((*(value.tpe)).kind) == typechecking_TypeKind_NULL))) {
             kind = compiler_InsnKind_BITCAST;
         }
         else if (typechecking_is_integer((value.tpe))) {
@@ -1289,7 +1289,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
         right = compiler_make_int_value(0);
         (right.tpe) = builtins_size_t_;
     }  ;
-    if ((((bool)typechecking_is_arithmetic((left.tpe))) && ((bool)typechecking_is_arithmetic((right.tpe))))) {
+    if ((typechecking_is_arithmetic((left.tpe)) && typechecking_is_arithmetic((right.tpe)))) {
         tpe = typechecking_common_type((left.tpe), (right.tpe));
         left = _87f75ce3_convert_to(node, left, tpe, state);
         right = _87f75ce3_convert_to(node, right, tpe, state);
@@ -1454,22 +1454,17 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     };
 };
  compiler_Value _87f75ce3_walk_PointerOp(parser_Node *node, compiler_InsnKind kind, compiler_State *state) {
-    compiler_Value value_left = compiler_walk_expression(((((*node).value).bin_op).left), state);
-    compiler_Value value_right = compiler_walk_expression(((((*node).value).bin_op).right), state);
-    compiler_Value ret_ptrtoint = compiler_make_local_value(builtins_size_t_, NULL, state);
-    compiler_Insn *ptrtoint = malloc((sizeof(compiler_Insn)));
-    ((*ptrtoint).kind) = compiler_InsnKind_PTRTOINT;
-    (((*ptrtoint).value).convert) = ((compiler_InsnConvert){ .ret = ret_ptrtoint, .value = value_left });
+    compiler_Value value_left = _87f75ce3_convert_to(node, compiler_walk_expression(((((*node).value).bin_op).left), state), builtins_size_t_, state);
+    compiler_Value value_right = _87f75ce3_convert_to(node, compiler_walk_expression(((((*node).value).bin_op).right), state), builtins_size_t_, state);
     compiler_Value ret_arith = compiler_make_local_value(builtins_size_t_, NULL, state);
     compiler_Insn *arith = malloc((sizeof(compiler_Insn)));
     ((*arith).kind) = kind;
-    (((*arith).value).arith) = ((compiler_InsnArithmetic){ .ret = ret_arith, .left = ret_ptrtoint, .right = value_right });
+    (((*arith).value).arith) = ((compiler_InsnArithmetic){ .ret = ret_arith, .left = value_left, .right = value_right });
+    compiler_push_insn(arith, state);
     compiler_Value ret_inttoptr = compiler_make_local_value(((*node).tpe), NULL, state);
     compiler_Insn *inttoptr = malloc((sizeof(compiler_Insn)));
     ((*inttoptr).kind) = compiler_InsnKind_INTTOPTR;
     (((*inttoptr).value).convert) = ((compiler_InsnConvert){ .ret = ret_inttoptr, .value = ret_arith });
-    compiler_push_insn(ptrtoint, state);
-    compiler_push_insn(arith, state);
     compiler_push_insn(inttoptr, state);
     return ret_inttoptr;
 };
@@ -1903,7 +1898,7 @@ int _87f75ce3_max_cases;
     compiler_push_insn(continue_insn, state);
     compiler_Label start_label = compiler_make_label(state);
     compiler_push_label(start_label, state);
-    compiler_Value cond = compiler_walk_expression(((((*node).value).while_loop).expr), state);
+    compiler_Value cond = _87f75ce3_convert_to(node, compiler_walk_expression(((((*node).value).while_loop).expr), state), builtins_bool_, state);
     compiler_Insn *br = malloc((sizeof(compiler_Insn)));
     ((*br).kind) = compiler_InsnKind_BR;
     (((*br).value).br) = ((compiler_InsnBr){ .cond = cond });
@@ -1931,9 +1926,12 @@ int _87f75ce3_max_cases;
     if ((((*range).kind) == parser_NodeKind_RANGE_INC)) {
         op = compiler_i_sle;
     }  ;
-    compiler_Value startv = compiler_walk_expression(((((*range).value).bin_op).left), state);
-    compiler_Value endv = compiler_walk_expression(((((*range).value).bin_op).right), state);
     parser_Node *iddecl = ((((*node).value).for_loop).iddecl);
+    typechecking_Type *tpe = ((*iddecl).tpe);
+    parser_Node *left = ((((*range).value).bin_op).left);
+    parser_Node *right = ((((*range).value).bin_op).right);
+    compiler_Value startv = _87f75ce3_convert_to(left, compiler_walk_expression(((((*range).value).bin_op).left), state), tpe, state);
+    compiler_Value endv = _87f75ce3_convert_to(right, compiler_walk_expression(right, state), tpe, state);
     compiler_Value loc;
     if ((((*iddecl).kind) == parser_NodeKind_FOR_ID_DECL)) {
         scope_Value *value = scope_get(((*iddecl).scope), ((((*iddecl).value).for_id_decl).ident));
@@ -1942,9 +1940,9 @@ int _87f75ce3_max_cases;
         }  ;
         compiler_Insn *alloca = malloc((sizeof(compiler_Insn)));
         ((*alloca).kind) = compiler_InsnKind_ALLOCA;
-        (((*alloca).value).alloca) = ((compiler_InsnAlloca){ .ret = ((compiler_Value){ .kind = compiler_ValueKind_LOCAL, .name = ((*value).assembly_name), .tpe = ((*iddecl).tpe) }) });
+        (((*alloca).value).alloca) = ((compiler_InsnAlloca){ .ret = ((compiler_Value){ .kind = compiler_ValueKind_LOCAL, .name = ((*value).assembly_name), .tpe = tpe }) });
         compiler_push_insn(alloca, state);
-        loc = ((compiler_Value){ .kind = compiler_ValueKind_LOCAL, .name = ((*value).assembly_name), .tpe = typechecking_pointer(((*iddecl).tpe)) });
+        loc = ((compiler_Value){ .kind = compiler_ValueKind_LOCAL, .name = ((*value).assembly_name), .tpe = typechecking_pointer(tpe) });
     }  else {
         compiler_Value *addr = (compiler_walk_expression(iddecl, state).addr);
         if ((!addr)) {
@@ -1967,13 +1965,13 @@ int _87f75ce3_max_cases;
     ((*load).kind) = compiler_InsnKind_LOAD;
     (((*load).value).load) = ((compiler_InsnLoad){ .value = load_ret, .loc = loc });
     compiler_push_insn(load, state);
-    typechecking_Type *tpe = typechecking_common_type((load_ret.tpe), (endv.tpe));
-    compiler_Value left = _87f75ce3_convert_to(node, load_ret, tpe, state);
-    compiler_Value right = _87f75ce3_convert_to(node, endv, tpe, state);
+    typechecking_Type *tpe2 = typechecking_common_type((load_ret.tpe), (endv.tpe));
+    compiler_Value left2 = _87f75ce3_convert_to(node, load_ret, tpe2, state);
+    compiler_Value right2 = _87f75ce3_convert_to(node, endv, tpe2, state);
     compiler_Value cmp_ret = compiler_make_local_value(builtins_bool_, NULL, state);
     compiler_Insn *cmp = malloc((sizeof(compiler_Insn)));
     ((*cmp).kind) = compiler_InsnKind_ICMP;
-    (((*cmp).value).cmp) = ((compiler_InsnCmp){ .op = op, .ret = cmp_ret, .left = left, .right = right });
+    (((*cmp).value).cmp) = ((compiler_InsnCmp){ .op = op, .ret = cmp_ret, .left = left2, .right = right2 });
     compiler_push_insn(cmp, state);
     compiler_Insn *br = malloc((sizeof(compiler_Insn)));
     ((*br).kind) = compiler_InsnKind_BR;
@@ -2256,45 +2254,6 @@ map_Map *_87f75ce3_imported_modules;
     }
     ;
 };
- void _87f75ce3_import_structures(typechecking_Type *tpe, compiler_State *state) {
-    if ((!tpe)) {
-        return ;
-    }  ;
-    switch (((int)((*tpe).kind))) {
-        break;
-        case typechecking_TypeKind_STRUCT ... typechecking_TypeKind_UNION:
-        if ((!map_contains(((*((*state).result)).structures), ((*tpe).type_name)))) {
-            map_put(((*((*state).result)).structures), ((*tpe).type_name), tpe);
-            for (int i = 0;(i < (((*tpe).fields).size));(i += 1)) {
-                typechecking_StructMember field = (((typechecking_StructMember *)((*tpe).fields).value)[i]);
-                _87f75ce3_import_structures((field.tpe), state);
-            }
-            ;
-        }  ;
-        break;
-        case typechecking_TypeKind_ARRAY:
-        _87f75ce3_import_structures(((*tpe).tpe), state);
-        break;
-        case typechecking_TypeKind_STATIC_ARRAY:
-        _87f75ce3_import_structures(((*tpe).tpe), state);
-        break;
-        case typechecking_TypeKind_POINTER:
-        _87f75ce3_import_structures(((*tpe).tpe), state);
-        break;
-        case typechecking_TypeKind_FUNCTION:
-        for (int i = 0;(i < vector_length(((*tpe).parameter_t)));(i += 1)) {
-            typechecking_NamedParameter *param = ((typechecking_NamedParameter *)vector_get(((*tpe).parameter_t), i));
-            _87f75ce3_import_structures(((*param).value), state);
-        }
-        ;
-        for (int i = 0;(i < vector_length(((*tpe).return_t)));(i += 1)) {
-            typechecking_Type *t = ((typechecking_Type *)vector_get(((*tpe).return_t), i));
-            _87f75ce3_import_structures(t, state);
-        }
-        ;
-    }
-    ;
-};
 DLL_EXPORT compiler_Result * compiler_compile(toolchain_Module *module) {
     parser_Node *node = ((*module).node);
     assert((((*node).kind) == parser_NodeKind_PROGRAM));
@@ -2313,17 +2272,12 @@ DLL_EXPORT compiler_Result * compiler_compile(toolchain_Module *module) {
                 if ((((int)((*value).share)) & ((int)parser_ShareMarker_EXPORT))) {
                     if (typechecking_is_function(((*value).tpe))) {
                         _87f75ce3_create_function(((*value).tpe), NULL, sc, state);
-                    } else if (typechecking_is_type(((*value).tpe))) {
-                        typechecking_Type *tpe = ((typechecking_Type *)((*value).value));
-                        if (typechecking_is_struct(tpe)) {
-                            _87f75ce3_import_structures(tpe, state);
-                        }  ;
-                    } else {
+                    } else if ((!typechecking_is_type(((*value).tpe)))) {
                         string name = ((*value).assembly_name);
                         compiler_Global *global = malloc((sizeof(compiler_Global)));
                         (*global) = ((compiler_Global){ .name = name, .tpe = ((*value).tpe), .external = true });
                         map_put(((*((*state).result)).globals), name, global);
-                    };
+                    } ;
                 }  ;
             }
             ;

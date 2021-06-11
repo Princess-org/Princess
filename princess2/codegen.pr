@@ -4,6 +4,7 @@ import map
 import util
 import typechecking
 import compiler
+import scope
 
 def type_to_str(tpe: *typechecking::Type) -> string {
     if not tpe { return "void" }
@@ -570,6 +571,11 @@ def emit_union(fp: File, union_: *typechecking::Type) {
     write_string(fp, "}\n")
 }
 
+def emit_stub(fp: File, stub: *typechecking::Type) {
+    write_string(fp, "%\"", (@stub).type_name, "\"")
+    write_string(fp, " = type opaque\n")
+}
+
 def emit_global(fp: File, global: *compiler::Global) {
     write_string(fp, "@\"", (@global).name, "\"")
     write_string(fp, " = ")
@@ -651,8 +657,86 @@ def gen_header(fp: File, module: *toolchain::Module) {
     write_string(fp, "target triple = \"x86_64-pc-linux-gnu\"\n")
 }
 
+type State = struct {
+    structures: *map::Map
+    cached: *map::Map
+    module: *toolchain::Module
+}
+
+import debug
+
+def import_structures(tpe: *typechecking::Type, state: *State)
+
+def import_structure(tpe: *typechecking::Type, state: *State) {
+    if not map::contains((@state).cached, (@tpe).type_name) {
+        map::put((@state).cached, (@tpe).type_name, map::sentinel)
+        let size = (@tpe).fields.size
+        if size > 0 {
+            map::put((@state).structures, (@tpe).type_name, tpe)
+            for var i in 0..size {
+                let field = (@tpe).fields[i]
+                import_structures(field.tpe, state)
+            }
+        }
+    }
+}
+
+def import_structures(tpe: *typechecking::Type, state: *State) {
+    if not tpe { return }
+    switch (@tpe).kind !int {
+        case typechecking::TypeKind::STRUCT..=typechecking::TypeKind::UNION:
+            import_structure(tpe, state)
+        case typechecking::TypeKind::ARRAY:
+            import_structures((@tpe).tpe, state)
+        case typechecking::TypeKind::STATIC_ARRAY:
+            import_structures((@tpe).tpe, state)
+        case typechecking::TypeKind::POINTER:
+            import_structures((@tpe).tpe, state)
+        case typechecking::TypeKind::FUNCTION:
+            for var i in 0..vector::length((@tpe).parameter_t) {
+                let param = vector::get((@tpe).parameter_t, i) !*typechecking::NamedParameter
+                import_structures((@param).value, state)
+            }
+            for var i in 0..vector::length((@tpe).return_t) {
+                let t = vector::get((@tpe).return_t, i) !*typechecking::Type
+                import_structures(t, state)
+            }
+        case typechecking::TypeKind::STUB:
+            if not map::contains((@state).structures, (@tpe).type_name) {
+                map::put((@state).structures, (@tpe).type_name, tpe)
+            }
+    }
+}
+
+def import_top_level_structures(sc: *scope::Scope, state: *State) {
+    let keys = map::keys((@sc).fields)
+    for var i in 0..keys.size {
+        let key = keys[i]
+        let value = map::get((@sc).fields, key) !*scope::Value
+        if (@(@value).tpe).kind == typechecking::TypeKind::NAMESPACE {
+            import_top_level_structures((@value).scope, state)
+        } else if typechecking::is_function((@value).tpe) {
+            import_structures((@value).tpe, state)
+        } else if typechecking::is_type((@value).tpe) {
+            let tpe = (@value).value !*typechecking::Type
+            import_structures(tpe, state)
+        } else {
+            import_structures((@value).tpe, state)
+        }
+    }   
+}
+
 export def gen(module: *toolchain::Module) -> string {
     let result = (@module).result
+
+    // TODO This really shouldn't be necessaray, figure out a way to have
+    // a less brute forced approach than going through all declarations again
+    let state = {
+        (@result).structures,
+        map::make(),
+        module
+    } !State
+    import_top_level_structures((@module).scope, *state)
 
     let buf = buffer::make_buffer()
     buffer::append_str(*buf, toolchain::outfolder)
@@ -671,10 +755,13 @@ export def gen(module: *toolchain::Module) -> string {
     let keys_structures = map::keys((@result).structures)
     for var i in 0..keys_structures.size {
         let structure = map::get((@result).structures, keys_structures[i]) !*typechecking::Type
-        if (@structure).kind == typechecking::TypeKind::STRUCT {
-            emit_structure(fp, structure)
-        } else {
-            emit_union(fp, structure)
+        switch (@structure).kind !int {
+            case typechecking::TypeKind::STRUCT:
+                emit_structure(fp, structure)
+            case typechecking::TypeKind::UNION:
+                emit_union(fp, structure)
+            case typechecking::TypeKind::STUB:
+                emit_stub(fp, structure)
         }
     }
 
