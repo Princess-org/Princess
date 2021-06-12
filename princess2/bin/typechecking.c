@@ -985,7 +985,6 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
             typechecking_errorn(left, ((Array){14, "Invalid cast\x0a"""}));
             return ;
         }  ;
-        ((*left).tpe) = ((*node).tpe);
     }  ;
     _3700c937_walk(left, state);
 };
@@ -1543,9 +1542,6 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
 };
  void _3700c937_walk_ArrayLit(parser_Node *node, typechecking_State *state) {
     typechecking_Type *tpe = NULL;
-    if (((*node).tpe)) {
-        tpe = ((*((*node).tpe)).tpe);
-    }  ;
     size_t len = vector_length((((*node).value).body));
     for (int i = 0;(i < len);(i += 1)) {
         parser_Node *n = ((parser_Node *)vector_get((((*node).value).body), i));
@@ -1562,13 +1558,14 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
         };
     }
     ;
-    if ((!((*node).tpe))) {
-        typechecking_Type *ret_tpe = malloc((sizeof(typechecking_Type)));
-        ((*ret_tpe).kind) = typechecking_TypeKind_STATIC_ARRAY;
-        ((*ret_tpe).length) = len;
-        ((*ret_tpe).tpe) = tpe;
-        ((*node).tpe) = ret_tpe;
+    if ((!tpe)) {
+        tpe = builtins_char_;
     }  ;
+    typechecking_Type *ret_tpe = malloc((sizeof(typechecking_Type)));
+    ((*ret_tpe).kind) = typechecking_TypeKind_STATIC_ARRAY;
+    ((*ret_tpe).length) = len;
+    ((*ret_tpe).tpe) = tpe;
+    ((*node).tpe) = ret_tpe;
 };
  void _3700c937_walk_SizeOf(parser_Node *node, typechecking_State *state) {
     parser_Node *expr = (((*node).value).expr);

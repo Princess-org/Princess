@@ -185,7 +185,7 @@ DLL_EXPORT compiler_Value compiler_charp(string str, compiler_State *state) {
     ((*tpe).kind) = typechecking_TypeKind_STATIC_ARRAY;
     ((*tpe).tpe) = builtins_char_;
     ((*tpe).length) = (str.size);
-    ((*tpe).size) = (((*tpe).length) * (sizeof(char)));
+    ((*tpe).size) = (((*tpe).length) * ((size_t)(sizeof(char))));
     ((*tpe).align) = (sizeof(char));
     compiler_Value *value = malloc((sizeof(compiler_Value)));
     (*value) = ((compiler_Value){ .kind = compiler_ValueKind_STRING, .s = str, .tpe = tpe });
@@ -270,7 +270,12 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     }  ;
     compiler_InsnKind kind;
     if ((((*tpe).kind) == typechecking_TypeKind_ARRAY)) {
-        if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && (((bool)(!((*tpe).tpe))) || typechecking_equals(((*tpe).tpe), ((*(value.tpe)).tpe))))) {
+        if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && (((*(value.tpe)).length) == 0))) {
+            Array values = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
+            (((compiler_Value *)values.value)[0]) = ((compiler_Value){ .kind = compiler_ValueKind_INT, .tpe = builtins_size_t_, .i = ((*(value.tpe)).length), .sign = 1 });
+            (((compiler_Value *)values.value)[1]) = ((compiler_Value){ .tpe = typechecking_pointer(((*tpe).tpe)) });
+            return ((compiler_Value){ .kind = compiler_ValueKind_STRUCT, .values = values, .tpe = tpe });
+        } else if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && (((bool)(!((*tpe).tpe))) || ((bool)typechecking_equals(((*tpe).tpe), ((*(value.tpe)).tpe)))))) {
             compiler_Value local = compiler_make_local_value(typechecking_pointer(((*(value.tpe)).tpe)), NULL, state);
             Array index = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
             (((compiler_Value *)index.value)[0]) = compiler_make_int_value(0);
@@ -301,7 +306,8 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
             (((*insert).value).insert_value) = ((compiler_InsnInsertValue){ .ret = ret, .value = value, .element = local, .index = index2 });
             compiler_push_insn(insert, state);
             return ret;
-        } else if ((((bool)(!((*tpe).tpe))) && (((*(value.tpe)).kind) == typechecking_TypeKind_ARRAY))) {
+        }
+        else if ((((bool)(!((*tpe).tpe))) && (((*(value.tpe)).kind) == typechecking_TypeKind_ARRAY))) {
             Array index1 = ((Array){1, malloc((((int64)(sizeof(int))) * ((int64)1)))});
             (((int *)index1.value)[0]) = 0;
             compiler_Value size = compiler_make_local_value(builtins_size_t_, NULL, state);
@@ -410,7 +416,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     else if (typechecking_is_pointer(tpe)) {
         if ((((*(value.tpe)).kind) == typechecking_TypeKind_NULL)) {
             return ((compiler_Value){ .kind = compiler_ValueKind_NULL, .tpe = tpe });
-        } else if ((typechecking_is_pointer((value.tpe)) || (((*(value.tpe)).kind) == typechecking_TypeKind_NULL))) {
+        } else if ((((bool)typechecking_is_pointer((value.tpe))) || (((*(value.tpe)).kind) == typechecking_TypeKind_NULL))) {
             kind = compiler_InsnKind_BITCAST;
         }
         else if (typechecking_is_integer((value.tpe))) {
@@ -1289,7 +1295,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
         right = compiler_make_int_value(0);
         (right.tpe) = builtins_size_t_;
     }  ;
-    if ((typechecking_is_arithmetic((left.tpe)) && typechecking_is_arithmetic((right.tpe)))) {
+    if ((((bool)typechecking_is_arithmetic((left.tpe))) && ((bool)typechecking_is_arithmetic((right.tpe))))) {
         tpe = typechecking_common_type((left.tpe), (right.tpe));
         left = _87f75ce3_convert_to(node, left, tpe, state);
         right = _87f75ce3_convert_to(node, right, tpe, state);
