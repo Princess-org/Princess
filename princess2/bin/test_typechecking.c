@@ -250,7 +250,7 @@ typedef struct _1f7978b0_Result {struct scope_Scope *scope; struct parser_Node *
     typechecking_Type *e = ((*scope_get((res.scope), parser_make_identifier(((Array){1, (Array[1]){ ((Array){2, "e"}) }})))).tpe);
     typechecking_Type *f = ((*scope_get((res.scope), parser_make_identifier(((Array){1, (Array[1]){ ((Array){2, "f"}) }})))).tpe);
     assert(((c == builtins_size_t_) && (e == builtins_size_t_)));
-    assert((((bool)typechecking_is_pointer(d)) && ((bool)typechecking_is_pointer(f))));
+    assert((typechecking_is_pointer(d) && typechecking_is_pointer(f)));
     assert(((((*d).tpe) == builtins_int_) && (((*f).tpe) == builtins_int_)));
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };

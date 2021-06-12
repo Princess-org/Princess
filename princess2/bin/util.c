@@ -107,6 +107,25 @@ DLL_EXPORT Array util_split_lines(string s) {
     (((char *)(((string *)result.value)[line]).value)[(((int64)size) - ((int64)k))]) = '\x00';
     return result;
 };
+DLL_EXPORT string util_basename(string file) {
+    int last_slash = 0;
+    for (int i = 0;(i < (file.size));(i += 1)) {
+        char c = (((char *)file.value)[i]);
+        if (((c == '/') || (c == '\\'))) {
+            last_slash = i;
+        }  ;
+    }
+    ;
+    Array ret = ((Array){(last_slash + 1), malloc((((int64)(sizeof(char))) * ((int64)(last_slash + 1))))});
+    memcpy((ret.value), (file.value), (last_slash + 1));
+    return ret;
+};
+DLL_EXPORT string util_exe_folder() {
+    Array exe_file = ((Array){PATH_MAX, malloc((((int64)(sizeof(char))) * ((int64)PATH_MAX)))});
+    executable_file((exe_file.value));
+    (exe_file.size) = (((int64)strlen((exe_file.value))) + ((int64)1));
+    return util_basename(exe_file);
+};
 DLL_EXPORT string util_read_all(File fh) {
     fseek(fh, 0, SEEK_END);
     int filesize = ftell(fh);

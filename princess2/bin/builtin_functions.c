@@ -137,7 +137,7 @@
         } else if ((tpe == builtins_char_)) {
             buffer_append_str((&buf), ((Array){3, "%c"}));
         }
-        else if (((typechecking_equals(tpe, builtins_string_) || typechecking_equals(tpe, typechecking_pointer(builtins_char_))) || ((((*tpe).kind) == typechecking_TypeKind_STATIC_ARRAY) && typechecking_equals(((*tpe).tpe), builtins_char_)))) {
+        else if (((((bool)typechecking_equals(tpe, builtins_string_)) || ((bool)typechecking_equals(tpe, typechecking_pointer(builtins_char_)))) || ((((*tpe).kind) == typechecking_TypeKind_STATIC_ARRAY) && ((bool)typechecking_equals(((*tpe).tpe), builtins_char_))))) {
             buffer_append_str((&buf), ((Array){3, "%s"}));
         }
         else if (typechecking_is_pointer(tpe)) {
@@ -185,7 +185,7 @@
     if ((!(value.tpe))) {
         return compiler_NO_VALUE;
     }  ;
-    if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && typechecking_equals(((*(value.tpe)).tpe), builtins_char_))) {
+    if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && ((bool)typechecking_equals(((*(value.tpe)).tpe), builtins_char_)))) {
         return compiler_charp_static((value.addr), state);
     } else if (typechecking_equals((value.tpe), builtins_string_)) {
         return compiler_charp_str(value, state);
@@ -338,6 +338,9 @@
  compiler_Value _fe23cc40__allocate_array(parser_Node *node, Array argsv, compiler_State *state) {
     _fe23cc40_import_function(state, ((Array){7, "malloc"}));
     typechecking_Type *tpe = ((((compiler_Value *)argsv.value)[0]).value_tpe);
+    if ((!tpe)) {
+        return compiler_NO_VALUE;
+    }  ;
     compiler_Value size = (((compiler_Value *)argsv.value)[1]);
     compiler_Value sizev = compiler_make_local_value(builtins_size_t_, NULL, state);
     compiler_Insn *mul = malloc((sizeof(compiler_Insn)));
@@ -641,7 +644,12 @@
     compiler_push_insn(trunc, state);
     return trunc_ret;
 };
+ compiler_Value _fe23cc40__executable_file(parser_Node *node, Array argsv, compiler_State *state) {
+    _fe23cc40_import_function(state, ((Array){16, "executable_file"}));
+    return _fe23cc40_forward_to_function(argsv, NULL, ((Array){16, "executable_file"}), state);
+};
 DLL_EXPORT void builtin_functions_p_main(Array args) {
+    compiler_p_main(args);
     _fe23cc40_create_function(((Array){7, "assert"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){10, "assertion"}), builtins_bool_) }}), ((Array){0, (typechecking_Type *[]){  }}), (&_fe23cc40__assert), NULL);
     _fe23cc40_create_function(((Array){6, "print"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_varargs(((Array){1, ""}), NULL) }}), ((Array){1, (typechecking_Type *[1]){ builtins_int_ }}), (&_fe23cc40__print), NULL);
     _fe23cc40_create_function(((Array){6, "error"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_varargs(((Array){1, ""}), NULL) }}), ((Array){1, (typechecking_Type *[1]){ builtins_int_ }}), (&_fe23cc40__error), NULL);
@@ -683,6 +691,7 @@ DLL_EXPORT void builtin_functions_p_main(Array args) {
     _fe23cc40_create_function(((Array){5, "exit"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){7, "status"}), builtins_int_) }}), ((Array){0, (typechecking_Type *[]){  }}), (&_fe23cc40__exit), NULL);
     _fe23cc40_create_function(((Array){7, "system"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){8, "command"}), builtins_string_) }}), ((Array){1, (typechecking_Type *[1]){ builtins_int_ }}), (&_fe23cc40__system), NULL);
     _fe23cc40_create_function(((Array){12, "starts_with"}), ((Array){2, (typechecking_NamedParameter *[2]){ _fe23cc40_param(((Array){4, "str"}), builtins_string_), _fe23cc40_param(((Array){4, "pre"}), builtins_string_) }}), ((Array){1, (typechecking_Type *[1]){ builtins_bool_ }}), (&_fe23cc40__starts_with), NULL);
+    _fe23cc40_create_function(((Array){16, "executable_file"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){9, "resolved"}), typechecking_pointer(builtins_char_)) }}), ((Array){0, (typechecking_Type *[]){  }}), (&_fe23cc40__executable_file), NULL);
 };
 
 

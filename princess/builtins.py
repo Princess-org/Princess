@@ -258,6 +258,7 @@ compiler.builtins.create_function("assert", types.FunctionT(c = True, return_t =
 compiler.builtins.create_function("length", types.FunctionT(c = True, return_t = (types.size_t,), parameter_t = (types.string,), macro = _length))
 compiler.builtins.create_function("strlen", types.FunctionT(c = True, return_t = (types.size_t,), parameter_t = (types.string,)))
 compiler.builtins.create_function("memcopy", types.FunctionT(c = True, return_t = (types.void_p,), parameter_t = (types.void_p, types.void_p, types.size_t), macro = _memcopy))
+compiler.builtins.create_function("executable_file", types.FunctionT(c = True, return_t = (types.void,), parameter_t = (types.string,)))
 
 compiler.builtins.create_function("min", types.FunctionT(c = True, return_t = (types.double,), parameter_t = (types.double, types.double), macro = _min))
 compiler.builtins.create_function("max", types.FunctionT(c = True, return_t = (types.double,), parameter_t = (types.double, types.double), macro = _max))

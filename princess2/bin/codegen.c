@@ -698,17 +698,23 @@
 };
 #include "toolchain.c"
  void _574f02bf_gen_cstdlib_includes(File fp, toolchain_Module *module) {
+    string exe_folder = util_exe_folder();
     Array keys = map_keys(((*module).imported));
     buffer_Buffer cmd_buffer = buffer_make_buffer();
-    buffer_append_str((&cmd_buffer), ((Array){28, "python3.9 cstdlib/genll.py "}));
+    buffer_append_str((&cmd_buffer), ((Array){11, "python3.9 "}));
+    buffer_append_str((&cmd_buffer), exe_folder);
+    buffer_append_str((&cmd_buffer), ((Array){22, "/../cstdlib/genll.py "}));
     for (int i = 0;(i < (keys.size));(i += 1)) {
         string cfunc = (((string *)keys.value)[i]);
         buffer_append_str((&cmd_buffer), cfunc);
         buffer_append_char((&cmd_buffer), ' ');
     }
     ;
+    buffer_Buffer header_buffer = buffer_make_buffer();
+    buffer_append_str((&header_buffer), exe_folder);
+    buffer_append_str((&header_buffer), ((Array){22, "/../cstdlib/header.ll"}));
     system((buffer_to_string((&cmd_buffer)).value));
-    File fp2 = fopen((((Array){18, "cstdlib/header.ll"}).value), (((Array){2, "r"}).value));
+    File fp2 = fopen((buffer_to_string((&header_buffer)).value), (((Array){2, "r"}).value));
     string header = util_read_all(fp2);
     fclose(fp2);
     fprintf(fp, (((Array){3, "%s"}).value), (header.value));
