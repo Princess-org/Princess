@@ -175,11 +175,6 @@ typedef struct _1f7978b0_Result {struct scope_Scope *scope; struct parser_Node *
     _1f7978b0_Result res = _1f7978b0_typecheck(str);
     str = ((Array){207, "\x0a""        import test::a\x0a""        def multiply_by_2(a: int) -> int {\x0a""            return a * 2\x0a""        }\x0a""        multiply_by_2(10)\x0a""        test::a::multiply_by_2(10)\x0a""        multiply_by_2(10.5) // test::a\x0a""    "});
     res = _1f7978b0_typecheck(str);
-    debug_redirect_stderr();
-    str = ((Array){106, "\x0a""        import test::a\x0a""        import test::b\x0a""        multiply_by_2(10)\x0a""        multiply_by_2(10.5)\x0a""    "});
-    res = _1f7978b0_typecheck(str);
-    vector_Vector *errors = debug_catch_errors();
-    assert((strcmp((_1f7978b0_next_error_msg(errors).value), (((Array){20, "Ambiguous reference"}).value)) == 0));
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };
  void _1f7978b0_test_return() {
@@ -255,7 +250,7 @@ typedef struct _1f7978b0_Result {struct scope_Scope *scope; struct parser_Node *
     typechecking_Type *e = ((*scope_get((res.scope), parser_make_identifier(((Array){1, (Array[1]){ ((Array){2, "e"}) }})))).tpe);
     typechecking_Type *f = ((*scope_get((res.scope), parser_make_identifier(((Array){1, (Array[1]){ ((Array){2, "f"}) }})))).tpe);
     assert(((c == builtins_size_t_) && (e == builtins_size_t_)));
-    assert((typechecking_is_pointer(d) && typechecking_is_pointer(f)));
+    assert((((bool)typechecking_is_pointer(d)) && ((bool)typechecking_is_pointer(f))));
     assert(((((*d).tpe) == builtins_int_) && (((*f).tpe) == builtins_int_)));
     printf((((Array){3, "%s"}).value), (((Array){4, "OK\x0a"""}).value));
 };

@@ -77,7 +77,7 @@ DLL_EXPORT string toolchain_find_module_file(parser_Node *module) {
     return ((Array){1, ""});
 };
 DLL_EXPORT toolchain_Module * toolchain_compile_file(string filename, string modulename, toolchain_Module *forward_declared) {
-    File fh = fopen((filename.value), (((Array){3, "rb"}).value));
+    FILE* fh = fopen((filename.value), (((Array){3, "rb"}).value));
     if ((!fh)) {
         fprintf(stderr, (((Array){7, "%s%s%s"}).value), (((Array){7, "File \""}).value), (filename.value), (((Array){17, "\" doesn't exist\x0a"""}).value));
     }  else {
@@ -150,7 +150,7 @@ DLL_EXPORT void toolchain_compile_main_file(string filename) {
         ;
         system((buffer_to_string((&link_command)).value));
         buffer_Buffer compile_command = buffer_make_buffer();
-        buffer_append_str((&compile_command), ((Array){19, "clang-12 --output "}));
+        buffer_append_str((&compile_command), ((Array){23, "clang-12 -lm --output "}));
         buffer_append_str((&compile_command), toolchain_outfile);
         buffer_append_char((&compile_command), ' ');
         buffer_append_str((&compile_command), toolchain_outfolder);

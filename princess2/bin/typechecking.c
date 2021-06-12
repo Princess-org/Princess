@@ -646,6 +646,7 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
 };
  void _3700c937_walk_Identifier(parser_Node *node, typechecking_State *state) {
     scope_Value *value = scope_get(((*state).scope), node);
+    ((*node).svalue) = value;
     if ((!value)) {
         typechecking_errorn(node, ((Array){20, "Unknown identifier "}));
         fprintf(stderr, (((Array){5, "%s%s"}).value), (parser_identifier_to_str(node).value), (((Array){2, "\x0a"""}).value));
@@ -765,6 +766,7 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
             ((*ident).scope) = ((*state).scope);
             ((*ident).tpe) = tpe;
             scope_create_variable(((*state).scope), ident, share, kw, tpe, NULL);
+            ((*ident).svalue) = scope_get(((*state).scope), ident);
         } else if ((((*node).kind) == parser_NodeKind_ID_ASSIGN)) {
             parser_Node *n = (((*node).value).expr);
             _3700c937_walk(n, state);
@@ -1792,11 +1794,16 @@ DLL_EXPORT void typechecking_typecheck(toolchain_Module *module) {
     (state.module) = ((*module).module);
     (state.scope) = ((*module).scope);
     (state.function_stack) = vector_make();
+    ((*node).scope) = (state.scope);
+    typechecking_Type *string_array_tpe = typechecking_array(builtins_string_);
+    parser_Node *args_ident = parser_make_identifier(((Array){1, (Array[1]){ ((Array){5, "args"}) }}));
+    scope_create_variable(((*node).scope), args_ident, parser_ShareMarker_NONE, parser_VarDecl_VAR, string_array_tpe, NULL);
+    scope_Value *value = scope_get(((*node).scope), args_ident);
+    ((*value).global) = false;
     for (int i = 0;(i < vector_length((((*node).value).body)));(i += 1)) {
         _3700c937_walk(((parser_Node *)vector_get((((*node).value).body), i)), (&state));
     }
     ;
-    ((*node).scope) = (state.scope);
 };
 DLL_EXPORT void typechecking_errorn(parser_Node *node, string msg) {
     if ((!node)) {

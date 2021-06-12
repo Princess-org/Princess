@@ -40,7 +40,8 @@ typedef union parser_NodeValue {struct parser_NodeBinaryOp bin_op; struct parser
 typedef struct parser_SourceLoc {string filename; string module; int line; int column; Array lines;} parser_SourceLoc;
 typedef struct typechecking_Type typechecking_Type;
 typedef struct scope_Scope scope_Scope;
-typedef struct parser_Node {enum parser_NodeKind kind; struct parser_SourceLoc loc; struct typechecking_Type *tpe; struct typechecking_Type *function; struct scope_Scope *scope; union parser_NodeValue value;} parser_Node;
+typedef struct scope_Value scope_Value;
+typedef struct parser_Node {enum parser_NodeKind kind; struct parser_SourceLoc loc; struct typechecking_Type *tpe; struct typechecking_Type *function; struct scope_Value *svalue; struct scope_Scope *scope; union parser_NodeValue value;} parser_Node;
 typedef struct _3643b863_ParseState {string filename; string module; bool has_error; Array lines; struct lexer_TokenList **tokens;} _3643b863_ParseState;
  void _3643b863_errort(lexer_Token token, _3643b863_ParseState *state, string msg);
 DLL_EXPORT parser_Node * parser_make_identifier(Array s) {
@@ -1651,12 +1652,8 @@ DLL_EXPORT parser_Node * parser_parse(lexer_TokenList *list, Array lines, string
         (toolchain_error_count += 1);
     }  ;
 };
-#include "typechecking.c"
-#include "scope.c"
 DLL_EXPORT void parser_p_main(Array args) {
     lexer_p_main(args);
-    typechecking_p_main(args);
-    scope_p_main(args);
 };
 
 

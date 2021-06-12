@@ -185,7 +185,7 @@ DLL_EXPORT compiler_Value compiler_charp(string str, compiler_State *state) {
     ((*tpe).kind) = typechecking_TypeKind_STATIC_ARRAY;
     ((*tpe).tpe) = builtins_char_;
     ((*tpe).length) = (str.size);
-    ((*tpe).size) = (((*tpe).length) * ((size_t)(sizeof(char))));
+    ((*tpe).size) = (((*tpe).length) * (sizeof(char)));
     ((*tpe).align) = (sizeof(char));
     compiler_Value *value = malloc((sizeof(compiler_Value)));
     (*value) = ((compiler_Value){ .kind = compiler_ValueKind_STRING, .s = str, .tpe = tpe });
@@ -275,7 +275,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
             (((compiler_Value *)values.value)[0]) = ((compiler_Value){ .kind = compiler_ValueKind_INT, .tpe = builtins_size_t_, .i = ((*(value.tpe)).length), .sign = 1 });
             (((compiler_Value *)values.value)[1]) = ((compiler_Value){ .tpe = typechecking_pointer(((*tpe).tpe)) });
             return ((compiler_Value){ .kind = compiler_ValueKind_STRUCT, .values = values, .tpe = tpe });
-        } else if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && (((bool)(!((*tpe).tpe))) || ((bool)typechecking_equals(((*tpe).tpe), ((*(value.tpe)).tpe)))))) {
+        } else if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && (((bool)(!((*tpe).tpe))) || typechecking_equals(((*tpe).tpe), ((*(value.tpe)).tpe))))) {
             compiler_Value local = compiler_make_local_value(typechecking_pointer(((*(value.tpe)).tpe)), NULL, state);
             Array index = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
             (((compiler_Value *)index.value)[0]) = compiler_make_int_value(0);
@@ -416,7 +416,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     else if (typechecking_is_pointer(tpe)) {
         if ((((*(value.tpe)).kind) == typechecking_TypeKind_NULL)) {
             return ((compiler_Value){ .kind = compiler_ValueKind_NULL, .tpe = tpe });
-        } else if ((((bool)typechecking_is_pointer((value.tpe))) || (((*(value.tpe)).kind) == typechecking_TypeKind_NULL))) {
+        } else if ((typechecking_is_pointer((value.tpe)) || (((*(value.tpe)).kind) == typechecking_TypeKind_NULL))) {
             kind = compiler_InsnKind_BITCAST;
         }
         else if (typechecking_is_integer((value.tpe))) {
@@ -889,7 +889,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     return value;
 };
  compiler_Value _87f75ce3_walk_Identifier(parser_Node *node, compiler_State *state) {
-    scope_Value *val = scope_get(((*node).scope), node);
+    scope_Value *val = ((*node).svalue);
     if ((!val)) {
         return compiler_NO_VALUE;
     }  ;
@@ -1295,7 +1295,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
         right = compiler_make_int_value(0);
         (right.tpe) = builtins_size_t_;
     }  ;
-    if ((((bool)typechecking_is_arithmetic((left.tpe))) && ((bool)typechecking_is_arithmetic((right.tpe))))) {
+    if ((typechecking_is_arithmetic((left.tpe)) && typechecking_is_arithmetic((right.tpe)))) {
         tpe = typechecking_common_type((left.tpe), (right.tpe));
         left = _87f75ce3_convert_to(node, left, tpe, state);
         right = _87f75ce3_convert_to(node, right, tpe, state);
@@ -2234,6 +2234,7 @@ map_Map *_87f75ce3_imported_modules;
         parser_Node *arg = parser_make_identifier(((Array){1, (Array[1]){ ((Array){5, "args"}) }}));
         ((*arg).scope) = ((*node).scope);
         ((*arg).tpe) = typechecking_array(builtins_string_);
+        ((*arg).svalue) = scope_get(((*arg).scope), arg);
         vector_push(args, arg);
         size_t name_size = vector_length((((*name).value).body));
         Array array = ((Array){(((int64)name_size) + ((int64)1)), malloc((((int64)(sizeof(string))) * (((int64)name_size) + ((int64)1))))});
@@ -2290,6 +2291,22 @@ DLL_EXPORT compiler_Result * compiler_compile(toolchain_Module *module) {
         }
         ;
     }  ;
+    parser_Node *ident = parser_make_identifier(((Array){1, (Array[1]){ ((Array){5, "main"}) }}));
+    (((*ident).loc).module) = ((*module).module);
+    (((*ident).loc).filename) = ((*module).filename);
+    typechecking_Type *main_tpe = typechecking_make_type(typechecking_TypeKind_FUNCTION, ident);
+    typechecking_Type *string_array_tpe = typechecking_array(builtins_string_);
+    typechecking_NamedParameter *named = malloc((sizeof(typechecking_NamedParameter)));
+    ((*named).name) = ((Array){5, "args"});
+    ((*named).value) = string_array_tpe;
+    ((*named).varargs) = false;
+    vector_Vector *args = vector_make();
+    vector_push(args, named);
+    ((*main_tpe).parameter_t) = args;
+    ((*main_tpe).return_t) = vector_make();
+    ((*main_tpe).macro) = NULL;
+    ((*main_tpe).proto) = NULL;
+    scope_create_function(((*node).scope), ident, parser_ShareMarker_EXPORT, main_tpe, false);
     for (int i = 0;(i < vector_length((((*node).value).body)));(i += 1)) {
         parser_Node *n = ((parser_Node *)vector_get((((*node).value).body), i));
         switch (((int)((*n).kind))) {
@@ -2312,26 +2329,6 @@ DLL_EXPORT compiler_Result * compiler_compile(toolchain_Module *module) {
         ;
     }
     ;
-    parser_Node *ident = parser_make_identifier(((Array){1, (Array[1]){ ((Array){5, "main"}) }}));
-    (((*ident).loc).module) = ((*module).module);
-    (((*ident).loc).filename) = ((*module).filename);
-    typechecking_Type *main_tpe = typechecking_make_type(typechecking_TypeKind_FUNCTION, ident);
-    typechecking_Type *string_array_tpe = typechecking_array(builtins_string_);
-    typechecking_NamedParameter *named = malloc((sizeof(typechecking_NamedParameter)));
-    ((*named).name) = ((Array){5, "args"});
-    ((*named).value) = string_array_tpe;
-    ((*named).varargs) = false;
-    vector_Vector *args = vector_make();
-    vector_push(args, named);
-    ((*main_tpe).parameter_t) = args;
-    ((*main_tpe).return_t) = vector_make();
-    ((*main_tpe).macro) = NULL;
-    ((*main_tpe).proto) = NULL;
-    parser_Node *args_ident = parser_make_identifier(((Array){1, (Array[1]){ ((Array){5, "args"}) }}));
-    scope_create_variable(((*node).scope), args_ident, parser_ShareMarker_NONE, parser_VarDecl_VAR, string_array_tpe, NULL);
-    scope_Value *value = scope_get(((*node).scope), args_ident);
-    ((*value).global) = false;
-    scope_create_function(((*node).scope), ident, parser_ShareMarker_EXPORT, main_tpe, false);
     _87f75ce3_create_function(main_tpe, body, ((*node).scope), state);
     return ((*state).result);
 };

@@ -115,7 +115,6 @@ DLL_EXPORT void builtins_p_main(Array args) {
     scope_create_variable(builtins_builtins, parser_make_identifier(((Array){1, (Array[1]){ ((Array){9, "PATH_MAX"}) }})), parser_ShareMarker_NONE, parser_VarDecl_CONST, builtins_int_, (&_a69ecad8_path_max));
     _a69ecad8_win32 = WIN32;
     scope_create_variable(builtins_builtins, parser_make_identifier(((Array){1, (Array[1]){ ((Array){6, "WIN32"}) }})), parser_ShareMarker_NONE, parser_VarDecl_CONST, builtins_bool_, (&_a69ecad8_win32));
-    scope_create_variable(builtins_builtins, parser_make_identifier(((Array){1, (Array[1]){ ((Array){5, "args"}) }})), parser_ShareMarker_NONE, parser_VarDecl_LET, typechecking_array(builtins_string_), NULL);
     builtin_functions_p_main(args);
 };
 
