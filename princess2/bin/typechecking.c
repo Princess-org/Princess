@@ -123,6 +123,7 @@ DLL_EXPORT typechecking_Type * typechecking_array(typechecking_Type *tpe) {
     ((*t).tpe) = tpe;
     ((*t).size) = (sizeof(string));
     ((*t).align) = (alignof(string));
+    return t;
 };
 DLL_EXPORT string typechecking_append_module(string name, string module) {
     buffer_Buffer buf = buffer_make_buffer();

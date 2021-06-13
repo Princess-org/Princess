@@ -430,7 +430,6 @@ DLL_EXPORT void scope_insert_module(scope_Scope *scope, parser_Node *alias, tool
 };
 DLL_EXPORT void scope_p_main(Array args) {
     ;
-    debug_p_main(args);
 };
 
 

@@ -598,6 +598,7 @@ DLL_EXPORT string parser_identifier_to_str(parser_Node *node) {
     _3643b863_expect(parse_state, lexer_TokenType_C_BRACE, ((Array){15, "Expecting '}'\x0a"""}));
     parser_Node *call = _3643b863_make_node(parser_NodeKind_STRUCT_LIT, line, column, parse_state);
     (((*call).value).struct_lit) = ((parser_NodeStructLit){ .args = args, .kwargs = kwargs });
+    return call;
 };
  parser_Node * _3643b863_parse_term(_3643b863_ParseState *parse_state) {
     lexer_Token token = _3643b863_pop(parse_state);
@@ -713,6 +714,7 @@ DLL_EXPORT string parser_identifier_to_str(parser_Node *node) {
     ;
     parser_Node *call = _3643b863_make_node(parser_NodeKind_FUNC_CALL, line, column, parse_state);
     (((*call).value).func_call) = ((parser_NodeFuncCall){ .left = node, .args = args, .kwargs = kwargs });
+    return call;
 };
  parser_Node * _3643b863_parse_post_expression(_3643b863_ParseState *parse_state) {
     lexer_Token token = _3643b863_peek(parse_state);
@@ -1038,6 +1040,7 @@ DLL_EXPORT string parser_identifier_to_str(parser_Node *node) {
     };
     parser_Node *result = _3643b863_make_node(parser_NodeKind_ASSIGN, line, column, parse_state);
     (((*result).value).assign) = ((parser_NodeAssign){ .left = left, .right = right });
+    return result;
 };
  parser_Node * _3643b863_parse_expression(_3643b863_ParseState *parse_state) {
     return _3643b863_parse_assign(parse_state);
@@ -1299,6 +1302,7 @@ DLL_EXPORT string parser_identifier_to_str(parser_Node *node) {
     _3643b863_expect(parse_state, lexer_TokenType_C_BRACE, ((Array){14, "Expected '}'\x0a"""}));
     parser_Node *node = _3643b863_make_node(parser_NodeKind_WHILE, line, column, parse_state);
     (((*node).value).while_loop) = ((parser_NodeWhile){ .expr = expr, .body = body });
+    return node;
 };
  parser_Node * _3643b863_expect_for_stmt(_3643b863_ParseState *parse_state) {
     lexer_Token token = _3643b863_peek(parse_state);
