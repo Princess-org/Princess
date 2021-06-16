@@ -19,25 +19,44 @@ export type Label = struct {
     name: string
 }
 
+export type DebugValueKind = enum {
+    BOOL; INT; STRING; METADATA; CONST
+}
+
+export type DebugValue = struct {
+    kind: DebugValueKind
+    name: string
+    s: string
+    i: int64
+}
+
+export type DebugParam = struct {
+    name: string
+    value: DebugValue
+}
+
 export type ValueKind = enum {
-    NULL; ZEROINITIALIZER; LOCAL; GLOBAL;
+    NULL; ZEROINITIALIZER; UNDEF; LOCAL; GLOBAL
     BOOL; INT; FLOAT; STRING
     ARRAY; STRUCT; UNION; TYPE
+    METADATA; DEBUG_INFO
 }
 
 export type Value = struct {
     kind: ValueKind
+    metadata: bool
     name: string
     sign: int
     i: uint64
     f: double
     s: string
-    undef: bool
     // This is the value of a type
     value_tpe: *typechecking::Type
     value: *Value
     // Used for both struct and array
     values: [Value]
+    // This is used for DEBUG_INFO
+    debug_values: [DebugParam]
     // Address of a value
     addr: *Value
     tpe: *typechecking::Type
@@ -189,6 +208,7 @@ export type InsnValue = struct #union {
 export type Insn = struct {
     kind: InsnKind
     value: InsnValue
+    debug: *Value
 }
 
 // Block for CFG
@@ -215,6 +235,7 @@ export type Result = struct {
     functions: *map::Map
     structures: *map::Map
     globals: *map::Map
+    metadata: *map::Map
 }
 
 export type Global = struct {
@@ -234,12 +255,21 @@ export type State = struct {
     module: *toolchain::Module
     counter: int
     global_counter: int
+    meta_counter: int
     // TODO Make this a stack for nested functions
     current_function: *Function
     current_block: *Block
     // Vector of LoopState 
     loops: *vector::Vector
+    ditypes: *map::Map
     result: *Result
+}
+
+export def make_insn(kind: InsnKind) -> *Insn {
+    let insn = allocate(Insn)
+    (@insn).kind = kind
+    (@insn).debug = null
+    return insn
 }
 
 def make_value(tpe: *typechecking::Type, value: *) -> Value {
@@ -278,10 +308,8 @@ def get_continue_insn(state: *State) -> *Insn {
 def push_loop_state(state: *State) {
     let loops = allocate(LoopState)
 
-    let break_insn = allocate(Insn)
-    (@break_insn).kind = InsnKind::BR_UNC
-    let continue_insn = allocate(Insn)
-    (@continue_insn).kind = InsnKind::BR_UNC
+    let break_insn = make_insn(InsnKind::BR_UNC)
+    let continue_insn = make_insn(InsnKind::BR_UNC)
 
     (@loops).break_insn = break_insn
     (@loops).continue_insn = continue_insn
@@ -382,8 +410,7 @@ export def charp_str(value: Value, state: *State) -> Value {
     let index = allocate(int, 1)
     index[0] = 1
 
-    let extract = allocate(Insn)
-    (@extract).kind = InsnKind::EXTRACTVALUE
+    let extract = make_insn(InsnKind::EXTRACTVALUE)
     (@extract).value.extract_value = {
         ret = local,
         value = value,
@@ -402,8 +429,7 @@ export def charp_static(global: *Value, state: *State) -> Value {
     index[0] = make_int_value(0)
     index[1] = make_int_value(0)
 
-    let gep = allocate(Insn)
-    (@gep).kind = InsnKind::GETELEMENTPTR
+    let gep = make_insn(InsnKind::GETELEMENTPTR)
     (@gep).value.gep = {
         ret = local,
         tpe = (@(@global).tpe).tpe,
@@ -524,8 +550,7 @@ def walk_String(node: *parser::Node, state: *State) -> Value {
     index[1].tpe = builtins::size_t_
 
     let gep_ret = make_local_value(typechecking::pointer((@tpe).tpe), null, state)
-    let gep = allocate(Insn)
-    (@gep).kind = InsnKind::GETELEMENTPTR
+    let gep = make_insn(InsnKind::GETELEMENTPTR)
     (@gep).value.gep = {
         ret = gep_ret,
         tpe = strtpe,
@@ -544,7 +569,7 @@ def walk_String(node: *parser::Node, state: *State) -> Value {
         sign = 1
     } !Value
     values[1] = {
-        undef = true,
+        kind = ValueKind::UNDEF,
         tpe = typechecking::pointer((@tpe).tpe)
     } !Value
 
@@ -556,8 +581,7 @@ def walk_String(node: *parser::Node, state: *State) -> Value {
 
     let index2 = allocate(int, 1)
     index2[0] = 1
-    let insert = allocate(Insn)
-    (@insert).kind = InsnKind::INSERTVALUE
+    let insert = make_insn(InsnKind::INSERTVALUE)
     (@insert).value.insert_value = {
         ret = ret,
         value = value,
@@ -597,6 +621,7 @@ def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Type, stat
                 sign = 1
             } !Value
             values[1] = {
+                kind = ValueKind::NULL,
                 tpe = typechecking::pointer((@tpe).tpe)
             } !Value
             return {
@@ -615,8 +640,7 @@ def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Type, stat
             index[1] = make_int_value(0)
             index[1].tpe = builtins::size_t_
 
-            let gep = allocate(Insn)
-            (@gep).kind = InsnKind::GETELEMENTPTR
+            let gep = make_insn(InsnKind::GETELEMENTPTR)
             (@gep).value.gep = {
                 ret = local,
                 tpe = value.tpe,
@@ -629,8 +653,7 @@ def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Type, stat
             if not (@tpe).tpe {
                 let local1 = local
                 local = make_local_value(typechecking::pointer(null), null, state)
-                let bitcast = allocate(Insn)
-                (@bitcast).kind = InsnKind::BITCAST
+                let bitcast = make_insn(InsnKind::BITCAST)
                 (@bitcast).value.convert = {
                     ret = local,
                     value = local1
@@ -649,7 +672,7 @@ def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Type, stat
                 sign = 1
             } !Value
             values[1] = {
-                undef = true,
+                kind = ValueKind::UNDEF,
                 tpe = typechecking::pointer((@tpe).tpe)
             } !Value
 
@@ -661,8 +684,7 @@ def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Type, stat
 
             let index2 = allocate(int, 1)
             index2[0] = 1
-            let insert = allocate(Insn)
-            (@insert).kind = InsnKind::INSERTVALUE
+            let insert = make_insn(InsnKind::INSERTVALUE)
             (@insert).value.insert_value = {
                 ret = ret,
                 value = value,
@@ -678,8 +700,7 @@ def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Type, stat
             index1[0] = 0
 
             let size = make_local_value(builtins::size_t_, null, state)
-            let extract1 = allocate(Insn)
-            (@extract1).kind = InsnKind::EXTRACTVALUE
+            let extract1 = make_insn(InsnKind::EXTRACTVALUE)
             (@extract1).value.extract_value = {
                 ret = size,
                 value = value,
@@ -692,8 +713,7 @@ def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Type, stat
             index2[0] = 1
 
             let ptr = make_local_value(typechecking::pointer((@value.tpe).tpe), null, state)
-            let extract2 = allocate(Insn)
-            (@extract2).kind = InsnKind::EXTRACTVALUE
+            let extract2 = make_insn(InsnKind::EXTRACTVALUE)
             (@extract2).value.extract_value = {
                 ret = ptr,
                 value = value,
@@ -703,8 +723,7 @@ def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Type, stat
             push_insn(extract2, state)
 
             let bitcast_ret = make_local_value(typechecking::pointer(null), null, state)
-            let bitcast = allocate(Insn)
-            (@bitcast).kind = InsnKind::BITCAST
+            let bitcast = make_insn(InsnKind::BITCAST)
             (@bitcast).value.convert = {
                 ret = bitcast_ret,
                 value = ptr
@@ -713,11 +732,10 @@ def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Type, stat
             push_insn(bitcast, state)
 
             let insert1_ret = make_local_value(tpe, null, state)
-            let insert1 = allocate(Insn)
-            (@insert1).kind = InsnKind::INSERTVALUE
+            let insert1 = make_insn(InsnKind::INSERTVALUE)
             (@insert1).value.insert_value = {
                 ret = insert1_ret,
-                value = { kind = ValueKind::STRUCT, undef = true, tpe = tpe } !Value,
+                value = { kind = ValueKind::UNDEF, tpe = tpe } !Value,
                 element = size,
                 index = index1
             } !InsnInsertValue
@@ -725,8 +743,7 @@ def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Type, stat
             push_insn(insert1, state)
 
             let insert2_ret = make_local_value(tpe, null, state)
-            let insert2 = allocate(Insn)
-            (@insert2).kind = InsnKind::INSERTVALUE
+            let insert2 = make_insn(InsnKind::INSERTVALUE)
             (@insert2).value.insert_value = {
                 ret = insert2_ret,
                 value = insert1_ret,
@@ -750,8 +767,7 @@ def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Type, stat
         }
         if typechecking::is_float(value.tpe) {
             let ret = make_local_value(builtins::bool_, null, state)
-            let insn = allocate(Insn)
-            (@insn).kind = InsnKind::FCMP
+            let insn = make_insn(InsnKind::FCMP)
             (@insn).value.cmp = {
                 op = f_une,
                 ret = ret,
@@ -766,8 +782,7 @@ def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Type, stat
             return ret
         } else if typechecking::is_integer(value.tpe) {
             let ret = make_local_value(builtins::bool_, null, state)
-            let insn = allocate(Insn)
-            (@insn).kind = InsnKind::ICMP
+            let insn = make_insn(InsnKind::ICMP)
             (@insn).value.cmp = {
                 op = i_ne,
                 ret = ret,
@@ -853,8 +868,7 @@ def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Type, stat
 
     let ret = make_local_value(tpe, null, state)
 
-    let insn = allocate(Insn)
-    (@insn).kind = kind
+    let insn = make_insn(kind)
     (@insn).value.convert = {
         ret = ret,
         value = value
@@ -918,8 +932,7 @@ def walk_StructLitUnion(node: *parser::Node, state: *State) -> Value {
     let value = convert_to(arg, walk_expression(arg, state), arg_tpe, state)
     
     let alloca_ret = make_local_value(tpe, null, state)
-    let alloca = allocate(Insn)
-    (@alloca).kind = InsnKind::ALLOCA
+    let alloca = make_insn(InsnKind::ALLOCA)
     (@alloca).value.alloca = {
         ret = alloca_ret
     } !InsnAlloca
@@ -932,8 +945,7 @@ def walk_StructLitUnion(node: *parser::Node, state: *State) -> Value {
     index[1] = make_int_value(0)
     index[2] = make_int_value(0)
     let gep_ret = make_local_value(typechecking::pointer(builtins::char_), null, state)
-    let gep = allocate(Insn)
-    (@gep).kind = InsnKind::GETELEMENTPTR
+    let gep = make_insn(InsnKind::GETELEMENTPTR)
     (@gep).value.gep = {
         ret = gep_ret,
         tpe = tpe,
@@ -943,16 +955,14 @@ def walk_StructLitUnion(node: *parser::Node, state: *State) -> Value {
     push_insn(gep, state)
 
     let bitcast_ret = make_local_value(typechecking::pointer(arg_tpe), null, state)
-    let bitcast = allocate(Insn)
-    (@bitcast).kind = InsnKind::BITCAST
+    let bitcast = make_insn(InsnKind::BITCAST)
     (@bitcast).value.convert = {
         ret = bitcast_ret,
         value = gep_ret
     } !InsnConvert
     push_insn(bitcast, state)
 
-    let store = allocate(Insn)
-    (@store).kind = InsnKind::STORE
+    let store = make_insn(InsnKind::STORE)
     (@store).value.store = {
         loc = bitcast_ret,
         value = value
@@ -960,8 +970,7 @@ def walk_StructLitUnion(node: *parser::Node, state: *State) -> Value {
     push_insn(store, state)
 
     let load_ret = make_local_value(tpe, null, state)
-    let load = allocate(Insn)
-    (@load).kind = InsnKind::LOAD
+    let load = make_insn(InsnKind::LOAD)
     (@load).value.load = {
         value = load_ret,
         loc = alloca_ret
@@ -1016,7 +1025,7 @@ def walk_StructLit(node: *parser::Node, state: *State) -> Value {
         let val = values[i]
         if val.kind == ValueKind::LOCAL or val.kind == ValueKind::GLOBAL {
             values[i] = {
-                undef = true,
+                kind = ValueKind::UNDEF,
                 tpe = val.tpe
             } !Value
 
@@ -1024,8 +1033,7 @@ def walk_StructLit(node: *parser::Node, state: *State) -> Value {
             
             let index = allocate(int, 1)
             index[0] = i
-            let insert = allocate(Insn)
-            (@insert).kind = InsnKind::INSERTVALUE
+            let insert = make_insn(InsnKind::INSERTVALUE)
             (@insert).value.insert_value = {
                 ret = ret,
                 value = value,
@@ -1062,7 +1070,7 @@ def walk_ArrayLit(node: *parser::Node, state: *State) -> Value {
 
         if val.kind == ValueKind::LOCAL or val.kind == ValueKind::GLOBAL {
             values[i] = {
-                undef = true,
+                kind = ValueKind::UNDEF,
                 tpe = val.tpe
             } !Value
 
@@ -1070,8 +1078,7 @@ def walk_ArrayLit(node: *parser::Node, state: *State) -> Value {
             
             let index = allocate(int, 1)
             index[0] = i
-            let insert = allocate(Insn)
-            (@insert).kind = InsnKind::INSERTVALUE
+            let insert = make_insn(InsnKind::INSERTVALUE)
             (@insert).value.insert_value = {
                 ret = ret,
                 value = value,
@@ -1086,8 +1093,7 @@ def walk_ArrayLit(node: *parser::Node, state: *State) -> Value {
 
     let ret = make_local_value(tpe, null, state)
 
-    let alloca = allocate(Insn)
-    (@alloca).kind = InsnKind::ALLOCA
+    let alloca = make_insn(InsnKind::ALLOCA)
     (@alloca).value.alloca = {
         ret = ret
     } !InsnAlloca
@@ -1098,8 +1104,7 @@ def walk_ArrayLit(node: *parser::Node, state: *State) -> Value {
     @retp = ret
     value.addr = retp
 
-    let store = allocate(Insn)
-    (@store).kind = InsnKind::STORE
+    let store = make_insn(InsnKind::STORE)
     (@store).value.store = {
         value = value,
         loc = ret
@@ -1114,8 +1119,7 @@ def walk_ArithmeticOp(node: *parser::Node, insn_kind: InsnKind, tpe: *typechecki
     let right = convert_to(node, walk_expression((@node).value.bin_op.right, state), tpe, state)
 
     let value = make_local_value(tpe, null, state)
-    let insn = allocate(Insn)
-    (@insn).kind = insn_kind
+    let insn = make_insn(insn_kind)
     (@insn).value.arith = {
         left = left,
         right = right,
@@ -1133,16 +1137,14 @@ def walk_USub(node: *parser::Node, state: *State) -> Value {
 
     let ret = make_local_value(tpe, null, state)
     if (@tpe).kind == typechecking::TypeKind::FLOAT {
-        let fneg = allocate(Insn)
-        (@fneg).kind = InsnKind::FNEG
+        let fneg = make_insn(InsnKind::FNEG)
         (@fneg).value.fneg = {
             ret = ret,
             value = expr
         } !InsnFneg
         push_insn(fneg, state)
     } else {
-        let sub = allocate(Insn)
-        (@sub).kind = InsnKind::SUB
+        let sub = make_insn(InsnKind::SUB)
         (@sub).value.arith = {
             ret = ret,
             left = { kind = ValueKind::INT, i = 0, sign = 1, tpe = tpe } !Value,
@@ -1161,8 +1163,7 @@ def walk_Not(node: *parser::Node, state: *State) -> Value {
     let expr = convert_to(node, walk_expression((@node).value.expr, state), builtins::bool_, state)
     
     let ret = make_local_value(builtins::bool_, null, state)
-    let xor = allocate(Insn)
-    (@xor).kind = InsnKind::XOR
+    let xor = make_insn(InsnKind::XOR)
     (@xor).value.arith = {
         ret = ret,
         left = expr,
@@ -1178,8 +1179,7 @@ def walk_And(node: *parser::Node, state: *State) -> Value {
     let left = convert_to(node, walk_expression((@node).value.bin_op.left, state), builtins::bool_, state)
 
     let ret_alloca = make_local_value(builtins::bool_, null, state)
-    let alloca = allocate(Insn)
-    (@alloca).kind = InsnKind::ALLOCA
+    let alloca = make_insn(InsnKind::ALLOCA)
     (@alloca).value.alloca = {
         ret = ret_alloca
     } !InsnAlloca
@@ -1187,22 +1187,19 @@ def walk_And(node: *parser::Node, state: *State) -> Value {
 
     push_insn(alloca, state)
 
-    let br = allocate(Insn)
-    (@br).kind = InsnKind::BR
+    let br = make_insn(InsnKind::BR)
     (@br).value.br = {
         cond = left
     } !InsnBr
 
-    let to_end = allocate(Insn)
-    (@to_end).kind = InsnKind::BR_UNC
+    let to_end = make_insn(InsnKind::BR_UNC)
 
     push_insn(br, state)
 
     let if_false = make_label(state)
     push_label(if_false, state)
 
-    let store1 = allocate(Insn)
-    (@store1).kind = InsnKind::STORE
+    let store1 = make_insn(InsnKind::STORE)
     (@store1).value.store = {
         value = { kind = ValueKind::BOOL, i = 0, sign = 1, tpe = builtins::bool_ } !Value,
         loc = ret_alloca
@@ -1216,8 +1213,7 @@ def walk_And(node: *parser::Node, state: *State) -> Value {
 
     let right = convert_to(node, walk_expression((@node).value.bin_op.right, state), builtins::bool_, state)
 
-    let store2 = allocate(Insn)
-    (@store2).kind = InsnKind::STORE
+    let store2 = make_insn(InsnKind::STORE)
     (@store2).value.store = {
         value = right,
         loc = ret_alloca
@@ -1234,8 +1230,7 @@ def walk_And(node: *parser::Node, state: *State) -> Value {
     (@to_end).value.br_unc.label_ = end
 
     let ret = make_local_value(builtins::bool_, null, state)
-    let load = allocate(Insn)
-    (@load).kind = InsnKind::LOAD
+    let load = make_insn(InsnKind::LOAD)
     (@load).value.load = {
         value = ret,
         loc = ret_alloca
@@ -1250,8 +1245,7 @@ def walk_Or(node: *parser::Node, state: *State) -> Value {
        let left = convert_to(node, walk_expression((@node).value.bin_op.left, state), builtins::bool_, state)
 
     let ret_alloca = make_local_value(builtins::bool_, null, state)
-    let alloca = allocate(Insn)
-    (@alloca).kind = InsnKind::ALLOCA
+    let alloca = make_insn(InsnKind::ALLOCA)
     (@alloca).value.alloca = {
         ret = ret_alloca
     } !InsnAlloca
@@ -1259,22 +1253,19 @@ def walk_Or(node: *parser::Node, state: *State) -> Value {
 
     push_insn(alloca, state)
 
-    let br = allocate(Insn)
-    (@br).kind = InsnKind::BR
+    let br = make_insn(InsnKind::BR)
     (@br).value.br = {
         cond = left
     } !InsnBr
 
-    let to_end = allocate(Insn)
-    (@to_end).kind = InsnKind::BR_UNC
+    let to_end = make_insn(InsnKind::BR_UNC)
 
     push_insn(br, state)
 
     let if_true = make_label(state)
     push_label(if_true, state)
 
-    let store1 = allocate(Insn)
-    (@store1).kind = InsnKind::STORE
+    let store1 = make_insn(InsnKind::STORE)
     (@store1).value.store = {
         value = { kind = ValueKind::BOOL, i = 1, sign = 1, tpe = builtins::bool_ } !Value,
         loc = ret_alloca
@@ -1288,8 +1279,7 @@ def walk_Or(node: *parser::Node, state: *State) -> Value {
 
     let right = convert_to(node, walk_expression((@node).value.bin_op.right, state), builtins::bool_, state)
 
-    let store2 = allocate(Insn)
-    (@store2).kind = InsnKind::STORE
+    let store2 = make_insn(InsnKind::STORE)
     (@store2).value.store = {
         value = right,
         loc = ret_alloca
@@ -1306,8 +1296,7 @@ def walk_Or(node: *parser::Node, state: *State) -> Value {
     (@to_end).value.br_unc.label_ = end
 
     let ret = make_local_value(builtins::bool_, null, state)
-    let load = allocate(Insn)
-    (@load).kind = InsnKind::LOAD
+    let load = make_insn(InsnKind::LOAD)
     (@load).value.load = {
         value = ret,
         loc = ret_alloca
@@ -1476,8 +1465,7 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
     if ret {
         addr = make_local_value(ret, null, state)
         
-        let alloca = allocate(Insn)
-        (@alloca).kind = InsnKind::ALLOCA
+        let alloca = make_insn(InsnKind::ALLOCA)
         (@alloca).value.alloca = {
             ret = addr
         } !InsnAlloca
@@ -1489,8 +1477,7 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
         value = make_local_value(ret, addrp, state)
     }
 
-    let insn = allocate(Insn)
-    (@insn).kind = InsnKind::CALL
+    let insn = make_insn(InsnKind::CALL)
     (@insn).value.call = {
         name = name_v,
         ret = value,
@@ -1500,8 +1487,7 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
     push_insn(insn, state)
 
     if ret {
-        let store = allocate(Insn)
-        (@store).kind = InsnKind::STORE
+        let store = make_insn(InsnKind::STORE)
         (@store).value.store = {
             value = value,
             loc = addr
@@ -1537,8 +1523,7 @@ def walk_Identifier(node: *parser::Node, state: *State) -> Value {
     if not typechecking::is_function(tpe) {
         let value = make_local_value(tpe, loc, state)
         
-        let insn = allocate(Insn)
-        (@insn).kind = InsnKind::LOAD
+        let insn = make_insn(InsnKind::LOAD)
         (@insn).value.load = {
             value = value,
             loc = @loc
@@ -1589,8 +1574,7 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
                 index[0] = make_int_value(0)
                 index[1] = make_int_value(k)
 
-                let gep = allocate(Insn)
-                (@gep).kind = InsnKind::GETELEMENTPTR
+                let gep = make_insn(InsnKind::GETELEMENTPTR)
                 (@gep).value.gep = {
                     ret = gep_ret,
                     tpe = value.tpe,
@@ -1604,8 +1588,7 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
                 @gep_retp = gep_ret
                 var ret = make_local_value(t, gep_retp, state)
 
-                let load = allocate(Insn)
-                (@load).kind = InsnKind::LOAD
+                let load = make_insn(InsnKind::LOAD)
                 (@load).value.load = {
                     value = ret,
                     loc = gep_ret
@@ -1615,8 +1598,7 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
 
                 ret = convert_to(n, ret, (@l).tpe, state)
 
-                let store = allocate(Insn)
-                (@store).kind = InsnKind::STORE
+                let store = make_insn(InsnKind::STORE)
                 (@store).value.store = {
                     value = ret,
                     loc = @addr
@@ -1639,8 +1621,7 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
 
             value = convert_to(n, value, (@l).tpe, state)
 
-            let store = allocate(Insn)
-            (@store).kind = InsnKind::STORE
+            let store = make_insn(InsnKind::STORE)
             (@store).value.store = {
                 value = value,
                 loc = @addr
@@ -1712,8 +1693,7 @@ def walk_Deref(node: *parser::Node, state: *State) -> Value {
     (@addr) = value
     let ret = make_local_value((@tpe).tpe, addr, state)
 
-    let load = allocate(Insn)
-    (@load).kind = InsnKind::LOAD
+    let load = make_insn(InsnKind::LOAD)
     (@load).value.load = {
         value = ret,
         loc = value
@@ -1732,8 +1712,7 @@ def walk_Ptr(node: *parser::Node, state: *State) -> Value {
 
 def walk_MemberAccess_gep(node: *parser::Node, tpe: *typechecking::Type, value: Value, index: [Value], state: *State) -> Value {
     let gep_ret = make_local_value(typechecking::pointer((@node).tpe), null, state) 
-    let gep = allocate(Insn)
-    (@gep).kind = InsnKind::GETELEMENTPTR
+    let gep = make_insn(InsnKind::GETELEMENTPTR)
     (@gep).value.gep = {
         ret = gep_ret,
         tpe = tpe,
@@ -1746,8 +1725,7 @@ def walk_MemberAccess_gep(node: *parser::Node, tpe: *typechecking::Type, value: 
     @addr = gep_ret
 
     let ret = make_local_value((@node).tpe, addr, state)
-    let load = allocate(Insn)
-    (@load).kind = InsnKind::LOAD
+    let load = make_insn(InsnKind::LOAD)
     (@load).value.load = {
         value = ret,
         loc = gep_ret
@@ -1787,8 +1765,7 @@ def walk_MemberAccess(node: *parser::Node, state: *State) -> Value {
             index[1].tpe = builtins::size_t_
 
             let gep_ret = make_local_value((@node).tpe, null, state)
-            let gep = allocate(Insn)
-            (@gep).kind = InsnKind::GETELEMENTPTR
+            let gep = make_insn(InsnKind::GETELEMENTPTR)
             (@gep).value.gep = {
                 ret = gep_ret,
                 tpe = tpe,
@@ -1807,6 +1784,8 @@ def walk_MemberAccess(node: *parser::Node, state: *State) -> Value {
             index[1] = make_int_value(0)
         } else if name == "value" {
             index[1] = make_int_value(1)
+        } else {
+            assert(false)
         }
 
         return walk_MemberAccess_gep(node, tpe, value, index, state)
@@ -1827,8 +1806,7 @@ def walk_MemberAccess(node: *parser::Node, state: *State) -> Value {
         index[2] = make_int_value(0)
 
         let gep_ret = make_local_value(typechecking::pointer(builtins::char_), null, state)
-        let gep = allocate(Insn)
-        (@gep).kind = InsnKind::GETELEMENTPTR
+        let gep = make_insn(InsnKind::GETELEMENTPTR)
         (@gep).value.gep = {
             ret = gep_ret,
             tpe = tpe,
@@ -1838,8 +1816,7 @@ def walk_MemberAccess(node: *parser::Node, state: *State) -> Value {
         push_insn(gep, state)
 
         let bitcast_ret = make_local_value(typechecking::pointer(member.tpe), null, state)
-        let bitcast = allocate(Insn)
-        (@bitcast).kind = InsnKind::BITCAST
+        let bitcast = make_insn(InsnKind::BITCAST)
         (@bitcast).value.convert = {
             ret = bitcast_ret,
             value = gep_ret
@@ -1849,8 +1826,7 @@ def walk_MemberAccess(node: *parser::Node, state: *State) -> Value {
         let addr = allocate(Value)
         (@addr) = bitcast_ret
         let load_ret = make_local_value(member.tpe, addr, state)
-        let load = allocate(Insn)
-        (@load).kind = InsnKind::LOAD
+        let load = make_insn(InsnKind::LOAD)
         (@load).value.load = {
             value = load_ret,
             loc = bitcast_ret
@@ -1862,6 +1838,7 @@ def walk_MemberAccess(node: *parser::Node, state: *State) -> Value {
         let index = allocate(Value, 2)
         index[0] = make_int_value(0)
 
+        var found = false
         for var i in 0..(@tpe).fields.size {
             let member = (@tpe).fields[i]
             if member.name == name {
@@ -1871,8 +1848,12 @@ def walk_MemberAccess(node: *parser::Node, state: *State) -> Value {
                     i = i,
                     tpe = builtins::int_
                 } !Value
+                found = true
                 break
             }
+        }
+        if not found {
+            assert(false)
         }
         return walk_MemberAccess_gep(node, tpe, value, index, state)
     }
@@ -1896,8 +1877,7 @@ def walk_ArraySubscript(node: *parser::Node, state: *State) -> Value {
 
         let gep_ret1 = make_local_value(typechecking::pointer(typechecking::pointer((@node).tpe)), null, state)
         
-        let gep1 = allocate(Insn)
-        (@gep1).kind = InsnKind::GETELEMENTPTR
+        let gep1 = make_insn(InsnKind::GETELEMENTPTR)
         (@gep1).value.gep = {
             ret = gep_ret1,
             tpe = array_tpe,
@@ -1907,8 +1887,7 @@ def walk_ArraySubscript(node: *parser::Node, state: *State) -> Value {
 
         let load1_value = make_local_value(typechecking::pointer((@node).tpe), null, state)
 
-        let load1 = allocate(Insn)
-        (@load1).kind = InsnKind::LOAD
+        let load1 = make_insn(InsnKind::LOAD)
         (@load1).value.load = {
             value = load1_value,
             loc = gep_ret1
@@ -1919,8 +1898,7 @@ def walk_ArraySubscript(node: *parser::Node, state: *State) -> Value {
 
         let gep_ret2 = make_local_value(typechecking::pointer((@node).tpe), null, state)
 
-        let gep2 = allocate(Insn)
-        (@gep2).kind = InsnKind::GETELEMENTPTR
+        let gep2 = make_insn(InsnKind::GETELEMENTPTR)
         (@gep2).value.gep = {
             ret = gep_ret2,
             tpe = (@node).tpe,
@@ -1932,8 +1910,7 @@ def walk_ArraySubscript(node: *parser::Node, state: *State) -> Value {
         (@addr) = gep_ret2
         let ret = make_local_value((@node).tpe, addr, state)
 
-        let load2 = allocate(Insn)
-        (@load2).kind = InsnKind::LOAD
+        let load2 = make_insn(InsnKind::LOAD)
         (@load2).value.load = {
             value = ret,
             loc = gep_ret2
@@ -1952,8 +1929,7 @@ def walk_ArraySubscript(node: *parser::Node, state: *State) -> Value {
 
         let gep_ret = make_local_value(typechecking::pointer((@node).tpe), null, state)
 
-        let gep = allocate(Insn)
-        (@gep).kind = InsnKind::GETELEMENTPTR
+        let gep = make_insn(InsnKind::GETELEMENTPTR)
         (@gep).value.gep = {
             ret = gep_ret,
             tpe = array_tpe,
@@ -1965,8 +1941,7 @@ def walk_ArraySubscript(node: *parser::Node, state: *State) -> Value {
         (@addr) = gep_ret
         let ret = make_local_value((@node).tpe, addr, state)
 
-        let load = allocate(Insn)
-        (@load).kind = InsnKind::LOAD
+        let load = make_insn(InsnKind::LOAD)
         (@load).value.load = {
             value = ret,
             loc = gep_ret
@@ -1982,8 +1957,7 @@ def walk_ArraySubscript(node: *parser::Node, state: *State) -> Value {
 
         let gep_ret = make_local_value(typechecking::pointer((@node).tpe), null, state)
 
-        let gep = allocate(Insn)
-        (@gep).kind = InsnKind::GETELEMENTPTR
+        let gep = make_insn(InsnKind::GETELEMENTPTR)
         (@gep).value.gep = {
             ret = gep_ret,
             tpe = (@node).tpe,
@@ -1995,8 +1969,7 @@ def walk_ArraySubscript(node: *parser::Node, state: *State) -> Value {
         (@addr) = gep_ret
         let ret = make_local_value((@node).tpe, addr, state)
 
-        let load = allocate(Insn)
-        (@load).kind = InsnKind::LOAD
+        let load = make_insn(InsnKind::LOAD)
         (@load).value.load = {
             value = ret,
             loc = gep_ret
@@ -2104,8 +2077,7 @@ def compare(node: *parser::Node, left: Value, right: Value, state: *State) -> Va
 
         let ret = make_local_value((@node).tpe, null, state)
 
-        let insn = allocate(Insn)
-        (@insn).kind = kind
+        let insn = make_insn(kind)
         (@insn).value.cmp = {
             op = op,
             ret = ret,
@@ -2125,8 +2097,7 @@ def compare(node: *parser::Node, left: Value, right: Value, state: *State) -> Va
             args[1] = charp_str(right, state)
 
             let call_ret = make_local_value(builtins::int_, null, state)
-            let call = allocate(Insn)
-            (@call).kind = InsnKind::CALL
+            let call = make_insn(InsnKind::CALL)
             (@call).value.call = {
                 name = {
                     kind = ValueKind::GLOBAL,
@@ -2149,8 +2120,7 @@ def compare(node: *parser::Node, left: Value, right: Value, state: *State) -> Va
             }
 
             let cmp_ret = make_local_value(builtins::bool_, null, state)
-            let cmp = allocate(Insn)
-            (@cmp).kind = InsnKind::ICMP
+            let cmp = make_insn(InsnKind::ICMP)
             (@cmp).value.cmp = {
                 op = op,
                 ret = cmp_ret,
@@ -2186,8 +2156,7 @@ def walk_ComparisionOp(node: *parser::Node, state: *State) -> Value {
         
         let ret = make_local_value(builtins::bool_, null, state)
 
-        let insn_and = allocate(Insn)
-        (@insn_and).kind = InsnKind::AND
+        let insn_and = make_insn(InsnKind::AND)
         (@insn_and).value.arith = {
             ret = ret,
             left = value_left,
@@ -2211,8 +2180,7 @@ def walk_PointerOp(node: *parser::Node, kind: InsnKind, state: *State) -> Value 
 
     let ret_arith = make_local_value(builtins::size_t_, null, state)
 
-    let arith = allocate(Insn)
-    (@arith).kind = kind
+    let arith = make_insn(kind)
     (@arith).value.arith = {
         ret = ret_arith,
         left = value_left,
@@ -2222,8 +2190,7 @@ def walk_PointerOp(node: *parser::Node, kind: InsnKind, state: *State) -> Value 
 
     let ret_inttoptr = make_local_value((@node).tpe, null, state)
 
-    let inttoptr = allocate(Insn)
-    (@inttoptr).kind = InsnKind::INTTOPTR
+    let inttoptr = make_insn(InsnKind::INTTOPTR)
     (@inttoptr).value.convert = {
         ret = ret_inttoptr,
         value = ret_arith
@@ -2326,15 +2293,13 @@ def walk_If(node: *parser::Node, state: *State) {
 
     let cond = convert_to(node, walk_expression((@node).value.if_.cond, state), builtins::bool_, state)
     let entry_label = make_label(state)
-    var entry = allocate(Insn)
-    (@entry).kind = InsnKind::BR
+    var entry = make_insn(InsnKind::BR)
     (@entry).value.br = {
         cond = cond,
         if_true = entry_label
     } !InsnBr
 
-    let exit = allocate(Insn)
-    (@exit).kind = InsnKind::BR_UNC
+    let exit = make_insn(InsnKind::BR_UNC)
 
     push_insn(entry, state)
     push_label(entry_label, state)
@@ -2352,8 +2317,7 @@ def walk_If(node: *parser::Node, state: *State) {
         let else_if = vector::get((@node).value.if_.else_if, i) !*parser::Node
         let cond = walk_expression((@else_if).value.else_if.cond, state)
 
-        entry = allocate(Insn)
-        (@entry).kind = InsnKind::BR
+        entry = make_insn(InsnKind::BR)
         (@entry).value.br = {
             cond = cond
         } !InsnBr
@@ -2397,16 +2361,14 @@ def walk_Switch(node: *parser::Node, state: *State) {
     let tpe = (@(@node).value.switch_.expr).tpe
     
     let switch_values = vector::make()
-    let swtch = allocate(Insn)
-    (@swtch).kind = InsnKind::SWITCH
+    let swtch = make_insn(InsnKind::SWITCH)
     (@swtch).value.switch_ = {
         value = swexpr,
         switch_values = switch_values
     } !InsnSwitch
     push_insn(swtch, state)
 
-    let end = allocate(Insn)
-    (@end).kind = InsnKind::BR_UNC
+    let end = make_insn(InsnKind::BR_UNC)
 
     var otherwise: *parser::Node = null
     let if_stmts = vector::make()
@@ -2515,8 +2477,7 @@ def walk_Switch(node: *parser::Node, state: *State) {
                 }
                 
                 let sub_ret = make_local_value(tpe, null, state)
-                let sub = allocate(Insn)
-                (@sub).kind = InsnKind::SUB
+                let sub = make_insn(InsnKind::SUB)
                 (@sub).value.arith = {
                     ret = sub_ret,
                     left = swexpr,
@@ -2529,8 +2490,7 @@ def walk_Switch(node: *parser::Node, state: *State) {
                     op = i_ult
                 }
                 let cmp_ret = make_local_value(builtins::bool_, null, state)
-                let cmp = allocate(Insn)
-                (@cmp).kind = InsnKind::ICMP
+                let cmp = make_insn(InsnKind::ICMP)
                 (@cmp).value.cmp = {
                     op = op,
                     ret = cmp_ret,
@@ -2539,8 +2499,7 @@ def walk_Switch(node: *parser::Node, state: *State) {
                 } !InsnCmp
                 push_insn(cmp, state)
 
-                let br = allocate(Insn)
-                (@br).kind = InsnKind::BR 
+                let br = make_insn(InsnKind::BR)
                 (@br).value.br = {
                     cond = cmp_ret
                 } !InsnBr
@@ -2552,8 +2511,7 @@ def walk_Switch(node: *parser::Node, state: *State) {
                 let value = @(typechecking::evaluate_constant(expr) !*uint64)
 
                 let cmp_ret = make_local_value(builtins::bool_, null, state)
-                let cmp = allocate(Insn)
-                (@cmp).kind = InsnKind::ICMP
+                let cmp = make_insn(InsnKind::ICMP)
                 (@cmp).value.cmp = {
                     op = i_eq,
                     ret = cmp_ret,
@@ -2562,8 +2520,7 @@ def walk_Switch(node: *parser::Node, state: *State) {
                 } !InsnCmp
                 push_insn(cmp, state)
 
-                let br = allocate(Insn)
-                (@br).kind = InsnKind::BR 
+                let br = make_insn(InsnKind::BR)
                 (@br).value.br = {
                     cond = cmp_ret
                 } !InsnBr
@@ -2636,8 +2593,7 @@ def walk_Return(node: *parser::Node, state: *State) {
         }
     }
 
-    let ret = allocate(Insn)
-    (@ret).kind = InsnKind::RET
+    let ret = make_insn(InsnKind::RET)
     (@ret).value.ret.value = value
 
     push_insn(ret, state)
@@ -2696,8 +2652,7 @@ def walk_While(node: *parser::Node, state: *State) {
 
     let cond = convert_to(node, walk_expression((@node).value.while_loop.expr, state), builtins::bool_, state)
     
-    let br = allocate(Insn)
-    (@br).kind = InsnKind::BR
+    let br = make_insn(InsnKind::BR)
     (@br).value.br = {
         cond = cond
     } !InsnBr
@@ -2745,8 +2700,7 @@ def walk_For(node: *parser::Node, state: *State) {
         let value = scope::get((@iddecl).scope, (@iddecl).value.for_id_decl.ident)
         if not value { return }
 
-        let alloca = allocate(Insn)
-        (@alloca).kind = InsnKind::ALLOCA
+        let alloca = make_insn(InsnKind::ALLOCA)
         (@alloca).value.alloca = {
             ret = {
                 kind = ValueKind::LOCAL,
@@ -2768,8 +2722,7 @@ def walk_For(node: *parser::Node, state: *State) {
         loc = @addr
     }
     
-    let store = allocate(Insn)
-    (@store).kind = InsnKind::STORE
+    let store = make_insn(InsnKind::STORE)
     (@store).value.store = {
         loc = loc,
         value = startv
@@ -2780,16 +2733,14 @@ def walk_For(node: *parser::Node, state: *State) {
     push_loop_state(state)
     let continue_insn = get_continue_insn(state)
     let break_insn = get_break_insn(state)
-    let start_insn = allocate(Insn)
-    (@start_insn).kind = InsnKind::BR_UNC
+    let start_insn = make_insn(InsnKind::BR_UNC)
 
     push_insn(start_insn, state)
     let start_label = make_label(state)
     push_label(start_label, state)
 
     let load_ret = make_local_value(builtins::int_, null, state)
-    let load = allocate(Insn)
-    (@load).kind = InsnKind::LOAD
+    let load = make_insn(InsnKind::LOAD)
     (@load).value.load = {
         value = load_ret,
         loc = loc
@@ -2802,8 +2753,7 @@ def walk_For(node: *parser::Node, state: *State) {
     let right2 = convert_to(node, endv, tpe2, state)
 
     let cmp_ret = make_local_value(builtins::bool_, null, state)
-    let cmp = allocate(Insn)
-    (@cmp).kind = InsnKind::ICMP
+    let cmp = make_insn(InsnKind::ICMP)
     (@cmp).value.cmp = {
         op = op,
         ret = cmp_ret,
@@ -2813,8 +2763,7 @@ def walk_For(node: *parser::Node, state: *State) {
 
     push_insn(cmp, state)
 
-    let br = allocate(Insn)
-    (@br).kind = InsnKind::BR
+    let br = make_insn(InsnKind::BR)
     (@br).value.br = {
         cond = cmp_ret
     } !InsnBr
@@ -2835,8 +2784,7 @@ def walk_For(node: *parser::Node, state: *State) {
     push_label(inc_label, state)
 
     let add_ret = make_local_value(builtins::int_, null, state)
-    let add = allocate(Insn)
-    (@add).kind = InsnKind::ADD
+    let add = make_insn(InsnKind::ADD)
     (@add).value.arith = {
         ret = add_ret,
         left = load_ret,
@@ -2845,8 +2793,7 @@ def walk_For(node: *parser::Node, state: *State) {
 
     push_insn(add, state)
 
-    let store2 = allocate(Insn)
-    (@store2).kind = InsnKind::STORE
+    let store2 = make_insn(InsnKind::STORE)
     (@store2).value.store = {
         loc = loc,
         value = add_ret
@@ -2881,8 +2828,7 @@ def walk_VarDecl(node: *parser::Node, state: *State) {
             if not value { continue }
             let name = (@value).assembly_name
 
-            let insn = allocate(Insn)
-            (@insn).kind = InsnKind::ALLOCA
+            let insn = make_insn(InsnKind::ALLOCA)
             (@insn).value.alloca = {
                 ret = {
                     kind = ValueKind::LOCAL,
@@ -3017,8 +2963,7 @@ def create_function(tpe: *typechecking::Type, body: *vector::Vector, scpe: *scop
             (@np).name = buffer::to_string(*buf)
             // Insert alloca and store instructions
 
-            let alloca = allocate(Insn)
-            (@alloca).kind = InsnKind::ALLOCA
+            let alloca = make_insn(InsnKind::ALLOCA)
             (@alloca).value.alloca = {
                 ret = {
                     kind = ValueKind::LOCAL,
@@ -3029,8 +2974,7 @@ def create_function(tpe: *typechecking::Type, body: *vector::Vector, scpe: *scop
 
             push_insn(alloca, state)
 
-            let store = allocate(Insn)
-            (@store).kind = InsnKind::STORE
+            let store = make_insn(InsnKind::STORE)
             (@store).value.store = {
                 value = {
                     kind = ValueKind::LOCAL,
@@ -3059,13 +3003,12 @@ def create_function(tpe: *typechecking::Type, body: *vector::Vector, scpe: *scop
             var value = NO_VALUE
             if (@function).ret {
                 value = {
-                    tpe = (@function).ret,
-                    undef = true
+                    kind = ValueKind::UNDEF,
+                    tpe = (@function).ret
                 } !Value
             }
             
-            let ret = allocate(Insn)
-            (@ret).kind = InsnKind::RET
+            let ret = make_insn(InsnKind::RET)
             (@ret).value.ret.value = value
             push_insn(ret, state)
         }
@@ -3181,23 +3124,49 @@ def walk_top_Import(node: *parser::Node, body: *vector::Vector, state: *State) {
 
 export def compile(module: *toolchain::Module) -> *Result {
     let node = (@module).node
-
     assert((@node).kind == parser::NodeKind::PROGRAM)
-    
     let body = vector::make()
+
+    // Create compilation unit and file
+    if toolchain::debug_sym {
+        let abspath = allocate(char, PATH_MAX)
+        absolute_path(util::dirname((@module).filename), abspath.value)
+        abspath.size = strlen(abspath) + 1
+
+        let debug_values = allocate(DebugParam, 2)
+        debug_values[0] = {
+            name = "filename",
+            value = { kind = DebugValueKind::STRING, s = (@module).filename } !DebugValue
+        } !DebugParam
+        debug_values[1] = {
+            name = "directory",
+            value = { kind = DebugValueKind::STRING, s = abspath } !DebugValue
+        } !DebugParam
+
+        (@module).difile = allocate(Value)
+        @(@module).difile = {
+            kind = ValueKind::DEBUG_INFO,
+            metadata = true,
+            debug_values = debug_values
+        } !Value
+    }
+    
     let state = allocate(State)
     @state = {
         module = module,
         counter = 0,
         global_counter = 0,
+        meta_counter = 0,
         loops = vector::make(),
-        result = allocate(Result)
+        result = allocate(Result),
+        ditypes = map::make()
     } !State
 
     @(@state).result = {
         functions = map::make(),
         structures = map::make(),
-        globals = map::make()
+        globals = map::make(),
+        metadata = map::make()
     } !Result
 
     // Forward declare functions from other files

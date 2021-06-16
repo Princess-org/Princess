@@ -11,6 +11,7 @@
 #include "typechecking.c"
 #include "compiler.c"
 #include "scope.c"
+#include "debug.c"
  string _574f02bf_type_to_str(typechecking_Type *tpe) {
     if ((!tpe)) {
         return ((Array){5, "void"});
@@ -130,82 +131,139 @@
     ;
     return buffer_to_string((&buf));
 };
+ string _574f02bf_debug_value_to_str(compiler_DebugValue value) {
+    buffer_Buffer buf = buffer_make_buffer();
+    switch (((int)(value.kind))) {
+        break;
+        case compiler_DebugValueKind_STRING:
+        buffer_append_str((&buf), util_repr((value.s)));
+        break;
+        case compiler_DebugValueKind_INT:
+        buffer_append_str((&buf), util_int_to_str((value.i)));
+        break;
+        case compiler_DebugValueKind_BOOL:
+        if ((value.i)) {
+            buffer_append_str((&buf), ((Array){5, "true"}));
+        }  else {
+            buffer_append_str((&buf), ((Array){6, "false"}));
+        };
+        break;
+        case compiler_DebugValueKind_CONST:
+        buffer_append_str((&buf), (value.name));
+        break;
+        case compiler_DebugValueKind_METADATA:
+        buffer_append_char((&buf), '!');
+        buffer_append_str((&buf), (value.name));
+    }
+    ;
+    return buffer_to_string((&buf));
+};
  string _574f02bf_value_to_str(compiler_Value value) {
     buffer_Buffer buf = buffer_make_buffer();
-    if ((value.undef)) {
+    switch (((int)(value.kind))) {
+        break;
+        case compiler_ValueKind_ZEROINITIALIZER:
+        buffer_append_str((&buf), ((Array){16, "zeroinitializer"}));
+        break;
+        case compiler_ValueKind_NULL:
+        buffer_append_str((&buf), ((Array){5, "null"}));
+        break;
+        case compiler_ValueKind_UNDEF:
         buffer_append_str((&buf), ((Array){6, "undef"}));
-    }  else {
-        switch (((int)(value.kind))) {
-            break;
-            case compiler_ValueKind_LOCAL:
-            buffer_append_char((&buf), '%');
-            buffer_append_str((&buf), (value.name));
-            break;
-            case compiler_ValueKind_GLOBAL:
-            buffer_append_str((&buf), ((Array){3, "@\""}));
-            buffer_append_str((&buf), (value.name));
-            buffer_append_char((&buf), '\"');
-            break;
-            case compiler_ValueKind_BOOL:
-            if ((value.i)) {
-                buffer_append_str((&buf), ((Array){5, "true"}));
-            }  else {
-                buffer_append_str((&buf), ((Array){6, "false"}));
-            };
-            break;
-            case compiler_ValueKind_INT:
-            buffer_append_str((&buf), util_uint_to_str_sign((value.sign), (value.i)));
-            break;
-            case compiler_ValueKind_FLOAT:
-            buffer_append_str((&buf), util_double_to_hex_str((value.f)));
-            break;
-            case compiler_ValueKind_STRUCT:
-            buffer_append_char((&buf), '{');
-            for (int i = 0;(i < ((value.values).size));(i += 1)) {
-                compiler_Value val = ((compiler_Value)(((compiler_Value *)(value.values).value)[i]));
+        break;
+        case compiler_ValueKind_METADATA:
+        buffer_append_char((&buf), '!');
+        buffer_append_str((&buf), (value.name));
+        break;
+        case compiler_ValueKind_LOCAL:
+        buffer_append_char((&buf), '%');
+        buffer_append_str((&buf), (value.name));
+        break;
+        case compiler_ValueKind_GLOBAL:
+        buffer_append_str((&buf), ((Array){3, "@\""}));
+        buffer_append_str((&buf), (value.name));
+        buffer_append_char((&buf), '\"');
+        break;
+        case compiler_ValueKind_BOOL:
+        if ((value.i)) {
+            buffer_append_str((&buf), ((Array){5, "true"}));
+        }  else {
+            buffer_append_str((&buf), ((Array){6, "false"}));
+        };
+        break;
+        case compiler_ValueKind_INT:
+        buffer_append_str((&buf), util_uint_to_str_sign((value.sign), (value.i)));
+        break;
+        case compiler_ValueKind_FLOAT:
+        buffer_append_str((&buf), util_double_to_hex_str((value.f)));
+        break;
+        case compiler_ValueKind_STRUCT:
+        if ((value.metadata)) {
+            buffer_append_char((&buf), '!');
+        }  ;
+        buffer_append_char((&buf), '{');
+        for (int i = 0;(i < ((value.values).size));(i += 1)) {
+            compiler_Value val = ((compiler_Value)(((compiler_Value *)(value.values).value)[i]));
+            if ((val.tpe)) {
                 buffer_append_str((&buf), _574f02bf_type_to_str((val.tpe)));
                 buffer_append_char((&buf), ' ');
-                buffer_append_str((&buf), _574f02bf_value_to_str(val));
-                if ((i < (((int64)((value.values).size)) - ((int64)1)))) {
-                    buffer_append_str((&buf), ((Array){3, ", "}));
-                }  ;
-            }
-            ;
-            buffer_append_char((&buf), '}');
-            break;
-            case compiler_ValueKind_ARRAY:
-            buffer_append_char((&buf), '[');
-            for (int i = 0;(i < ((value.values).size));(i += 1)) {
-                compiler_Value val = ((compiler_Value)(((compiler_Value *)(value.values).value)[i]));
-                buffer_append_str((&buf), _574f02bf_type_to_str((val.tpe)));
-                buffer_append_char((&buf), ' ');
-                buffer_append_str((&buf), _574f02bf_value_to_str(val));
-                if ((i < (((int64)((value.values).size)) - ((int64)1)))) {
-                    buffer_append_str((&buf), ((Array){3, ", "}));
-                }  ;
-            }
-            ;
-            buffer_append_char((&buf), ']');
-            break;
-            case compiler_ValueKind_ZEROINITIALIZER:
-            buffer_append_str((&buf), ((Array){16, "zeroinitializer"}));
-            break;
-            case compiler_ValueKind_NULL:
-            buffer_append_str((&buf), ((Array){5, "null"}));
-            break;
-            case compiler_ValueKind_STRING:
-            buffer_append_str((&buf), util_repr((value.s)));
-            break;
-            default:
-            fprintf(stderr, (((Array){5, "%d%s"}).value), (value.kind), (((Array){2, "\x0a"""}).value));
-            assert(false);
+            }  ;
+            buffer_append_str((&buf), _574f02bf_value_to_str(val));
+            if ((i < (((int64)((value.values).size)) - ((int64)1)))) {
+                buffer_append_str((&buf), ((Array){3, ", "}));
+            }  ;
         }
         ;
-    };
+        buffer_append_char((&buf), '}');
+        break;
+        case compiler_ValueKind_ARRAY:
+        buffer_append_char((&buf), '[');
+        for (int i = 0;(i < ((value.values).size));(i += 1)) {
+            compiler_Value val = ((compiler_Value)(((compiler_Value *)(value.values).value)[i]));
+            if ((val.tpe)) {
+                buffer_append_str((&buf), _574f02bf_type_to_str((val.tpe)));
+                buffer_append_char((&buf), ' ');
+            }  ;
+            buffer_append_str((&buf), _574f02bf_value_to_str(val));
+            if ((i < (((int64)((value.values).size)) - ((int64)1)))) {
+                buffer_append_str((&buf), ((Array){3, ", "}));
+            }  ;
+        }
+        ;
+        buffer_append_char((&buf), ']');
+        break;
+        case compiler_ValueKind_STRING:
+        if ((value.metadata)) {
+            buffer_append_char((&buf), '!');
+        }  else {
+            buffer_append_char((&buf), 'c');
+        };
+        buffer_append_str((&buf), util_repr((value.s)));
+        break;
+        case compiler_ValueKind_DEBUG_INFO:
+        buffer_append_char((&buf), '!');
+        buffer_append_str((&buf), (value.name));
+        buffer_append_char((&buf), '(');
+        for (int i = 0;(i < ((value.debug_values).size));(i += 1)) {
+            compiler_DebugParam val = ((compiler_DebugParam)(((compiler_DebugParam *)(value.debug_values).value)[i]));
+            buffer_append_str((&buf), (val.name));
+            buffer_append_str((&buf), ((Array){3, ": "}));
+            buffer_append_str((&buf), _574f02bf_debug_value_to_str((val.value)));
+            if ((i < (((int64)((value.debug_values).size)) - ((int64)1)))) {
+                buffer_append_str((&buf), ((Array){3, ", "}));
+            }  ;
+        }
+        ;
+        buffer_append_char((&buf), ')');
+        break;
+        default:
+        fprintf(stderr, (((Array){5, "%d%s"}).value), (value.kind), (((Array){2, "\x0a"""}).value));
+        assert(false);
+    }
+    ;
     return buffer_to_string((&buf));
 };
  void _574f02bf_emit_arithmetic(File fp, string name, compiler_Insn *insn) {
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x09"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).arith).ret)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){4, " = "}).value));
     fprintf(fp, (((Array){5, "%s%s"}).value), (name.value), (((Array){2, " "}).value));
@@ -214,18 +272,15 @@
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).arith).left)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, ", "}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).arith).right)).value));
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
  void _574f02bf_emit_ret(File fp, compiler_Insn *insn) {
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){6, "\x09""ret "}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){5, "ret "}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_type_to_str((((((*insn).value).ret).value).tpe)).value));
     if ((((((*insn).value).ret).value).tpe)) {
         fprintf(fp, (((Array){5, "%s%s"}).value), (((Array){2, " "}).value), (_574f02bf_value_to_str(((((*insn).value).ret).value)).value));
     }  ;
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
  void _574f02bf_emit_call(File fp, compiler_Insn *insn) {
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x09"""}).value));
     if ((((((*insn).value).call).ret).tpe)) {
         fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).call).ret)).value));
         fprintf(fp, (((Array){3, "%s"}).value), (((Array){4, " = "}).value));
@@ -255,24 +310,26 @@
     size_t argsize = (((((*insn).value).call).args).size);
     for (int i = 0;(i < argsize);(i += 1)) {
         compiler_Value arg = (((compiler_Value *)((((*insn).value).call).args).value)[i]);
-        fprintf(fp, (((Array){5, "%s%s"}).value), (_574f02bf_type_to_str((arg.tpe)).value), (((Array){2, " "}).value));
+        if ((arg.metadata)) {
+            fprintf(fp, (((Array){3, "%s"}).value), (((Array){10, "metadata "}).value));
+        }  ;
+        if ((arg.tpe)) {
+            fprintf(fp, (((Array){5, "%s%s"}).value), (_574f02bf_type_to_str((arg.tpe)).value), (((Array){2, " "}).value));
+        }  ;
         fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(arg).value));
         if ((i < (((int64)argsize) - ((int64)1)))) {
             fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, ", "}).value));
         }  ;
     }
     ;
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, ")\x0a"""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, ")"}).value));
 };
  void _574f02bf_emit_alloca(File fp, compiler_Insn *insn) {
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x09"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).alloca).ret)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){11, " = alloca "}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_type_to_str((((((*insn).value).alloca).ret).tpe)).value));
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
  void _574f02bf_emit_store(File fp, compiler_Insn *insn) {
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x09"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){7, "store "}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_type_to_str((((((*insn).value).store).value).tpe)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, " "}).value));
@@ -281,10 +338,8 @@
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_type_to_str((((((*insn).value).store).loc).tpe)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, " "}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).store).loc)).value));
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
  void _574f02bf_emit_load(File fp, compiler_Insn *insn) {
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x09"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).load).value)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){9, " = load "}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_type_to_str((((((*insn).value).load).value).tpe)).value));
@@ -292,10 +347,8 @@
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_type_to_str((((((*insn).value).load).loc).tpe)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, " "}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).load).loc)).value));
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
  void _574f02bf_emit_br(File fp, compiler_Insn *insn) {
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x09"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){4, "br "}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_type_to_str((((((*insn).value).br).cond).tpe)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, " "}).value));
@@ -304,16 +357,12 @@
     fprintf(fp, (((Array){3, "%s"}).value), ((((((*insn).value).br).if_true).name).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){10, ", label %"}).value));
     fprintf(fp, (((Array){3, "%s"}).value), ((((((*insn).value).br).if_false).name).value));
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
  void _574f02bf_emit_br_unc(File fp, compiler_Insn *insn) {
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x09"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){11, "br label %"}).value));
     fprintf(fp, (((Array){3, "%s"}).value), ((((((*insn).value).br_unc).label_).name).value));
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
  void _574f02bf_emit_insert_value(File fp, compiler_Insn *insn) {
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x09"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).insert_value).ret)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){16, " = insertvalue "}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_type_to_str((((((*insn).value).insert_value).value).tpe)).value));
@@ -332,10 +381,8 @@
         }  ;
     }
     ;
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
  void _574f02bf_emit_extract_value(File fp, compiler_Insn *insn) {
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x09"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).extract_value).ret)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){17, " = extractvalue "}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_type_to_str((((((*insn).value).extract_value).value).tpe)).value));
@@ -350,10 +397,8 @@
         }  ;
     }
     ;
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
  void _574f02bf_emit_convert(File fp, string name, compiler_Insn *insn) {
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x09"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).convert).ret)).value));
     fprintf(fp, (((Array){7, "%s%s%s"}).value), (((Array){4, " = "}).value), (name.value), (((Array){2, " "}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_type_to_str((((((*insn).value).convert).value).tpe)).value));
@@ -361,10 +406,8 @@
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).convert).value)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){5, " to "}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_type_to_str((((((*insn).value).convert).ret).tpe)).value));
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
  void _574f02bf_emit_gep(File fp, compiler_Insn *insn) {
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x09"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).gep).ret)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){18, " = getelementptr "}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_type_to_str(((((*insn).value).gep).tpe)).value));
@@ -383,10 +426,8 @@
         }  ;
     }
     ;
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
  void _574f02bf_emit_compare(File fp, string name, compiler_Insn *insn) {
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x09"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).cmp).ret)).value));
     fprintf(fp, (((Array){11, "%s%s%s%s%s"}).value), (((Array){4, " = "}).value), (name.value), (((Array){2, " "}).value), (((((*insn).value).cmp).op).value), (((Array){2, " "}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_type_to_str((((((*insn).value).cmp).left).tpe)).value));
@@ -394,19 +435,16 @@
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).cmp).left)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, ", "}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).cmp).right)).value));
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
  void _574f02bf_emit_fneg(File fp, compiler_Insn *insn) {
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x09"""}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).fneg).ret)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){9, " = fneg "}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_type_to_str((((((*insn).value).fneg).value).tpe)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, " "}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).fneg).value)).value));
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
  void _574f02bf_emit_switch(File fp, compiler_Insn *insn) {
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){9, "\x09""switch "}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){8, "switch "}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_type_to_str((((((*insn).value).switch_).value).tpe)).value));
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, " "}).value));
     fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str(((((*insn).value).switch_).value)).value));
@@ -424,9 +462,10 @@
         fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
     }
     ;
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){4, "\x09""]\x0a"""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, "\x09""]"}).value));
 };
  void _574f02bf_emit(File fp, compiler_Insn *insn) {
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
     switch (((int)((*insn).kind))) {
         break;
         case compiler_InsnKind_FNEG:
@@ -559,12 +598,17 @@
         _574f02bf_emit_ret(fp, insn);
         break;
         case compiler_InsnKind_UNREACHABLE:
-        fprintf(fp, (((Array){3, "%s"}).value), (((Array){14, "\x09""unreachable\x0a"""}).value));
+        fprintf(fp, (((Array){3, "%s"}).value), (((Array){12, "unreachable"}).value));
         break;
         default:
         assert(false);
     }
     ;
+    if (((*insn).debug)) {
+        fprintf(fp, (((Array){3, "%s"}).value), (((Array){8, ", !dbg "}).value));
+        fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str((*((*insn).debug))).value));
+    }  ;
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
  void _574f02bf_emit_block(File fp, compiler_Block *block) {
     fprintf(fp, (((Array){5, "%s%s"}).value), (((*block).label_).value), (((Array){3, ":\x0a"""}).value));
@@ -726,7 +770,6 @@
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){39, "target triple = \"x86_64-pc-linux-gnu\"\x0a"""}).value));
 };
 typedef struct _574f02bf_State {struct map_Map *structures; struct map_Map *cached; struct toolchain_Module *module;} _574f02bf_State;
-#include "debug.c"
  void _574f02bf_import_structures(typechecking_Type *tpe, _574f02bf_State *state);
  void _574f02bf_import_structure(typechecking_Type *tpe, _574f02bf_State *state) {
     if ((!map_contains(((*state).cached), ((*tpe).type_name)))) {

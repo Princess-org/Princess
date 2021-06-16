@@ -16,6 +16,7 @@ map_Map *_fad58de7_res;
 bool _fad58de7_test;
 bool _fad58de7_print_ast;
 bool _fad58de7_print_ll;
+bool _fad58de7_debug_sym;
 vector_Vector *_fad58de7_filenames;
 vector_Vector *_fad58de7_includes;
 string *_fad58de7_outfolder;
@@ -28,14 +29,15 @@ DLL_EXPORT void main_p_main(Array args) {
     test_parser_p_main(args);
     test_compiler_p_main(args);
     toolchain_p_main(args);
-    _fad58de7_options = ((Array){7, malloc((((int64)(sizeof(getopt_Option))) * ((int64)7)))});
+    _fad58de7_options = ((Array){8, malloc((((int64)(sizeof(getopt_Option))) * ((int64)8)))});
     (((getopt_Option *)_fad58de7_options.value)[0]) = ((getopt_Option){ getopt_Type_BOOL, ((Array){1, ""}), ((Array){6, "--ast"}), 0, false });
     (((getopt_Option *)_fad58de7_options.value)[1]) = ((getopt_Option){ getopt_Type_BOOL, ((Array){1, ""}), ((Array){5, "--ll"}), 0, false });
     (((getopt_Option *)_fad58de7_options.value)[2]) = ((getopt_Option){ getopt_Type_BOOL, ((Array){1, ""}), ((Array){7, "--test"}), 0, false });
     (((getopt_Option *)_fad58de7_options.value)[3]) = ((getopt_Option){ getopt_Type_STRING, ((Array){3, "-i"}), ((Array){10, "--include"}), 1, true });
     (((getopt_Option *)_fad58de7_options.value)[4]) = ((getopt_Option){ getopt_Type_STRING, ((Array){3, "-o"}), ((Array){12, "--outfolder"}), 1, false });
     (((getopt_Option *)_fad58de7_options.value)[5]) = ((getopt_Option){ getopt_Type_STRING, ((Array){1, ""}), ((Array){10, "--outfile"}), 1, false });
-    (((getopt_Option *)_fad58de7_options.value)[6]) = ((getopt_Option){ getopt_Type_STRING, ((Array){1, ""}), ((Array){8, "compile"}), getopt_ARGS_ANY, false });
+    (((getopt_Option *)_fad58de7_options.value)[6]) = ((getopt_Option){ getopt_Type_BOOL, ((Array){3, "-d"}), ((Array){8, "--debug"}), 0, false });
+    (((getopt_Option *)_fad58de7_options.value)[7]) = ((getopt_Option){ getopt_Type_STRING, ((Array){1, ""}), ((Array){8, "compile"}), getopt_ARGS_ANY, false });
     _fad58de7_res = getopt_parse(args, _fad58de7_options);
     if ((!_fad58de7_res)) {
         exit((-1));
@@ -43,6 +45,7 @@ DLL_EXPORT void main_p_main(Array args) {
     _fad58de7_test = (*((bool *)map_get(_fad58de7_res, ((Array){7, "--test"}))));
     _fad58de7_print_ast = (*((bool *)map_get(_fad58de7_res, ((Array){6, "--ast"}))));
     _fad58de7_print_ll = (*((bool *)map_get(_fad58de7_res, ((Array){5, "--ll"}))));
+    _fad58de7_debug_sym = (*((bool *)map_get(_fad58de7_res, ((Array){8, "--debug"}))));
     _fad58de7_filenames = ((vector_Vector *)map_get(_fad58de7_res, ((Array){8, "compile"})));
     _fad58de7_includes = ((vector_Vector *)map_get(_fad58de7_res, ((Array){10, "--include"})));
     _fad58de7_outfolder = ((string *)map_get(_fad58de7_res, ((Array){12, "--outfolder"})));
@@ -71,6 +74,7 @@ DLL_EXPORT void main_p_main(Array args) {
         tests_run_test_suite();
     }  else {
         toolchain_print_ast = _fad58de7_print_ast;
+        toolchain_debug_sym = _fad58de7_debug_sym;
         if ((((bool)_fad58de7_filenames) && (vector_length(_fad58de7_filenames) > 0))) {
             if ((vector_length(_fad58de7_filenames) > 1)) {
                 fprintf(stderr, (((Array){3, "%s"}).value), (((Array){29, "More than one file specified"}).value));

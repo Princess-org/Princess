@@ -107,7 +107,7 @@ DLL_EXPORT Array util_split_lines(string s) {
     (((char *)(((string *)result.value)[line]).value)[(((int64)size) - ((int64)k))]) = '\x00';
     return result;
 };
-DLL_EXPORT string util_basename(string file) {
+DLL_EXPORT string util_dirname(string file) {
     int last_slash = 0;
     for (int i = 0;(i < (file.size));(i += 1)) {
         char c = (((char *)file.value)[i]);
@@ -124,7 +124,7 @@ DLL_EXPORT string util_exe_folder() {
     Array exe_file = ((Array){PATH_MAX, malloc((((int64)(sizeof(char))) * ((int64)PATH_MAX)))});
     executable_file((exe_file.value));
     (exe_file.size) = (((int64)strlen((exe_file.value))) + ((int64)1));
-    return util_basename(exe_file);
+    return util_dirname(exe_file);
 };
 DLL_EXPORT string util_read_all(File fh) {
     fseek(fh, 0, SEEK_END);
@@ -228,7 +228,7 @@ DLL_EXPORT int util_lcm(int a, int b) {
 };
 DLL_EXPORT string util_repr(string s) {
     buffer_Buffer buf = buffer_make_buffer();
-    buffer_append_str((&buf), ((Array){3, "c\""}));
+    buffer_append_str((&buf), ((Array){2, "\""}));
     for (int i = 0;(i < (((int64)(s.size)) - ((int64)1)));(i += 1)) {
         uint8 c = ((uint8)(((char *)s.value)[i]));
         if ((((c < 32) || (c > 126)) || (c == 34))) {

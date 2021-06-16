@@ -82,8 +82,7 @@
     if (tpe) {
         ret = compiler_make_local_value(tpe, NULL, state);
     }  ;
-    compiler_Insn *call = malloc((sizeof(compiler_Insn)));
-    ((*call).kind) = compiler_InsnKind_CALL;
+    compiler_Insn *call = compiler_make_insn(compiler_InsnKind_CALL);
     (((*call).value).call) = ((compiler_InsnCall){ .name = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = name }), .ret = ret, .args = args });
     compiler_push_insn(call, state);
     return ret;
@@ -95,8 +94,7 @@
         return compiler_NO_VALUE;
     }  ;
     compiler_Label if_false = compiler_make_label(state);
-    compiler_Insn *br = malloc((sizeof(compiler_Insn)));
-    ((*br).kind) = compiler_InsnKind_BR;
+    compiler_Insn *br = compiler_make_insn(compiler_InsnKind_BR);
     (((*br).value).br) = ((compiler_InsnBr){ .cond = insn, .if_false = if_false });
     compiler_push_insn(br, state);
     compiler_push_label(if_false, state);
@@ -109,12 +107,10 @@
         current_function = ((*((*state).current_function)).unmangled);
     }  ;
     (((compiler_Value *)args.value)[3]) = compiler_charp(current_function, state);
-    compiler_Insn *call = malloc((sizeof(compiler_Insn)));
-    ((*call).kind) = compiler_InsnKind_CALL;
+    compiler_Insn *call = compiler_make_insn(compiler_InsnKind_CALL);
     (((*call).value).call) = ((compiler_InsnCall){ .name = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = ((Array){14, "__assert_fail"}) }), .ret = compiler_NO_VALUE, .args = args });
     compiler_push_insn(call, state);
-    compiler_Insn *unreachable = malloc((sizeof(compiler_Insn)));
-    ((*unreachable).kind) = compiler_InsnKind_UNREACHABLE;
+    compiler_Insn *unreachable = compiler_make_insn(compiler_InsnKind_UNREACHABLE);
     compiler_push_insn(unreachable, state);
     compiler_Label if_true = compiler_make_label(state);
     compiler_push_label(if_true, state);
@@ -137,7 +133,7 @@
         } else if ((tpe == builtins_char_)) {
             buffer_append_str((&buf), ((Array){3, "%c"}));
         }
-        else if (((typechecking_equals(tpe, builtins_string_) || typechecking_equals(tpe, typechecking_pointer(builtins_char_))) || ((((*tpe).kind) == typechecking_TypeKind_STATIC_ARRAY) && typechecking_equals(((*tpe).tpe), builtins_char_)))) {
+        else if (((((bool)typechecking_equals(tpe, builtins_string_)) || ((bool)typechecking_equals(tpe, typechecking_pointer(builtins_char_)))) || ((((*tpe).kind) == typechecking_TypeKind_STATIC_ARRAY) && ((bool)typechecking_equals(((*tpe).tpe), builtins_char_))))) {
             buffer_append_str((&buf), ((Array){3, "%s"}));
         }
         else if (typechecking_is_pointer(tpe)) {
@@ -185,7 +181,7 @@
     if ((!(value.tpe))) {
         return compiler_NO_VALUE;
     }  ;
-    if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && typechecking_equals(((*(value.tpe)).tpe), builtins_char_))) {
+    if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && ((bool)typechecking_equals(((*(value.tpe)).tpe), builtins_char_)))) {
         return compiler_charp_static((value.addr), state);
     } else if (typechecking_equals((value.tpe), builtins_string_)) {
         return compiler_charp_str(value, state);
@@ -205,11 +201,10 @@
     }
     ;
     compiler_Value ret = compiler_make_local_value(builtins_int_, NULL, state);
-    compiler_Insn *call = malloc((sizeof(compiler_Insn)));
+    compiler_Insn *call = compiler_make_insn(compiler_InsnKind_CALL);
     Array proto = ((Array){2, malloc((((int64)(sizeof(typechecking_NamedParameter))) * ((int64)2)))});
     (((typechecking_NamedParameter *)proto.value)[0]) = (*_fe23cc40_param(((Array){1, ""}), typechecking_pointer(builtins_char_)));
     (((typechecking_NamedParameter *)proto.value)[1]) = (*_fe23cc40_varargs(((Array){1, ""}), NULL));
-    ((*call).kind) = compiler_InsnKind_CALL;
     (((*call).value).call) = ((compiler_InsnCall){ .name = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = ((Array){7, "printf"}) }), .ret = ret, .args = args, .proto = proto });
     compiler_push_insn(call, state);
     return ret;
@@ -221,8 +216,7 @@
         return compiler_NO_VALUE;
     }  ;
     compiler_Value load_ret = compiler_make_local_value(builtins_File_, NULL, state);
-    compiler_Insn *load = malloc((sizeof(compiler_Insn)));
-    ((*load).kind) = compiler_InsnKind_LOAD;
+    compiler_Insn *load = compiler_make_insn(compiler_InsnKind_LOAD);
     (((*load).value).load) = ((compiler_InsnLoad){ .value = load_ret, .loc = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = ((Array){7, "stderr"}), .tpe = typechecking_pointer(builtins_File_) }) });
     compiler_push_insn(load, state);
     Array args = ((Array){(((int64)(argsv.size)) + ((int64)2)), malloc((((int64)(sizeof(compiler_Value))) * (((int64)(argsv.size)) + ((int64)2))))});
@@ -233,12 +227,11 @@
     }
     ;
     compiler_Value ret = compiler_make_local_value(builtins_int_, NULL, state);
-    compiler_Insn *call = malloc((sizeof(compiler_Insn)));
+    compiler_Insn *call = compiler_make_insn(compiler_InsnKind_CALL);
     Array proto = ((Array){3, malloc((((int64)(sizeof(typechecking_NamedParameter))) * ((int64)3)))});
     (((typechecking_NamedParameter *)proto.value)[0]) = (*_fe23cc40_param(((Array){1, ""}), builtins_File_));
     (((typechecking_NamedParameter *)proto.value)[1]) = (*_fe23cc40_param(((Array){1, ""}), typechecking_pointer(builtins_char_)));
     (((typechecking_NamedParameter *)proto.value)[2]) = (*_fe23cc40_varargs(((Array){1, ""}), NULL));
-    ((*call).kind) = compiler_InsnKind_CALL;
     (((*call).value).call) = ((compiler_InsnCall){ .name = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = ((Array){8, "fprintf"}) }), .ret = ret, .args = args, .proto = proto });
     compiler_push_insn(call, state);
     return ret;
@@ -261,12 +254,11 @@
     }
     ;
     compiler_Value ret = compiler_make_local_value(builtins_int_, NULL, state);
-    compiler_Insn *call = malloc((sizeof(compiler_Insn)));
+    compiler_Insn *call = compiler_make_insn(compiler_InsnKind_CALL);
     Array proto = ((Array){3, malloc((((int64)(sizeof(typechecking_NamedParameter))) * ((int64)3)))});
     (((typechecking_NamedParameter *)proto.value)[0]) = (*_fe23cc40_param(((Array){1, ""}), typechecking_pointer(builtins_char_)));
     (((typechecking_NamedParameter *)proto.value)[1]) = (*_fe23cc40_param(((Array){1, ""}), typechecking_pointer(builtins_char_)));
     (((typechecking_NamedParameter *)proto.value)[2]) = (*_fe23cc40_varargs(((Array){1, ""}), NULL));
-    ((*call).kind) = compiler_InsnKind_CALL;
     (((*call).value).call) = ((compiler_InsnCall){ .name = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = ((Array){7, "concat"}) }), .ret = ret, .args = args, .proto = proto });
     compiler_push_insn(call, state);
     return ret;
@@ -276,13 +268,11 @@
     compiler_Value len = compiler_make_local_value(builtins_size_t_, NULL, state);
     Array index = ((Array){1, malloc((((int64)(sizeof(int))) * ((int64)1)))});
     (((int *)index.value)[0]) = 0;
-    compiler_Insn *extract = malloc((sizeof(compiler_Insn)));
-    ((*extract).kind) = compiler_InsnKind_EXTRACTVALUE;
+    compiler_Insn *extract = compiler_make_insn(compiler_InsnKind_EXTRACTVALUE);
     (((*extract).value).extract_value) = ((compiler_InsnExtractValue){ .index = index, .value = array, .ret = len });
     compiler_push_insn(extract, state);
     compiler_Value ret = compiler_make_local_value(builtins_size_t_, NULL, state);
-    compiler_Insn *sub = malloc((sizeof(compiler_Insn)));
-    ((*sub).kind) = compiler_InsnKind_SUB;
+    compiler_Insn *sub = compiler_make_insn(compiler_InsnKind_SUB);
     (((*sub).value).arith) = ((compiler_InsnArithmetic){ .ret = ret, .left = len, .right = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = 1, .sign = 1, .tpe = builtins_size_t_ }) });
     compiler_push_insn(sub, state);
     return ret;
@@ -300,8 +290,7 @@
     (((compiler_Value *)args.value)[0]) = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = ((*tpe).size), .tpe = builtins_size_t_ });
     compiler_Value call_ret = _fe23cc40_forward_to_function(args, typechecking_pointer(NULL), ((Array){7, "malloc"}), state);
     compiler_Value ret = compiler_make_local_value(typechecking_pointer(tpe), NULL, state);
-    compiler_Insn *bitcast = malloc((sizeof(compiler_Insn)));
-    ((*bitcast).kind) = compiler_InsnKind_BITCAST;
+    compiler_Insn *bitcast = compiler_make_insn(compiler_InsnKind_BITCAST);
     (((*bitcast).value).convert) = ((compiler_InsnConvert){ .ret = ret, .value = call_ret });
     compiler_push_insn(bitcast, state);
     return ret;
@@ -315,22 +304,19 @@
 };
  compiler_Value _fe23cc40_allocate_make_array(compiler_Value call_ret, compiler_Value size, typechecking_Type *tpe, compiler_State *state) {
     compiler_Value bitcast_ret = compiler_make_local_value(typechecking_pointer(tpe), NULL, state);
-    compiler_Insn *bitcast = malloc((sizeof(compiler_Insn)));
-    ((*bitcast).kind) = compiler_InsnKind_BITCAST;
+    compiler_Insn *bitcast = compiler_make_insn(compiler_InsnKind_BITCAST);
     (((*bitcast).value).convert) = ((compiler_InsnConvert){ .ret = bitcast_ret, .value = call_ret });
     compiler_push_insn(bitcast, state);
     Array index1 = ((Array){1, malloc((((int64)(sizeof(int))) * ((int64)1)))});
     (((int *)index1.value)[0]) = 1;
     compiler_Value insert1_ret = compiler_make_local_value(typechecking_array(tpe), NULL, state);
-    compiler_Insn *insert1 = malloc((sizeof(compiler_Insn)));
-    ((*insert1).kind) = compiler_InsnKind_INSERTVALUE;
-    (((*insert1).value).insert_value) = ((compiler_InsnInsertValue){ .ret = insert1_ret, .value = ((compiler_Value){ .kind = compiler_ValueKind_LOCAL, .undef = true, .tpe = typechecking_array(tpe) }), .element = bitcast_ret, .index = index1 });
+    compiler_Insn *insert1 = compiler_make_insn(compiler_InsnKind_INSERTVALUE);
+    (((*insert1).value).insert_value) = ((compiler_InsnInsertValue){ .ret = insert1_ret, .value = ((compiler_Value){ .kind = compiler_ValueKind_UNDEF, .tpe = typechecking_array(tpe) }), .element = bitcast_ret, .index = index1 });
     compiler_push_insn(insert1, state);
     Array index2 = ((Array){1, malloc((((int64)(sizeof(int))) * ((int64)1)))});
     (((int *)index2.value)[0]) = 0;
     compiler_Value insert2_ret = compiler_make_local_value(typechecking_array(tpe), NULL, state);
-    compiler_Insn *insert2 = malloc((sizeof(compiler_Insn)));
-    ((*insert2).kind) = compiler_InsnKind_INSERTVALUE;
+    compiler_Insn *insert2 = compiler_make_insn(compiler_InsnKind_INSERTVALUE);
     (((*insert2).value).insert_value) = ((compiler_InsnInsertValue){ .ret = insert2_ret, .value = insert1_ret, .element = size, .index = index2 });
     compiler_push_insn(insert2, state);
     return insert2_ret;
@@ -343,8 +329,7 @@
     }  ;
     compiler_Value size = (((compiler_Value *)argsv.value)[1]);
     compiler_Value sizev = compiler_make_local_value(builtins_size_t_, NULL, state);
-    compiler_Insn *mul = malloc((sizeof(compiler_Insn)));
-    ((*mul).kind) = compiler_InsnKind_MUL;
+    compiler_Insn *mul = compiler_make_insn(compiler_InsnKind_MUL);
     (((*mul).value).arith) = ((compiler_InsnArithmetic){ .ret = sizev, .left = size, .right = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = ((*tpe).size), .sign = 1, .tpe = builtins_size_t_ }) });
     compiler_push_insn(mul, state);
     Array args = ((Array){1, malloc((((int64)(sizeof(compiler_Value))) * ((int64)1)))});
@@ -374,8 +359,7 @@
     (((compiler_Value *)args.value)[1]) = ((compiler_Value){ .kind = compiler_ValueKind_INT, .i = ((*tpe).size), .tpe = builtins_size_t_ });
     compiler_Value call_ret = _fe23cc40_forward_to_function(args, typechecking_pointer(NULL), ((Array){7, "calloc"}), state);
     compiler_Value ret = compiler_make_local_value(typechecking_pointer(tpe), NULL, state);
-    compiler_Insn *bitcast = malloc((sizeof(compiler_Insn)));
-    ((*bitcast).kind) = compiler_InsnKind_BITCAST;
+    compiler_Insn *bitcast = compiler_make_insn(compiler_InsnKind_BITCAST);
     (((*bitcast).value).convert) = ((compiler_InsnConvert){ .ret = ret, .value = call_ret });
     compiler_push_insn(bitcast, state);
     return ret;
@@ -406,8 +390,7 @@
     compiler_Value ret_extract = compiler_make_local_value(typechecking_pointer(((*(arg.tpe)).tpe)), NULL, state);
     Array index = ((Array){1, malloc((((int64)(sizeof(int))) * ((int64)1)))});
     (((int *)index.value)[0]) = 1;
-    compiler_Insn *extract = malloc((sizeof(compiler_Insn)));
-    ((*extract).kind) = compiler_InsnKind_EXTRACTVALUE;
+    compiler_Insn *extract = compiler_make_insn(compiler_InsnKind_EXTRACTVALUE);
     (((*extract).value).extract_value) = ((compiler_InsnExtractValue){ .ret = ret_extract, .value = arg, .index = index });
     compiler_push_insn(extract, state);
     Array args = ((Array){1, malloc((((int64)(sizeof(compiler_Value))) * ((int64)1)))});
@@ -442,15 +425,13 @@
     compiler_Value len = compiler_make_local_value(builtins_size_t_, NULL, state);
     Array index = ((Array){1, malloc((((int64)(sizeof(int))) * ((int64)1)))});
     (((int *)index.value)[0]) = 0;
-    compiler_Insn *extract = malloc((sizeof(compiler_Insn)));
-    ((*extract).kind) = compiler_InsnKind_EXTRACTVALUE;
+    compiler_Insn *extract = compiler_make_insn(compiler_InsnKind_EXTRACTVALUE);
     (((*extract).value).extract_value) = ((compiler_InsnExtractValue){ .index = index, .value = array, .ret = len });
     compiler_push_insn(extract, state);
     compiler_Value ptr = compiler_make_local_value(typechecking_pointer(NULL), NULL, state);
     Array index2 = ((Array){1, malloc((((int64)(sizeof(int))) * ((int64)1)))});
     (((int *)index2.value)[0]) = 1;
-    compiler_Insn *extract2 = malloc((sizeof(compiler_Insn)));
-    ((*extract2).kind) = compiler_InsnKind_EXTRACTVALUE;
+    compiler_Insn *extract2 = compiler_make_insn(compiler_InsnKind_EXTRACTVALUE);
     (((*extract2).value).extract_value) = ((compiler_InsnExtractValue){ .index = index2, .value = array, .ret = ptr });
     compiler_push_insn(extract2, state);
     Array args = ((Array){4, malloc((((int64)(sizeof(compiler_Value))) * ((int64)4)))});
@@ -475,8 +456,7 @@
     compiler_Value ptr = compiler_make_local_value(typechecking_pointer(NULL), NULL, state);
     Array index2 = ((Array){1, malloc((((int64)(sizeof(int))) * ((int64)1)))});
     (((int *)index2.value)[0]) = 1;
-    compiler_Insn *extract2 = malloc((sizeof(compiler_Insn)));
-    ((*extract2).kind) = compiler_InsnKind_EXTRACTVALUE;
+    compiler_Insn *extract2 = compiler_make_insn(compiler_InsnKind_EXTRACTVALUE);
     (((*extract2).value).extract_value) = ((compiler_InsnExtractValue){ .index = index2, .value = array, .ret = ptr });
     compiler_push_insn(extract2, state);
     Array args = ((Array){4, malloc((((int64)(sizeof(compiler_Value))) * ((int64)4)))});
@@ -531,8 +511,7 @@
     (((typechecking_NamedParameter *)proto.value)[0]) = (*_fe23cc40_param(((Array){1, ""}), builtins_File_));
     (((typechecking_NamedParameter *)proto.value)[1]) = (*_fe23cc40_param(((Array){1, ""}), typechecking_pointer(builtins_char_)));
     (((typechecking_NamedParameter *)proto.value)[2]) = (*_fe23cc40_varargs(((Array){1, ""}), NULL));
-    compiler_Insn *call = malloc((sizeof(compiler_Insn)));
-    ((*call).kind) = compiler_InsnKind_CALL;
+    compiler_Insn *call = compiler_make_insn(compiler_InsnKind_CALL);
     (((*call).value).call) = ((compiler_InsnCall){ .name = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = ((Array){8, "fprintf"}) }), .ret = ret, .args = args, .proto = proto });
     compiler_push_insn(call, state);
     return ret;
@@ -542,13 +521,11 @@
     compiler_Value extract_ret = compiler_make_local_value(builtins_size_t_, NULL, state);
     Array index = ((Array){1, malloc((((int64)(sizeof(int))) * ((int64)1)))});
     (((int *)index.value)[0]) = 0;
-    compiler_Insn *extract = malloc((sizeof(compiler_Insn)));
-    ((*extract).kind) = compiler_InsnKind_EXTRACTVALUE;
+    compiler_Insn *extract = compiler_make_insn(compiler_InsnKind_EXTRACTVALUE);
     (((*extract).value).extract_value) = ((compiler_InsnExtractValue){ .index = index, .value = (((compiler_Value *)argsv.value)[1]), .ret = extract_ret });
     compiler_push_insn(extract, state);
     compiler_Value len = compiler_make_local_value(builtins_int_, NULL, state);
-    compiler_Insn *convert = malloc((sizeof(compiler_Insn)));
-    ((*convert).kind) = compiler_InsnKind_TRUNC;
+    compiler_Insn *convert = compiler_make_insn(compiler_InsnKind_TRUNC);
     (((*convert).value).convert) = ((compiler_InsnConvert){ .ret = len, .value = extract_ret });
     compiler_push_insn(convert, state);
     Array args = ((Array){3, malloc((((int64)(sizeof(compiler_Value))) * ((int64)3)))});
@@ -565,8 +542,7 @@
     (((typechecking_NamedParameter *)proto.value)[0]) = (*_fe23cc40_param(((Array){1, ""}), builtins_File_));
     (((typechecking_NamedParameter *)proto.value)[1]) = (*_fe23cc40_param(((Array){1, ""}), typechecking_pointer(builtins_char_)));
     (((typechecking_NamedParameter *)proto.value)[2]) = (*_fe23cc40_varargs(((Array){1, ""}), NULL));
-    compiler_Insn *call = malloc((sizeof(compiler_Insn)));
-    ((*call).kind) = compiler_InsnKind_CALL;
+    compiler_Insn *call = compiler_make_insn(compiler_InsnKind_CALL);
     (((*call).value).call) = ((compiler_InsnCall){ .name = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = ((Array){7, "fscanf"}) }), .ret = ret, .args = argsv, .proto = proto });
     compiler_push_insn(call, state);
     return ret;
@@ -638,8 +614,7 @@
     _fe23cc40_convert_to_charp(argsv, state);
     compiler_Value value = _fe23cc40_forward_to_function(argsv, builtins_int8_, ((Array){12, "starts_with"}), state);
     compiler_Value trunc_ret = compiler_make_local_value(builtins_bool_, NULL, state);
-    compiler_Insn *trunc = malloc((sizeof(compiler_Insn)));
-    ((*trunc).kind) = compiler_InsnKind_TRUNC;
+    compiler_Insn *trunc = compiler_make_insn(compiler_InsnKind_TRUNC);
     (((*trunc).value).convert) = ((compiler_InsnConvert){ .ret = trunc_ret, .value = value });
     compiler_push_insn(trunc, state);
     return trunc_ret;
@@ -647,6 +622,11 @@
  compiler_Value _fe23cc40__executable_file(parser_Node *node, Array argsv, compiler_State *state) {
     _fe23cc40_import_function(state, ((Array){16, "executable_file"}));
     return _fe23cc40_forward_to_function(argsv, NULL, ((Array){16, "executable_file"}), state);
+};
+ compiler_Value _fe23cc40__absolute_path(parser_Node *node, Array argsv, compiler_State *state) {
+    _fe23cc40_import_function(state, ((Array){14, "absolute_path"}));
+    _fe23cc40_convert_to_charp(argsv, state);
+    return _fe23cc40_forward_to_function(argsv, NULL, ((Array){14, "absolute_path"}), state);
 };
 DLL_EXPORT void builtin_functions_p_main(Array args) {
     compiler_p_main(args);
@@ -692,6 +672,7 @@ DLL_EXPORT void builtin_functions_p_main(Array args) {
     _fe23cc40_create_function(((Array){7, "system"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){8, "command"}), builtins_string_) }}), ((Array){1, (typechecking_Type *[1]){ builtins_int_ }}), (&_fe23cc40__system), NULL);
     _fe23cc40_create_function(((Array){12, "starts_with"}), ((Array){2, (typechecking_NamedParameter *[2]){ _fe23cc40_param(((Array){4, "str"}), builtins_string_), _fe23cc40_param(((Array){4, "pre"}), builtins_string_) }}), ((Array){1, (typechecking_Type *[1]){ builtins_bool_ }}), (&_fe23cc40__starts_with), NULL);
     _fe23cc40_create_function(((Array){16, "executable_file"}), ((Array){1, (typechecking_NamedParameter *[1]){ _fe23cc40_param(((Array){9, "resolved"}), typechecking_pointer(builtins_char_)) }}), ((Array){0, (typechecking_Type *[]){  }}), (&_fe23cc40__executable_file), NULL);
+    _fe23cc40_create_function(((Array){14, "absolute_path"}), ((Array){2, (typechecking_NamedParameter *[2]){ _fe23cc40_param(((Array){9, "pathname"}), builtins_string_), _fe23cc40_param(((Array){9, "resolved"}), typechecking_pointer(builtins_char_)) }}), ((Array){0, (typechecking_Type *[]){  }}), (&_fe23cc40__absolute_path), NULL);
 };
 
 
