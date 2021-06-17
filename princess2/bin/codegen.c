@@ -136,7 +136,7 @@
     switch (((int)(value.kind))) {
         break;
         case compiler_DebugValueKind_STRING:
-        buffer_append_str((&buf), util_repr((value.s)));
+        buffer_append_str((&buf), util_repr((value.s), false));
         break;
         case compiler_DebugValueKind_INT:
         buffer_append_str((&buf), util_int_to_str((value.i)));
@@ -238,9 +238,12 @@
         }  else {
             buffer_append_char((&buf), 'c');
         };
-        buffer_append_str((&buf), util_repr((value.s)));
+        buffer_append_str((&buf), util_repr((value.s), (!(value.metadata))));
         break;
         case compiler_ValueKind_DEBUG_INFO:
+        if ((value.distinct)) {
+            buffer_append_str((&buf), ((Array){10, "distinct "}));
+        }  ;
         buffer_append_char((&buf), '!');
         buffer_append_str((&buf), (value.name));
         buffer_append_char((&buf), '(');
@@ -465,7 +468,7 @@
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){3, "\x09""]"}).value));
 };
  void _574f02bf_emit(File fp, compiler_Insn *insn) {
-    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
+    fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x09"""}).value));
     switch (((int)((*insn).kind))) {
         break;
         case compiler_InsnKind_FNEG:
@@ -894,6 +897,16 @@ DLL_EXPORT string codegen_gen(toolchain_Module *module) {
         _574f02bf_gen_main_function(fp);
     }  ;
     _574f02bf_gen_cstdlib_includes(fp, module);
+    Array keys_meta = map_keys(((*result).metadata));
+    for (int i = 0;(i < (keys_meta.size));(i += 1)) {
+        string key = (((string *)keys_meta.value)[i]);
+        compiler_Value *value = ((compiler_Value *)map_get(((*result).metadata), key));
+        fprintf(fp, (((Array){5, "%s%s"}).value), (((Array){2, "!"}).value), (key.value));
+        fprintf(fp, (((Array){3, "%s"}).value), (((Array){4, " = "}).value));
+        fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str((*value)).value));
+        fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
+    }
+    ;
     fclose(fp);
     return outfile;
 };

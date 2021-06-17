@@ -226,7 +226,7 @@ DLL_EXPORT int util_gcd(int a, int b) {
 DLL_EXPORT int util_lcm(int a, int b) {
     return ((a * b) / util_gcd(a, b));
 };
-DLL_EXPORT string util_repr(string s) {
+DLL_EXPORT string util_repr(string s, bool zero) {
     buffer_Buffer buf = buffer_make_buffer();
     buffer_append_str((&buf), ((Array){2, "\""}));
     for (int i = 0;(i < (((int64)(s.size)) - ((int64)1)));(i += 1)) {
@@ -249,7 +249,10 @@ DLL_EXPORT string util_repr(string s) {
         };
     }
     ;
-    buffer_append_str((&buf), ((Array){5, "\\00\""}));
+    if (zero) {
+        buffer_append_str((&buf), ((Array){4, "\\00"}));
+    }  ;
+    buffer_append_char((&buf), '\"');
     return buffer_to_string((&buf));
 };
 DLL_EXPORT void util_p_main(Array args) {

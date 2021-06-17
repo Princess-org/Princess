@@ -13,6 +13,7 @@ Array toolchain_include_path;
 ARRAY(toolchain_outfolder, char, 2);
 int toolchain_error_count;
 ARRAY(toolchain_outfile, char, 6);
+ARRAY(toolchain_version, char, 15);
 bool toolchain_print_ast;
 bool toolchain_debug_sym;
 typedef struct scope_Scope scope_Scope;
@@ -20,7 +21,6 @@ typedef struct parser_Node parser_Node;
 typedef struct compiler_Result compiler_Result;
 typedef struct compiler_Value compiler_Value;
 typedef struct toolchain_Module {bool forward_declared; string filename; string llfile; string module; struct parser_Node *node; struct scope_Scope *scope; struct compiler_Result *result; struct map_Map *imported; struct compiler_Value *difile;} toolchain_Module;
-DLL_EXPORT toolchain_Module * toolchain_get_main_module();
 DLL_EXPORT toolchain_Module * toolchain_compile_file(string filename, string mod, toolchain_Module *forward_declared);
 DLL_EXPORT toolchain_Module * toolchain_compile_module(parser_Node *module);
 DLL_EXPORT string toolchain_find_module_file(parser_Node *module);
@@ -33,9 +33,6 @@ DLL_EXPORT scope_Scope * toolchain_get_forward_declared_scope(parser_Node *ident
 #include "debug.c"
 #include "builtins.c"
 #include "compiler.c"
-DLL_EXPORT toolchain_Module * toolchain_get_main_module() {
-    return ((toolchain_Module *)map_get(toolchain_modules, ((Array){5, "main"})));
-};
 DLL_EXPORT scope_Scope * toolchain_get_forward_declared_scope(parser_Node *ident) {
     buffer_Buffer buf = buffer_make_buffer();
     int64 len = (((int64)vector_length((((*ident).value).body))) - ((int64)1));
@@ -170,6 +167,7 @@ DLL_EXPORT void toolchain_p_main(Array args) {
     memcpy((toolchain_outfolder.value), (((Array){2, "."}).value), ((sizeof(char)) * (toolchain_outfolder.size)));
     toolchain_error_count = 0;
     memcpy((toolchain_outfile.value), (((Array){6, "a.out"}).value), ((sizeof(char)) * (toolchain_outfile.size)));
+    memcpy((toolchain_version.value), (((Array){15, "Princess 0.0.1"}).value), ((sizeof(char)) * (toolchain_version.size)));
     toolchain_print_ast = false;
     toolchain_debug_sym = false;
     typechecking_p_main(args);

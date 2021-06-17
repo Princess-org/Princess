@@ -45,6 +45,7 @@ export type ValueKind = enum {
 export type Value = struct {
     kind: ValueKind
     metadata: bool
+    distinct: bool
     name: string
     sign: int
     i: uint64
@@ -232,9 +233,13 @@ export type Function = struct {
 }
 
 export type Result = struct {
+    // Map of Function
     functions: *map::Map
+    // Map of typechecking::Type
     structures: *map::Map
+    // Map of Global
     globals: *map::Map
+    // Map of Value
     metadata: *map::Map
 }
 
@@ -261,8 +266,11 @@ export type State = struct {
     current_block: *Block
     // Vector of LoopState 
     loops: *vector::Vector
-    ditypes: *map::Map
     result: *Result
+    // Map of Value
+    ditypes: *map::Map
+    difile: *Value
+    diunit: *Value
 }
 
 export def make_insn(kind: InsnKind) -> *Insn {
@@ -319,6 +327,28 @@ def push_loop_state(state: *State) {
 
 def pop_loop_state(state: *State) {
     vector::pop((@state).loops)
+}
+
+def make_meta(state: *State) -> *Value {
+    let s = util::int_to_str((@state).meta_counter)
+    (@state).meta_counter += 1
+    let value = allocate(Value)
+    (@value).kind = ValueKind::METADATA
+    (@value).name = s
+    return value
+}
+
+def push_meta(meta: *Value, state: *State) -> *Value {
+    let val = make_meta(state)
+    map::put((@(@state).result).metadata, (@val).name, meta)
+    return val
+}
+
+def meta_to_debug_value(meta: *Value) -> DebugValue {
+    return {
+        kind = DebugValueKind::METADATA,
+        name = (@meta).name
+    } !DebugValue
 }
 
 export def make_label(state: *State) -> Label {
@@ -1548,11 +1578,12 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
 
     let right = (@node).value.assign.right
     let left = (@node).value.assign.left
-    var last_value: Value
+    var last_value = NO_VALUE
 
     var j = 0
     for var i in 0..vector::length(right) {
         let n = vector::get(right, i) !*parser::Node
+        if not n { break }
         var value = walk_expression(n, state)
         let tpe = (@n).tpe
         if not tpe { continue }
@@ -2904,6 +2935,7 @@ def create_function(tpe: *typechecking::Type, body: *vector::Vector, scpe: *scop
         var align = 1
         for var i in 0..length {
             let t = vector::get((@tpe).return_t, i) !*typechecking::Type
+            // TODO Add an underscore in front for the debugger
             let name = util::int_to_str(i)
 
             offset = (ceil(offset / (@t).align  !double) * (@tpe).align) !int
@@ -3127,30 +3159,6 @@ export def compile(module: *toolchain::Module) -> *Result {
     assert((@node).kind == parser::NodeKind::PROGRAM)
     let body = vector::make()
 
-    // Create compilation unit and file
-    if toolchain::debug_sym {
-        let abspath = allocate(char, PATH_MAX)
-        absolute_path(util::dirname((@module).filename), abspath.value)
-        abspath.size = strlen(abspath) + 1
-
-        let debug_values = allocate(DebugParam, 2)
-        debug_values[0] = {
-            name = "filename",
-            value = { kind = DebugValueKind::STRING, s = (@module).filename } !DebugValue
-        } !DebugParam
-        debug_values[1] = {
-            name = "directory",
-            value = { kind = DebugValueKind::STRING, s = abspath } !DebugValue
-        } !DebugParam
-
-        (@module).difile = allocate(Value)
-        @(@module).difile = {
-            kind = ValueKind::DEBUG_INFO,
-            metadata = true,
-            debug_values = debug_values
-        } !Value
-    }
-    
     let state = allocate(State)
     @state = {
         module = module,
@@ -3169,6 +3177,134 @@ export def compile(module: *toolchain::Module) -> *Result {
         metadata = map::make()
     } !Result
 
+    // Create compilation unit and file
+    if toolchain::debug_sym {
+        let abspath = allocate(char, PATH_MAX)
+        absolute_path(util::dirname((@module).filename), abspath.value)
+        abspath.size = strlen(abspath) + 1
+
+        let dvalues1 = allocate(DebugParam, 2)
+        dvalues1[0] = {
+            name = "filename", value = { kind = DebugValueKind::STRING, s = (@module).filename } !DebugValue
+        } !DebugParam
+        dvalues1[1] = {
+            name = "directory", value = { kind = DebugValueKind::STRING, s = abspath } !DebugValue
+        } !DebugParam
+
+        let difile = allocate(Value)
+        @difile = {
+            kind = ValueKind::DEBUG_INFO,
+            metadata = true,
+            name = "DIFile",
+            debug_values = dvalues1
+        } !Value
+        (@state).difile = push_meta(difile, state)
+
+        let dvalues2 = allocate(DebugParam, 5)
+        dvalues2[0] = {
+            name = "language", value = { kind = DebugValueKind::CONST, name = "DW_LANG_C99" } !DebugValue
+        } !DebugParam
+        dvalues2[1] = {
+            name = "file", value = meta_to_debug_value((@state).difile)
+        } !DebugParam
+        dvalues2[2] = {
+            name = "producer", value = { kind = DebugValueKind::STRING, s = toolchain::version } !DebugValue
+        } !DebugParam
+        dvalues2[3] = {
+            name = "isOptimized", value = { kind = DebugValueKind::BOOL, i = 0 } !DebugValue
+        } !DebugParam
+        dvalues2[4] = {
+            name = "emissionKind", value = { kind = DebugValueKind::CONST, name = "FullDebug" } !DebugValue
+        } !DebugParam
+        let diunit = allocate(Value)
+        @diunit = {
+            kind = ValueKind::DEBUG_INFO,
+            metadata = true,
+            distinct = true,
+            name = "DICompileUnit",
+            debug_values = dvalues2
+        } !Value
+        (@state).diunit = push_meta(diunit, state)
+
+        let values = allocate(Value, 1)
+        values[0] = @(@state).diunit
+        let dbgcu = allocate(Value)
+        @dbgcu = {
+            kind = ValueKind::STRUCT,
+            metadata = true,
+            values = values
+        } !Value
+        map::put((@(@state).result).metadata, "llvm.dbg.cu", dbgcu)
+
+        let values2 = allocate(Value, 3)
+        values2[0] = { ValueKind::INT, i = 7, sign = 1, tpe = builtins::int_ } !Value
+        values2[1] = { ValueKind::STRING, metadata = true, s = "Dwarf Version" } !Value
+        values2[2] = { ValueKind::INT, i = 4, sign = 1, tpe = builtins::int_ } !Value
+        let dwarfv = allocate(Value)
+        @dwarfv = {
+            kind = ValueKind::STRUCT,
+            metadata = true,
+            values = values2
+        } !Value
+        let dwarfvp = push_meta(dwarfv, state)
+
+        let values3 = allocate(Value, 3)
+        values3[0] = { ValueKind::INT, i = 2, sign = 1, tpe = builtins::int_ } !Value
+        values3[1] = { ValueKind::STRING, metadata = true, s = "Debug Info Version" } !Value
+        values3[2] = { ValueKind::INT, i = 3, sign = 1, tpe = builtins::int_ } !Value
+        let div = allocate(Value)
+        @div = {
+            kind = ValueKind::STRUCT,
+            metadata = true,
+            values = values3
+        } !Value
+        let divp = push_meta(div, state)
+
+        let values4 = allocate(Value, 3)
+        values4[0] = { ValueKind::INT, i = 1, sign = 1, tpe = builtins::int_ } !Value
+        values4[1] = { ValueKind::STRING, metadata = true, s = "wchar_size" } !Value
+        values4[2] = { ValueKind::INT, i = 4, sign = 1, tpe = builtins::int_ } !Value
+        let wchars = allocate(Value)
+        @wchars = {
+            kind = ValueKind::STRUCT,
+            metadata = true,
+            values = values4
+        } !Value
+        let wcharsp = push_meta(wchars, state)
+        
+        let values5 = allocate(Value, 3)
+        values5[0] = @dwarfvp
+        values5[1] = @divp
+        values5[2] = @wcharsp
+        let flags = allocate(Value)
+        @flags = {
+            kind = ValueKind::STRUCT,
+            metadata = true,
+            values = values5
+        } !Value
+        map::put((@(@state).result).metadata, "llvm.module.flags", flags)
+
+        let values6 = allocate(Value, 1)
+        values6[0] = { ValueKind::STRING, metadata = true, s = toolchain::version } !Value
+        let identv = allocate(Value)
+        @identv = {
+            kind = ValueKind::STRUCT,
+            metadata = true,
+            values = values6
+        } !Value
+        let identp = push_meta(identv, state)
+
+        let values7 = allocate(Value, 1)
+        values7[0] = @identp
+        let ident = allocate(Value)
+        @ident = {
+            kind = ValueKind::STRUCT,
+            metadata = true,
+            values = values7
+        } !Value
+        map::put((@(@state).result).metadata, "llvm.ident", ident)
+    }
+    
     // Forward declare functions from other files
     // TODO This doesn't work for functions that return multiple parameters
     let sc = (@node).scope
