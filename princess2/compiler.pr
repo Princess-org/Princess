@@ -230,6 +230,7 @@ export type Function = struct {
     forward_declare: bool
     // First node
     block: *Block
+    debug: *Value
 }
 
 export type Result = struct {
@@ -271,13 +272,25 @@ export type State = struct {
     ditypes: *map::Map
     difile: *Value
     diunit: *Value
+    // Vector of Value
+    discope: *vector::Vector
+}
+
+def di_type(tpe: *typechecking::Type, state: *State) -> *Value
+
+export def make_insn_dbg(kind: InsnKind, debug: *Value) -> *Insn {
+    let insn = allocate(Insn)
+    (@insn).kind = kind
+    if toolchain::debug_sym {
+        (@insn).debug = debug
+    } else {
+        (@insn).debug = null
+    }
+    return insn
 }
 
 export def make_insn(kind: InsnKind) -> *Insn {
-    let insn = allocate(Insn)
-    (@insn).kind = kind
-    (@insn).debug = null
-    return insn
+    return make_insn_dbg(kind, null)
 }
 
 def make_value(tpe: *typechecking::Type, value: *) -> Value {
@@ -333,8 +346,10 @@ def make_meta(state: *State) -> *Value {
     let s = util::int_to_str((@state).meta_counter)
     (@state).meta_counter += 1
     let value = allocate(Value)
-    (@value).kind = ValueKind::METADATA
-    (@value).name = s
+    @value = {
+        kind = ValueKind::METADATA,
+        name = s
+    } !Value
     return value
 }
 
@@ -345,10 +360,33 @@ def push_meta(meta: *Value, state: *State) -> *Value {
 }
 
 def meta_to_debug_value(meta: *Value) -> DebugValue {
+    assert((@meta).kind == ValueKind::METADATA)
     return {
         kind = DebugValueKind::METADATA,
         name = (@meta).name
     } !DebugValue
+}
+
+export def make_location(node: *parser::Node, state: *State) -> *Value {
+    if not toolchain::debug_sym { return null }
+    let debug_values = allocate(DebugParam, 3)
+    debug_values[0] = {
+        name = "line", value = { kind = DebugValueKind::INT, i = (@node).loc.line } !DebugValue
+    } !DebugParam
+    debug_values[1] = {
+        name = "column", value = { kind = DebugValueKind::INT, i = (@node).loc.column } !DebugValue
+    } !DebugParam
+    debug_values[2] = {
+        name = "scope", value = meta_to_debug_value(vector::peek((@state).discope) !*Value)
+    } !DebugParam
+    
+    let di = allocate(Value)
+    @di = {
+        kind = ValueKind::DEBUG_INFO,
+        name = "DILocation",
+        debug_values = debug_values
+    } !Value
+    return push_meta(di, state)
 }
 
 export def make_label(state: *State) -> Label {
@@ -361,6 +399,85 @@ export def make_unique_name(state: *State) -> string {
     let s = util::int_to_str((@state).counter)
     (@state).counter += 1
     return s
+}
+
+export def push_label(label_: Label, state: *State) {
+    let block = allocate(Block)
+    // TODO Might want to use the actual label here
+    (@block).label_ = label_.name
+    (@block).insn = vector::make()
+    (@block).next = null
+    (@(@state).current_block).next = block
+    (@state).current_block = block
+}
+
+export def push_insn(insn: *Insn, state: *State) {
+    vector::push((@(@state).current_block).insn, insn)
+}
+
+def push_declare_arg(node: *parser::Node, val: Value, name: string, arg: int, state: *State) {
+    if not toolchain::debug_sym { return }
+    var line = (@node).loc.line
+
+    var debug_values: [DebugParam]
+    if arg >= 0 {
+        debug_values = allocate(DebugParam, 6)
+    } else {
+        debug_values = allocate(DebugParam, 5)
+    }
+
+    debug_values[0] = {
+        name = "name", value = { kind = DebugValueKind::STRING, s = name } !DebugValue
+    } !DebugParam
+    debug_values[1] = {
+        name = "scope", value = meta_to_debug_value(vector::peek((@state).discope) !*Value)
+    } !DebugParam
+    debug_values[2] = {
+        name = "file", value = meta_to_debug_value((@state).difile)
+    } !DebugParam
+    debug_values[3] = {
+        name = "line", value = { kind = DebugValueKind::INT, i = line } !DebugValue
+    } !DebugParam
+    debug_values[4] = {
+        name = "type", value = meta_to_debug_value(di_type((@val.tpe).tpe, state))
+    } !DebugParam
+    if arg >= 0 {
+        debug_values[5] = {
+            name = "arg", value = { kind = DebugValueKind::INT, i = arg } !DebugValue
+        } !DebugParam
+    }
+
+    let value = allocate(Value)
+    @value = {
+        kind = ValueKind::DEBUG_INFO,
+        name = "DILocalVariable",
+        debug_values = debug_values
+    } !Value
+
+    // These all need metadata set to true
+    let args = allocate(Value, 3)
+    args[0] = val
+    args[0].metadata = true
+    args[1] = @push_meta(value, state)
+    args[1].metadata = true
+    args[2] = {
+        metadata = true,
+        kind = ValueKind::DEBUG_INFO,
+        name = "DIExpression",
+        debug_values = [] ![DebugParam]
+    } !Value
+
+    let call = make_insn_dbg(InsnKind::CALL, make_location(node, state))
+    (@call).value.call = {
+        name = { kind = ValueKind::GLOBAL, name = "llvm.dbg.declare" } !Value,
+        ret = NO_VALUE,
+        args = args
+    } !InsnCall
+    push_insn(call, state)
+}
+
+def push_declare(node: *parser::Node, val: Value, name: string, state: *State) {
+    push_declare_arg(node, val, name, -1, state)
 }
 
 export def make_int_value(v: int) -> Value {
@@ -420,20 +537,6 @@ export def make_global_value(tpe: *typechecking::Type, name: string, value: *Val
     } !Value
 }
 
-export def push_label(label_: Label, state: *State) {
-    let block = allocate(Block)
-    // TODO Might want to use the actual label here
-    (@block).label_ = label_.name
-    (@block).insn = vector::make()
-    (@block).next = null
-    (@(@state).current_block).next = block
-    (@state).current_block = block
-}
-
-export def push_insn(insn: *Insn, state: *State) {
-    vector::push((@(@state).current_block).insn, insn)
-}
-
 export def charp_str(value: Value, state: *State) -> Value {
     let local = make_local_value(typechecking::pointer(builtins::char_), null, state)
 
@@ -473,8 +576,7 @@ export def charp_static(global: *Value, state: *State) -> Value {
 }
 
 export def charp(str: string, state: *State) -> Value {
-    let tpe = allocate(typechecking::Type)
-    (@tpe).kind = typechecking::TypeKind::STATIC_ARRAY
+    let tpe = typechecking::make_type_raw(typechecking::TypeKind::STATIC_ARRAY)
     (@tpe).tpe = builtins::char_
     (@tpe).length = str.size
     (@tpe).size = (@tpe).length * (size_of char)
@@ -491,6 +593,36 @@ export def charp(str: string, state: *State) -> Value {
     let globalp = allocate(Value)
     @globalp = global
     return charp_static(globalp, state)
+}
+
+// TODO We might want to cache this somewhere
+def make_return_type(tpe: *typechecking::Type) -> *typechecking::Type {
+    // Create anonymous struct as return type
+    let ret_tpe = typechecking::make_anonymous_type(typechecking::TypeKind::STRUCT)
+    (@ret_tpe).packed = false
+    let length = vector::length((@tpe).return_t)
+    let fields = allocate(typechecking::StructMember, length)
+
+    // TODO Somehow refactor this with typechecking::type_lookup
+    var offset = 0
+    var align = 1
+    for var i in 0..length {
+        let t = vector::get((@tpe).return_t, i) !*typechecking::Type
+        // TODO Add an underscore in front for the debugger
+        let name = util::int_to_str(i)
+
+        offset = (ceil(offset / (@t).align  !double) * (@tpe).align) !int
+        align = util::lcm(align, (@t).align !int)
+
+        fields[i] = { (@tpe).line, name, t, offset } !typechecking::StructMember
+        offset += (@t).size
+    }
+    offset = (ceil(offset / align !double) * align) !int
+
+    (@ret_tpe).size = offset
+    (@ret_tpe).align = align
+    (@ret_tpe).fields = fields
+    return ret_tpe
 }
 
 export def walk_expression(node: *parser::Node, state: *State) -> Value
@@ -557,8 +689,7 @@ def walk_Char(node: *parser::Node, state: *State) -> Value {
 def walk_String(node: *parser::Node, state: *State) -> Value {
     let tpe = (@node).tpe
 
-    let strtpe = allocate(typechecking::Type)
-    (@strtpe).kind = typechecking::TypeKind::STATIC_ARRAY
+    let strtpe = typechecking::make_type_raw(typechecking::TypeKind::STATIC_ARRAY)
     (@strtpe).tpe = builtins::char_
     (@strtpe).length = (@node).value.str.size
     (@strtpe).size = (@tpe).length * (size_of char)
@@ -1472,9 +1603,11 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
     var name_v: Value
     var ret: *typechecking::Type = null
     if is_fp {
-        // TODO Support multiple return values
-        assert(vector::length((@tpe).return_t) <= 1)
-        ret = vector::peek((@tpe).return_t) !*typechecking::Type
+        if vector::length((@tpe).return_t) > 1 {
+            ret = make_return_type(tpe)
+        } else {
+            ret = vector::peek((@tpe).return_t) !*typechecking::Type
+        }
         name_v = walk_expression((@node).value.func_call.left, state)
     } else {    
         var name = (@tpe).type_name
@@ -1507,7 +1640,7 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
         value = make_local_value(ret, addrp, state)
     }
 
-    let insn = make_insn(InsnKind::CALL)
+    let insn = make_insn_dbg(InsnKind::CALL, make_location(node, state))
     (@insn).value.call = {
         name = name_v,
         ret = value,
@@ -2731,16 +2864,20 @@ def walk_For(node: *parser::Node, state: *State) {
         let value = scope::get((@iddecl).scope, (@iddecl).value.for_id_decl.ident)
         if not value { return }
 
+        let ret = {
+            kind = ValueKind::LOCAL,
+            name = (@value).assembly_name,
+            tpe = tpe
+        } !Value
+
         let alloca = make_insn(InsnKind::ALLOCA)
         (@alloca).value.alloca = {
-            ret = {
-                kind = ValueKind::LOCAL,
-                name = (@value).assembly_name,
-                tpe = tpe
-            } !Value
+            ret = ret
         } !InsnAlloca
-
         push_insn(alloca, state)
+
+        ret.tpe = typechecking::pointer(tpe)
+        push_declare((@iddecl).value.for_id_decl.ident, ret, (@value).name, state)
 
         loc = {
             kind = ValueKind::LOCAL,
@@ -2859,16 +2996,21 @@ def walk_VarDecl(node: *parser::Node, state: *State) {
             if not value { continue }
             let name = (@value).assembly_name
 
+            let ret = {
+                kind = ValueKind::LOCAL,
+                name = name,
+                tpe = tpe
+            } !Value
+
             let insn = make_insn(InsnKind::ALLOCA)
             (@insn).value.alloca = {
-                ret = {
-                    kind = ValueKind::LOCAL,
-                    name = name,
-                    tpe = tpe
-                } !Value
+                ret = ret
             } !InsnAlloca
-
             push_insn(insn, state)
+
+            ret.tpe = typechecking::pointer(tpe)
+            push_declare(v, ret, (@value).name, state)
+
             vector::push(assign_left, v)
         } else {
             vector::push(assign_left, (@n).value.expr)
@@ -2913,49 +3055,356 @@ export def walk(node: *parser::Node, state: *State) {
     }
 }
 
-def create_function(tpe: *typechecking::Type, body: *vector::Vector, scpe: *scope::Scope, state: *State) {
+def di_basic_type(tpe: *typechecking::Type, name: string, c: string, state: *State) -> *Value {
+    let debug_values = allocate(DebugParam, 4)
+    debug_values[0] = {
+        name = "name", value = { kind = DebugValueKind::STRING, s = name } !DebugValue
+    } !DebugParam
+    debug_values[1] = {
+        name = "size", value = { kind = DebugValueKind::INT, i = (@tpe).size * 8 } !DebugValue
+    } !DebugParam
+    debug_values[2] = {
+        name = "align", value = { kind = DebugValueKind::INT, i = (@tpe).align * 8 } !DebugValue
+    } !DebugParam
+    debug_values[3] = {
+        name = "encoding", value = { kind = DebugValueKind::CONST, name = c } !DebugValue
+    } !DebugParam
+    let di = allocate(Value)
+    @di = {
+        kind = ValueKind::DEBUG_INFO,
+        name = "DIBasicType",
+        debug_values = debug_values
+    } !Value
+    return di
+}
+
+def di_composite_type(value: *Value, tpe: *typechecking::Type, name: string, c: string, state: *State) -> *Value {
+    let elementsarr = allocate(Value, (@tpe).fields.size)
+    for var i in 0..(@tpe).fields.size {
+        let elem = (@tpe).fields[i]
+        let debug_values = allocate(DebugParam, 8)
+        debug_values[0] = {
+            name = "tag", value = { kind = DebugValueKind::CONST, name = "DW_TAG_member" } !DebugValue
+        } !DebugParam
+        debug_values[1] = {
+            name = "name", value = { kind = DebugValueKind::STRING, s = elem.name } !DebugValue
+        } !DebugParam
+        debug_values[2] = {
+            name = "scope", value = meta_to_debug_value(value)
+        } !DebugParam
+        debug_values[3] = {
+            name = "file", value = meta_to_debug_value((@state).difile)
+        } !DebugParam
+        debug_values[4] = {
+            name = "line", value = { kind = DebugValueKind::INT, i = elem.line } !DebugValue
+        } !DebugParam
+        debug_values[5] = {
+            name = "baseType", value = meta_to_debug_value(di_type(elem.tpe, state))
+        } !DebugParam
+        debug_values[6] = {
+            name = "size", value = { kind = DebugValueKind::INT, i = (@elem.tpe).size * 8 } !DebugValue
+        } !DebugParam
+        debug_values[7] = {
+            name = "offset", value = { kind = DebugValueKind::INT, i = elem.offset * 8 } !DebugValue
+        } !DebugParam
+
+        let di = allocate(Value)
+        @di = {
+            kind = ValueKind::DEBUG_INFO,
+            name = "DIDerivedType",
+            debug_values = debug_values
+        } !Value
+        elementsarr[i] = @push_meta(di, state)
+    }
+    
+    let elements = allocate(Value)
+    @elements = {
+        kind = ValueKind::STRUCT,
+        metadata = true,
+        values = elementsarr
+    } !Value
+    let elementsp = push_meta(elements, state)
+
+    let debug_values = allocate(DebugParam, 5)
+    debug_values[0] = {
+        name = "tag", value = { kind = DebugValueKind::CONST, name = c } !DebugValue
+    } !DebugParam
+    debug_values[1] = {
+        name = "file", value = meta_to_debug_value((@state).difile)
+    } !DebugParam
+    debug_values[2] = {
+        name = "line", value = { kind = DebugValueKind::INT, i = (@tpe).line } !DebugValue
+    } !DebugParam
+    debug_values[3] = {
+        name = "size", value = { kind = DebugValueKind::INT, i = (@tpe).size * 8 } !DebugValue
+    } !DebugParam
+    debug_values[4] = {
+        name = "elements", value = meta_to_debug_value(elementsp)
+    } !DebugParam
+
+    let di = allocate(Value)
+    @di = {
+        kind = ValueKind::DEBUG_INFO,
+        name = "DICompositeType",
+        debug_values = debug_values
+    } !Value
+    return di
+}
+
+def di_subroutine_type(tpe: *typechecking::Type, state: *State) -> *Value {
+    let values = allocate(Value, vector::length((@tpe).parameter_t) + 1)
+
+    var ret_tpe: *typechecking::Type = null
+    if vector::length((@tpe).return_t) > 1 {
+        ret_tpe = make_return_type(tpe)
+    } else if vector::length((@tpe).return_t) == 1 {
+        ret_tpe = vector::get((@tpe).return_t, 0) !*typechecking::Type
+    }
+
+    if ret_tpe {
+        values[0] = @di_type(ret_tpe, state)
+    } else {
+        values[0] = NO_VALUE
+    }
+
+    for var i in 0..vector::length((@tpe).parameter_t) {
+        let np = vector::get((@tpe).parameter_t, i) !*typechecking::NamedParameter
+        values[i + 1] = @di_type((@np).value, state)
+    }
+
+    let types = allocate(Value)
+    @types = {
+        kind = ValueKind::STRUCT,
+        metadata = true,
+        values = values
+    } !Value
+    let typesp = push_meta(types, state)
+
+    let debug_values = allocate(DebugParam, 1)
+    debug_values[0] = {
+        name = "types", value = meta_to_debug_value(typesp)
+    } !DebugParam
+
+    let di = allocate(Value)
+    @di = {
+        kind = ValueKind::DEBUG_INFO,
+        name = "DISubroutineType",
+        debug_values = debug_values
+    } !Value
+
+    return push_meta(di, state)
+}
+
+def di_function_type(tpe: *typechecking::Type, state: *State) -> *Value {
+    let diftpe = di_subroutine_type(tpe, state)
+
+    let debug_values = allocate(DebugParam, 3)
+    debug_values[0] = {
+        name = "tag", value = { kind = DebugValueKind::CONST, name = "DW_TAG_pointer_type" } !DebugValue
+    } !DebugParam
+    debug_values[1] = {
+        name = "baseType", value = meta_to_debug_value(diftpe)
+    } !DebugParam
+    debug_values[2] = {
+        name = "size", value = { kind = DebugValueKind::INT, i = (size_of type () -> ()) * 8 } !DebugValue
+    } !DebugParam
+
+    let di = allocate(Value)
+    @di = {
+        kind = ValueKind::DEBUG_INFO,
+        name = "DIDerivedType",
+        debug_values = debug_values
+    } !Value
+    return di
+}
+
+def di_pointer_type(tpe: *typechecking::Type, state: *State) -> *Value {
+    let debug_values = allocate(DebugParam, 3)
+    debug_values[0] = {
+        name = "tag", value = { kind = DebugValueKind::CONST, name = "DW_TAG_pointer_type" } !DebugValue
+    } !DebugParam
+    debug_values[1] = {
+        name = "baseType", value = meta_to_debug_value(di_type((@tpe).tpe, state))
+    } !DebugParam
+    debug_values[2] = {
+        name = "size", value = { kind = DebugValueKind::INT, i = (size_of type *) * 8 } !DebugValue
+    } !DebugParam
+
+    let di = allocate(Value)
+    @di = {
+        kind = ValueKind::DEBUG_INFO,
+        name = "DIDerivedType",
+        debug_values = debug_values
+    } !Value
+    return di
+}
+
+// TODO More dimensions
+def di_static_array_type(tpe: *typechecking::Type, state: *State) -> *Value {
+    
+    let debug_values1 = allocate(DebugParam, 1)
+    debug_values1[0] = {
+        name = "count", value = { kind = DebugValueKind::INT, i = (@tpe).length } !DebugValue
+    } !DebugParam
+    let value = allocate(Value)
+    @value = {
+        kind = ValueKind::DEBUG_INFO,
+        name = "DISubrange",
+        debug_values = debug_values1
+    } !Value
+
+    let values = allocate(Value, 1)
+    values[0] = @push_meta(value, state)
+    let elements = allocate(Value)
+    @elements = {
+        kind = ValueKind::STRUCT,
+        metadata = true,
+        values = values
+    } !Value
+
+    let debug_values = allocate(DebugParam, 4)
+    debug_values[0] = {
+        name = "tag", value = { kind = DebugValueKind::CONST, name = "DW_TAG_array_type" } !DebugValue
+    } !DebugParam
+    debug_values[1] = {
+        name = "baseType", value = meta_to_debug_value(di_type((@tpe).tpe, state))
+    } !DebugParam
+    debug_values[2] = {
+        name = "size", value = { kind = DebugValueKind::INT, i = (@tpe).size * 8 } !DebugValue
+    } !DebugParam
+    debug_values[3] = {
+        name = "elements", value = meta_to_debug_value(push_meta(elements, state))
+    } !DebugParam
+
+    let di = allocate(Value)
+    @di = {
+        kind = ValueKind::DEBUG_INFO,
+        name = "DICompositeType",
+        debug_values = debug_values
+    } !Value
+    return di
+}
+
+def di_array_type(value: *Value, tpe: *typechecking::Type, state: *State) -> *Value {
+    // TODO This should probably be an array type instead (see documentation)
+    let array = typechecking::copy(builtins::array)
+    (@array).fields[1].tpe = typechecking::pointer((@tpe).tpe)
+    return di_composite_type(value, array, "<array>", "DW_TAG_structure_type", state)
+}
+
+def di_type(tpe: *typechecking::Type, state: *State) -> *Value {
+    let anonymous = length((@tpe).type_name) == 0
+    var ditpe: *Value = null
+    if not anonymous {
+        ditpe = map::get((@state).ditypes, (@tpe).type_name) !*Value
+    }
+    if ditpe { return ditpe }
+
+    var name = (@tpe).type_name
+    if anonymous {
+        name = "<anonymous>"
+    }
+
+    ditpe = allocate(Value)
+    let ditpep = push_meta(ditpe, state)
+    if not anonymous {
+        map::put((@state).ditypes, (@tpe).type_name, ditpep)
+    }
+
+    switch (@tpe).kind !int {
+        // TODO compare with char for special casing
+        case typechecking::TypeKind::WORD:
+            if (@tpe).unsig {
+                @ditpe = @di_basic_type(tpe, name, "DW_ATE_unsigned", state)
+            } else {
+                @ditpe = @di_basic_type(tpe, name, "DW_ATE_signed", state)
+            }
+        case typechecking::TypeKind::FLOAT:
+            @ditpe = @di_basic_type(tpe, name, "DW_ATE_float", state)
+        case typechecking::TypeKind::BOOL:
+            @ditpe = @di_basic_type(tpe, name, "DW_ATE_unsigned", state)
+        case typechecking::TypeKind::STRUCT:
+            @ditpe = @di_composite_type(ditpep, tpe, name, "DW_TAG_structure_type", state)
+        case typechecking::TypeKind::UNION:
+            @ditpe = @di_composite_type(ditpep, tpe, name, "DW_TAG_union_type", state)
+        case typechecking::TypeKind::ENUM:
+            // TODO Use enumeration type
+            if (@(@tpe).tpe).unsig {
+                @ditpe = @di_basic_type((@tpe).tpe, name, "DW_ATE_unsigned", state)
+            } else {
+                @ditpe = @di_basic_type((@tpe).tpe, name, "DW_ATE_signed", state)
+            }
+        case typechecking::TypeKind::FUNCTION:
+            @ditpe = @di_function_type(tpe, state)
+        case typechecking::TypeKind::POINTER:
+            @ditpe = @di_pointer_type(tpe, state)
+        case typechecking::TypeKind::STATIC_ARRAY:
+            @ditpe = @di_static_array_type(tpe, state)
+        case typechecking::TypeKind::ARRAY:
+            @ditpe = @di_array_type(ditpep, tpe, state)
+        case:
+            error((@tpe).kind, "\n") 
+            assert(false)
+    }
+    return ditpep
+}
+
+def create_function(node: *parser::Node, tpe: *typechecking::Type, body: *vector::Vector, scpe: *scope::Scope, state: *State) {
+    var line = 0
+    if node { line = (@node).loc.line }
+
     let function = allocate(Function)
     (@function).name = typechecking::mangle_function_name((@tpe).type_name, (@tpe).parameter_t)
     (@function).unmangled = (@tpe).type_name
     (@function).multiple_returns = false
     (@function).forward_declare = true
+    (@function).debug = null
     if body {
         (@function).forward_declare = false
     }
 
+    if toolchain::debug_sym and body {
+        let debug_values = allocate(DebugParam, 7)
+        debug_values[0] = {
+            name = "name", value = { kind = DebugValueKind::STRING, s = (@tpe).type_name } !DebugValue
+        } !DebugParam
+        debug_values[1] = {
+            name = "scope", value = meta_to_debug_value(vector::peek((@state).discope) !*Value)
+        } !DebugParam
+        debug_values[2] = {
+            name = "file", value = meta_to_debug_value((@state).difile)
+        } !DebugParam
+        debug_values[3] = {
+            name = "line", value = { kind = DebugValueKind::INT, i = line } !DebugValue
+        } !DebugParam
+        debug_values[4] = {
+            name = "type", value = meta_to_debug_value(di_subroutine_type(tpe, state))
+        } !DebugParam
+        debug_values[5] = {
+            name = "scopeLine", value = { kind = DebugValueKind::INT, i = line } !DebugValue
+        } !DebugParam
+        debug_values[6] = {
+            name = "unit", value = meta_to_debug_value((@state).diunit)
+        } !DebugParam
+
+        let disub = allocate(Value)
+        @disub = {
+            kind = ValueKind::DEBUG_INFO,
+            name = "DISubprogram",
+            distinct = true,
+            debug_values = debug_values
+        } !Value
+        let disubp = push_meta(disub, state)
+        (@function).debug = disubp
+
+        vector::push((@state).discope, disubp)
+    }
+
     if vector::length((@tpe).return_t) > 1 {
-        // Create anonymous struct as return type
-        let ret_tpe = typechecking::make_anonymous_type(typechecking::TypeKind::STRUCT)
-        (@ret_tpe).packed = false
-        let length = vector::length((@tpe).return_t)
-        let fields = allocate(typechecking::StructMember, length)
-
-        // TODO Somehow refactor this with typechecking::type_lookup
-        var offset = 0
-        var align = 1
-        for var i in 0..length {
-            let t = vector::get((@tpe).return_t, i) !*typechecking::Type
-            // TODO Add an underscore in front for the debugger
-            let name = util::int_to_str(i)
-
-            offset = (ceil(offset / (@t).align  !double) * (@tpe).align) !int
-            align = util::lcm(align, (@t).align !int)
-
-            fields[i] = { name, t, offset } !StructMember
-            offset += (@t).size
-        }
-        offset = (ceil(offset / align !double) * align) !int
-
-        (@ret_tpe).size = offset
-        (@ret_tpe).align = align
-        (@ret_tpe).fields = fields
-
-        (@function).ret = ret_tpe
+        (@function).ret = make_return_type(tpe)
         (@function).multiple_returns = true
-    } else if vector::length((@tpe).return_t) == 1 {
-        (@function).ret = vector::get((@tpe).return_t, 0) !*typechecking::Type
     } else {
-        (@function).ret = null
+        (@function).ret = vector::peek((@tpe).return_t) !*typechecking::Type
     }
 
     (@function).args = vector::make()
@@ -2987,6 +3436,7 @@ def create_function(tpe: *typechecking::Type, body: *vector::Vector, scpe: *scop
                 let v = vars[i]
                 print(v, "\n")
             }*/
+            let oldname = (@np).name
             let name = (@scope::get(scpe, parser::make_identifier([(@np).name]))).assembly_name
             let buf = buffer::make_buffer()
             buffer::append_str(*buf, name)
@@ -2995,17 +3445,23 @@ def create_function(tpe: *typechecking::Type, body: *vector::Vector, scpe: *scop
             (@np).name = buffer::to_string(*buf)
             // Insert alloca and store instructions
 
+            let ret = {
+                kind = ValueKind::LOCAL,
+                name = name,
+                tpe = (@np).value
+            } !Value
+
             let alloca = make_insn(InsnKind::ALLOCA)
             (@alloca).value.alloca = {
-                ret = {
-                    kind = ValueKind::LOCAL,
-                    name = name,
-                    tpe = (@np).value
-                } !Value
+                ret = ret
             } !InsnAlloca
-
             push_insn(alloca, state)
 
+            if (@np).node {
+                ret.tpe = typechecking::pointer((@np).value)
+                push_declare_arg((@np).node, ret, oldname, i + 1, state)
+            }
+            
             let store = make_insn(InsnKind::STORE)
             (@store).value.store = {
                 value = {
@@ -3044,11 +3500,15 @@ def create_function(tpe: *typechecking::Type, body: *vector::Vector, scpe: *scop
             (@ret).value.ret.value = value
             push_insn(ret, state)
         }
+
+        if toolchain::debug_sym {
+            vector::pop((@state).discope)
+        }
     }
 }
 
 def walk_Def(node: *parser::Node, state: *State){
-    create_function((@node).tpe, (@node).value.def_.body, (@node).scope, state)
+    create_function(node, (@node).tpe, (@node).value.def_.body, (@node).scope, state)
 }
 
 def walk_TypeDecl(node: *parser::Node, state: *State) {
@@ -3142,6 +3602,7 @@ def walk_top_Import(node: *parser::Node, body: *vector::Vector, state: *State) {
         (@call).scope = (@node).scope
         (@call).tpe = null
         (@call).function = (@main_value).tpe
+        (@call).loc = (@node).loc
         (@call).value.func_call = {
             left = ident,
             args = args,
@@ -3167,7 +3628,8 @@ export def compile(module: *toolchain::Module) -> *Result {
         meta_counter = 0,
         loops = vector::make(),
         result = allocate(Result),
-        ditypes = map::make()
+        ditypes = map::make(),
+        discope = vector::make()
     } !State
 
     @(@state).result = {
@@ -3182,10 +3644,11 @@ export def compile(module: *toolchain::Module) -> *Result {
         let abspath = allocate(char, PATH_MAX)
         absolute_path(util::dirname((@module).filename), abspath.value)
         abspath.size = strlen(abspath) + 1
+        let file = util::basename((@module).filename)
 
         let dvalues1 = allocate(DebugParam, 2)
         dvalues1[0] = {
-            name = "filename", value = { kind = DebugValueKind::STRING, s = (@module).filename } !DebugValue
+            name = "filename", value = { kind = DebugValueKind::STRING, s = file } !DebugValue
         } !DebugParam
         dvalues1[1] = {
             name = "directory", value = { kind = DebugValueKind::STRING, s = abspath } !DebugValue
@@ -3199,6 +3662,7 @@ export def compile(module: *toolchain::Module) -> *Result {
             debug_values = dvalues1
         } !Value
         (@state).difile = push_meta(difile, state)
+        vector::push((@state).discope, (@state).difile)
 
         let dvalues2 = allocate(DebugParam, 5)
         dvalues2[0] = {
@@ -3317,7 +3781,7 @@ export def compile(module: *toolchain::Module) -> *Result {
                 let value = map::get((@m_scope).fields, keys[i]) !*scope::Value
                 if (@value).share !int & parser::ShareMarker::EXPORT !int {
                     if typechecking::is_function((@value).tpe) {
-                        create_function((@value).tpe, null, sc, state)
+                        create_function(null, (@value).tpe, null, sc, state)
                     } else if not typechecking::is_type((@value).tpe) {
                         let name = (@value).assembly_name
                         let global = allocate(Global)
@@ -3344,6 +3808,7 @@ export def compile(module: *toolchain::Module) -> *Result {
     (@named).name = "args"
     (@named).value = string_array_tpe
     (@named).varargs = false
+    (@named).node = null
     let args = vector::make()
     vector::push(args, named)
 
@@ -3371,7 +3836,7 @@ export def compile(module: *toolchain::Module) -> *Result {
         }
     }
 
-    create_function(main_tpe, body, (@node).scope, state)
+    create_function(ident, main_tpe, body, (@node).scope, state)
 
     return (@state).result
 }

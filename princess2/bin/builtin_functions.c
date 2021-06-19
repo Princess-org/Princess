@@ -19,6 +19,7 @@
     ((*named).name) = name;
     ((*named).value) = tpe;
     ((*named).varargs) = false;
+    ((*named).node) = NULL;
     return named;
 };
  typechecking_NamedParameter * _fe23cc40_varargs(string name, typechecking_Type *tpe) {
@@ -26,6 +27,7 @@
     ((*named).name) = name;
     ((*named).value) = tpe;
     ((*named).varargs) = true;
+    ((*named).node) = NULL;
     return named;
 };
  typechecking_Type * _fe23cc40_make_function_type(string name, Array parameter_t, Array return_t, compiler_Value (*macro)(parser_Node *, Array, compiler_State *), vector_Vector * (*proto)(vector_Vector *, vector_Vector *, typechecking_State *)) {
@@ -39,8 +41,7 @@
         vector_push(rets, (((typechecking_Type **)return_t.value)[i]));
     }
     ;
-    typechecking_Type *tpe = malloc((sizeof(typechecking_Type)));
-    ((*tpe).kind) = typechecking_TypeKind_FUNCTION;
+    typechecking_Type *tpe = typechecking_make_type_raw(typechecking_TypeKind_FUNCTION);
     ((*tpe).name) = name;
     ((*tpe).type_name) = name;
     ((*tpe).parameter_t) = pars;
@@ -133,7 +134,7 @@
         } else if ((tpe == builtins_char_)) {
             buffer_append_str((&buf), ((Array){3, "%c"}));
         }
-        else if (((((bool)typechecking_equals(tpe, builtins_string_)) || ((bool)typechecking_equals(tpe, typechecking_pointer(builtins_char_)))) || ((((*tpe).kind) == typechecking_TypeKind_STATIC_ARRAY) && ((bool)typechecking_equals(((*tpe).tpe), builtins_char_))))) {
+        else if (((typechecking_equals(tpe, builtins_string_) || typechecking_equals(tpe, typechecking_pointer(builtins_char_))) || ((((*tpe).kind) == typechecking_TypeKind_STATIC_ARRAY) && typechecking_equals(((*tpe).tpe), builtins_char_)))) {
             buffer_append_str((&buf), ((Array){3, "%s"}));
         }
         else if (typechecking_is_pointer(tpe)) {
@@ -181,7 +182,7 @@
     if ((!(value.tpe))) {
         return compiler_NO_VALUE;
     }  ;
-    if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && ((bool)typechecking_equals(((*(value.tpe)).tpe), builtins_char_)))) {
+    if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && typechecking_equals(((*(value.tpe)).tpe), builtins_char_))) {
         return compiler_charp_static((value.addr), state);
     } else if (typechecking_equals((value.tpe), builtins_string_)) {
         return compiler_charp_str(value, state);

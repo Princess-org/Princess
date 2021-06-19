@@ -116,8 +116,21 @@ DLL_EXPORT string util_dirname(string file) {
         }  ;
     }
     ;
-    Array ret = ((Array){(last_slash + 1), malloc((((int64)(sizeof(char))) * ((int64)(last_slash + 1))))});
+    Array ret = ((Array){(last_slash + 2), calloc((last_slash + 2), (sizeof(char)))});
     memcpy((ret.value), (file.value), (last_slash + 1));
+    return ret;
+};
+DLL_EXPORT string util_basename(string file) {
+    int last_slash = 0;
+    for (int i = 0;(i < (file.size));(i += 1)) {
+        char c = (((char *)file.value)[i]);
+        if (((c == '/') || (c == '\\'))) {
+            last_slash = i;
+        }  ;
+    }
+    ;
+    Array ret = ((Array){(((int64)(file.size)) - ((int64)last_slash)), calloc((((int64)(file.size)) - ((int64)last_slash)), (sizeof(char)))});
+    memcpy((ret.value), ((file.value) + last_slash), (((int64)(file.size)) - ((int64)last_slash)));
     return ret;
 };
 DLL_EXPORT string util_exe_folder() {

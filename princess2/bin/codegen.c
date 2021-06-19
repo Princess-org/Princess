@@ -645,6 +645,10 @@
     }
     ;
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, ")"}).value));
+    if (((*function).debug)) {
+        fprintf(fp, (((Array){3, "%s"}).value), (((Array){7, " !dbg "}).value));
+        fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str((*((*function).debug))).value));
+    }  ;
     if ((!((*function).forward_declare))) {
         fprintf(fp, (((Array){3, "%s"}).value), (((Array){4, " {\x0a"""}).value));
         compiler_Block *block = ((*function).block);
@@ -766,6 +770,9 @@
     fclose(fp2);
     fprintf(fp, (((Array){3, "%s"}).value), (header.value));
     free((header.value));
+    if (toolchain_debug_sym) {
+        fprintf(fp, (((Array){3, "%s"}).value), (((Array){62, "declare void @llvm.dbg.declare(metadata, metadata, metadata)\x0a"""}).value));
+    }  ;
 };
  void _574f02bf_gen_header(File fp, toolchain_Module *module) {
     fprintf(fp, (((Array){7, "%s%s%s"}).value), (((Array){20, "source_filename = \""}).value), (((*module).filename).value), (((Array){3, "\"\x0a"""}).value));

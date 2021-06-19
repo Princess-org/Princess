@@ -57,16 +57,24 @@ typedef struct compiler_InsnBr {struct compiler_Value cond; struct compiler_Labe
 typedef union compiler_InsnValue {struct compiler_InsnArithmetic arith; struct compiler_InsnReturn ret; struct compiler_InsnStore store; struct compiler_InsnLoad load; struct compiler_InsnAlloca alloca; struct compiler_InsnCall call; struct compiler_InsnBrUnc br_unc; struct compiler_InsnBr br; struct compiler_InsnInsertValue insert_value; struct compiler_InsnExtractValue extract_value; struct compiler_InsnGetElementPtr gep; struct compiler_InsnConvert convert; struct compiler_InsnCmp cmp; struct compiler_InsnFneg fneg; struct compiler_InsnSwitch switch_;} compiler_InsnValue;
 typedef struct compiler_Insn {enum compiler_InsnKind kind; union compiler_InsnValue value; struct compiler_Value *debug;} compiler_Insn;
 typedef struct compiler_Block {string label_; struct vector_Vector *insn; struct compiler_Block *next;} compiler_Block;
-typedef struct compiler_Function {string name; string unmangled; struct vector_Vector *args; struct typechecking_Type *ret; bool multiple_returns; bool forward_declare; struct compiler_Block *block;} compiler_Function;
+typedef struct compiler_Function {string name; string unmangled; struct vector_Vector *args; struct typechecking_Type *ret; bool multiple_returns; bool forward_declare; struct compiler_Block *block; struct compiler_Value *debug;} compiler_Function;
 typedef struct compiler_Result {struct map_Map *functions; struct map_Map *structures; struct map_Map *globals; struct map_Map *metadata;} compiler_Result;
 typedef struct compiler_Global {bool external; bool private; string name; struct typechecking_Type *tpe; struct compiler_Value *value;} compiler_Global;
 typedef struct _87f75ce3_LoopState {struct compiler_Insn *break_insn; struct compiler_Insn *continue_insn;} _87f75ce3_LoopState;
-typedef struct compiler_State {struct toolchain_Module *module; int counter; int global_counter; int meta_counter; struct compiler_Function *current_function; struct compiler_Block *current_block; struct vector_Vector *loops; struct compiler_Result *result; struct map_Map *ditypes; struct compiler_Value *difile; struct compiler_Value *diunit;} compiler_State;
-DLL_EXPORT compiler_Insn * compiler_make_insn(compiler_InsnKind kind) {
+typedef struct compiler_State {struct toolchain_Module *module; int counter; int global_counter; int meta_counter; struct compiler_Function *current_function; struct compiler_Block *current_block; struct vector_Vector *loops; struct compiler_Result *result; struct map_Map *ditypes; struct compiler_Value *difile; struct compiler_Value *diunit; struct vector_Vector *discope;} compiler_State;
+ compiler_Value * _87f75ce3_di_type(typechecking_Type *tpe, compiler_State *state);
+DLL_EXPORT compiler_Insn * compiler_make_insn_dbg(compiler_InsnKind kind, compiler_Value *debug) {
     compiler_Insn *insn = malloc((sizeof(compiler_Insn)));
     ((*insn).kind) = kind;
-    ((*insn).debug) = NULL;
+    if (toolchain_debug_sym) {
+        ((*insn).debug) = debug;
+    }  else {
+        ((*insn).debug) = NULL;
+    };
     return insn;
+};
+DLL_EXPORT compiler_Insn * compiler_make_insn(compiler_InsnKind kind) {
+    return compiler_make_insn_dbg(kind, NULL);
 };
  compiler_Value _87f75ce3_make_value(typechecking_Type *tpe, void *value) {
     switch (((int)((*tpe).kind))) {
@@ -119,8 +127,7 @@ DLL_EXPORT compiler_Insn * compiler_make_insn(compiler_InsnKind kind) {
     string s = util_int_to_str(((*state).meta_counter));
     (((*state).meta_counter) += 1);
     compiler_Value *value = malloc((sizeof(compiler_Value)));
-    ((*value).kind) = compiler_ValueKind_METADATA;
-    ((*value).name) = s;
+    (*value) = ((compiler_Value){ .kind = compiler_ValueKind_METADATA, .name = s });
     return value;
 };
  compiler_Value * _87f75ce3_push_meta(compiler_Value *meta, compiler_State *state) {
@@ -129,7 +136,20 @@ DLL_EXPORT compiler_Insn * compiler_make_insn(compiler_InsnKind kind) {
     return val;
 };
  compiler_DebugValue _87f75ce3_meta_to_debug_value(compiler_Value *meta) {
+    assert((((*meta).kind) == compiler_ValueKind_METADATA));
     return ((compiler_DebugValue){ .kind = compiler_DebugValueKind_METADATA, .name = ((*meta).name) });
+};
+DLL_EXPORT compiler_Value * compiler_make_location(parser_Node *node, compiler_State *state) {
+    if ((!toolchain_debug_sym)) {
+        return NULL;
+    }  ;
+    Array debug_values = ((Array){3, malloc((((int64)(sizeof(compiler_DebugParam))) * ((int64)3)))});
+    (((compiler_DebugParam *)debug_values.value)[0]) = ((compiler_DebugParam){ .name = ((Array){5, "line"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = (((*node).loc).line) }) });
+    (((compiler_DebugParam *)debug_values.value)[1]) = ((compiler_DebugParam){ .name = ((Array){7, "column"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = (((*node).loc).column) }) });
+    (((compiler_DebugParam *)debug_values.value)[2]) = ((compiler_DebugParam){ .name = ((Array){6, "scope"}), .value = _87f75ce3_meta_to_debug_value(((compiler_Value *)vector_peek(((*state).discope)))) });
+    compiler_Value *di = malloc((sizeof(compiler_Value)));
+    (*di) = ((compiler_Value){ .kind = compiler_ValueKind_DEBUG_INFO, .name = ((Array){11, "DILocation"}), .debug_values = debug_values });
+    return _87f75ce3_push_meta(di, state);
 };
 DLL_EXPORT compiler_Label compiler_make_label(compiler_State *state) {
     string s = util_int_to_str(((*state).counter));
@@ -140,6 +160,51 @@ DLL_EXPORT string compiler_make_unique_name(compiler_State *state) {
     string s = util_int_to_str(((*state).counter));
     (((*state).counter) += 1);
     return s;
+};
+DLL_EXPORT void compiler_push_label(compiler_Label label_, compiler_State *state) {
+    compiler_Block *block = malloc((sizeof(compiler_Block)));
+    ((*block).label_) = (label_.name);
+    ((*block).insn) = vector_make();
+    ((*block).next) = NULL;
+    ((*((*state).current_block)).next) = block;
+    ((*state).current_block) = block;
+};
+DLL_EXPORT void compiler_push_insn(compiler_Insn *insn, compiler_State *state) {
+    vector_push(((*((*state).current_block)).insn), insn);
+};
+ void _87f75ce3_push_declare_arg(parser_Node *node, compiler_Value val, string name, int arg, compiler_State *state) {
+    if ((!toolchain_debug_sym)) {
+        return ;
+    }  ;
+    int line = (((*node).loc).line);
+    Array debug_values;
+    if ((arg >= 0)) {
+        debug_values = ((Array){6, malloc((((int64)(sizeof(compiler_DebugParam))) * ((int64)6)))});
+    }  else {
+        debug_values = ((Array){5, malloc((((int64)(sizeof(compiler_DebugParam))) * ((int64)5)))});
+    };
+    (((compiler_DebugParam *)debug_values.value)[0]) = ((compiler_DebugParam){ .name = ((Array){5, "name"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_STRING, .s = name }) });
+    (((compiler_DebugParam *)debug_values.value)[1]) = ((compiler_DebugParam){ .name = ((Array){6, "scope"}), .value = _87f75ce3_meta_to_debug_value(((compiler_Value *)vector_peek(((*state).discope)))) });
+    (((compiler_DebugParam *)debug_values.value)[2]) = ((compiler_DebugParam){ .name = ((Array){5, "file"}), .value = _87f75ce3_meta_to_debug_value(((*state).difile)) });
+    (((compiler_DebugParam *)debug_values.value)[3]) = ((compiler_DebugParam){ .name = ((Array){5, "line"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = line }) });
+    (((compiler_DebugParam *)debug_values.value)[4]) = ((compiler_DebugParam){ .name = ((Array){5, "type"}), .value = _87f75ce3_meta_to_debug_value(_87f75ce3_di_type(((*(val.tpe)).tpe), state)) });
+    if ((arg >= 0)) {
+        (((compiler_DebugParam *)debug_values.value)[5]) = ((compiler_DebugParam){ .name = ((Array){4, "arg"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = arg }) });
+    }  ;
+    compiler_Value *value = malloc((sizeof(compiler_Value)));
+    (*value) = ((compiler_Value){ .kind = compiler_ValueKind_DEBUG_INFO, .name = ((Array){16, "DILocalVariable"}), .debug_values = debug_values });
+    Array args = ((Array){3, malloc((((int64)(sizeof(compiler_Value))) * ((int64)3)))});
+    (((compiler_Value *)args.value)[0]) = val;
+    ((((compiler_Value *)args.value)[0]).metadata) = true;
+    (((compiler_Value *)args.value)[1]) = (*_87f75ce3_push_meta(value, state));
+    ((((compiler_Value *)args.value)[1]).metadata) = true;
+    (((compiler_Value *)args.value)[2]) = ((compiler_Value){ .metadata = true, .kind = compiler_ValueKind_DEBUG_INFO, .name = ((Array){13, "DIExpression"}), .debug_values = ((Array){0, (compiler_DebugParam[]){  }}) });
+    compiler_Insn *call = compiler_make_insn_dbg(compiler_InsnKind_CALL, compiler_make_location(node, state));
+    (((*call).value).call) = ((compiler_InsnCall){ .name = ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = ((Array){17, "llvm.dbg.declare"}) }), .ret = compiler_NO_VALUE, .args = args });
+    compiler_push_insn(call, state);
+};
+ void _87f75ce3_push_declare(parser_Node *node, compiler_Value val, string name, compiler_State *state) {
+    _87f75ce3_push_declare_arg(node, val, name, (-1), state);
 };
 DLL_EXPORT compiler_Value compiler_make_int_value(int v) {
     int i = v;
@@ -171,17 +236,6 @@ DLL_EXPORT compiler_Value compiler_make_global_value(typechecking_Type *tpe, str
     map_put(((*((*state).result)).globals), ((*global).name), global);
     return ((compiler_Value){ .kind = compiler_ValueKind_GLOBAL, .name = name, .tpe = typechecking_pointer(tpe), .addr = NULL });
 };
-DLL_EXPORT void compiler_push_label(compiler_Label label_, compiler_State *state) {
-    compiler_Block *block = malloc((sizeof(compiler_Block)));
-    ((*block).label_) = (label_.name);
-    ((*block).insn) = vector_make();
-    ((*block).next) = NULL;
-    ((*((*state).current_block)).next) = block;
-    ((*state).current_block) = block;
-};
-DLL_EXPORT void compiler_push_insn(compiler_Insn *insn, compiler_State *state) {
-    vector_push(((*((*state).current_block)).insn), insn);
-};
 DLL_EXPORT compiler_Value compiler_charp_str(compiler_Value value, compiler_State *state) {
     compiler_Value local = compiler_make_local_value(typechecking_pointer(builtins_char_), NULL, state);
     Array index = ((Array){1, malloc((((int64)(sizeof(int))) * ((int64)1)))});
@@ -202,8 +256,7 @@ DLL_EXPORT compiler_Value compiler_charp_static(compiler_Value *global, compiler
     return local;
 };
 DLL_EXPORT compiler_Value compiler_charp(string str, compiler_State *state) {
-    typechecking_Type *tpe = malloc((sizeof(typechecking_Type)));
-    ((*tpe).kind) = typechecking_TypeKind_STATIC_ARRAY;
+    typechecking_Type *tpe = typechecking_make_type_raw(typechecking_TypeKind_STATIC_ARRAY);
     ((*tpe).tpe) = builtins_char_;
     ((*tpe).length) = (str.size);
     ((*tpe).size) = (((*tpe).length) * ((size_t)(sizeof(char))));
@@ -214,6 +267,28 @@ DLL_EXPORT compiler_Value compiler_charp(string str, compiler_State *state) {
     compiler_Value *globalp = malloc((sizeof(compiler_Value)));
     (*globalp) = global;
     return compiler_charp_static(globalp, state);
+};
+ typechecking_Type * _87f75ce3_make_return_type(typechecking_Type *tpe) {
+    typechecking_Type *ret_tpe = typechecking_make_anonymous_type(typechecking_TypeKind_STRUCT);
+    ((*ret_tpe).packed) = false;
+    size_t length = vector_length(((*tpe).return_t));
+    Array fields = ((Array){length, malloc(((sizeof(typechecking_StructMember)) * ((size_t)length)))});
+    int offset = 0;
+    int align = 1;
+    for (int i = 0;(i < length);(i += 1)) {
+        typechecking_Type *t = ((typechecking_Type *)vector_get(((*tpe).return_t), i));
+        string name = util_int_to_str(i);
+        offset = ((int)(ceil((((double)offset) / ((double)((*t).align)))) * ((double)((*tpe).align))));
+        align = util_lcm(align, ((int)((*t).align)));
+        (((typechecking_StructMember *)fields.value)[i]) = ((typechecking_StructMember){ ((*tpe).line), name, t, offset });
+        (offset += ((*t).size));
+    }
+    ;
+    offset = ((int)(ceil((((double)offset) / ((double)align))) * ((double)align)));
+    ((*ret_tpe).size) = offset;
+    ((*ret_tpe).align) = align;
+    ((*ret_tpe).fields) = fields;
+    return ret_tpe;
 };
 DLL_EXPORT compiler_Value compiler_walk_expression(parser_Node *node, compiler_State *state);
 DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
@@ -250,8 +325,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
 };
  compiler_Value _87f75ce3_walk_String(parser_Node *node, compiler_State *state) {
     typechecking_Type *tpe = ((*node).tpe);
-    typechecking_Type *strtpe = malloc((sizeof(typechecking_Type)));
-    ((*strtpe).kind) = typechecking_TypeKind_STATIC_ARRAY;
+    typechecking_Type *strtpe = typechecking_make_type_raw(typechecking_TypeKind_STATIC_ARRAY);
     ((*strtpe).tpe) = builtins_char_;
     ((*strtpe).length) = ((((*node).value).str).size);
     ((*strtpe).size) = (((*tpe).length) * ((size_t)(sizeof(char))));
@@ -839,8 +913,11 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     compiler_Value name_v;
     typechecking_Type *ret = NULL;
     if (is_fp) {
-        assert((vector_length(((*tpe).return_t)) <= 1));
-        ret = ((typechecking_Type *)vector_peek(((*tpe).return_t)));
+        if ((vector_length(((*tpe).return_t)) > 1)) {
+            ret = _87f75ce3_make_return_type(tpe);
+        }  else {
+            ret = ((typechecking_Type *)vector_peek(((*tpe).return_t)));
+        };
         name_v = compiler_walk_expression(((((*node).value).func_call).left), state);
     }  else {
         string name = ((*tpe).type_name);
@@ -864,7 +941,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
         (*addrp) = addr;
         value = compiler_make_local_value(ret, addrp, state);
     }  ;
-    compiler_Insn *insn = compiler_make_insn(compiler_InsnKind_CALL);
+    compiler_Insn *insn = compiler_make_insn_dbg(compiler_InsnKind_CALL, compiler_make_location(node, state));
     (((*insn).value).call) = ((compiler_InsnCall){ .name = name_v, .ret = value, .args = args });
     compiler_push_insn(insn, state);
     if (ret) {
@@ -1902,9 +1979,12 @@ int _87f75ce3_max_cases;
         if ((!value)) {
             return ;
         }  ;
+        compiler_Value ret = ((compiler_Value){ .kind = compiler_ValueKind_LOCAL, .name = ((*value).assembly_name), .tpe = tpe });
         compiler_Insn *alloca = compiler_make_insn(compiler_InsnKind_ALLOCA);
-        (((*alloca).value).alloca) = ((compiler_InsnAlloca){ .ret = ((compiler_Value){ .kind = compiler_ValueKind_LOCAL, .name = ((*value).assembly_name), .tpe = tpe }) });
+        (((*alloca).value).alloca) = ((compiler_InsnAlloca){ .ret = ret });
         compiler_push_insn(alloca, state);
+        (ret.tpe) = typechecking_pointer(tpe);
+        _87f75ce3_push_declare(((((*iddecl).value).for_id_decl).ident), ret, ((*value).name), state);
         loc = ((compiler_Value){ .kind = compiler_ValueKind_LOCAL, .name = ((*value).assembly_name), .tpe = typechecking_pointer(tpe) });
     }  else {
         compiler_Value *addr = (compiler_walk_expression(iddecl, state).addr);
@@ -1978,9 +2058,12 @@ int _87f75ce3_max_cases;
                 continue;
             }  ;
             string name = ((*value).assembly_name);
+            compiler_Value ret = ((compiler_Value){ .kind = compiler_ValueKind_LOCAL, .name = name, .tpe = tpe });
             compiler_Insn *insn = compiler_make_insn(compiler_InsnKind_ALLOCA);
-            (((*insn).value).alloca) = ((compiler_InsnAlloca){ .ret = ((compiler_Value){ .kind = compiler_ValueKind_LOCAL, .name = name, .tpe = tpe }) });
+            (((*insn).value).alloca) = ((compiler_InsnAlloca){ .ret = ret });
             compiler_push_insn(insn, state);
+            (ret.tpe) = typechecking_pointer(tpe);
+            _87f75ce3_push_declare(v, ret, ((*value).name), state);
             vector_push(assign_left, v);
         }  else {
             vector_push(assign_left, (((*n).value).expr));
@@ -2034,41 +2117,215 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state) {
     }
     ;
 };
- void _87f75ce3_create_function(typechecking_Type *tpe, vector_Vector *body, scope_Scope *scpe, compiler_State *state) {
+ compiler_Value * _87f75ce3_di_basic_type(typechecking_Type *tpe, string name, string c, compiler_State *state) {
+    Array debug_values = ((Array){4, malloc((((int64)(sizeof(compiler_DebugParam))) * ((int64)4)))});
+    (((compiler_DebugParam *)debug_values.value)[0]) = ((compiler_DebugParam){ .name = ((Array){5, "name"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_STRING, .s = name }) });
+    (((compiler_DebugParam *)debug_values.value)[1]) = ((compiler_DebugParam){ .name = ((Array){5, "size"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = (((int64)((*tpe).size)) * ((int64)8)) }) });
+    (((compiler_DebugParam *)debug_values.value)[2]) = ((compiler_DebugParam){ .name = ((Array){6, "align"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = (((int64)((*tpe).align)) * ((int64)8)) }) });
+    (((compiler_DebugParam *)debug_values.value)[3]) = ((compiler_DebugParam){ .name = ((Array){9, "encoding"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_CONST, .name = c }) });
+    compiler_Value *di = malloc((sizeof(compiler_Value)));
+    (*di) = ((compiler_Value){ .kind = compiler_ValueKind_DEBUG_INFO, .name = ((Array){12, "DIBasicType"}), .debug_values = debug_values });
+    return di;
+};
+ compiler_Value * _87f75ce3_di_composite_type(compiler_Value *value, typechecking_Type *tpe, string name, string c, compiler_State *state) {
+    Array elementsarr = ((Array){(((*tpe).fields).size), malloc(((sizeof(compiler_Value)) * (((*tpe).fields).size)))});
+    for (int i = 0;(i < (((*tpe).fields).size));(i += 1)) {
+        typechecking_StructMember elem = (((typechecking_StructMember *)((*tpe).fields).value)[i]);
+        Array debug_values = ((Array){8, malloc((((int64)(sizeof(compiler_DebugParam))) * ((int64)8)))});
+        (((compiler_DebugParam *)debug_values.value)[0]) = ((compiler_DebugParam){ .name = ((Array){4, "tag"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_CONST, .name = ((Array){14, "DW_TAG_member"}) }) });
+        (((compiler_DebugParam *)debug_values.value)[1]) = ((compiler_DebugParam){ .name = ((Array){5, "name"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_STRING, .s = (elem.name) }) });
+        (((compiler_DebugParam *)debug_values.value)[2]) = ((compiler_DebugParam){ .name = ((Array){6, "scope"}), .value = _87f75ce3_meta_to_debug_value(value) });
+        (((compiler_DebugParam *)debug_values.value)[3]) = ((compiler_DebugParam){ .name = ((Array){5, "file"}), .value = _87f75ce3_meta_to_debug_value(((*state).difile)) });
+        (((compiler_DebugParam *)debug_values.value)[4]) = ((compiler_DebugParam){ .name = ((Array){5, "line"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = (elem.line) }) });
+        (((compiler_DebugParam *)debug_values.value)[5]) = ((compiler_DebugParam){ .name = ((Array){9, "baseType"}), .value = _87f75ce3_meta_to_debug_value(_87f75ce3_di_type((elem.tpe), state)) });
+        (((compiler_DebugParam *)debug_values.value)[6]) = ((compiler_DebugParam){ .name = ((Array){5, "size"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = (((int64)((*(elem.tpe)).size)) * ((int64)8)) }) });
+        (((compiler_DebugParam *)debug_values.value)[7]) = ((compiler_DebugParam){ .name = ((Array){7, "offset"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = (((int64)(elem.offset)) * ((int64)8)) }) });
+        compiler_Value *di = malloc((sizeof(compiler_Value)));
+        (*di) = ((compiler_Value){ .kind = compiler_ValueKind_DEBUG_INFO, .name = ((Array){14, "DIDerivedType"}), .debug_values = debug_values });
+        (((compiler_Value *)elementsarr.value)[i]) = (*_87f75ce3_push_meta(di, state));
+    }
+    ;
+    compiler_Value *elements = malloc((sizeof(compiler_Value)));
+    (*elements) = ((compiler_Value){ .kind = compiler_ValueKind_STRUCT, .metadata = true, .values = elementsarr });
+    compiler_Value *elementsp = _87f75ce3_push_meta(elements, state);
+    Array debug_values = ((Array){5, malloc((((int64)(sizeof(compiler_DebugParam))) * ((int64)5)))});
+    (((compiler_DebugParam *)debug_values.value)[0]) = ((compiler_DebugParam){ .name = ((Array){4, "tag"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_CONST, .name = c }) });
+    (((compiler_DebugParam *)debug_values.value)[1]) = ((compiler_DebugParam){ .name = ((Array){5, "file"}), .value = _87f75ce3_meta_to_debug_value(((*state).difile)) });
+    (((compiler_DebugParam *)debug_values.value)[2]) = ((compiler_DebugParam){ .name = ((Array){5, "line"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = ((*tpe).line) }) });
+    (((compiler_DebugParam *)debug_values.value)[3]) = ((compiler_DebugParam){ .name = ((Array){5, "size"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = (((int64)((*tpe).size)) * ((int64)8)) }) });
+    (((compiler_DebugParam *)debug_values.value)[4]) = ((compiler_DebugParam){ .name = ((Array){9, "elements"}), .value = _87f75ce3_meta_to_debug_value(elementsp) });
+    compiler_Value *di = malloc((sizeof(compiler_Value)));
+    (*di) = ((compiler_Value){ .kind = compiler_ValueKind_DEBUG_INFO, .name = ((Array){16, "DICompositeType"}), .debug_values = debug_values });
+    return di;
+};
+ compiler_Value * _87f75ce3_di_subroutine_type(typechecking_Type *tpe, compiler_State *state) {
+    Array values = ((Array){(((int64)vector_length(((*tpe).parameter_t))) + ((int64)1)), malloc((((int64)(sizeof(compiler_Value))) * (((int64)vector_length(((*tpe).parameter_t))) + ((int64)1))))});
+    typechecking_Type *ret_tpe = NULL;
+    if ((vector_length(((*tpe).return_t)) > 1)) {
+        ret_tpe = _87f75ce3_make_return_type(tpe);
+    } else if ((vector_length(((*tpe).return_t)) == 1)) {
+        ret_tpe = ((typechecking_Type *)vector_get(((*tpe).return_t), 0));
+    } ;
+    if (ret_tpe) {
+        (((compiler_Value *)values.value)[0]) = (*_87f75ce3_di_type(ret_tpe, state));
+    }  else {
+        (((compiler_Value *)values.value)[0]) = compiler_NO_VALUE;
+    };
+    for (int i = 0;(i < vector_length(((*tpe).parameter_t)));(i += 1)) {
+        typechecking_NamedParameter *np = ((typechecking_NamedParameter *)vector_get(((*tpe).parameter_t), i));
+        (((compiler_Value *)values.value)[(i + 1)]) = (*_87f75ce3_di_type(((*np).value), state));
+    }
+    ;
+    compiler_Value *types = malloc((sizeof(compiler_Value)));
+    (*types) = ((compiler_Value){ .kind = compiler_ValueKind_STRUCT, .metadata = true, .values = values });
+    compiler_Value *typesp = _87f75ce3_push_meta(types, state);
+    Array debug_values = ((Array){1, malloc((((int64)(sizeof(compiler_DebugParam))) * ((int64)1)))});
+    (((compiler_DebugParam *)debug_values.value)[0]) = ((compiler_DebugParam){ .name = ((Array){6, "types"}), .value = _87f75ce3_meta_to_debug_value(typesp) });
+    compiler_Value *di = malloc((sizeof(compiler_Value)));
+    (*di) = ((compiler_Value){ .kind = compiler_ValueKind_DEBUG_INFO, .name = ((Array){17, "DISubroutineType"}), .debug_values = debug_values });
+    return _87f75ce3_push_meta(di, state);
+};
+ compiler_Value * _87f75ce3_di_function_type(typechecking_Type *tpe, compiler_State *state) {
+    compiler_Value *diftpe = _87f75ce3_di_subroutine_type(tpe, state);
+    Array debug_values = ((Array){3, malloc((((int64)(sizeof(compiler_DebugParam))) * ((int64)3)))});
+    (((compiler_DebugParam *)debug_values.value)[0]) = ((compiler_DebugParam){ .name = ((Array){4, "tag"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_CONST, .name = ((Array){20, "DW_TAG_pointer_type"}) }) });
+    (((compiler_DebugParam *)debug_values.value)[1]) = ((compiler_DebugParam){ .name = ((Array){9, "baseType"}), .value = _87f75ce3_meta_to_debug_value(diftpe) });
+    (((compiler_DebugParam *)debug_values.value)[2]) = ((compiler_DebugParam){ .name = ((Array){5, "size"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = (((int64)(sizeof(void (*)()))) * ((int64)8)) }) });
+    compiler_Value *di = malloc((sizeof(compiler_Value)));
+    (*di) = ((compiler_Value){ .kind = compiler_ValueKind_DEBUG_INFO, .name = ((Array){14, "DIDerivedType"}), .debug_values = debug_values });
+    return di;
+};
+ compiler_Value * _87f75ce3_di_pointer_type(typechecking_Type *tpe, compiler_State *state) {
+    Array debug_values = ((Array){3, malloc((((int64)(sizeof(compiler_DebugParam))) * ((int64)3)))});
+    (((compiler_DebugParam *)debug_values.value)[0]) = ((compiler_DebugParam){ .name = ((Array){4, "tag"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_CONST, .name = ((Array){20, "DW_TAG_pointer_type"}) }) });
+    (((compiler_DebugParam *)debug_values.value)[1]) = ((compiler_DebugParam){ .name = ((Array){9, "baseType"}), .value = _87f75ce3_meta_to_debug_value(_87f75ce3_di_type(((*tpe).tpe), state)) });
+    (((compiler_DebugParam *)debug_values.value)[2]) = ((compiler_DebugParam){ .name = ((Array){5, "size"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = (((int64)(sizeof(void *))) * ((int64)8)) }) });
+    compiler_Value *di = malloc((sizeof(compiler_Value)));
+    (*di) = ((compiler_Value){ .kind = compiler_ValueKind_DEBUG_INFO, .name = ((Array){14, "DIDerivedType"}), .debug_values = debug_values });
+    return di;
+};
+ compiler_Value * _87f75ce3_di_static_array_type(typechecking_Type *tpe, compiler_State *state) {
+    Array debug_values1 = ((Array){1, malloc((((int64)(sizeof(compiler_DebugParam))) * ((int64)1)))});
+    (((compiler_DebugParam *)debug_values1.value)[0]) = ((compiler_DebugParam){ .name = ((Array){6, "count"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = ((*tpe).length) }) });
+    compiler_Value *value = malloc((sizeof(compiler_Value)));
+    (*value) = ((compiler_Value){ .kind = compiler_ValueKind_DEBUG_INFO, .name = ((Array){11, "DISubrange"}), .debug_values = debug_values1 });
+    Array values = ((Array){1, malloc((((int64)(sizeof(compiler_Value))) * ((int64)1)))});
+    (((compiler_Value *)values.value)[0]) = (*_87f75ce3_push_meta(value, state));
+    compiler_Value *elements = malloc((sizeof(compiler_Value)));
+    (*elements) = ((compiler_Value){ .kind = compiler_ValueKind_STRUCT, .metadata = true, .values = values });
+    Array debug_values = ((Array){4, malloc((((int64)(sizeof(compiler_DebugParam))) * ((int64)4)))});
+    (((compiler_DebugParam *)debug_values.value)[0]) = ((compiler_DebugParam){ .name = ((Array){4, "tag"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_CONST, .name = ((Array){18, "DW_TAG_array_type"}) }) });
+    (((compiler_DebugParam *)debug_values.value)[1]) = ((compiler_DebugParam){ .name = ((Array){9, "baseType"}), .value = _87f75ce3_meta_to_debug_value(_87f75ce3_di_type(((*tpe).tpe), state)) });
+    (((compiler_DebugParam *)debug_values.value)[2]) = ((compiler_DebugParam){ .name = ((Array){5, "size"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = (((int64)((*tpe).size)) * ((int64)8)) }) });
+    (((compiler_DebugParam *)debug_values.value)[3]) = ((compiler_DebugParam){ .name = ((Array){9, "elements"}), .value = _87f75ce3_meta_to_debug_value(_87f75ce3_push_meta(elements, state)) });
+    compiler_Value *di = malloc((sizeof(compiler_Value)));
+    (*di) = ((compiler_Value){ .kind = compiler_ValueKind_DEBUG_INFO, .name = ((Array){16, "DICompositeType"}), .debug_values = debug_values });
+    return di;
+};
+ compiler_Value * _87f75ce3_di_array_type(compiler_Value *value, typechecking_Type *tpe, compiler_State *state) {
+    typechecking_Type *array = typechecking_copy(builtins_array);
+    ((((typechecking_StructMember *)((*array).fields).value)[1]).tpe) = typechecking_pointer(((*tpe).tpe));
+    return _87f75ce3_di_composite_type(value, array, ((Array){8, "<array>"}), ((Array){22, "DW_TAG_structure_type"}), state);
+};
+ compiler_Value * _87f75ce3_di_type(typechecking_Type *tpe, compiler_State *state) {
+    bool anonymous = (((((*tpe).type_name).size) - 1) == 0);
+    compiler_Value *ditpe = NULL;
+    if ((!anonymous)) {
+        ditpe = ((compiler_Value *)map_get(((*state).ditypes), ((*tpe).type_name)));
+    }  ;
+    if (ditpe) {
+        return ditpe;
+    }  ;
+    string name = ((*tpe).type_name);
+    if (anonymous) {
+        name = ((Array){12, "<anonymous>"});
+    }  ;
+    ditpe = malloc((sizeof(compiler_Value)));
+    compiler_Value *ditpep = _87f75ce3_push_meta(ditpe, state);
+    if ((!anonymous)) {
+        map_put(((*state).ditypes), ((*tpe).type_name), ditpep);
+    }  ;
+    switch (((int)((*tpe).kind))) {
+        break;
+        case typechecking_TypeKind_WORD:
+        if (((*tpe).unsig)) {
+            (*ditpe) = (*_87f75ce3_di_basic_type(tpe, name, ((Array){16, "DW_ATE_unsigned"}), state));
+        }  else {
+            (*ditpe) = (*_87f75ce3_di_basic_type(tpe, name, ((Array){14, "DW_ATE_signed"}), state));
+        };
+        break;
+        case typechecking_TypeKind_FLOAT:
+        (*ditpe) = (*_87f75ce3_di_basic_type(tpe, name, ((Array){13, "DW_ATE_float"}), state));
+        break;
+        case typechecking_TypeKind_BOOL:
+        (*ditpe) = (*_87f75ce3_di_basic_type(tpe, name, ((Array){16, "DW_ATE_unsigned"}), state));
+        break;
+        case typechecking_TypeKind_STRUCT:
+        (*ditpe) = (*_87f75ce3_di_composite_type(ditpep, tpe, name, ((Array){22, "DW_TAG_structure_type"}), state));
+        break;
+        case typechecking_TypeKind_UNION:
+        (*ditpe) = (*_87f75ce3_di_composite_type(ditpep, tpe, name, ((Array){18, "DW_TAG_union_type"}), state));
+        break;
+        case typechecking_TypeKind_ENUM:
+        if (((*((*tpe).tpe)).unsig)) {
+            (*ditpe) = (*_87f75ce3_di_basic_type(((*tpe).tpe), name, ((Array){16, "DW_ATE_unsigned"}), state));
+        }  else {
+            (*ditpe) = (*_87f75ce3_di_basic_type(((*tpe).tpe), name, ((Array){14, "DW_ATE_signed"}), state));
+        };
+        break;
+        case typechecking_TypeKind_FUNCTION:
+        (*ditpe) = (*_87f75ce3_di_function_type(tpe, state));
+        break;
+        case typechecking_TypeKind_POINTER:
+        (*ditpe) = (*_87f75ce3_di_pointer_type(tpe, state));
+        break;
+        case typechecking_TypeKind_STATIC_ARRAY:
+        (*ditpe) = (*_87f75ce3_di_static_array_type(tpe, state));
+        break;
+        case typechecking_TypeKind_ARRAY:
+        (*ditpe) = (*_87f75ce3_di_array_type(ditpep, tpe, state));
+        break;
+        default:
+        fprintf(stderr, (((Array){5, "%d%s"}).value), ((*tpe).kind), (((Array){2, "\x0a"""}).value));
+        assert(false);
+    }
+    ;
+    return ditpep;
+};
+ void _87f75ce3_create_function(parser_Node *node, typechecking_Type *tpe, vector_Vector *body, scope_Scope *scpe, compiler_State *state) {
+    int line = 0;
+    if (node) {
+        line = (((*node).loc).line);
+    }  ;
     compiler_Function *function = malloc((sizeof(compiler_Function)));
     ((*function).name) = typechecking_mangle_function_name(((*tpe).type_name), ((*tpe).parameter_t));
     ((*function).unmangled) = ((*tpe).type_name);
     ((*function).multiple_returns) = false;
     ((*function).forward_declare) = true;
+    ((*function).debug) = NULL;
     if (body) {
         ((*function).forward_declare) = false;
     }  ;
+    if ((((bool)toolchain_debug_sym) && ((bool)body))) {
+        Array debug_values = ((Array){7, malloc((((int64)(sizeof(compiler_DebugParam))) * ((int64)7)))});
+        (((compiler_DebugParam *)debug_values.value)[0]) = ((compiler_DebugParam){ .name = ((Array){5, "name"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_STRING, .s = ((*tpe).type_name) }) });
+        (((compiler_DebugParam *)debug_values.value)[1]) = ((compiler_DebugParam){ .name = ((Array){6, "scope"}), .value = _87f75ce3_meta_to_debug_value(((compiler_Value *)vector_peek(((*state).discope)))) });
+        (((compiler_DebugParam *)debug_values.value)[2]) = ((compiler_DebugParam){ .name = ((Array){5, "file"}), .value = _87f75ce3_meta_to_debug_value(((*state).difile)) });
+        (((compiler_DebugParam *)debug_values.value)[3]) = ((compiler_DebugParam){ .name = ((Array){5, "line"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = line }) });
+        (((compiler_DebugParam *)debug_values.value)[4]) = ((compiler_DebugParam){ .name = ((Array){5, "type"}), .value = _87f75ce3_meta_to_debug_value(_87f75ce3_di_subroutine_type(tpe, state)) });
+        (((compiler_DebugParam *)debug_values.value)[5]) = ((compiler_DebugParam){ .name = ((Array){10, "scopeLine"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = line }) });
+        (((compiler_DebugParam *)debug_values.value)[6]) = ((compiler_DebugParam){ .name = ((Array){5, "unit"}), .value = _87f75ce3_meta_to_debug_value(((*state).diunit)) });
+        compiler_Value *disub = malloc((sizeof(compiler_Value)));
+        (*disub) = ((compiler_Value){ .kind = compiler_ValueKind_DEBUG_INFO, .name = ((Array){13, "DISubprogram"}), .distinct = true, .debug_values = debug_values });
+        compiler_Value *disubp = _87f75ce3_push_meta(disub, state);
+        ((*function).debug) = disubp;
+        vector_push(((*state).discope), disubp);
+    }  ;
     if ((vector_length(((*tpe).return_t)) > 1)) {
-        typechecking_Type *ret_tpe = typechecking_make_anonymous_type(typechecking_TypeKind_STRUCT);
-        ((*ret_tpe).packed) = false;
-        size_t length = vector_length(((*tpe).return_t));
-        Array fields = ((Array){length, malloc(((sizeof(typechecking_StructMember)) * ((size_t)length)))});
-        int offset = 0;
-        int align = 1;
-        for (int i = 0;(i < length);(i += 1)) {
-            typechecking_Type *t = ((typechecking_Type *)vector_get(((*tpe).return_t), i));
-            string name = util_int_to_str(i);
-            offset = ((int)(ceil((((double)offset) / ((double)((*t).align)))) * ((double)((*tpe).align))));
-            align = util_lcm(align, ((int)((*t).align)));
-            (((typechecking_StructMember *)fields.value)[i]) = ((typechecking_StructMember){ name, t, offset });
-            (offset += ((*t).size));
-        }
-        ;
-        offset = ((int)(ceil((((double)offset) / ((double)align))) * ((double)align)));
-        ((*ret_tpe).size) = offset;
-        ((*ret_tpe).align) = align;
-        ((*ret_tpe).fields) = fields;
-        ((*function).ret) = ret_tpe;
+        ((*function).ret) = _87f75ce3_make_return_type(tpe);
         ((*function).multiple_returns) = true;
-    } else if ((vector_length(((*tpe).return_t)) == 1)) {
-        ((*function).ret) = ((typechecking_Type *)vector_get(((*tpe).return_t), 0));
-    } else {
-        ((*function).ret) = NULL;
+    }  else {
+        ((*function).ret) = ((typechecking_Type *)vector_peek(((*tpe).return_t)));
     };
     ((*function).args) = vector_make();
     for (int i = 0;(i < vector_length(((*tpe).parameter_t)));(i += 1)) {
@@ -2089,14 +2346,20 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state) {
         ((*state).current_block) = block;
         for (int i = 0;(i < vector_length(((*function).args)));(i += 1)) {
             typechecking_NamedParameter *np = ((typechecking_NamedParameter *)vector_get(((*function).args), i));
+            string oldname = ((*np).name);
             string name = ((*scope_get(scpe, parser_make_identifier(((Array){1, (string[1]){ ((*np).name) }})))).assembly_name);
             buffer_Buffer buf = buffer_make_buffer();
             buffer_append_str((&buf), name);
             buffer_append_str((&buf), ((Array){7, ".value"}));
             ((*np).name) = buffer_to_string((&buf));
+            compiler_Value ret = ((compiler_Value){ .kind = compiler_ValueKind_LOCAL, .name = name, .tpe = ((*np).value) });
             compiler_Insn *alloca = compiler_make_insn(compiler_InsnKind_ALLOCA);
-            (((*alloca).value).alloca) = ((compiler_InsnAlloca){ .ret = ((compiler_Value){ .kind = compiler_ValueKind_LOCAL, .name = name, .tpe = ((*np).value) }) });
+            (((*alloca).value).alloca) = ((compiler_InsnAlloca){ .ret = ret });
             compiler_push_insn(alloca, state);
+            if (((*np).node)) {
+                (ret.tpe) = typechecking_pointer(((*np).value));
+                _87f75ce3_push_declare_arg(((*np).node), ret, oldname, (i + 1), state);
+            }  ;
             compiler_Insn *store = compiler_make_insn(compiler_InsnKind_STORE);
             (((*store).value).store) = ((compiler_InsnStore){ .value = ((compiler_Value){ .kind = compiler_ValueKind_LOCAL, .name = ((*np).name), .tpe = ((*np).value) }), .loc = ((compiler_Value){ .kind = compiler_ValueKind_LOCAL, .name = name, .tpe = typechecking_pointer(((*np).value)) }) });
             compiler_push_insn(store, state);
@@ -2117,10 +2380,13 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state) {
             ((((*ret).value).ret).value) = value;
             compiler_push_insn(ret, state);
         }  ;
+        if (toolchain_debug_sym) {
+            vector_pop(((*state).discope));
+        }  ;
     }  ;
 };
  void _87f75ce3_walk_Def(parser_Node *node, compiler_State *state) {
-    _87f75ce3_create_function(((*node).tpe), ((((*node).value).def_).body), ((*node).scope), state);
+    _87f75ce3_create_function(node, ((*node).tpe), ((((*node).value).def_).body), ((*node).scope), state);
 };
  void _87f75ce3_walk_TypeDecl(parser_Node *node, compiler_State *state) {
     vector_Vector *left = ((((*node).value).type_decl).left);
@@ -2207,6 +2473,7 @@ map_Map *_87f75ce3_imported_modules;
         ((*call).scope) = ((*node).scope);
         ((*call).tpe) = NULL;
         ((*call).function) = ((*main_value).tpe);
+        ((*call).loc) = ((*node).loc);
         (((*call).value).func_call) = ((parser_NodeFuncCall){ .left = ident, .args = args, .kwargs = vector_make() });
         vector_push(body, call);
         map_put(_87f75ce3_imported_modules, filename, map_sentinel);
@@ -2218,18 +2485,20 @@ DLL_EXPORT compiler_Result * compiler_compile(toolchain_Module *module) {
     assert((((*node).kind) == parser_NodeKind_PROGRAM));
     vector_Vector *body = vector_make();
     compiler_State *state = malloc((sizeof(compiler_State)));
-    (*state) = ((compiler_State){ .module = module, .counter = 0, .global_counter = 0, .meta_counter = 0, .loops = vector_make(), .result = malloc((sizeof(compiler_Result))), .ditypes = map_make() });
+    (*state) = ((compiler_State){ .module = module, .counter = 0, .global_counter = 0, .meta_counter = 0, .loops = vector_make(), .result = malloc((sizeof(compiler_Result))), .ditypes = map_make(), .discope = vector_make() });
     (*((*state).result)) = ((compiler_Result){ .functions = map_make(), .structures = map_make(), .globals = map_make(), .metadata = map_make() });
     if (toolchain_debug_sym) {
         Array abspath = ((Array){PATH_MAX, malloc((((int64)(sizeof(char))) * ((int64)PATH_MAX)))});
         absolute_path((util_dirname(((*module).filename)).value), (abspath.value));
         (abspath.size) = (((int64)strlen((abspath.value))) + ((int64)1));
+        string file = util_basename(((*module).filename));
         Array dvalues1 = ((Array){2, malloc((((int64)(sizeof(compiler_DebugParam))) * ((int64)2)))});
-        (((compiler_DebugParam *)dvalues1.value)[0]) = ((compiler_DebugParam){ .name = ((Array){9, "filename"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_STRING, .s = ((*module).filename) }) });
+        (((compiler_DebugParam *)dvalues1.value)[0]) = ((compiler_DebugParam){ .name = ((Array){9, "filename"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_STRING, .s = file }) });
         (((compiler_DebugParam *)dvalues1.value)[1]) = ((compiler_DebugParam){ .name = ((Array){10, "directory"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_STRING, .s = abspath }) });
         compiler_Value *difile = malloc((sizeof(compiler_Value)));
         (*difile) = ((compiler_Value){ .kind = compiler_ValueKind_DEBUG_INFO, .metadata = true, .name = ((Array){7, "DIFile"}), .debug_values = dvalues1 });
         ((*state).difile) = _87f75ce3_push_meta(difile, state);
+        vector_push(((*state).discope), ((*state).difile));
         Array dvalues2 = ((Array){5, malloc((((int64)(sizeof(compiler_DebugParam))) * ((int64)5)))});
         (((compiler_DebugParam *)dvalues2.value)[0]) = ((compiler_DebugParam){ .name = ((Array){9, "language"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_CONST, .name = ((Array){12, "DW_LANG_C99"}) }) });
         (((compiler_DebugParam *)dvalues2.value)[1]) = ((compiler_DebugParam){ .name = ((Array){5, "file"}), .value = _87f75ce3_meta_to_debug_value(((*state).difile)) });
@@ -2293,7 +2562,7 @@ DLL_EXPORT compiler_Result * compiler_compile(toolchain_Module *module) {
                 scope_Value *value = ((scope_Value *)map_get(((*m_scope).fields), (((string *)keys.value)[i])));
                 if ((((int)((*value).share)) & ((int)parser_ShareMarker_EXPORT))) {
                     if (typechecking_is_function(((*value).tpe))) {
-                        _87f75ce3_create_function(((*value).tpe), NULL, sc, state);
+                        _87f75ce3_create_function(NULL, ((*value).tpe), NULL, sc, state);
                     } else if ((!typechecking_is_type(((*value).tpe)))) {
                         string name = ((*value).assembly_name);
                         compiler_Global *global = malloc((sizeof(compiler_Global)));
@@ -2315,6 +2584,7 @@ DLL_EXPORT compiler_Result * compiler_compile(toolchain_Module *module) {
     ((*named).name) = ((Array){5, "args"});
     ((*named).value) = string_array_tpe;
     ((*named).varargs) = false;
+    ((*named).node) = NULL;
     vector_Vector *args = vector_make();
     vector_push(args, named);
     ((*main_tpe).parameter_t) = args;
@@ -2344,7 +2614,7 @@ DLL_EXPORT compiler_Result * compiler_compile(toolchain_Module *module) {
         ;
     }
     ;
-    _87f75ce3_create_function(main_tpe, body, ((*node).scope), state);
+    _87f75ce3_create_function(ident, main_tpe, body, ((*node).scope), state);
     return ((*state).result);
 };
 DLL_EXPORT void compiler_p_main(Array args) {

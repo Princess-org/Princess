@@ -61,6 +61,7 @@ typechecking_Type *_a69ecad8_file_t;
 typechecking_Type *builtins_File_;
 int _a69ecad8_path_max;
 bool _a69ecad8_win32;
+typechecking_Type *builtins_array;
 #include "builtin_functions.c"
 DLL_EXPORT void builtins_p_main(Array args) {
     builtins_builtins = scope_enter_scope(NULL);
@@ -106,6 +107,8 @@ DLL_EXPORT void builtins_p_main(Array args) {
     scope_create_variable(builtins_builtins, parser_make_identifier(((Array){1, (Array[1]){ ((Array){9, "SEEK_END"}) }})), parser_ShareMarker_NONE, parser_VarDecl_CONST, builtins_int_, (&_a69ecad8_seek_end));
     _a69ecad8_file_t = typechecking_make_type(typechecking_TypeKind_STRUCT, parser_make_identifier(((Array){1, (Array[1]){ ((Array){16, "struct._IO_FILE"}) }})));
     (((*_a69ecad8_file_t).fields).size) = 0;
+    ((*_a69ecad8_file_t).size) = 1;
+    ((*_a69ecad8_file_t).align) = 1;
     builtins_File_ = typechecking_pointer(_a69ecad8_file_t);
     scope_create_type(builtins_builtins, parser_make_identifier(((Array){1, (Array[1]){ ((Array){5, "File"}) }})), parser_ShareMarker_NONE, builtins_File_);
     scope_create_variable(builtins_builtins, parser_make_identifier(((Array){1, (Array[1]){ ((Array){6, "stdin"}) }})), parser_ShareMarker_NONE, parser_VarDecl_VAR, builtins_File_, NULL);
@@ -115,6 +118,12 @@ DLL_EXPORT void builtins_p_main(Array args) {
     scope_create_variable(builtins_builtins, parser_make_identifier(((Array){1, (Array[1]){ ((Array){9, "PATH_MAX"}) }})), parser_ShareMarker_NONE, parser_VarDecl_CONST, builtins_int_, (&_a69ecad8_path_max));
     _a69ecad8_win32 = WIN32;
     scope_create_variable(builtins_builtins, parser_make_identifier(((Array){1, (Array[1]){ ((Array){6, "WIN32"}) }})), parser_ShareMarker_NONE, parser_VarDecl_CONST, builtins_bool_, (&_a69ecad8_win32));
+    builtins_array = typechecking_make_type(typechecking_TypeKind_STRUCT, parser_make_identifier(((Array){1, (Array[1]){ ((Array){6, "Array"}) }})));
+    ((*builtins_array).fields) = ((Array){2, malloc((((int64)(sizeof(typechecking_StructMember))) * ((int64)2)))});
+    (((typechecking_StructMember *)((*builtins_array).fields).value)[0]) = ((typechecking_StructMember){ 0, ((Array){5, "size"}), builtins_size_t_, 0 });
+    (((typechecking_StructMember *)((*builtins_array).fields).value)[1]) = ((typechecking_StructMember){ 0, ((Array){6, "value"}), typechecking_pointer(NULL), (sizeof(size_t)) });
+    ((*builtins_array).size) = (sizeof(string));
+    ((*builtins_array).align) = (alignof(string));
     builtin_functions_p_main(args);
 };
 
