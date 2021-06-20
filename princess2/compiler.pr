@@ -20,7 +20,7 @@ export type Label = struct {
 }
 
 export type DebugValueKind = enum {
-    BOOL; INT; STRING; METADATA; CONST
+    BOOL; INT; STRING; METADATA; CONST; DIEXP
 }
 
 export type DebugValue = struct {
@@ -240,6 +240,8 @@ export type Result = struct {
     structures: *map::Map
     // Map of Global
     globals: *map::Map
+    // Map of Global
+    constants: *map::Map
     // Map of Value
     metadata: *map::Map
 }
@@ -250,6 +252,8 @@ export type Global = struct {
     name: string
     tpe: *typechecking::Type
     value: *Value
+    line: int
+    debug: *Value
 }
 
 type LoopState = struct {
@@ -360,6 +364,8 @@ def push_meta(meta: *Value, state: *State) -> *Value {
 }
 
 def meta_to_debug_value(meta: *Value) -> DebugValue {
+    if not meta { return {} !DebugValue }
+    
     assert((@meta).kind == ValueKind::METADATA)
     return {
         kind = DebugValueKind::METADATA,
@@ -371,10 +377,10 @@ export def make_location(node: *parser::Node, state: *State) -> *Value {
     if not toolchain::debug_sym { return null }
     let debug_values = allocate(DebugParam, 3)
     debug_values[0] = {
-        name = "line", value = { kind = DebugValueKind::INT, i = (@node).loc.line } !DebugValue
+        name = "line", value = { kind = DebugValueKind::INT, i = (@node).loc.line + 1 } !DebugValue
     } !DebugParam
     debug_values[1] = {
-        name = "column", value = { kind = DebugValueKind::INT, i = (@node).loc.column } !DebugValue
+        name = "column", value = { kind = DebugValueKind::INT, i = (@node).loc.column + 1 } !DebugValue
     } !DebugParam
     debug_values[2] = {
         name = "scope", value = meta_to_debug_value(vector::peek((@state).discope) !*Value)
@@ -436,7 +442,7 @@ def push_declare_arg(node: *parser::Node, val: Value, name: string, arg: int, st
         name = "file", value = meta_to_debug_value((@state).difile)
     } !DebugParam
     debug_values[3] = {
-        name = "line", value = { kind = DebugValueKind::INT, i = line } !DebugValue
+        name = "line", value = { kind = DebugValueKind::INT, i = line + 1 } !DebugValue
     } !DebugParam
     debug_values[4] = {
         name = "type", value = meta_to_debug_value(di_type((@val.tpe).tpe, state))
@@ -525,9 +531,10 @@ export def make_global_value(tpe: *typechecking::Type, name: string, value: *Val
         private = true,
         name = name,
         tpe = tpe,
-        value = value
+        value = value,
+        line = -1
     } !Global
-    map::put((@(@state).result).globals, (@global).name, global)
+    map::put((@(@state).result).constants, (@global).name, global)
 
     return {
         kind = ValueKind::GLOBAL,
@@ -3096,7 +3103,7 @@ def di_composite_type(value: *Value, tpe: *typechecking::Type, name: string, c: 
             name = "file", value = meta_to_debug_value((@state).difile)
         } !DebugParam
         debug_values[4] = {
-            name = "line", value = { kind = DebugValueKind::INT, i = elem.line } !DebugValue
+            name = "line", value = { kind = DebugValueKind::INT, i = elem.line + 1 } !DebugValue
         } !DebugParam
         debug_values[5] = {
             name = "baseType", value = meta_to_debug_value(di_type(elem.tpe, state))
@@ -3125,7 +3132,7 @@ def di_composite_type(value: *Value, tpe: *typechecking::Type, name: string, c: 
     } !Value
     let elementsp = push_meta(elements, state)
 
-    let debug_values = allocate(DebugParam, 5)
+    let debug_values = allocate(DebugParam, 6)
     debug_values[0] = {
         name = "tag", value = { kind = DebugValueKind::CONST, name = c } !DebugValue
     } !DebugParam
@@ -3133,13 +3140,16 @@ def di_composite_type(value: *Value, tpe: *typechecking::Type, name: string, c: 
         name = "file", value = meta_to_debug_value((@state).difile)
     } !DebugParam
     debug_values[2] = {
-        name = "line", value = { kind = DebugValueKind::INT, i = (@tpe).line } !DebugValue
+        name = "line", value = { kind = DebugValueKind::INT, i = (@tpe).line + 1 } !DebugValue
     } !DebugParam
     debug_values[3] = {
         name = "size", value = { kind = DebugValueKind::INT, i = (@tpe).size * 8 } !DebugValue
     } !DebugParam
     debug_values[4] = {
         name = "elements", value = meta_to_debug_value(elementsp)
+    } !DebugParam
+    debug_values[5] = {
+        name = "name", value = { kind = DebugValueKind::STRING, s = name } !DebugValue
     } !DebugParam
 
     let di = allocate(Value)
@@ -3293,6 +3303,8 @@ def di_array_type(value: *Value, tpe: *typechecking::Type, state: *State) -> *Va
 }
 
 def di_type(tpe: *typechecking::Type, state: *State) -> *Value {
+    if not tpe { return null }
+
     let anonymous = length((@tpe).type_name) == 0
     var ditpe: *Value = null
     if not anonymous {
@@ -3350,7 +3362,7 @@ def di_type(tpe: *typechecking::Type, state: *State) -> *Value {
 }
 
 def create_function(node: *parser::Node, tpe: *typechecking::Type, body: *vector::Vector, scpe: *scope::Scope, state: *State) {
-    var line = 0
+    var line = -1
     if node { line = (@node).loc.line }
 
     let function = allocate(Function)
@@ -3365,8 +3377,9 @@ def create_function(node: *parser::Node, tpe: *typechecking::Type, body: *vector
 
     if toolchain::debug_sym and body {
         let debug_values = allocate(DebugParam, 7)
+        // TODO We might have to use the mangled name here
         debug_values[0] = {
-            name = "name", value = { kind = DebugValueKind::STRING, s = (@tpe).type_name } !DebugValue
+            name = "name", value = { kind = DebugValueKind::STRING, s = (@function).name } !DebugValue
         } !DebugParam
         debug_values[1] = {
             name = "scope", value = meta_to_debug_value(vector::peek((@state).discope) !*Value)
@@ -3375,13 +3388,13 @@ def create_function(node: *parser::Node, tpe: *typechecking::Type, body: *vector
             name = "file", value = meta_to_debug_value((@state).difile)
         } !DebugParam
         debug_values[3] = {
-            name = "line", value = { kind = DebugValueKind::INT, i = line } !DebugValue
+            name = "line", value = { kind = DebugValueKind::INT, i = line + 1 } !DebugValue
         } !DebugParam
         debug_values[4] = {
             name = "type", value = meta_to_debug_value(di_subroutine_type(tpe, state))
         } !DebugParam
         debug_values[5] = {
-            name = "scopeLine", value = { kind = DebugValueKind::INT, i = line } !DebugValue
+            name = "scopeLine", value = { kind = DebugValueKind::INT, i = line + 1 } !DebugValue
         } !DebugParam
         debug_values[6] = {
             name = "unit", value = meta_to_debug_value((@state).diunit)
@@ -3537,7 +3550,8 @@ def walk_top_VarDecl(node: *parser::Node, body: *vector::Vector, state: *State) 
             let global = allocate(Global)
             @global = {
                 name = name,
-                tpe = (@v).tpe
+                tpe = (@v).tpe,
+                line = (@v).loc.line
             } !Global
             map::put((@(@state).result).globals, (@global).name, global)
             vector::push(left, (@n).value.id_decl.value)
@@ -3636,9 +3650,11 @@ export def compile(module: *toolchain::Module) -> *Result {
         functions = map::make(),
         structures = map::make(),
         globals = map::make(),
+        constants = map::make(),
         metadata = map::make()
     } !Result
 
+    var globals: *Value = null
     // Create compilation unit and file
     if toolchain::debug_sym {
         let abspath = allocate(char, PATH_MAX)
@@ -3664,7 +3680,8 @@ export def compile(module: *toolchain::Module) -> *Result {
         (@state).difile = push_meta(difile, state)
         vector::push((@state).discope, (@state).difile)
 
-        let dvalues2 = allocate(DebugParam, 5)
+        globals = allocate(Value)
+        let dvalues2 = allocate(DebugParam, 6)
         dvalues2[0] = {
             name = "language", value = { kind = DebugValueKind::CONST, name = "DW_LANG_C99" } !DebugValue
         } !DebugParam
@@ -3680,6 +3697,10 @@ export def compile(module: *toolchain::Module) -> *Result {
         dvalues2[4] = {
             name = "emissionKind", value = { kind = DebugValueKind::CONST, name = "FullDebug" } !DebugValue
         } !DebugParam
+        dvalues2[5] = {
+            name = "globals", value = meta_to_debug_value(push_meta(globals, state))
+        } !DebugParam
+
         let diunit = allocate(Value)
         @diunit = {
             kind = ValueKind::DEBUG_INFO,
@@ -3788,7 +3809,8 @@ export def compile(module: *toolchain::Module) -> *Result {
                         (@global) = {
                             name = name,
                             tpe = (@value).tpe,
-                            external = true
+                            external = true,
+                            line = -1
                         } !Global
                         map::put((@(@state).result).globals, name, global)
                     }
@@ -3800,6 +3822,8 @@ export def compile(module: *toolchain::Module) -> *Result {
     let ident = parser::make_identifier(["main"])
     (@ident).loc.module = (@module).module
     (@ident).loc.filename = (@module).filename
+    (@ident).loc.line = 0
+    (@ident).loc.column = 0
     let main_tpe = typechecking::make_type(typechecking::TypeKind::FUNCTION, ident)
     
     let string_array_tpe = typechecking::array(builtins::string_)
@@ -3837,6 +3861,67 @@ export def compile(module: *toolchain::Module) -> *Result {
     }
 
     create_function(ident, main_tpe, body, (@node).scope, state)
+
+    if toolchain::debug_sym {
+        let keys = map::keys((@(@state).result).globals)
+        let values = allocate(Value, keys.size)
+        for var i in 0..keys.size {
+            let global = map::get((@(@state).result).globals, keys[i]) !*Global
+
+            let debug_values = allocate(DebugParam, 6)
+            debug_values[0] = {
+                name = "name", value = { kind = DebugValueKind::STRING, s = (@global).name } !DebugValue
+            } !DebugParam
+            debug_values[1] = {
+                name = "scope", value = meta_to_debug_value((@state).diunit)
+            } !DebugParam
+            debug_values[2] = {
+                name = "file", value = meta_to_debug_value((@state).difile)
+            } !DebugParam
+            debug_values[3] = {
+                name = "line", value = { kind = DebugValueKind::INT, i = (@global).line + 1 } !DebugValue
+            } !DebugParam
+            debug_values[4] = {
+                name = "type", value = meta_to_debug_value(di_type((@global).tpe, state))
+            } !DebugParam
+            debug_values[5] = {
+                name = "isDefinition", value = { kind = DebugValueKind::BOOL, i = (not (@global).external) !int } !DebugValue
+            } !DebugParam
+
+            let diglobal = allocate(Value)
+            @diglobal = {
+                kind = ValueKind::DEBUG_INFO,
+                name = "DIGlobalVariable",
+                debug_values = debug_values,
+                distinct = true
+            } !Value
+            let diglobalp = push_meta(diglobal, state)
+
+            let debug_values2 = allocate(DebugParam, 2)
+            debug_values2[0] = {
+                name = "var", value = meta_to_debug_value(diglobalp)
+            } !DebugParam
+            debug_values2[1] = {
+                name = "expr", value = { kind = DebugValueKind::DIEXP } !DebugValue
+            } !DebugParam
+
+            let diglobal_expr = allocate(Value)
+            @diglobal_expr = {
+                kind = ValueKind::DEBUG_INFO,
+                name = "DIGlobalVariableExpression",
+                debug_values = debug_values2
+            } !Value
+            let diglobal_exprp = push_meta(diglobal_expr, state)
+
+            values[i] = @diglobal_exprp
+            (@global).debug = diglobal_exprp
+        }
+        @globals = {
+            kind = ValueKind::STRUCT,
+            metadata = true,
+            values = values
+        } !Value
+    }
 
     return (@state).result
 }

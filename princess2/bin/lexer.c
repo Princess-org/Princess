@@ -107,10 +107,6 @@ DLL_EXPORT void lexer_print_token_list(lexer_TokenList *list) {
         return ((char)26);
     }  ;
     char c = (((char *)s.value)[(*i)]);
-    if ((c == '\x0a')) {
-        ((*line) += 1);
-        (*column) = 0;
-    }  ;
     return c;
 };
  char _9f927900_peek_char(string s, int *i, int n) {
@@ -180,6 +176,10 @@ DLL_EXPORT void lexer_print_token_list(lexer_TokenList *list) {
         } else if ((c == '\"')) {
             end_of_string = true;
             break;
+        }
+        else if ((c == '\x0a')) {
+            ((*line) += 1);
+            (*column) = 0;
         } else {
             buffer_append_char((&buf), c);
         };
@@ -216,6 +216,8 @@ DLL_EXPORT void lexer_print_token_list(lexer_TokenList *list) {
             return _9f927900_error_token(((Array){25, "Invalid escape sequence\x0a"""}), start_line, start_column);
         };
     } else if ((c == '\x0a')) {
+        ((*line) += 1);
+        (*column) = 0;
         return _9f927900_error_token(((Array){21, "Unexpected new line\x0a"""}), start_line, start_column);
     } else {
         result = c;
@@ -465,6 +467,10 @@ DLL_EXPORT void lexer_print_token_list(lexer_TokenList *list) {
                 buffer_append_char((&buf), '/');
                 _9f927900_next_char(s, i, line, column);
             }  ;
+        }
+        else if ((c == '\x0a')) {
+            ((*line) += 1);
+            (*column) = 0;
         } ;
         c = _9f927900_next_char(s, i, line, column);
     }
@@ -669,6 +675,10 @@ DLL_EXPORT void lexer_print_token_list(lexer_TokenList *list) {
     int start_column = (*column);
     char c = _9f927900_peek_char(s, i, 0);
     while ((_9f927900_is_whitespace(c) || ((c == '\x0a') && (depth > 0)))) {
+        if ((c == '\x0a')) {
+            ((*line) += 1);
+            (*column) = 0;
+        }  ;
         c = _9f927900_next_char(s, i, line, column);
     }
     ;
@@ -688,6 +698,8 @@ DLL_EXPORT lexer_TokenList * lexer_lex(string s) {
             token = _9f927900_parse_whitespace(depth, s, (&i), (&line), (&column));
         } else if ((c == '\x0a')) {
             token = _9f927900_simple_token(lexer_TokenType_NEW_LINE, line, column);
+            column = 0;
+            (line += 1);
             (i += 1);
         }
         else if ((c == '(')) {

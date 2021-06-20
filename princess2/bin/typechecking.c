@@ -121,7 +121,7 @@ DLL_EXPORT string typechecking_append_module(string name, string module) {
 DLL_EXPORT typechecking_Type * typechecking_make_type_raw(typechecking_TypeKind kind) {
     typechecking_Type *tpe = malloc((sizeof(typechecking_Type)));
     ((*tpe).type_name) = ((Array){1, ""});
-    ((*tpe).line) = 0;
+    ((*tpe).line) = (-1);
     ((*tpe).kind) = kind;
     return tpe;
 };
@@ -164,7 +164,7 @@ int _3700c937_counter;
 };
 DLL_EXPORT typechecking_Type * typechecking_make_anonymous_type(typechecking_TypeKind kind) {
     typechecking_Type *t = malloc((sizeof(typechecking_Type)));
-    ((*t).line) = 0;
+    ((*t).line) = (-1);
     ((*t).kind) = kind;
     ((*t).type_name) = ((Array){1, ""});
     ((*t).name) = ((Array){1, ""});
@@ -489,7 +489,7 @@ DLL_EXPORT typechecking_Type * typechecking_type_lookup(parser_Node *node, typec
             typechecking_errorn(node, ((Array){26, "Empty struct not allowed\x0a"""}));
             return NULL;
         }  ;
-        Array fields = ((Array){length, malloc(((sizeof(typechecking_StructMember)) * ((size_t)length)))});
+        Array fields = ((Array){length, malloc(((sizeof(typechecking_StructMember)) * length))});
         int offset = 0;
         int align = 1;
         for (int i = 0;(i < length);(i += 1)) {
@@ -522,7 +522,7 @@ DLL_EXPORT typechecking_Type * typechecking_type_lookup(parser_Node *node, typec
             typechecking_errorn(node, ((Array){25, "Empty union not allowed\x0a"""}));
             return NULL;
         }  ;
-        Array fields = ((Array){length, malloc(((sizeof(typechecking_StructMember)) * ((size_t)length)))});
+        Array fields = ((Array){length, malloc(((sizeof(typechecking_StructMember)) * length))});
         int size = 0;
         int align = 1;
         for (int i = 0;(i < length);(i += 1)) {
@@ -1586,7 +1586,7 @@ DLL_EXPORT typechecking_Type * typechecking_common_type(typechecking_Type *a, ty
     ((*ret_tpe).line) = (((*node).loc).line);
     ((*ret_tpe).length) = len;
     ((*ret_tpe).tpe) = tpe;
-    ((*ret_tpe).size) = (len * ((size_t)((*tpe).size)));
+    ((*ret_tpe).size) = (len * ((*tpe).size));
     ((*ret_tpe).align) = ((*tpe).align);
     ((*node).tpe) = ret_tpe;
 };
@@ -1834,7 +1834,7 @@ DLL_EXPORT void typechecking_errorn(parser_Node *node, string msg) {
     int line = (((*node).loc).line);
     int column = (((*node).loc).column);
     fprintf(stderr, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
-    fprintf(stderr, (((Array){13, "%s%s%d%s%d%s"}).value), (filename.value), (((Array){2, "@"}).value), (line + ((int)1)), (((Array){2, ":"}).value), (column + ((int)1)), (((Array){2, "\x0a"""}).value));
+    fprintf(stderr, (((Array){13, "%s%s%d%s%d%s"}).value), (filename.value), (((Array){2, "@"}).value), (line + 1), (((Array){2, ":"}).value), (column + 1), (((Array){2, "\x0a"""}).value));
     fprintf(stderr, (((Array){5, "%s%s"}).value), ((((string *)(((*node).loc).lines).value)[line]).value), (((Array){2, "\x0a"""}).value));
     for (int i = 0;(i < column);(i += 1)) {
         fprintf(stderr, (((Array){3, "%s"}).value), (((Array){2, " "}).value));
@@ -1848,9 +1848,6 @@ DLL_EXPORT void typechecking_p_main(Array args) {
     ;
     _3700c937_counter = 0;
     typechecking_type_ = typechecking_make_anonymous_type(typechecking_TypeKind_TYPE);
-    scope_p_main(args);
-    builtins_p_main(args);
-    debug_p_main(args);
 };
 
 

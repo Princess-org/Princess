@@ -154,6 +154,9 @@
         case compiler_DebugValueKind_METADATA:
         buffer_append_char((&buf), '!');
         buffer_append_str((&buf), (value.name));
+        break;
+        case compiler_DebugValueKind_DIEXP:
+        buffer_append_str((&buf), ((Array){16, "!DIExpression()"}));
     }
     ;
     return buffer_to_string((&buf));
@@ -712,6 +715,10 @@
     } else if ((!((*global).external))) {
         fprintf(fp, (((Array){3, "%s"}).value), (((Array){16, "zeroinitializer"}).value));
     } ;
+    if (((*global).debug)) {
+        fprintf(fp, (((Array){3, "%s"}).value), (((Array){8, ", !dbg "}).value));
+        fprintf(fp, (((Array){3, "%s"}).value), (_574f02bf_value_to_str((*((*global).debug))).value));
+    }  ;
     fprintf(fp, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
  void _574f02bf_gen_main_function(File fp) {
@@ -891,6 +898,12 @@ DLL_EXPORT string codegen_gen(toolchain_Module *module) {
     Array keys_globals = map_keys(((*result).globals));
     for (int i = 0;(i < (keys_globals.size));(i += 1)) {
         compiler_Global *global = ((compiler_Global *)map_get(((*result).globals), (((string *)keys_globals.value)[i])));
+        _574f02bf_emit_global(fp, global);
+    }
+    ;
+    Array keys_constants = map_keys(((*result).constants));
+    for (int i = 0;(i < (keys_constants.size));(i += 1)) {
+        compiler_Global *global = ((compiler_Global *)map_get(((*result).constants), (((string *)keys_constants.value)[i])));
         _574f02bf_emit_global(fp, global);
     }
     ;

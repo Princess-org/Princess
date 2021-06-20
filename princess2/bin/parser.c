@@ -54,8 +54,8 @@ DLL_EXPORT parser_Node * parser_make_identifier(Array s) {
     ((*node).kind) = parser_NodeKind_IDENTIFIER;
     (((*node).loc).filename) = ((Array){9, "builtins"});
     (((*node).loc).module) = ((Array){9, "builtins"});
-    (((*node).loc).line) = 0;
-    (((*node).loc).column) = 0;
+    (((*node).loc).line) = (-1);
+    (((*node).loc).column) = (-1);
     (((*node).loc).module) = ((Array){1, ""});
     (((*node).value).body) = vec;
     ((*node).tpe) = NULL;
@@ -1647,7 +1647,7 @@ DLL_EXPORT parser_Node * parser_parse(lexer_TokenList *list, Array lines, string
         int line = (token.line);
         int column = (token.column);
         fprintf(stderr, (((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
-        fprintf(stderr, (((Array){13, "%s%s%d%s%d%s"}).value), (filename.value), (((Array){2, "@"}).value), (line + ((int)1)), (((Array){2, ":"}).value), (column + ((int)1)), (((Array){2, "\x0a"""}).value));
+        fprintf(stderr, (((Array){13, "%s%s%d%s%d%s"}).value), (filename.value), (((Array){2, "@"}).value), (line + 1), (((Array){2, ":"}).value), (column + 1), (((Array){2, "\x0a"""}).value));
         fprintf(stderr, (((Array){5, "%s%s"}).value), ((((string *)((*state).lines).value)[line]).value), (((Array){2, "\x0a"""}).value));
         for (int i = 0;(i < column);(i += 1)) {
             fprintf(stderr, (((Array){3, "%s"}).value), (((Array){2, " "}).value));
