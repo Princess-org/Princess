@@ -1,7 +1,7 @@
 /* This file was compiled by the grace
    of your highness Princess Vic Nightfall
 */
-#include "princess.h"
+#include "princess2/princess.h"
 #ifndef _main_H
 #define _main_H
 #include "map.c"

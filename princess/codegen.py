@@ -336,7 +336,7 @@ class CCodeGen(CodeGenerator):
             /* This file was compiled by the grace
                of your highness Princess Vic Nightfall
             */
-            #include "princess.h"
+            #include "princess2/princess.h"
             #ifndef _{file}_H
             #define _{file}_H
             {code}

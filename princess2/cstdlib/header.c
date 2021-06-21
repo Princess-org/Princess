@@ -19,4 +19,4 @@
 #include <float.h>
 #include <limits.h>
 
-#include "../../princess.h"
+#include "../princess.h"

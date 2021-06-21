@@ -1,7 +1,7 @@
 /* This file was compiled by the grace
    of your highness Princess Vic Nightfall
 */
-#include "princess.h"
+#include "princess2/princess.h"
 #ifndef _buffer_H
 #define _buffer_H
 int _7f2db423_INITIAL_SIZE;
