@@ -180,6 +180,7 @@ DLL_EXPORT void lexer_print_token_list(lexer_TokenList *list) {
         else if ((c == '\x0a')) {
             ((*line) += 1);
             (*column) = 0;
+            buffer_append_char((&buf), c);
         } else {
             buffer_append_char((&buf), c);
         };

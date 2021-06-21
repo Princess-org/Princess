@@ -135,6 +135,9 @@
     buffer_Buffer buf = buffer_make_buffer();
     switch (((int)(value.kind))) {
         break;
+        case compiler_DebugValueKind_NULL:
+        buffer_append_str((&buf), ((Array){5, "null"}));
+        break;
         case compiler_DebugValueKind_STRING:
         buffer_append_str((&buf), util_repr((value.s), false));
         break;
