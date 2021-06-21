@@ -147,8 +147,8 @@ DLL_EXPORT compiler_Value * compiler_make_location(parser_Node *node, compiler_S
         return NULL;
     }  ;
     Array debug_values = ((Array){3, malloc((((int64)(sizeof(compiler_DebugParam))) * ((int64)3)))});
-    (((compiler_DebugParam *)debug_values.value)[0]) = ((compiler_DebugParam){ .name = ((Array){5, "line"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = ((((*node).loc).line) + ((int)1)) }) });
-    (((compiler_DebugParam *)debug_values.value)[1]) = ((compiler_DebugParam){ .name = ((Array){7, "column"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = ((((*node).loc).column) + ((int)1)) }) });
+    (((compiler_DebugParam *)debug_values.value)[0]) = ((compiler_DebugParam){ .name = ((Array){5, "line"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = ((((*node).loc).line) + 1) }) });
+    (((compiler_DebugParam *)debug_values.value)[1]) = ((compiler_DebugParam){ .name = ((Array){7, "column"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = ((((*node).loc).column) + 1) }) });
     (((compiler_DebugParam *)debug_values.value)[2]) = ((compiler_DebugParam){ .name = ((Array){6, "scope"}), .value = _87f75ce3_meta_to_debug_value(((compiler_Value *)vector_peek(((*state).discope)))) });
     compiler_Value *di = malloc((sizeof(compiler_Value)));
     (*di) = ((compiler_Value){ .kind = compiler_ValueKind_DEBUG_INFO, .name = ((Array){11, "DILocation"}), .debug_values = debug_values });
@@ -189,7 +189,7 @@ DLL_EXPORT void compiler_push_insn(compiler_Insn *insn, compiler_State *state) {
     (((compiler_DebugParam *)debug_values.value)[0]) = ((compiler_DebugParam){ .name = ((Array){5, "name"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_STRING, .s = name }) });
     (((compiler_DebugParam *)debug_values.value)[1]) = ((compiler_DebugParam){ .name = ((Array){6, "scope"}), .value = _87f75ce3_meta_to_debug_value(((compiler_Value *)vector_peek(((*state).discope)))) });
     (((compiler_DebugParam *)debug_values.value)[2]) = ((compiler_DebugParam){ .name = ((Array){5, "file"}), .value = _87f75ce3_meta_to_debug_value(((*state).difile)) });
-    (((compiler_DebugParam *)debug_values.value)[3]) = ((compiler_DebugParam){ .name = ((Array){5, "line"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = (line + ((int)1)) }) });
+    (((compiler_DebugParam *)debug_values.value)[3]) = ((compiler_DebugParam){ .name = ((Array){5, "line"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = (line + 1) }) });
     (((compiler_DebugParam *)debug_values.value)[4]) = ((compiler_DebugParam){ .name = ((Array){5, "type"}), .value = _87f75ce3_meta_to_debug_value(_87f75ce3_di_type(((*(val.tpe)).tpe), state)) });
     if ((arg >= 0)) {
         (((compiler_DebugParam *)debug_values.value)[5]) = ((compiler_DebugParam){ .name = ((Array){4, "arg"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = arg }) });
@@ -262,7 +262,7 @@ DLL_EXPORT compiler_Value compiler_charp(string str, compiler_State *state) {
     typechecking_Type *tpe = typechecking_make_type_raw(typechecking_TypeKind_STATIC_ARRAY);
     ((*tpe).tpe) = builtins_char_;
     ((*tpe).length) = (str.size);
-    ((*tpe).size) = (((*tpe).length) * ((size_t)(sizeof(char))));
+    ((*tpe).size) = (((*tpe).length) * (sizeof(char)));
     ((*tpe).align) = (sizeof(char));
     compiler_Value *value = malloc((sizeof(compiler_Value)));
     (*value) = ((compiler_Value){ .kind = compiler_ValueKind_STRING, .s = str, .tpe = tpe });
@@ -278,8 +278,8 @@ DLL_EXPORT compiler_Value compiler_charp(string str, compiler_State *state) {
     Array debug_values = ((Array){4, malloc((((int64)(sizeof(compiler_DebugParam))) * ((int64)4)))});
     (((compiler_DebugParam *)debug_values.value)[0]) = ((compiler_DebugParam){ .name = ((Array){6, "scope"}), .value = _87f75ce3_meta_to_debug_value(((compiler_Value *)vector_peek(((*state).discope)))) });
     (((compiler_DebugParam *)debug_values.value)[1]) = ((compiler_DebugParam){ .name = ((Array){5, "file"}), .value = _87f75ce3_meta_to_debug_value(((*state).difile)) });
-    (((compiler_DebugParam *)debug_values.value)[2]) = ((compiler_DebugParam){ .name = ((Array){5, "line"}), .value = ((compiler_DebugValue){ compiler_DebugValueKind_INT, .i = ((((*node).loc).line) + ((int)1)) }) });
-    (((compiler_DebugParam *)debug_values.value)[3]) = ((compiler_DebugParam){ .name = ((Array){7, "column"}), .value = ((compiler_DebugValue){ compiler_DebugValueKind_INT, .i = ((((*node).loc).column) + ((int)1)) }) });
+    (((compiler_DebugParam *)debug_values.value)[2]) = ((compiler_DebugParam){ .name = ((Array){5, "line"}), .value = ((compiler_DebugValue){ compiler_DebugValueKind_INT, .i = ((((*node).loc).line) + 1) }) });
+    (((compiler_DebugParam *)debug_values.value)[3]) = ((compiler_DebugParam){ .name = ((Array){7, "column"}), .value = ((compiler_DebugValue){ compiler_DebugValueKind_INT, .i = ((((*node).loc).column) + 1) }) });
     compiler_Value *dilexical = malloc((sizeof(compiler_Value)));
     (*dilexical) = ((compiler_Value){ .kind = compiler_ValueKind_DEBUG_INFO, .name = ((Array){15, "DILexicalBlock"}), .distinct = true, .debug_values = debug_values });
     vector_push(((*state).discope), _87f75ce3_push_meta(dilexical, state));
@@ -293,7 +293,7 @@ DLL_EXPORT compiler_Value compiler_charp(string str, compiler_State *state) {
     typechecking_Type *ret_tpe = typechecking_make_anonymous_type(typechecking_TypeKind_STRUCT);
     ((*ret_tpe).packed) = false;
     size_t length = vector_length(((*tpe).return_t));
-    Array fields = ((Array){length, malloc(((sizeof(typechecking_StructMember)) * ((size_t)length)))});
+    Array fields = ((Array){length, malloc(((sizeof(typechecking_StructMember)) * length))});
     int offset = 0;
     int align = 1;
     for (int i = 0;(i < length);(i += 1)) {
@@ -350,7 +350,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     typechecking_Type *strtpe = typechecking_make_type_raw(typechecking_TypeKind_STATIC_ARRAY);
     ((*strtpe).tpe) = builtins_char_;
     ((*strtpe).length) = ((((*node).value).str).size);
-    ((*strtpe).size) = (((*tpe).length) * ((size_t)(sizeof(char))));
+    ((*strtpe).size) = (((*tpe).length) * (sizeof(char)));
     ((*strtpe).align) = (sizeof(char));
     compiler_Value *str_value = malloc((sizeof(compiler_Value)));
     (*str_value) = ((compiler_Value){ .kind = compiler_ValueKind_STRING, .s = (((*node).value).str), .tpe = tpe });
@@ -397,7 +397,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
             (((compiler_Value *)values.value)[0]) = ((compiler_Value){ .kind = compiler_ValueKind_INT, .tpe = builtins_size_t_, .i = ((*(value.tpe)).length), .sign = 1 });
             (((compiler_Value *)values.value)[1]) = ((compiler_Value){ .kind = compiler_ValueKind_NULL, .tpe = typechecking_pointer(((*tpe).tpe)) });
             return ((compiler_Value){ .kind = compiler_ValueKind_STRUCT, .values = values, .tpe = tpe });
-        } else if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && (((bool)(!((*tpe).tpe))) || ((bool)typechecking_equals(((*tpe).tpe), ((*(value.tpe)).tpe)))))) {
+        } else if (((((*(value.tpe)).kind) == typechecking_TypeKind_STATIC_ARRAY) && (((bool)(!((*tpe).tpe))) || typechecking_equals(((*tpe).tpe), ((*(value.tpe)).tpe))))) {
             compiler_Value local = compiler_make_local_value(typechecking_pointer(((*(value.tpe)).tpe)), NULL, state);
             Array index = ((Array){2, malloc((((int64)(sizeof(compiler_Value))) * ((int64)2)))});
             (((compiler_Value *)index.value)[0]) = compiler_make_int_value(0);
@@ -528,7 +528,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     else if (typechecking_is_pointer(tpe)) {
         if ((((*(value.tpe)).kind) == typechecking_TypeKind_NULL)) {
             return ((compiler_Value){ .kind = compiler_ValueKind_NULL, .tpe = tpe });
-        } else if ((((bool)typechecking_is_pointer((value.tpe))) || (((*(value.tpe)).kind) == typechecking_TypeKind_NULL))) {
+        } else if ((typechecking_is_pointer((value.tpe)) || (((*(value.tpe)).kind) == typechecking_TypeKind_NULL))) {
             kind = compiler_InsnKind_BITCAST;
         }
         else if (typechecking_is_integer((value.tpe))) {
@@ -671,7 +671,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
     compiler_Value *loc = compiler_make_location(node, state);
     typechecking_Type *tpe = ((*node).tpe);
     size_t len = vector_length((((*node).value).body));
-    Array values = ((Array){len, malloc(((sizeof(compiler_Value)) * ((size_t)len)))});
+    Array values = ((Array){len, malloc(((sizeof(compiler_Value)) * len))});
     for (int i = 0;(i < len);(i += 1)) {
         parser_Node *v = ((parser_Node *)vector_get((((*node).value).body), i));
         (((compiler_Value *)values.value)[i]) = compiler_walk_expression(v, state);
@@ -905,7 +905,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
         return compiler_NO_VALUE;
     }  ;
     vector_Vector *parameter_t = ((*tpe).parameter_t);
-    Array args = ((Array){(vector_length(((((*node).value).func_call).args)) + vector_length(((((*node).value).func_call).kwargs))), malloc(((sizeof(compiler_Value)) * ((size_t)(vector_length(((((*node).value).func_call).args)) + vector_length(((((*node).value).func_call).kwargs))))))});
+    Array args = ((Array){(vector_length(((((*node).value).func_call).args)) + vector_length(((((*node).value).func_call).kwargs))), malloc(((sizeof(compiler_Value)) * (vector_length(((((*node).value).func_call).args)) + vector_length(((((*node).value).func_call).kwargs)))))});
     for (int i = 0;(i < vector_length(((((*node).value).func_call).args)));(i += 1)) {
         parser_Node *n = ((parser_Node *)vector_get(((((*node).value).func_call).args), i));
         typechecking_NamedParameter *p = NULL;
@@ -1386,7 +1386,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state);
         right = compiler_make_int_value(0);
         (right.tpe) = builtins_size_t_;
     }  ;
-    if ((((bool)typechecking_is_arithmetic((left.tpe))) && ((bool)typechecking_is_arithmetic((right.tpe))))) {
+    if ((typechecking_is_arithmetic((left.tpe)) && typechecking_is_arithmetic((right.tpe)))) {
         tpe = typechecking_common_type((left.tpe), (right.tpe));
         left = _87f75ce3_convert_to(node, left, tpe, state);
         right = _87f75ce3_convert_to(node, right, tpe, state);
@@ -1931,7 +1931,7 @@ int _87f75ce3_max_cases;
     }  ;
     compiler_Value value = compiler_NO_VALUE;
     if (((*current_function).multiple_returns)) {
-        Array ret_args = ((Array){vector_length((((*node).value).body)), malloc(((sizeof(compiler_Value)) * ((size_t)vector_length((((*node).value).body)))))});
+        Array ret_args = ((Array){vector_length((((*node).value).body)), malloc(((sizeof(compiler_Value)) * vector_length((((*node).value).body))))});
         for (int i = 0;(i < (ret_args.size));(i += 1)) {
             parser_Node *n = ((parser_Node *)vector_get((((*node).value).body), i));
             typechecking_Type *tpe = ((((typechecking_StructMember *)((*((*current_function).ret)).fields).value)[i]).tpe);
@@ -2200,7 +2200,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state) {
         (((compiler_DebugParam *)debug_values.value)[1]) = ((compiler_DebugParam){ .name = ((Array){5, "name"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_STRING, .s = (elem.name) }) });
         (((compiler_DebugParam *)debug_values.value)[2]) = ((compiler_DebugParam){ .name = ((Array){6, "scope"}), .value = _87f75ce3_meta_to_debug_value(value) });
         (((compiler_DebugParam *)debug_values.value)[3]) = ((compiler_DebugParam){ .name = ((Array){5, "file"}), .value = _87f75ce3_meta_to_debug_value(((*state).difile)) });
-        (((compiler_DebugParam *)debug_values.value)[4]) = ((compiler_DebugParam){ .name = ((Array){5, "line"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = ((elem.line) + ((int)1)) }) });
+        (((compiler_DebugParam *)debug_values.value)[4]) = ((compiler_DebugParam){ .name = ((Array){5, "line"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = ((elem.line) + 1) }) });
         (((compiler_DebugParam *)debug_values.value)[5]) = ((compiler_DebugParam){ .name = ((Array){9, "baseType"}), .value = _87f75ce3_meta_to_debug_value(_87f75ce3_di_type((elem.tpe), state)) });
         (((compiler_DebugParam *)debug_values.value)[6]) = ((compiler_DebugParam){ .name = ((Array){5, "size"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = (((int64)((*(elem.tpe)).size)) * ((int64)8)) }) });
         (((compiler_DebugParam *)debug_values.value)[7]) = ((compiler_DebugParam){ .name = ((Array){7, "offset"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = (((int64)(elem.offset)) * ((int64)8)) }) });
@@ -2215,7 +2215,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state) {
     Array debug_values = ((Array){6, malloc((((int64)(sizeof(compiler_DebugParam))) * ((int64)6)))});
     (((compiler_DebugParam *)debug_values.value)[0]) = ((compiler_DebugParam){ .name = ((Array){4, "tag"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_CONST, .name = c }) });
     (((compiler_DebugParam *)debug_values.value)[1]) = ((compiler_DebugParam){ .name = ((Array){5, "file"}), .value = _87f75ce3_meta_to_debug_value(((*state).difile)) });
-    (((compiler_DebugParam *)debug_values.value)[2]) = ((compiler_DebugParam){ .name = ((Array){5, "line"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = (((*tpe).line) + ((int)1)) }) });
+    (((compiler_DebugParam *)debug_values.value)[2]) = ((compiler_DebugParam){ .name = ((Array){5, "line"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = (((*tpe).line) + 1) }) });
     (((compiler_DebugParam *)debug_values.value)[3]) = ((compiler_DebugParam){ .name = ((Array){5, "size"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = (((int64)((*tpe).size)) * ((int64)8)) }) });
     (((compiler_DebugParam *)debug_values.value)[4]) = ((compiler_DebugParam){ .name = ((Array){9, "elements"}), .value = _87f75ce3_meta_to_debug_value(elementsp) });
     (((compiler_DebugParam *)debug_values.value)[5]) = ((compiler_DebugParam){ .name = ((Array){5, "name"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_STRING, .s = name }) });
@@ -2227,7 +2227,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state) {
     Array debug_values = ((Array){5, malloc((((int64)(sizeof(compiler_DebugParam))) * ((int64)5)))});
     (((compiler_DebugParam *)debug_values.value)[0]) = ((compiler_DebugParam){ .name = ((Array){4, "tag"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_CONST, .name = ((Array){22, "DW_TAG_structure_type"}) }) });
     (((compiler_DebugParam *)debug_values.value)[1]) = ((compiler_DebugParam){ .name = ((Array){5, "file"}), .value = _87f75ce3_meta_to_debug_value(((*state).difile)) });
-    (((compiler_DebugParam *)debug_values.value)[2]) = ((compiler_DebugParam){ .name = ((Array){5, "line"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = (((*tpe).line) + ((int)1)) }) });
+    (((compiler_DebugParam *)debug_values.value)[2]) = ((compiler_DebugParam){ .name = ((Array){5, "line"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_INT, .i = (((*tpe).line) + 1) }) });
     (((compiler_DebugParam *)debug_values.value)[3]) = ((compiler_DebugParam){ .name = ((Array){5, "name"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_STRING, .s = name }) });
     (((compiler_DebugParam *)debug_values.value)[4]) = ((compiler_DebugParam){ .name = ((Array){6, "flags"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_CONST, .name = ((Array){14, "DIFlagFwdDecl"}) }) });
     compiler_Value *di = malloc((sizeof(compiler_Value)));
@@ -2388,7 +2388,7 @@ DLL_EXPORT void compiler_walk(parser_Node *node, compiler_State *state) {
     if (body) {
         ((*function).forward_declare) = false;
     }  ;
-    if ((((bool)toolchain_debug_sym) && ((bool)body))) {
+    if ((toolchain_debug_sym && ((bool)body))) {
         Array debug_values = ((Array){7, malloc((((int64)(sizeof(compiler_DebugParam))) * ((int64)7)))});
         (((compiler_DebugParam *)debug_values.value)[0]) = ((compiler_DebugParam){ .name = ((Array){5, "name"}), .value = ((compiler_DebugValue){ .kind = compiler_DebugValueKind_STRING, .s = ((*function).name) }) });
         (((compiler_DebugParam *)debug_values.value)[1]) = ((compiler_DebugParam){ .name = ((Array){6, "scope"}), .value = _87f75ce3_meta_to_debug_value(((compiler_Value *)vector_peek(((*state).discope)))) });
@@ -2571,8 +2571,12 @@ DLL_EXPORT compiler_Result * compiler_compile(toolchain_Module *module) {
     (*((*state).result)) = ((compiler_Result){ .functions = map_make(), .structures = map_make(), .globals = map_make(), .constants = map_make(), .metadata = map_make() });
     compiler_Value *globals = NULL;
     if (toolchain_debug_sym) {
+        string dirname = util_dirname(((*module).filename));
+        if ((((dirname.size) - 1) == 0)) {
+            dirname = ((Array){2, "."});
+        }  ;
         Array abspath = ((Array){PATH_MAX, malloc((((int64)(sizeof(char))) * ((int64)PATH_MAX)))});
-        absolute_path((util_dirname(((*module).filename)).value), (abspath.value));
+        absolute_path((dirname.value), (abspath.value));
         (abspath.size) = (((int64)strlen((abspath.value))) + ((int64)1));
         string file = util_basename(((*module).filename));
         Array dvalues1 = ((Array){2, malloc((((int64)(sizeof(compiler_DebugParam))) * ((int64)2)))});

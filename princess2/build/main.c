@@ -34,8 +34,8 @@ DLL_EXPORT void main_p_main(Array args) {
     (((getopt_Option *)_fad58de7_options.value)[1]) = ((getopt_Option){ getopt_Type_BOOL, ((Array){1, ""}), ((Array){5, "--ll"}), 0, false });
     (((getopt_Option *)_fad58de7_options.value)[2]) = ((getopt_Option){ getopt_Type_BOOL, ((Array){1, ""}), ((Array){7, "--test"}), 0, false });
     (((getopt_Option *)_fad58de7_options.value)[3]) = ((getopt_Option){ getopt_Type_STRING, ((Array){3, "-i"}), ((Array){10, "--include"}), 1, true });
-    (((getopt_Option *)_fad58de7_options.value)[4]) = ((getopt_Option){ getopt_Type_STRING, ((Array){3, "-o"}), ((Array){12, "--outfolder"}), 1, false });
-    (((getopt_Option *)_fad58de7_options.value)[5]) = ((getopt_Option){ getopt_Type_STRING, ((Array){1, ""}), ((Array){10, "--outfile"}), 1, false });
+    (((getopt_Option *)_fad58de7_options.value)[4]) = ((getopt_Option){ getopt_Type_STRING, ((Array){1, ""}), ((Array){14, "--buildfolder"}), 1, false });
+    (((getopt_Option *)_fad58de7_options.value)[5]) = ((getopt_Option){ getopt_Type_STRING, ((Array){3, "-o"}), ((Array){10, "--outfile"}), 1, false });
     (((getopt_Option *)_fad58de7_options.value)[6]) = ((getopt_Option){ getopt_Type_BOOL, ((Array){3, "-d"}), ((Array){8, "--debug"}), 0, false });
     (((getopt_Option *)_fad58de7_options.value)[7]) = ((getopt_Option){ getopt_Type_STRING, ((Array){1, ""}), ((Array){8, "compile"}), getopt_ARGS_ANY, false });
     _fad58de7_res = getopt_parse(args, _fad58de7_options);
@@ -48,7 +48,7 @@ DLL_EXPORT void main_p_main(Array args) {
     _fad58de7_debug_sym = (*((bool *)map_get(_fad58de7_res, ((Array){8, "--debug"}))));
     _fad58de7_filenames = ((vector_Vector *)map_get(_fad58de7_res, ((Array){8, "compile"})));
     _fad58de7_includes = ((vector_Vector *)map_get(_fad58de7_res, ((Array){10, "--include"})));
-    _fad58de7_outfolder = ((string *)map_get(_fad58de7_res, ((Array){12, "--outfolder"})));
+    _fad58de7_outfolder = ((string *)map_get(_fad58de7_res, ((Array){14, "--buildfolder"})));
     _fad58de7_outfile = ((string *)map_get(_fad58de7_res, ((Array){10, "--outfile"})));
     if (_fad58de7_outfolder) {
         toolchain_outfolder = (*_fad58de7_outfolder);

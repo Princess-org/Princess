@@ -1097,7 +1097,7 @@ def compile_module(module, base_path, include_path):
     
     return scope
 
-def compile_file(file, base_path = Path(""), include_path = Path(""), codecov = False):
+def compile_file(file, exefile, base_path = Path(""), include_path = Path(""), codecov = False):
     file = Path(file)
     filename = file.stem
 
@@ -1114,11 +1114,6 @@ def compile_file(file, base_path = Path(""), include_path = Path(""), codecov = 
 
     with open(c_file, "w") as fp:
         fp.write(csrc)
-
-    if os.name == "nt":
-        exefile = base_path / (filename + ".exe")
-    else:
-        exefile = base_path / filename
     
     args = ["gcc", "-g", "-I" + str(include_dir), "-o", str(exefile), str(c_file), "-lm"]
     if codecov:
@@ -1136,7 +1131,7 @@ def eval(csrc, p_filename, c_filename, main_type, args = []):
 
     include_dir = Path(__file__).parent.parent
 
-    base_path = (include_dir / "bin").absolute()
+    base_path = (include_dir / "build").absolute()
     c_file = base_path / (c_filename + ".c")
     c_file.parent.mkdir(parents = True, exist_ok = True)
 

@@ -17,7 +17,7 @@
 #include "builtins.c"
 bool test_compiler_print_ll;
  string _6dcc03b3_compile(string s) {
-    toolchain_outfolder = ((Array){6, "./bin"});
+    toolchain_outfolder = ((Array){8, "./build"});
     Array main = ((Array){5, "main"});
     lexer_TokenList *tokens = lexer_lex(s);
     Array lines = util_split_lines(s);
@@ -33,10 +33,10 @@ bool test_compiler_print_ll;
     compiler_Result *result = compiler_compile(module);
     ((*module).result) = result;
     codegen_gen(module);
-    File fh = fopen((((Array){14, "./bin/main.ll"}).value), (((Array){2, "r"}).value));
+    File fh = fopen((((Array){16, "./build/main.ll"}).value), (((Array){2, "r"}).value));
     string buf = util_read_all(fh);
     fclose(fh);
-    int llc = system((((Array){19, "llc-12 bin/main.ll"}).value));
+    int llc = system((((Array){21, "llc-12 build/main.ll"}).value));
     if (llc) {
         fprintf(stderr, (((Array){3, "%s"}).value), (((Array){25, "LLC compilation failed!\x0a"""}).value));
     }  ;

@@ -10,7 +10,7 @@ def test_import():
         let distance = point::distance(a, b) !int
         return distance
     """
-    base_path = Path("bin/test_import").resolve()
+    base_path = Path("build/test_import").resolve()
     base_path.mkdir(parents = True, exist_ok = True)
     include_path = Path("tests/compiler")
     
@@ -28,7 +28,7 @@ def test_mutual_import():
         return (@a).value
     """
 
-    base_path = Path("bin/test_import").resolve()
+    base_path = Path("build/test_import").resolve()
     base_path.mkdir(parents = True, exist_ok = True)
     include_path = Path("tests/compiler")
     

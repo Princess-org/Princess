@@ -78,19 +78,20 @@ def main():
     parser.add_argument("--src", "-s", action = "store_true", help = "Emits the source code before evaluation")
     parser.add_argument("--codecov", action = "store_true", help = "Emits code coverage")
     parser.add_argument("-c", metavar = "FILE", type = argparse.FileType("r"), help = "Compile .pr file")
-    parser.add_argument("-o", metavar = "DIR", type = dir_path, help = "Output directory")
+    parser.add_argument("-o", "--outfile", metavar = "FILE", help = "Output file")
+    parser.add_argument("--buildfolder", metavar = "DIR", type = dir_path, help = "Output directory")
     
     args = parser.parse_args()
     
     colorama.init()
 
     if args.c:
-        if args.o:
-            out = args.o
+        if args.buildfolder:
+            out = args.buildfolder
         else:
             out = Path("")
 
-        compile_file(args.c.name, base_path = out, codecov = args.codecov)
+        compile_file(args.c.name, exefile = args.outfile, base_path = out, codecov = args.codecov)
     else:
         print("Princess REPL")
         print("type exit to leave the prompt")

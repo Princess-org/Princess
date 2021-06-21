@@ -719,7 +719,7 @@ DLL_EXPORT void debug_print_node(parser_Node *node) {
     printf((((Array){3, "%s"}).value), (((Array){2, "\x0a"""}).value));
 };
 typedef struct debug_Error {string where; string src; string msg;} debug_Error;
-ARRAY(_ad42f669_file, char, 15);
+ARRAY(_ad42f669_file, char, 17);
 File _ad42f669_fh;
 DLL_EXPORT void debug_redirect_stderr() {
     _ad42f669_fh = freopen((_ad42f669_file.value), (((Array){2, "w"}).value), stderr);
@@ -898,7 +898,7 @@ DLL_EXPORT string debug_type_to_str(typechecking_Type *tpe) {
     ;
 };
 DLL_EXPORT void debug_p_main(Array args) {
-    memcpy((_ad42f669_file.value), (((Array){15, "bin/stderr.txt"}).value), ((sizeof(char)) * (_ad42f669_file.size)));
+    memcpy((_ad42f669_file.value), (((Array){17, "build/stderr.txt"}).value), ((sizeof(char)) * (_ad42f669_file.size)));
 };
 
 

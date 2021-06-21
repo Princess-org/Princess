@@ -108,7 +108,7 @@ DLL_EXPORT Array util_split_lines(string s) {
     return result;
 };
 DLL_EXPORT string util_dirname(string file) {
-    int last_slash = 0;
+    int last_slash = (-1);
     for (int i = 0;(i < (file.size));(i += 1)) {
         char c = (((char *)file.value)[i]);
         if (((c == '/') || (c == '\\'))) {
