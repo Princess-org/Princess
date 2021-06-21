@@ -2,7 +2,7 @@
 set -e
 
 mkdir -p bin build
-python3.9 -m princess --codecov -c main.pr -o bin/
+python3.9 -m princess --codecov -c main.pr --buildfolder=build --outfile=bin/main
 
 ./bin/main --test
 mv main.gcda build/
