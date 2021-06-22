@@ -12,6 +12,7 @@ mv bin/princess-dl/bin/princess bin/princess
 rm -r bin/princess-dl
 rm bin/princess-dl.zip
 
+# TODO Set the executable flag
 echo "Building the compiler..."
 chmod +x ./bin/princess
 ./bin/princess -d --include=src --buildfolder=build --outfile=bin/princess2 src/main.pr
