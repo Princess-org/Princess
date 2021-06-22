@@ -1,6 +1,5 @@
 # Princess 
-[![Build Status](https://travis-ci.com/Victorious3/Princess.svg?token=GCuZsys2sc7hxCMZKs2a&branch=master)](https://travis-ci.com/Victorious3/Princess)
-[![codecov](https://codecov.io/gh/Victorious3/Princess/branch/master/graph/badge.svg?token=WU10FBU4FW)](https://codecov.io/gh/Victorious3/Princess)
+[![Build Status](https://api.travis-ci.com/Princess-org/Princess.svg?branch=master)](https://travis-ci.com/github/Princess-org/Princess)
 ## Goals
 - The language should be at least as fast to compile as C, it should be possible to have a compiler for it run on an embedded device
 - The language should provide direct access to the underlying hardware, so it should be possible to write a bootloader without using any 
