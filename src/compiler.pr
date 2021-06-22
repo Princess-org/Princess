@@ -1,0 +1,4036 @@
+// TODO Right now pretty much every operation is adding a load instruction
+// This is because every sub expression can be used as a value, even if only 
+// the address is used. A potential fix would be to add a flag to walk_expression
+// only when the value is needed. The optimizer discards the load instructions
+// but its still better if they aren't present in the first place
+
+import buffer
+import parser
+import vector
+import map
+import scope
+import util
+import debug
+import toolchain
+import builtins
+import typechecking
+
+export type Label = struct {
+    name: string
+}
+
+export type DebugValueKind = enum {
+    NULL; BOOL; INT; STRING; METADATA; CONST; DIEXP
+}
+
+export type DebugValue = struct {
+    kind: DebugValueKind
+    name: string
+    s: string
+    i: int64
+}
+
+export type DebugParam = struct {
+    name: string
+    value: DebugValue
+}
+
+export type ValueKind = enum {
+    NULL; ZEROINITIALIZER; UNDEF; LOCAL; GLOBAL
+    BOOL; INT; FLOAT; STRING
+    ARRAY; STRUCT; UNION; TYPE
+    METADATA; DEBUG_INFO
+}
+
+export type Value = struct {
+    kind: ValueKind
+    metadata: bool
+    distinct: bool
+    name: string
+    sign: int
+    i: uint64
+    f: double
+    s: string
+    // This is the value of a type
+    value_tpe: *typechecking::Type
+    value: *Value
+    // Used for both struct and array
+    values: [Value]
+    // This is used for DEBUG_INFO
+    debug_values: [DebugParam]
+    // Address of a value
+    addr: *Value
+    tpe: *typechecking::Type
+}
+
+export let NO_VALUE = { kind = ValueKind::NULL, tpe = null } !Value
+
+export type InsnKind = enum {
+    ADD; SUB; MUL; SREM; UREM; SDIV; UDIV
+    FADD; FSUB; FMUL; FREM; FDIV; ASHR; SHL
+    AND; OR; XOR; FCMP; ICMP; FNEG
+    RET; LOAD; STORE; ALLOCA
+    INSERTVALUE; EXTRACTVALUE; GETELEMENTPTR
+    TRUNC; ZEXT; SEXT; FPTRUNC; FPEXT
+    FPTOUI; FPTOSI; UITOFP; SITOFP
+    PTRTOINT; INTTOPTR; BITCAST; SWITCH
+    CALL; BR_UNC; BR; UNREACHABLE
+}
+
+// Floating point constants
+export let f_ueq = "ueq"
+export let f_ugt = "ugt"
+export let f_uge = "uge"
+export let f_ult = "ult"
+export let f_ule = "ule"
+export let f_une = "une"
+
+// Integer constants
+export let i_eq  = "eq"
+export let i_ne  = "ne"
+export let i_ugt = "ugt"
+export let i_uge = "uge"
+export let i_ult = "ult"
+export let i_ule = "ule"
+export let i_sgt = "sgt"
+export let i_sge = "sge"
+export let i_slt = "slt"
+export let i_sle = "sle"
+
+export type InsnCmp = struct {
+    op: string
+    ret: Value
+    left: Value
+    right: Value
+}
+
+export type SwitchValue = struct {
+    value: Value
+    label_: Label
+}
+
+export type InsnSwitch = struct {
+    value: Value
+    otherwise: Label
+    // Vector of SwitchValue
+    switch_values: *vector::Vector
+}
+
+export type InsnFneg = struct {
+    ret: Value
+    value: Value
+}
+
+export type InsnInsertValue = struct {
+    ret: Value
+    value: Value
+    element: Value
+    index: [int]
+}
+
+export type InsnGetElementPtr = struct {
+    ret: Value
+    // Here the type isn't the same as ret
+    tpe: *typechecking::Type
+    value: Value
+    index: [Value]
+}
+
+export type InsnConvert = struct {
+    ret: Value
+    value: Value
+}
+
+export type InsnExtractValue = struct {
+    ret: Value
+    value: Value
+    index: [int]
+}
+
+export type InsnStore = struct {
+    value: Value
+    loc: Value
+}
+
+export type InsnLoad = struct {
+    value: Value
+    loc: Value
+}
+
+export type InsnReturn = struct {
+    value: Value
+}
+
+export type InsnArithmetic = struct {
+    ret: Value
+    left: Value
+    right: Value
+}
+
+export type InsnAlloca = struct {
+    ret: Value
+}
+
+export type InsnCall = struct {
+    name: Value
+    ret: Value
+    args: [Value]
+    proto: [typechecking::NamedParameter]
+}
+
+export type InsnBrUnc = struct {
+    label_: Label
+}
+
+export type InsnBr = struct {
+    cond: Value
+    if_true: Label
+    if_false: Label
+}
+
+export type InsnValue = struct #union {
+    arith: InsnArithmetic
+    ret: InsnReturn
+    store: InsnStore
+    load: InsnLoad
+    alloca: InsnAlloca
+    call: InsnCall
+    br_unc: InsnBrUnc
+    br: InsnBr
+    insert_value: InsnInsertValue
+    extract_value: InsnExtractValue
+    gep: InsnGetElementPtr
+    convert: InsnConvert
+    cmp: InsnCmp
+    fneg: InsnFneg
+    switch_: InsnSwitch
+}
+
+export type Insn = struct {
+    kind: InsnKind
+    value: InsnValue
+    debug: *Value
+}
+
+// Block for CFG
+export type Block = struct {
+    label_: string
+    // Vector of Insn
+    insn: *vector::Vector
+    next: *Block
+}
+
+export type Function = struct {
+    name: string
+    unmangled: string
+    // Vector of typechecking::NamedParameter
+    args: *vector::Vector
+    ret: *typechecking::Type
+    multiple_returns: bool
+    forward_declare: bool
+    // First node
+    block: *Block
+    debug: *Value
+}
+
+export type Result = struct {
+    // Map of Function
+    functions: *map::Map
+    // Map of typechecking::Type
+    structures: *map::Map
+    // Map of Global
+    globals: *map::Map
+    // Map of Global
+    constants: *map::Map
+    // Map of Value
+    metadata: *map::Map
+}
+
+export type Global = struct {
+    external: bool
+    private: bool
+    name: string
+    tpe: *typechecking::Type
+    value: *Value
+    line: int
+    debug: *Value
+}
+
+type LoopState = struct {
+    break_insn: *Insn
+    continue_insn: *Insn
+}
+
+export type State = struct {
+    module: *toolchain::Module
+    counter: int
+    global_counter: int
+    meta_counter: int
+    // TODO Make this a stack for nested functions
+    current_function: *Function
+    current_block: *Block
+    // Vector of LoopState 
+    loops: *vector::Vector
+    result: *Result
+    // Map of Value
+    ditypes: *map::Map
+    difile: *Value
+    diunit: *Value
+    // Vector of Value
+    discope: *vector::Vector
+}
+
+def di_type(tpe: *typechecking::Type, state: *State) -> *Value
+
+export def make_insn_dbg(kind: InsnKind, debug: *Value) -> *Insn {
+    let insn = allocate(Insn)
+    (@insn).kind = kind
+    if toolchain::debug_sym {
+        (@insn).debug = debug
+    } else {
+        (@insn).debug = null
+    }
+    return insn
+}
+
+export def make_insn(kind: InsnKind) -> *Insn {
+    return make_insn_dbg(kind, null)
+}
+
+def make_value(tpe: *typechecking::Type, value: *) -> Value {
+    switch (@tpe).kind !int {
+        case typechecking::TypeKind::TYPE:
+            return { kind = ValueKind::TYPE, tpe = typechecking::type_, value_tpe = value !*typechecking::Type } !Value
+        case typechecking::TypeKind::WORD:
+            return { kind = ValueKind::INT, tpe = builtins::int_, sign = 1, i = @(value !*uint64) } !Value
+        case typechecking::TypeKind::FLOAT:
+            return { kind = ValueKind::FLOAT, tpe = builtins::double_, f = @(value !*double) } !Value
+        case typechecking::TypeKind::BOOL:
+            return { kind = ValueKind::BOOL, tpe = builtins::bool_, sign = 1, i = @(value !*uint64) } !Value
+        case typechecking::TypeKind::ENUM:
+            // TODO This doesn't seem right
+            return { kind = ValueKind::INT, tpe = tpe, sign = 1, i = @(value !*uint64) } !Value
+        case:
+            error((@tpe).kind, "\n") 
+            assert(false)
+    }
+}
+
+def get_break_insn(state: *State) -> *Insn {
+    if vector::length((@state).loops) > 0 {
+        return (@(vector::peek((@state).loops) !*LoopState)).break_insn
+    }
+    return null
+}
+
+def get_continue_insn(state: *State) -> *Insn {
+    if vector::length((@state).loops) > 0 {
+        return (@(vector::peek((@state).loops) !*LoopState)).continue_insn
+    }
+    return null
+}
+
+def push_loop_state(state: *State) {
+    let loops = allocate(LoopState)
+
+    let break_insn = make_insn(InsnKind::BR_UNC)
+    let continue_insn = make_insn(InsnKind::BR_UNC)
+
+    (@loops).break_insn = break_insn
+    (@loops).continue_insn = continue_insn
+    
+    vector::push((@state).loops, loops)
+}
+
+def pop_loop_state(state: *State) {
+    vector::pop((@state).loops)
+}
+
+def make_meta(state: *State) -> *Value {
+    let s = util::int_to_str((@state).meta_counter)
+    (@state).meta_counter += 1
+    let value = allocate(Value)
+    @value = {
+        kind = ValueKind::METADATA,
+        name = s
+    } !Value
+    return value
+}
+
+def push_meta(meta: *Value, state: *State) -> *Value {
+    let val = make_meta(state)
+    map::put((@(@state).result).metadata, (@val).name, meta)
+    return val
+}
+
+def meta_to_debug_value(meta: *Value) -> DebugValue {
+    if not meta { return {} !DebugValue }
+    
+    assert((@meta).kind == ValueKind::METADATA)
+    return {
+        kind = DebugValueKind::METADATA,
+        name = (@meta).name
+    } !DebugValue
+}
+
+export def make_location(node: *parser::Node, state: *State) -> *Value {
+    if not toolchain::debug_sym { return null }
+    let debug_values = allocate(DebugParam, 3)
+    debug_values[0] = {
+        name = "line", value = { kind = DebugValueKind::INT, i = (@node).loc.line + 1 } !DebugValue
+    } !DebugParam
+    debug_values[1] = {
+        name = "column", value = { kind = DebugValueKind::INT, i = (@node).loc.column + 1 } !DebugValue
+    } !DebugParam
+    debug_values[2] = {
+        name = "scope", value = meta_to_debug_value(vector::peek((@state).discope) !*Value)
+    } !DebugParam
+    
+    let di = allocate(Value)
+    @di = {
+        kind = ValueKind::DEBUG_INFO,
+        name = "DILocation",
+        debug_values = debug_values
+    } !Value
+    return push_meta(di, state)
+}
+
+export def make_label(state: *State) -> Label {
+    let s = util::int_to_str((@state).counter)
+    (@state).counter += 1
+    return { name = s } !Label
+}
+
+export def make_unique_name(state: *State) -> string {
+    let s = util::int_to_str((@state).counter)
+    (@state).counter += 1
+    return s
+}
+
+export def push_label(label_: Label, state: *State) {
+    let block = allocate(Block)
+    // TODO Might want to use the actual label here
+    (@block).label_ = label_.name
+    (@block).insn = vector::make()
+    (@block).next = null
+    (@(@state).current_block).next = block
+    (@state).current_block = block
+}
+
+export def push_insn(insn: *Insn, state: *State) {
+    vector::push((@(@state).current_block).insn, insn)
+}
+
+def push_declare_arg(node: *parser::Node, val: Value, name: string, arg: int, state: *State) {
+    if not toolchain::debug_sym { return }
+    var line = (@node).loc.line
+
+    var debug_values: [DebugParam]
+    if arg >= 0 {
+        debug_values = allocate(DebugParam, 6)
+    } else {
+        debug_values = allocate(DebugParam, 5)
+    }
+
+    debug_values[0] = {
+        name = "name", value = { kind = DebugValueKind::STRING, s = name } !DebugValue
+    } !DebugParam
+    debug_values[1] = {
+        name = "scope", value = meta_to_debug_value(vector::peek((@state).discope) !*Value)
+    } !DebugParam
+    debug_values[2] = {
+        name = "file", value = meta_to_debug_value((@state).difile)
+    } !DebugParam
+    debug_values[3] = {
+        name = "line", value = { kind = DebugValueKind::INT, i = line + 1 } !DebugValue
+    } !DebugParam
+    debug_values[4] = {
+        name = "type", value = meta_to_debug_value(di_type((@val.tpe).tpe, state))
+    } !DebugParam
+    if arg >= 0 {
+        debug_values[5] = {
+            name = "arg", value = { kind = DebugValueKind::INT, i = arg } !DebugValue
+        } !DebugParam
+    }
+
+    let value = allocate(Value)
+    @value = {
+        kind = ValueKind::DEBUG_INFO,
+        name = "DILocalVariable",
+        debug_values = debug_values
+    } !Value
+
+    // These all need metadata set to true
+    let args = allocate(Value, 3)
+    args[0] = val
+    args[0].metadata = true
+    args[1] = @push_meta(value, state)
+    args[1].metadata = true
+    args[2] = {
+        metadata = true,
+        kind = ValueKind::DEBUG_INFO,
+        name = "DIExpression",
+        debug_values = [] ![DebugParam]
+    } !Value
+
+    let call = make_insn_dbg(InsnKind::CALL, make_location(node, state))
+    (@call).value.call = {
+        name = { kind = ValueKind::GLOBAL, name = "llvm.dbg.declare" } !Value,
+        ret = NO_VALUE,
+        args = args
+    } !InsnCall
+    push_insn(call, state)
+}
+
+def push_declare(node: *parser::Node, val: Value, name: string, state: *State) {
+    push_declare_arg(node, val, name, -1, state)
+}
+
+export def make_int_value(v: int) -> Value {
+    var i = v
+    var sign = 1
+    if i < 0 {
+        i = -i
+        sign = -1
+    }
+    let value = {
+        kind = ValueKind::INT,
+        i = i,
+        sign = sign,
+        tpe = builtins::int_
+    } !Value
+
+    if v < 0 {
+        value.sign = -1
+    } else {
+        value.sign = 1
+    }
+
+    return value
+}
+
+export def make_local_value(tpe: *typechecking::Type, addr: *Value, state: *State) -> Value {
+    return {
+        kind = ValueKind::LOCAL,
+        name = make_unique_name(state),
+        tpe = tpe,
+        addr = addr
+    } !Value
+}
+
+export def make_global_value(tpe: *typechecking::Type, name: string, value: *Value, state: *State) -> Value {
+    let buf = buffer::make_buffer()
+    buffer::append_str(*buf, name)
+    buffer::append_char(*buf, '.')
+    buffer::append_str(*buf, util::int_to_str((@state).global_counter))
+    name = buffer::to_string(*buf)
+    (@state).global_counter += 1
+
+    let global = allocate(Global)
+    @global = {
+        private = true,
+        name = name,
+        tpe = tpe,
+        value = value,
+        line = -1
+    } !Global
+    map::put((@(@state).result).constants, (@global).name, global)
+
+    return {
+        kind = ValueKind::GLOBAL,
+        name = name,
+        tpe = typechecking::pointer(tpe),
+        addr = null
+    } !Value
+}
+
+export def charp_str(value: Value, state: *State) -> Value {
+    let local = make_local_value(typechecking::pointer(builtins::char_), null, state)
+
+    let index = allocate(int, 1)
+    index[0] = 1
+
+    let extract = make_insn(InsnKind::EXTRACTVALUE)
+    (@extract).value.extract_value = {
+        ret = local,
+        value = value,
+        index = index
+    } !InsnExtractValue
+
+    push_insn(extract, state)
+
+    return local
+}
+
+export def charp_static(global: *Value, state: *State) -> Value {
+    let local = make_local_value(typechecking::pointer(builtins::char_), global, state)
+
+    let index = allocate(Value, 2)
+    index[0] = make_int_value(0)
+    index[1] = make_int_value(0)
+
+    let gep = make_insn(InsnKind::GETELEMENTPTR)
+    (@gep).value.gep = {
+        ret = local,
+        tpe = (@(@global).tpe).tpe,
+        value = @global,
+        index = index
+    } !InsnGetElementPtr
+
+    push_insn(gep, state)
+
+    return local
+}
+
+export def charp(str: string, state: *State) -> Value {
+    let tpe = typechecking::make_type_raw(typechecking::TypeKind::STATIC_ARRAY)
+    (@tpe).tpe = builtins::char_
+    (@tpe).length = str.size
+    (@tpe).size = (@tpe).length * (size_of char)
+    (@tpe).align = size_of char
+
+    let value = allocate(Value)
+    @value = {
+        kind = ValueKind::STRING,
+        s = str,
+        tpe = tpe
+    } !Value
+
+    let global = make_global_value(tpe, "str", value, state)
+    let globalp = allocate(Value)
+    @globalp = global
+    return charp_static(globalp, state)
+}
+
+def push_scope(node: *parser::Node, state: *State) {
+    if not toolchain::debug_sym { return }
+
+    let debug_values = allocate(DebugParam, 4)
+    debug_values[0] = {
+        name = "scope", value = meta_to_debug_value(vector::peek((@state).discope) !*Value)
+    } !DebugParam
+    debug_values[1] = {
+        name = "file", value = meta_to_debug_value((@state).difile)
+    } !DebugParam
+    debug_values[2] = {
+        name = "line", value = { DebugValueKind::INT, i = (@node).loc.line + 1} !DebugValue
+    } !DebugParam
+    debug_values[3] = {
+        name = "column", value = { DebugValueKind::INT, i = (@node).loc.column + 1} !DebugValue
+    } !DebugParam
+
+    let dilexical = allocate(Value)
+    @dilexical = {
+        kind = ValueKind::DEBUG_INFO,
+        name = "DILexicalBlock",
+        distinct = true,
+        debug_values = debug_values
+    } !Value
+
+    vector::push((@state).discope, push_meta(dilexical, state))
+}
+
+def pop_scope(state: *State) {
+    if toolchain::debug_sym {
+        vector::pop((@state).discope)
+    }
+}
+
+// TODO We might want to cache this somewhere
+def make_return_type(tpe: *typechecking::Type) -> *typechecking::Type {
+    // Create anonymous struct as return type
+    let ret_tpe = typechecking::make_anonymous_type(typechecking::TypeKind::STRUCT)
+    (@ret_tpe).packed = false
+    let length = vector::length((@tpe).return_t)
+    let fields = allocate(typechecking::StructMember, length)
+
+    // TODO Somehow refactor this with typechecking::type_lookup
+    var offset = 0
+    var align = 1
+    for var i in 0..length {
+        let t = vector::get((@tpe).return_t, i) !*typechecking::Type
+        // TODO Add an underscore in front for the debugger
+        let name = util::int_to_str(i)
+
+        offset = (ceil(offset / (@t).align  !double) * (@tpe).align) !int
+        align = util::lcm(align, (@t).align !int)
+
+        fields[i] = { (@tpe).line, name, t, offset } !typechecking::StructMember
+        offset += (@t).size
+    }
+    offset = (ceil(offset / align !double) * align) !int
+
+    (@ret_tpe).size = offset
+    (@ret_tpe).align = align
+    (@ret_tpe).fields = fields
+    return ret_tpe
+}
+
+export def walk_expression(node: *parser::Node, state: *State) -> Value
+export def walk(node: *parser::Node, state: *State)
+
+def walk_Null(node: *parser::Node, state: *State) -> Value {
+    let tpe = (@node).tpe
+    let value = {
+        kind = ValueKind::NULL,
+        tpe = tpe
+    } !Value
+    return value
+}
+
+def walk_Boolean(node: *parser::Node, state: *State) -> Value {
+    let tpe = (@node).tpe
+    let value = {
+        kind = ValueKind::BOOL,
+        i = (@node).value.i,
+        sign = 1,
+        tpe = tpe
+    } !Value
+    return value
+}
+
+def walk_Integer(node: *parser::Node, state: *State) -> Value {
+    let tpe = (@node).tpe
+    let value = {
+        kind = ValueKind::INT,
+        i = (@node).value.i,
+        sign = 1,
+        tpe = tpe
+    } !Value
+    return value
+}
+
+def walk_Float(node: *parser::Node, state: *State) -> Value {
+    let tpe = (@node).tpe
+    let value = {
+        kind = ValueKind::FLOAT,
+        f = (@node).value.f,
+        tpe = tpe
+    } !Value
+    return value
+}
+
+def walk_Char(node: *parser::Node, state: *State) -> Value {
+    let tpe = (@node).tpe
+    var v = (@node).value.i !char
+    var sign = 1
+    if v < 0 {
+        v = -v
+        sign = -1
+    }
+    let value = {
+        kind = ValueKind::INT,
+        i = v,
+        sign = sign,
+        tpe = tpe
+    } !Value
+    return value    
+}
+
+def walk_String(node: *parser::Node, state: *State) -> Value {
+    let loc = make_location(node, state)
+    let tpe = (@node).tpe
+
+    let strtpe = typechecking::make_type_raw(typechecking::TypeKind::STATIC_ARRAY)
+    (@strtpe).tpe = builtins::char_
+    (@strtpe).length = (@node).value.str.size
+    (@strtpe).size = (@tpe).length * (size_of char)
+    (@strtpe).align = size_of char
+    
+    let str_value = allocate(Value)
+    @str_value = {
+        kind = ValueKind::STRING,
+        s = (@node).value.str,
+        tpe = tpe
+    } !Value
+
+    let global = make_global_value(strtpe, "str", str_value, state)
+    
+    let index = allocate(Value, 2)
+    index[0] = make_int_value(0)
+    index[0].tpe = builtins::size_t_
+    index[1] = make_int_value(0)
+    index[1].tpe = builtins::size_t_
+
+    let gep_ret = make_local_value(typechecking::pointer((@tpe).tpe), null, state)
+    let gep = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
+    (@gep).value.gep = {
+        ret = gep_ret,
+        tpe = strtpe,
+        value = global,
+        index = index
+    } !InsnGetElementPtr
+    push_insn(gep, state)
+
+    let ret = make_local_value(tpe, null, state)
+
+    let values = allocate(Value, 2)
+    values[0] = {
+        kind = ValueKind::INT,
+        tpe = builtins::size_t_,
+        i = (@node).value.str.size,
+        sign = 1
+    } !Value
+    values[1] = {
+        kind = ValueKind::UNDEF,
+        tpe = typechecking::pointer((@tpe).tpe)
+    } !Value
+
+    let value = {
+        kind = ValueKind::STRUCT,
+        values = values,
+        tpe = tpe
+    } !Value
+
+    let index2 = allocate(int, 1)
+    index2[0] = 1
+    let insert = make_insn_dbg(InsnKind::INSERTVALUE, loc)
+    (@insert).value.insert_value = {
+        ret = ret,
+        value = value,
+        element = gep_ret, 
+        index = index2
+    } !InsnInsertValue
+    push_insn(insert, state)
+
+    return ret
+}
+
+def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Type, state: *State) -> Value {
+    if not value.tpe or not tpe { return value }
+    let loc = make_location(node, state)
+    
+    if typechecking::equals(value.tpe, tpe) {
+        return value
+    }
+
+    if typechecking::is_enum(tpe) {
+        tpe = (@tpe).tpe
+    }
+    if typechecking::is_enum(value.tpe) {
+        value.tpe = (@value.tpe).tpe
+    }
+
+    var kind: InsnKind
+    if (@tpe).kind == typechecking::TypeKind::ARRAY {
+        if (@value.tpe).kind == typechecking::TypeKind::STATIC_ARRAY and
+            (@value.tpe).length == 0 {
+
+            let values = allocate(Value, 2)
+            values[0] = {
+                kind = ValueKind::INT,
+                tpe = builtins::size_t_,
+                i = (@value.tpe).length,
+                sign = 1
+            } !Value
+            values[1] = {
+                kind = ValueKind::NULL,
+                tpe = typechecking::pointer((@tpe).tpe)
+            } !Value
+            return {
+                kind = ValueKind::STRUCT,
+                values = values,
+                tpe = tpe
+            } !Value
+        } else if (@value.tpe).kind == typechecking::TypeKind::STATIC_ARRAY and 
+            (not (@tpe).tpe or typechecking::equals((@tpe).tpe, (@value.tpe).tpe)) {
+
+            var local = make_local_value(typechecking::pointer((@value.tpe).tpe), null, state)
+
+            let index = allocate(Value, 2)
+            index[0] = make_int_value(0)
+            index[0].tpe = builtins::size_t_
+            index[1] = make_int_value(0)
+            index[1].tpe = builtins::size_t_
+
+            let gep = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
+            (@gep).value.gep = {
+                ret = local,
+                tpe = value.tpe,
+                value = @value.addr,
+                index = index
+            } !InsnGetElementPtr
+
+            push_insn(gep, state)
+
+            if not (@tpe).tpe {
+                let local1 = local
+                local = make_local_value(typechecking::pointer(null), null, state)
+                let bitcast = make_insn_dbg(InsnKind::BITCAST, loc)
+                (@bitcast).value.convert = {
+                    ret = local,
+                    value = local1
+                } !InsnConvert
+
+                push_insn(bitcast, state)
+            }
+
+            let ret = make_local_value(tpe, null, state)
+
+            let values = allocate(Value, 2)
+            values[0] = {
+                kind = ValueKind::INT,
+                tpe = builtins::size_t_,
+                i = (@value.tpe).length,
+                sign = 1
+            } !Value
+            values[1] = {
+                kind = ValueKind::UNDEF,
+                tpe = typechecking::pointer((@tpe).tpe)
+            } !Value
+
+            let value = {
+                kind = ValueKind::STRUCT,
+                values = values,
+                tpe = tpe
+            } !Value
+
+            let index2 = allocate(int, 1)
+            index2[0] = 1
+            let insert = make_insn_dbg(InsnKind::INSERTVALUE, loc)
+            (@insert).value.insert_value = {
+                ret = ret,
+                value = value,
+                element = local, 
+                index = index2
+            } !InsnInsertValue
+
+            push_insn(insert, state)
+
+            return ret
+        } else if not (@tpe).tpe and (@value.tpe).kind == typechecking::TypeKind::ARRAY {
+            let index1 = allocate(int, 1)
+            index1[0] = 0
+
+            let size = make_local_value(builtins::size_t_, null, state)
+            let extract1 = make_insn_dbg(InsnKind::EXTRACTVALUE, loc)
+            (@extract1).value.extract_value = {
+                ret = size,
+                value = value,
+                index = index1
+            } !InsnExtractValue
+
+            push_insn(extract1, state)
+
+            let index2 = allocate(int, 1)
+            index2[0] = 1
+
+            let ptr = make_local_value(typechecking::pointer((@value.tpe).tpe), null, state)
+            let extract2 = make_insn_dbg(InsnKind::EXTRACTVALUE, loc)
+            (@extract2).value.extract_value = {
+                ret = ptr,
+                value = value,
+                index = index2
+            } !InsnExtractValue
+
+            push_insn(extract2, state)
+
+            let bitcast_ret = make_local_value(typechecking::pointer(null), null, state)
+            let bitcast = make_insn_dbg(InsnKind::BITCAST, loc)
+            (@bitcast).value.convert = {
+                ret = bitcast_ret,
+                value = ptr
+            } !InsnConvert
+
+            push_insn(bitcast, state)
+
+            let insert1_ret = make_local_value(tpe, null, state)
+            let insert1 = make_insn_dbg(InsnKind::INSERTVALUE, loc)
+            (@insert1).value.insert_value = {
+                ret = insert1_ret,
+                value = { kind = ValueKind::UNDEF, tpe = tpe } !Value,
+                element = size,
+                index = index1
+            } !InsnInsertValue
+
+            push_insn(insert1, state)
+
+            let insert2_ret = make_local_value(tpe, null, state)
+            let insert2 = make_insn_dbg(InsnKind::INSERTVALUE, loc)
+            (@insert2).value.insert_value = {
+                ret = insert2_ret,
+                value = insert1_ret,
+                element = bitcast_ret,
+                index = index2
+            } !InsnInsertValue
+
+            push_insn(insert2, state)
+
+            return insert2_ret
+        } else {
+            typechecking::errorn(node, "Can't convert ")
+            error(debug::type_to_str(value.tpe), " to ", debug::type_to_str(tpe), "\n")
+            return value
+        }
+    } else if (@tpe).kind == typechecking::TypeKind::BOOL {
+        if typechecking::is_pointer(value.tpe) {
+            // TODO This isn't the correct type, we need something like
+            // intptr_t
+            value = convert_to(node, value, builtins::size_t_, state)
+        }
+        if typechecking::is_float(value.tpe) {
+            let ret = make_local_value(builtins::bool_, null, state)
+            let insn = make_insn_dbg(InsnKind::FCMP, loc)
+            (@insn).value.cmp = {
+                op = f_une,
+                ret = ret,
+                left = value,
+                right = {
+                    kind = ValueKind::FLOAT,
+                    tpe = value.tpe,
+                    f = 0.0
+                } !Value
+            } !InsnCmp
+            push_insn(insn, state)
+            return ret
+        } else if typechecking::is_integer(value.tpe) {
+            let ret = make_local_value(builtins::bool_, null, state)
+            let insn = make_insn_dbg(InsnKind::ICMP, loc)
+            (@insn).value.cmp = {
+                op = i_ne,
+                ret = ret,
+                left = value,
+                right = {
+                    kind = ValueKind::INT,
+                    tpe = value.tpe,
+                    i = 0,
+                    sign = 1
+                } !Value
+            } !InsnCmp
+            push_insn(insn, state)
+            return ret
+        } else {
+            // TODO Arrays and Co
+            typechecking::errorn(node, "Can't convert ")
+            error(debug::type_to_str(value.tpe), " to ", debug::type_to_str(tpe), "\n")
+            return value
+        }
+    } else if typechecking::is_integer(tpe) {
+        if typechecking::is_integer(value.tpe) {
+            if (@value.tpe).size == (@tpe).size {
+                // Types only differ in sign, llvm doesn't treat them any different
+                return value
+            } else if (@value.tpe).size > (@tpe).size {
+                kind = InsnKind::TRUNC
+            } else if (@tpe).unsig {
+                kind = InsnKind::ZEXT
+            } else {
+                kind = InsnKind::SEXT
+            }
+        } else if typechecking::is_float(value.tpe) {
+            if (@tpe).unsig {
+                kind = InsnKind::FPTOUI
+            } else {
+                kind = InsnKind::FPTOSI
+            }
+        } else if typechecking::is_pointer(value.tpe) {
+            kind = InsnKind::PTRTOINT
+        } else {
+            typechecking::errorn(node, "Can't convert ")
+            error(debug::type_to_str(value.tpe), " to ", debug::type_to_str(tpe), "\n")
+            return value
+        }
+    } else if typechecking::is_float(tpe) {
+        if typechecking::is_integer(value.tpe) {
+            if (@value.tpe).unsig {
+                kind = InsnKind::UITOFP
+            } else {
+                kind = InsnKind::SITOFP
+            }
+        } else if typechecking::is_float(value.tpe) {
+            if (@value.tpe).size > (@tpe).size {
+                kind = InsnKind::FPTRUNC
+            } else {
+                kind = InsnKind::FPEXT
+            }
+        } else {
+            typechecking::errorn(node, "Can't convert ")
+            error(debug::type_to_str(value.tpe), " to ", debug::type_to_str(tpe), "\n")
+            return value
+        }
+    } else if typechecking::is_pointer(tpe) {
+        if (@value.tpe).kind == typechecking::TypeKind::NULL {
+            return { 
+                kind = ValueKind::NULL, 
+                tpe = tpe 
+            } !Value
+        } else if typechecking::is_pointer(value.tpe) or (@value.tpe).kind == typechecking::TypeKind::NULL {
+            kind = InsnKind::BITCAST
+        } else if typechecking::is_integer(value.tpe) {
+            kind = InsnKind::INTTOPTR
+        } else {
+            typechecking::errorn(node, "Can't convert ")
+            error(debug::type_to_str(value.tpe), " to ", debug::type_to_str(tpe), "\n")
+            return value
+        }
+    } else {
+        typechecking::errorn(node, "Can't convert ")
+        error(debug::type_to_str(value.tpe), " to ", debug::type_to_str(tpe), "\n")
+        return value
+    }
+
+    let ret = make_local_value(tpe, null, state)
+
+    let insn = make_insn_dbg(kind, loc)
+    (@insn).value.convert = {
+        ret = ret,
+        value = value
+    } !InsnConvert
+
+    push_insn(insn, state)
+
+    return ret
+}
+
+def walk_Cast(node: *parser::Node, state: *State) -> Value {
+    let value = walk_expression((@node).value.expr, state)
+    return convert_to(node, value, (@node).tpe, state)
+}
+
+def walk_StructLitUnion(node: *parser::Node, state: *State) -> Value {
+    let loc = make_location(node, state)
+    let args = (@node).value.struct_lit.args
+    let kwargs = (@node).value.struct_lit.kwargs
+    let tpe = (@node).tpe
+
+    let largs = vector::length(args)
+    let lkwargs = vector::length(kwargs)
+    if largs > 1 or lkwargs > 1 or largs == 1 and lkwargs == 1 {
+        typechecking::errorn(node, "Union initalizer can only have one argument")
+        return NO_VALUE
+    } else if largs == 0 and lkwargs == 0 {
+        let arraytpe = typechecking::make_static_array(builtins::char_, (@tpe).size)
+
+        let values = allocate(Value, 1)
+        values[0] = {
+            kind = ValueKind::ZEROINITIALIZER,
+            tpe = arraytpe
+        } !Value
+
+        return {
+            kind = ValueKind::STRUCT,
+            tpe = tpe,
+            values = values
+        } !Value
+    }
+
+    var arg: *parser::Node = null
+    var arg_tpe: *typechecking::Type = null
+    if largs == 1 {
+        arg = vector::get(args, 0) !*parser::Node
+        arg_tpe = (@tpe).fields[0].tpe
+    } else {
+        let kwarg = vector::get(kwargs, 0) !*parser::Node
+        arg = (@kwarg).value.named_arg.value
+        let name = typechecking::last_ident_to_str((@kwarg).value.named_arg.name)
+
+        for var j in 0..(@tpe).fields.size {
+            let field = (@tpe).fields[j]
+            if field.name == name {
+                arg_tpe = field.tpe
+                break
+            }
+        }
+    }
+
+    let value = convert_to(arg, walk_expression(arg, state), arg_tpe, state)
+    
+    let alloca_ret = make_local_value(tpe, null, state)
+    let alloca = make_insn_dbg(InsnKind::ALLOCA, loc)
+    (@alloca).value.alloca = {
+        ret = alloca_ret
+    } !InsnAlloca
+    push_insn(alloca, state)
+
+    alloca_ret.tpe = typechecking::pointer(tpe)
+    
+    let index = allocate(Value, 3)
+    index[0] = make_int_value(0)
+    index[1] = make_int_value(0)
+    index[2] = make_int_value(0)
+    let gep_ret = make_local_value(typechecking::pointer(builtins::char_), null, state)
+    let gep = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
+    (@gep).value.gep = {
+        ret = gep_ret,
+        tpe = tpe,
+        value = alloca_ret,
+        index = index
+    } !InsnGetElementPtr
+    push_insn(gep, state)
+
+    let bitcast_ret = make_local_value(typechecking::pointer(arg_tpe), null, state)
+    let bitcast = make_insn_dbg(InsnKind::BITCAST, loc)
+    (@bitcast).value.convert = {
+        ret = bitcast_ret,
+        value = gep_ret
+    } !InsnConvert
+    push_insn(bitcast, state)
+
+    let store = make_insn_dbg(InsnKind::STORE, loc)
+    (@store).value.store = {
+        loc = bitcast_ret,
+        value = value
+    } !InsnStore
+    push_insn(store, state)
+
+    let load_ret = make_local_value(tpe, null, state)
+    let load = make_insn_dbg(InsnKind::LOAD, loc)
+    (@load).value.load = {
+        value = load_ret,
+        loc = alloca_ret
+    } !InsnLoad
+    push_insn(load, state)
+
+    return load_ret
+}
+
+def walk_StructLit(node: *parser::Node, state: *State) -> Value {
+    let loc = make_location(node, state)
+    let args = (@node).value.struct_lit.args
+    let kwargs = (@node).value.struct_lit.kwargs
+
+    let tpe = (@node).tpe
+    if not tpe { return NO_VALUE }
+    if (@tpe).kind == typechecking::TypeKind::UNION {
+        return walk_StructLitUnion(node, state)
+    }
+
+    let values = allocate(Value, (@tpe).fields.size)
+    for var i in 0..values.size {
+        values[i] = {
+            kind = ValueKind::ZEROINITIALIZER,
+            tpe = (@tpe).fields[i].tpe
+        } !Value
+    }
+    for var i in 0..vector::length(args) {
+        let arg = vector::get(args, i) !*parser::Node
+        let value = walk_expression(arg, state)
+        values[i] = convert_to(arg, value, (@tpe).fields[i].tpe, state)
+    }
+    for var i in 0..vector::length(kwargs) {
+        let kwarg = vector::get(kwargs, i) !*parser::Node
+        let name = typechecking::last_ident_to_str((@kwarg).value.named_arg.name)
+        let value = walk_expression((@kwarg).value.named_arg.value, state)
+        
+        for var j in 0..(@tpe).fields.size {
+            let field = (@tpe).fields[j]
+            if field.name == name {
+                values[j] = convert_to(kwarg, value, field.tpe, state)
+                break
+            }
+        }
+    }
+    var value = {
+        kind = ValueKind::STRUCT,
+        values = values,
+        tpe = tpe
+    } !Value
+
+    for var i in 0..values.size {
+        let val = values[i]
+        if val.kind == ValueKind::LOCAL or val.kind == ValueKind::GLOBAL {
+            values[i] = {
+                kind = ValueKind::UNDEF,
+                tpe = val.tpe
+            } !Value
+
+            let ret = make_local_value(tpe, null, state)
+            
+            let index = allocate(int, 1)
+            index[0] = i
+            let insert = make_insn_dbg(InsnKind::INSERTVALUE, loc)
+            (@insert).value.insert_value = {
+                ret = ret,
+                value = value,
+                element = val,
+                index = index
+            } !InsnInsertValue
+            
+            push_insn(insert, state)
+            value = ret
+        }
+    }
+    
+    return value
+}
+
+def walk_ArrayLit(node: *parser::Node, state: *State) -> Value {
+    let loc = make_location(node, state)
+    let tpe = (@node).tpe
+
+    let len = vector::length((@node).value.body)
+    let values = allocate(Value, len)
+    for var i in 0..len {
+        let v = vector::get((@node).value.body, i) !*parser::Node
+        values[i] = walk_expression(v, state)
+    }
+
+    var value = {
+        kind = ValueKind::ARRAY,
+        values = values,
+        tpe = tpe
+    } !Value
+
+    for var i in 0..len {
+        let val = values[i]
+
+        if val.kind == ValueKind::LOCAL or val.kind == ValueKind::GLOBAL {
+            values[i] = {
+                kind = ValueKind::UNDEF,
+                tpe = val.tpe
+            } !Value
+
+            let ret = make_local_value(tpe, null, state)
+            
+            let index = allocate(int, 1)
+            index[0] = i
+            let insert = make_insn_dbg(InsnKind::INSERTVALUE, loc )
+            (@insert).value.insert_value = {
+                ret = ret,
+                value = value,
+                element = val,
+                index = index
+            } !InsnInsertValue
+            
+            push_insn(insert, state)
+            value = ret
+        }
+    }
+
+    let ret = make_local_value(tpe, null, state)
+
+    let alloca = make_insn_dbg(InsnKind::ALLOCA, loc)
+    (@alloca).value.alloca = {
+        ret = ret
+    } !InsnAlloca
+    push_insn(alloca, state)
+
+    ret.tpe = typechecking::pointer(tpe)
+    let retp = allocate(Value)
+    @retp = ret
+    value.addr = retp
+
+    let store = make_insn_dbg(InsnKind::STORE, loc)
+    (@store).value.store = {
+        value = value,
+        loc = ret
+    } !InsnStore
+    push_insn(store, state)
+
+    return value
+}
+
+def walk_ArithmeticOp(node: *parser::Node, insn_kind: InsnKind, tpe: *typechecking::Type, state: *State) -> Value {
+    let loc = make_location(node, state)
+    let left = convert_to(node, walk_expression((@node).value.bin_op.left, state), tpe, state)
+    let right = convert_to(node, walk_expression((@node).value.bin_op.right, state), tpe, state)
+
+    let value = make_local_value(tpe, null, state)
+    let insn = make_insn_dbg(insn_kind, loc)
+    (@insn).value.arith = {
+        left = left,
+        right = right,
+        ret = value
+    } !InsnArithmetic
+
+    push_insn(insn, state)
+
+    return value
+}
+
+def walk_USub(node: *parser::Node, state: *State) -> Value {
+    let loc = make_location(node, state)
+    let tpe = (@node).tpe
+    let expr = walk_expression((@node).value.expr, state)
+
+    let ret = make_local_value(tpe, null, state)
+    if (@tpe).kind == typechecking::TypeKind::FLOAT {
+        let fneg = make_insn_dbg(InsnKind::FNEG, loc)
+        (@fneg).value.fneg = {
+            ret = ret,
+            value = expr
+        } !InsnFneg
+        push_insn(fneg, state)
+    } else {
+        let sub = make_insn_dbg(InsnKind::SUB, loc)
+        (@sub).value.arith = {
+            ret = ret,
+            left = { kind = ValueKind::INT, i = 0, sign = 1, tpe = tpe } !Value,
+            right = expr
+        } !InsnArithmetic
+        push_insn(sub, state)
+    }
+    return ret
+}
+
+def walk_UAdd(node: *parser::Node, state: *State) -> Value {
+    return walk_expression((@node).value.expr, state)
+}
+
+def walk_Not(node: *parser::Node, state: *State) -> Value {
+    let loc = make_location(node, state)
+    let expr = convert_to(node, walk_expression((@node).value.expr, state), builtins::bool_, state)
+    
+    let ret = make_local_value(builtins::bool_, null, state)
+    let xor = make_insn_dbg(InsnKind::XOR, loc)
+    (@xor).value.arith = {
+        ret = ret,
+        left = expr,
+        right = { kind = ValueKind::BOOL, i = 1, sign = 1, tpe = builtins::bool_ } !Value
+    } !InsnArithmetic
+
+    push_insn(xor, state)
+    return ret
+}
+
+// TODO It would be nice if and/or could work by returning the values themselves
+def walk_And(node: *parser::Node, state: *State) -> Value {
+    let loc = make_location(node, state)
+    let left = convert_to(node, walk_expression((@node).value.bin_op.left, state), builtins::bool_, state)
+
+    let ret_alloca = make_local_value(builtins::bool_, null, state)
+    let alloca = make_insn_dbg(InsnKind::ALLOCA, loc)
+    (@alloca).value.alloca = {
+        ret = ret_alloca
+    } !InsnAlloca
+    ret_alloca.tpe = typechecking::pointer(builtins::bool_)
+
+    push_insn(alloca, state)
+
+    let br = make_insn_dbg(InsnKind::BR, loc)
+    (@br).value.br = {
+        cond = left
+    } !InsnBr
+
+    let to_end = make_insn_dbg(InsnKind::BR_UNC, loc)
+
+    push_insn(br, state)
+
+    let if_false = make_label(state)
+    push_label(if_false, state)
+
+    let store1 = make_insn_dbg(InsnKind::STORE, loc)
+    (@store1).value.store = {
+        value = { kind = ValueKind::BOOL, i = 0, sign = 1, tpe = builtins::bool_ } !Value,
+        loc = ret_alloca
+    } !InsnStore
+
+    push_insn(store1, state)
+    push_insn(to_end, state)
+
+    let if_true = make_label(state)
+    push_label(if_true, state)
+
+    let right = convert_to(node, walk_expression((@node).value.bin_op.right, state), builtins::bool_, state)
+
+    let store2 = make_insn_dbg(InsnKind::STORE, loc)
+    (@store2).value.store = {
+        value = right,
+        loc = ret_alloca
+    } !InsnStore
+
+    push_insn(store2, state)
+    push_insn(to_end, state)
+
+    let end = make_label(state)
+    push_label(end, state)
+
+    (@br).value.br.if_true = if_true
+    (@br).value.br.if_false = if_false
+    (@to_end).value.br_unc.label_ = end
+
+    let ret = make_local_value(builtins::bool_, null, state)
+    let load = make_insn_dbg(InsnKind::LOAD, loc)
+    (@load).value.load = {
+        value = ret,
+        loc = ret_alloca
+    } !InsnLoad
+
+    push_insn(load, state)
+
+    return ret
+}
+
+def walk_Or(node: *parser::Node, state: *State) -> Value {
+    let loc = make_location(node, state)
+    let left = convert_to(node, walk_expression((@node).value.bin_op.left, state), builtins::bool_, state)
+
+    let ret_alloca = make_local_value(builtins::bool_, null, state)
+    let alloca = make_insn_dbg(InsnKind::ALLOCA, loc)
+    (@alloca).value.alloca = {
+        ret = ret_alloca
+    } !InsnAlloca
+    ret_alloca.tpe = typechecking::pointer(builtins::bool_)
+
+    push_insn(alloca, state)
+
+    let br = make_insn_dbg(InsnKind::BR, loc)
+    (@br).value.br = {
+        cond = left
+    } !InsnBr
+
+    let to_end = make_insn_dbg(InsnKind::BR_UNC, loc)
+
+    push_insn(br, state)
+
+    let if_true = make_label(state)
+    push_label(if_true, state)
+
+    let store1 = make_insn_dbg(InsnKind::STORE, loc)
+    (@store1).value.store = {
+        value = { kind = ValueKind::BOOL, i = 1, sign = 1, tpe = builtins::bool_ } !Value,
+        loc = ret_alloca
+    } !InsnStore
+
+    push_insn(store1, state)
+    push_insn(to_end, state)
+
+    let if_false = make_label(state)
+    push_label(if_false, state)
+
+    let right = convert_to(node, walk_expression((@node).value.bin_op.right, state), builtins::bool_, state)
+
+    let store2 = make_insn_dbg(InsnKind::STORE, loc)
+    (@store2).value.store = {
+        value = right,
+        loc = ret_alloca
+    } !InsnStore
+
+    push_insn(store2, state)
+    push_insn(to_end, state)
+
+    let end = make_label(state)
+    push_label(end, state)
+
+    (@br).value.br.if_true = if_true
+    (@br).value.br.if_false = if_false
+    (@to_end).value.br_unc.label_ = end
+
+    let ret = make_local_value(builtins::bool_, null, state)
+    let load = make_insn_dbg(InsnKind::LOAD, loc)
+    (@load).value.load = {
+        value = ret,
+        loc = ret_alloca
+    } !InsnLoad
+
+    push_insn(load, state)
+
+    return ret
+}
+
+def walk_Add(node: *parser::Node, state: *State) -> Value {
+    let tpe = (@node).tpe
+    if not tpe { return NO_VALUE }
+
+    var insn_kind = InsnKind::ADD
+    if typechecking::is_float(tpe) {
+        insn_kind = InsnKind::FADD
+    }
+    return walk_ArithmeticOp(node, insn_kind, tpe, state)
+}
+
+def walk_Sub(node: *parser::Node, state: *State) -> Value {
+    let tpe = (@node).tpe
+    if not tpe { return NO_VALUE }
+
+    var insn_kind = InsnKind::SUB
+    if typechecking::is_float(tpe) {
+        insn_kind = InsnKind::FSUB 
+    }
+    return walk_ArithmeticOp(node, insn_kind, tpe, state)
+}
+
+def walk_Mul(node: *parser::Node, state: *State) -> Value {
+    let tpe = (@node).tpe
+    if not tpe { return NO_VALUE }
+
+    var insn_kind = InsnKind::MUL
+    if typechecking::is_float(tpe) {
+        insn_kind = InsnKind::FMUL 
+    }
+    return walk_ArithmeticOp(node, insn_kind, tpe, state)
+}
+
+def walk_Mod(node: *parser::Node, state: *State) -> Value {
+    let tpe = (@node).tpe
+    if not tpe { return NO_VALUE }
+
+    var insn_kind = InsnKind::SREM
+    if typechecking::is_float(tpe) {
+        insn_kind = InsnKind::FREM 
+    } else if (@tpe).unsig {
+        insn_kind = InsnKind::UREM
+    }
+    return walk_ArithmeticOp(node, insn_kind, tpe, state)
+}
+
+def walk_Div(node: *parser::Node, state: *State) -> Value {
+    let tpe = (@node).tpe
+    if not tpe { return NO_VALUE }
+
+    var insn_kind = InsnKind::SDIV
+    if typechecking::is_float(tpe) {
+        insn_kind = InsnKind::FDIV 
+    } else if (@tpe).unsig {
+        insn_kind = InsnKind::UDIV
+    }
+    return walk_ArithmeticOp(node, insn_kind, tpe, state)
+}
+
+def walk_Shl(node: *parser::Node, state: *State) -> Value {
+    let tpe = (@node).tpe
+    return walk_ArithmeticOp(node, InsnKind::SHL, tpe, state)
+}
+
+def walk_Shr(node: *parser::Node, state: *State) -> Value {
+    let tpe = (@node).tpe
+    return walk_ArithmeticOp(node, InsnKind::ASHR, tpe, state)
+}
+
+def walk_BAnd(node: *parser::Node, state: *State) -> Value {
+    let tpe = (@node).tpe
+    return walk_ArithmeticOp(node, InsnKind::AND, tpe, state)
+}
+
+def walk_BOr(node: *parser::Node, state: *State) -> Value {
+    let tpe = (@node).tpe
+    return walk_ArithmeticOp(node, InsnKind::OR, tpe, state)
+}
+
+def walk_BXor(node: *parser::Node, state: *State) -> Value {
+    let tpe = (@node).tpe
+    return walk_ArithmeticOp(node, InsnKind::XOR, tpe, state)
+}
+
+def walk_Call(node: *parser::Node, state: *State) -> Value {
+    var tpe = (@node).function
+    var is_fp = false
+    if typechecking::is_function_pointer(tpe) {
+        tpe = (@tpe).tpe
+        is_fp = true
+    }
+    if not tpe { return NO_VALUE }
+    let parameter_t = (@tpe).parameter_t
+
+    let args = allocate(Value, 
+        vector::length((@node).value.func_call.args) + 
+        vector::length((@node).value.func_call.kwargs))
+
+    for var i in 0..vector::length((@node).value.func_call.args) {
+        let n = vector::get((@node).value.func_call.args, i) !*parser::Node
+
+        var p: *typechecking::NamedParameter = null
+        if i < vector::length(parameter_t) {
+            p = vector::get(parameter_t, i) !*typechecking::NamedParameter
+        } else {
+            p = vector::peek(parameter_t) !*typechecking::NamedParameter
+            if not (@p).varargs { return NO_VALUE }
+        }
+        var expr = walk_expression(n, state)
+        expr = convert_to(n, expr, (@p).value, state)
+        args[i] = expr
+    }
+    for var i in 0..vector::length((@node).value.func_call.kwargs) {
+        let n = vector::get((@node).value.func_call.kwargs, i) !*parser::Node
+        assert((@n).kind == parser::NodeKind::NAMED_ARG)
+        // Find named parameter
+        let name = typechecking::last_ident_to_str((@n).value.named_arg.name)
+        let value = (@n).value.named_arg.value
+        for var j in 0..vector::length(parameter_t) {
+            let p = vector::get(parameter_t, j) !*typechecking::NamedParameter
+            if (@p).name == name {
+                var expr = walk_expression(value, state)
+                expr = convert_to(n, expr, (@p).value, state)
+                args[j] = expr
+            }
+        }
+    }
+
+    if (@tpe).macro {
+        return (@tpe).macro(node, args, state)
+    }
+
+    var name_v: Value
+    var ret: *typechecking::Type = null
+    if is_fp {
+        if vector::length((@tpe).return_t) > 1 {
+            ret = make_return_type(tpe)
+        } else {
+            ret = vector::peek((@tpe).return_t) !*typechecking::Type
+        }
+        name_v = walk_expression((@node).value.func_call.left, state)
+    } else {    
+        var name = (@tpe).type_name
+        name = typechecking::mangle_function_name(name, parameter_t)
+        
+        let function = map::get((@(@state).result).functions, name) !*Function
+        if not function { return NO_VALUE }
+        ret = (@function).ret
+
+        name_v = {
+            kind = ValueKind::GLOBAL,
+            name = name
+        } !Value
+    }
+
+    var addr = NO_VALUE
+    var value = NO_VALUE
+    if ret {
+        addr = make_local_value(ret, null, state)
+        
+        let alloca = make_insn(InsnKind::ALLOCA)
+        (@alloca).value.alloca = {
+            ret = addr
+        } !InsnAlloca
+        push_insn(alloca, state)
+        
+        addr.tpe = typechecking::pointer(ret)
+        let addrp = allocate(Value)
+        (@addrp) = addr
+        value = make_local_value(ret, addrp, state)
+    }
+
+    let insn = make_insn_dbg(InsnKind::CALL, make_location(node, state))
+    (@insn).value.call = {
+        name = name_v,
+        ret = value,
+        args = args
+    } !InsnCall
+
+    push_insn(insn, state)
+
+    if ret {
+        let store = make_insn(InsnKind::STORE)
+        (@store).value.store = {
+            value = value,
+            loc = addr
+        } !InsnStore
+        push_insn(store, state)
+    }
+
+    return value
+}
+
+def walk_Identifier(node: *parser::Node, state: *State) -> Value {
+    let loc = make_location(node, state)
+    let val = (@node).svalue
+
+    if not val { return NO_VALUE }
+    if (@val).value {
+        return make_value((@val).tpe, (@val).value)
+    }
+    let tpe = (@node).tpe
+
+    let name = (@val).assembly_name
+    var kind = ValueKind::LOCAL
+    if (@val).global {
+        kind = ValueKind::GLOBAL
+    }
+
+    let locv = allocate(Value)
+    (@locv) = {
+        kind = kind,
+        name = name,
+        tpe = typechecking::pointer(tpe)
+    } !Value
+
+    if not typechecking::is_function(tpe) {
+        let value = make_local_value(tpe, locv, state)
+        
+        let insn = make_insn_dbg(InsnKind::LOAD, loc)
+        (@insn).value.load = {
+            value = value,
+            loc = @locv
+        } !InsnLoad
+        push_insn(insn, state)
+        return value
+    } else {
+        (@locv).name = typechecking::mangle_function_name((@tpe).type_name, (@tpe).parameter_t)
+        let value = { 
+            kind = ValueKind::LOCAL, 
+            name = name, 
+            tpe = tpe, 
+            addr = locv
+        } !Value
+        return value
+    }
+}
+
+def walk_Assign(node: *parser::Node, state: *State) -> Value {
+    // TODO Make this possible: a, b = c, d = e, f
+    // Right now we can only return one value
+
+    let loc = make_location(node, state)
+    let right = (@node).value.assign.right
+    let left = (@node).value.assign.left
+    var last_value = NO_VALUE
+
+    var j = 0
+    for var i in 0..vector::length(right) {
+        let n = vector::get(right, i) !*parser::Node
+        if not n { break }
+        var value = walk_expression(n, state)
+        let tpe = (@n).tpe
+        if not tpe { continue }
+        if (@tpe).kind == typechecking::TypeKind::TUPLE {
+            for var k in 0..vector::length((@tpe).return_t) {
+                let t = vector::get((@tpe).return_t, k) !*typechecking::Type
+                if j >= vector::length(left) { return NO_VALUE }
+                let l = vector::get(left, j) !*parser::Node
+
+                let addr = walk_expression(l, state).addr
+                if not addr {
+                    typechecking::errorn(l, "Can't assign, expression has no address\n")
+                    return NO_VALUE
+                }
+
+                let gep_ret = make_local_value(typechecking::pointer(t), null, state)
+
+                let index = allocate(Value, 2)
+                index[0] = make_int_value(0)
+                index[1] = make_int_value(k)
+
+                let gep = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
+                (@gep).value.gep = {
+                    ret = gep_ret,
+                    tpe = value.tpe,
+                    value = @value.addr,
+                    index = index
+                } !InsnGetElementPtr
+
+                push_insn(gep, state)
+                
+                let gep_retp = allocate(Value)
+                @gep_retp = gep_ret
+                var ret = make_local_value(t, gep_retp, state)
+
+                let load = make_insn_dbg(InsnKind::LOAD, loc)
+                (@load).value.load = {
+                    value = ret,
+                    loc = gep_ret
+                } !InsnLoad
+
+                push_insn(load, state)
+
+                ret = convert_to(n, ret, (@l).tpe, state)
+
+                let store = make_insn_dbg(InsnKind::STORE, loc)
+                (@store).value.store = {
+                    value = ret,
+                    loc = @addr
+                } !InsnStore
+
+                push_insn(store, state)
+
+                last_value = ret
+                j += 1
+            }
+        } else {
+            if j >= vector::length(left) { return NO_VALUE }
+            let l = vector::get(left, j) !*parser::Node
+            // TODO This adds a useless load instruction
+            let addr = walk_expression(l, state).addr
+            if not addr { 
+                typechecking::errorn(l, "Can't assign, expression has no address\n")
+                return NO_VALUE 
+            }
+
+            value = convert_to(n, value, (@l).tpe, state)
+
+            let store = make_insn_dbg(InsnKind::STORE, loc)
+            (@store).value.store = {
+                value = value,
+                loc = @addr
+            } !InsnStore
+
+            push_insn(store, state)
+
+            last_value = value
+            j += 1
+        }
+    }
+    return last_value
+}
+
+def walk_AssignEq(node: *parser::Node, state: *State) -> Value {
+    let left = (@node).value.bin_op.left
+    let right = (@node).value.bin_op.right
+
+    var kind: parser::NodeKind
+    switch (@node).kind !int {
+        case parser::NodeKind::PADD_EQ: kind = parser::NodeKind::PADD
+        case parser::NodeKind::PSUB_EQ: kind = parser::NodeKind::PSUB
+        case parser::NodeKind::ADD_EQ:  kind = parser::NodeKind::ADD
+        case parser::NodeKind::SUB_EQ:  kind = parser::NodeKind::SUB
+        case parser::NodeKind::MUL_EQ:  kind = parser::NodeKind::MUL
+        case parser::NodeKind::DIV_EQ:  kind = parser::NodeKind::DIV
+        case parser::NodeKind::MOD_EQ:  kind = parser::NodeKind::MOD
+        case parser::NodeKind::AND_EQ:  kind = parser::NodeKind::BAND
+        case parser::NodeKind::OR_EQ:   kind = parser::NodeKind::BOR
+        case parser::NodeKind::XOR_EQ:  kind = parser::NodeKind::BXOR
+        case parser::NodeKind::SHL_EQ:  kind = parser::NodeKind::SHL
+        case parser::NodeKind::SHR_EQ:  kind = parser::NodeKind::SHR
+        case: assert(false)
+    }
+
+    let arithmetic = allocate(parser::Node)
+    (@arithmetic).kind = kind
+    (@arithmetic).loc = (@node).loc
+    (@arithmetic).scope = (@node).scope
+    (@arithmetic).tpe = (@node).tpe
+    (@arithmetic).value.bin_op = {
+        left = left,
+        right = right
+    } !parser::NodeBinaryOp
+
+    let left_vec = vector::make()
+    vector::push(left_vec, left)
+    let right_vec = vector::make()
+    vector::push(right_vec, arithmetic)
+
+    let assign_eq_node = allocate(parser::Node)
+    (@assign_eq_node).kind = parser::NodeKind::ASSIGN
+    (@assign_eq_node).loc = (@node).loc
+    (@assign_eq_node).scope = (@node).scope
+    (@assign_eq_node).value.assign = {
+        left = left_vec,
+        right = right_vec
+    } !parser::NodeAssign
+
+    return walk_expression(assign_eq_node, state)
+}
+
+def walk_Deref(node: *parser::Node, state: *State) -> Value {
+    let loc = make_location(node, state)
+    let value = walk_expression((@node).value.expr, state)
+    let tpe = value.tpe
+    if not tpe { return NO_VALUE }
+
+    let addr = allocate(Value)
+    (@addr) = value
+    let ret = make_local_value((@tpe).tpe, addr, state)
+
+    let load = make_insn_dbg(InsnKind::LOAD, loc)
+    (@load).value.load = {
+        value = ret,
+        loc = value
+    } !InsnLoad
+
+    push_insn(load, state)
+    return ret
+}
+
+def walk_Ptr(node: *parser::Node, state: *State) -> Value {
+    let value = walk_expression((@node).value.expr, state)
+    if not value.addr { return NO_VALUE }
+
+    return @(value.addr)
+}
+
+def walk_MemberAccess_gep(node: *parser::Node, tpe: *typechecking::Type, value: Value, index: [Value], state: *State) -> Value {
+    let loc = make_location(node, state)
+    let gep_ret = make_local_value(typechecking::pointer((@node).tpe), null, state) 
+    let gep = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
+    (@gep).value.gep = {
+        ret = gep_ret,
+        tpe = tpe,
+        value = @value.addr,
+        index = index
+    } !InsnGetElementPtr
+    push_insn(gep, state)
+
+    let addr = allocate(Value)
+    @addr = gep_ret
+
+    let ret = make_local_value((@node).tpe, addr, state)
+    let load = make_insn_dbg(InsnKind::LOAD, loc)
+    (@load).value.load = {
+        value = ret,
+        loc = gep_ret
+    } !InsnLoad
+    push_insn(load, state)
+
+    return ret
+}
+
+def walk_MemberAccess(node: *parser::Node, state: *State) -> Value {
+    let loc = make_location(node, state)
+    if not (@node).tpe { return NO_VALUE }
+
+    let left = (@node).value.bin_op.left
+    let right = (@node).value.bin_op.right
+
+    let value = walk_expression(left, state)
+    if not value.addr {
+        typechecking::errorn(node, "Can't use member access, expression has no address\n")
+        return NO_VALUE
+    }
+
+    let tpe = (@left).tpe
+
+    // TODO This might double error
+    let name = typechecking::last_ident_to_str(right)
+
+    if (@tpe).kind == typechecking::TypeKind::STATIC_ARRAY {
+        if name == "size" {
+            let i = make_int_value((@tpe).length !int)
+            i.tpe = builtins::size_t_
+            return i
+        } else if name == "value" {
+            let index = allocate(Value, 2)
+            index[0] = make_int_value(0)
+            index[0].tpe = builtins::size_t_
+            index[1] = make_int_value(0)
+            index[1].tpe = builtins::size_t_
+
+            let gep_ret = make_local_value((@node).tpe, null, state)
+            let gep = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
+            (@gep).value.gep = {
+                ret = gep_ret,
+                tpe = tpe,
+                value = @value.addr,
+                index = index
+            } !InsnGetElementPtr
+
+            push_insn(gep, state)
+            return gep_ret
+        } else { assert(false) }
+    } else if (@tpe).kind == typechecking::TypeKind::ARRAY {
+        let index = allocate(Value, 2)
+        index[0] = make_int_value(0)
+
+        if name == "size" {
+            index[1] = make_int_value(0)
+        } else if name == "value" {
+            index[1] = make_int_value(1)
+        } else {
+            assert(false)
+        }
+
+        return walk_MemberAccess_gep(node, tpe, value, index, state)
+    } else if (@tpe).kind == typechecking::TypeKind::UNION {
+
+        var member: typechecking::StructMember
+        for var i in 0..(@tpe).fields.size {
+            let m = (@tpe).fields[i]
+            if m.name == name {
+                member = m
+                break
+            }
+        }
+
+        let index = allocate(Value, 3)
+        index[0] = make_int_value(0)
+        index[1] = make_int_value(0)
+        index[2] = make_int_value(0)
+
+        let gep_ret = make_local_value(typechecking::pointer(builtins::char_), null, state)
+        let gep = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
+        (@gep).value.gep = {
+            ret = gep_ret,
+            tpe = tpe,
+            value = @value.addr,
+            index = index
+        } !InsnGetElementPtr
+        push_insn(gep, state)
+
+        let bitcast_ret = make_local_value(typechecking::pointer(member.tpe), null, state)
+        let bitcast = make_insn_dbg(InsnKind::BITCAST, loc)
+        (@bitcast).value.convert = {
+            ret = bitcast_ret,
+            value = gep_ret
+        } !InsnConvert
+        push_insn(bitcast, state)
+
+        let addr = allocate(Value)
+        (@addr) = bitcast_ret
+        let load_ret = make_local_value(member.tpe, addr, state)
+        let load = make_insn_dbg(InsnKind::LOAD, loc)
+        (@load).value.load = {
+            value = load_ret,
+            loc = bitcast_ret
+        } !InsnLoad
+        push_insn(load, state)
+
+        return load_ret
+    } else {
+        let index = allocate(Value, 2)
+        index[0] = make_int_value(0)
+
+        var found = false
+        for var i in 0..(@tpe).fields.size {
+            let member = (@tpe).fields[i]
+            if member.name == name {
+                index[1] = {
+                    kind = ValueKind::INT,
+                    sign = 1,
+                    i = i,
+                    tpe = builtins::int_
+                } !Value
+                found = true
+                break
+            }
+        }
+        if not found {
+            assert(false)
+        }
+        return walk_MemberAccess_gep(node, tpe, value, index, state)
+    }
+}
+
+// TODO Lots of duplicate code
+def walk_ArraySubscript(node: *parser::Node, state: *State) -> Value {
+    if not (@node).tpe { return NO_VALUE }
+    let loc = make_location(node, state)
+
+    let left = (@node).value.bin_op.left
+    let right = (@node).value.bin_op.right
+    
+    let array_tpe = (@left).tpe
+    let left_value = walk_expression(left, state)
+    let right_value = walk_expression(right, state)
+
+    if (@array_tpe).kind == typechecking::TypeKind::ARRAY {
+        let index1 = allocate(Value, 2)
+        index1[0] = make_int_value(0)
+        index1[1] = make_int_value(1)
+
+        let gep_ret1 = make_local_value(typechecking::pointer(typechecking::pointer((@node).tpe)), null, state)
+        
+        let gep1 = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
+        (@gep1).value.gep = {
+            ret = gep_ret1,
+            tpe = array_tpe,
+            value = @left_value.addr,
+            index = index1
+        } !InsnGetElementPtr
+
+        let load1_value = make_local_value(typechecking::pointer((@node).tpe), null, state)
+
+        let load1 = make_insn_dbg(InsnKind::LOAD, loc)
+        (@load1).value.load = {
+            value = load1_value,
+            loc = gep_ret1
+        } !InsnLoad
+
+        let index2 = allocate(Value, 1)
+        index2[0] = right_value
+
+        let gep_ret2 = make_local_value(typechecking::pointer((@node).tpe), null, state)
+
+        let gep2 = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
+        (@gep2).value.gep = {
+            ret = gep_ret2,
+            tpe = (@node).tpe,
+            value = load1_value,
+            index = index2
+        } !InsnGetElementPtr
+        
+        let addr = allocate(Value)
+        (@addr) = gep_ret2
+        let ret = make_local_value((@node).tpe, addr, state)
+
+        let load2 = make_insn_dbg(InsnKind::LOAD, loc)
+        (@load2).value.load = {
+            value = ret,
+            loc = gep_ret2
+        } !InsnLoad
+
+        push_insn(gep1, state)
+        push_insn(load1, state)
+        push_insn(gep2, state)
+        push_insn(load2, state)
+        
+        return ret
+    } else if (@array_tpe).kind == typechecking::TypeKind::STATIC_ARRAY {  
+        var index = allocate(Value, 2)
+        index[0] = make_int_value(0)
+        index[1] = right_value
+
+        let gep_ret = make_local_value(typechecking::pointer((@node).tpe), null, state)
+
+        let gep = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
+        (@gep).value.gep = {
+            ret = gep_ret,
+            tpe = array_tpe,
+            value = @left_value.addr,
+            index = index
+        } !InsnGetElementPtr
+
+        let addr = allocate(Value)
+        (@addr) = gep_ret
+        let ret = make_local_value((@node).tpe, addr, state)
+
+        let load = make_insn_dbg(InsnKind::LOAD, loc)
+        (@load).value.load = {
+            value = ret,
+            loc = gep_ret
+        } !InsnLoad
+
+        push_insn(gep, state)
+        push_insn(load, state)
+
+        return ret
+    } else if typechecking::is_pointer(array_tpe) {
+        var index = allocate(Value, 1)
+        index[0] = right_value
+
+        let gep_ret = make_local_value(typechecking::pointer((@node).tpe), null, state)
+
+        let gep = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
+        (@gep).value.gep = {
+            ret = gep_ret,
+            tpe = (@node).tpe,
+            value = left_value,
+            index = index
+        } !InsnGetElementPtr
+
+        let addr = allocate(Value)
+        (@addr) = gep_ret
+        let ret = make_local_value((@node).tpe, addr, state)
+
+        let load = make_insn_dbg(InsnKind::LOAD, loc)
+        (@load).value.load = {
+            value = ret,
+            loc = gep_ret
+        } !InsnLoad
+
+        push_insn(gep, state)
+        push_insn(load, state)
+        
+        return ret
+    } else {
+        assert(false)
+    }
+}
+
+def walk_SizeOf(node: *parser::Node, state: *State) -> Value {
+    var tpe = (@(@node).value.expr).tpe
+    if not tpe {
+        typechecking::errorn(node, "Invalid expression\n")
+        return NO_VALUE
+    }
+    let value = make_int_value((@tpe).size !int)
+    value.tpe = builtins::size_t_
+    
+    return value
+}
+
+def walk_AlignOf(node: *parser::Node, state: *State) -> Value {
+    var tpe = (@(@node).value.expr).tpe
+    if not tpe {
+        typechecking::errorn(node, "Invalid expression\n")
+        return NO_VALUE
+    }
+    let value = make_int_value((@tpe).align !int)
+    value.tpe = builtins::size_t_
+    
+    return value
+}
+
+def compare(node: *parser::Node, left: Value, right: Value, state: *State) -> Value {
+    let loc = make_location(node, state)
+
+    var tpe: *typechecking::Type = null
+    if typechecking::is_enum(left.tpe) {
+        left.tpe = (@left.tpe).tpe
+    }
+    if typechecking::is_enum(right.tpe) {
+        right.tpe = (@right.tpe).tpe
+    }
+    if typechecking::is_pointer(left.tpe) {
+        // TODO We need something like intptr_t, but for now size_t will suffice
+        left = convert_to(node, left, builtins::size_t_, state)
+    }
+    if typechecking::is_pointer(right.tpe) {
+        right = convert_to(node, right, builtins::size_t_, state)
+    }
+    if (@left.tpe).kind == typechecking::TypeKind::NULL {
+        left = make_int_value(0)
+        left.tpe = builtins::size_t_
+    }
+    if (@right.tpe).kind == typechecking::TypeKind::NULL {
+        right = make_int_value(0)
+        right.tpe = builtins::size_t_
+    }
+    if typechecking::is_arithmetic(left.tpe) and typechecking::is_arithmetic(right.tpe) {
+        tpe = typechecking::common_type(left.tpe, right.tpe)
+
+        left = convert_to(node, left, tpe, state)
+        right = convert_to(node, right, tpe, state)
+
+        var kind: InsnKind
+        var op: string
+        if typechecking::is_float(tpe) {
+            kind = InsnKind::FCMP
+            switch (@node).kind !int {
+                case parser::NodeKind::EQ:  op = f_ueq
+                case parser::NodeKind::NEQ: op = f_une
+                case parser::NodeKind::GT:  op = f_ugt
+                case parser::NodeKind::LT:  op = f_ult
+                case parser::NodeKind::GEQ: op = f_uge
+                case parser::NodeKind::LEQ: op = f_ule
+                case: assert(false)
+            }
+        } else {
+            kind = InsnKind::ICMP
+            if (@tpe).unsig {
+                switch (@node).kind !int {
+                    case parser::NodeKind::EQ:  op = i_eq
+                    case parser::NodeKind::NEQ: op = i_ne
+                    case parser::NodeKind::GT:  op = i_ugt
+                    case parser::NodeKind::LT:  op = i_ult
+                    case parser::NodeKind::GEQ: op = i_uge
+                    case parser::NodeKind::LEQ: op = i_ule
+                    case: assert(false)
+                }
+            } else {
+                switch (@node).kind !int {
+                    case parser::NodeKind::EQ:  op = i_eq
+                    case parser::NodeKind::NEQ: op = i_ne
+                    case parser::NodeKind::GT:  op = i_sgt
+                    case parser::NodeKind::LT:  op = i_slt
+                    case parser::NodeKind::GEQ: op = i_sge
+                    case parser::NodeKind::LEQ: op = i_sle
+                    case: assert(false)
+                }
+            }
+        }
+
+        let ret = make_local_value((@node).tpe, null, state)
+
+        let insn = make_insn_dbg(kind, loc)
+        (@insn).value.cmp = {
+            op = op,
+            ret = ret,
+            left = left,
+            right = right
+        } !InsnCmp
+
+        push_insn(insn, state)
+
+        return ret
+    } else if typechecking::equals(left.tpe, right.tpe) { 
+        if typechecking::equals(left.tpe, builtins::string_) {
+            map::put((@(@state).module).imported, "strcmp", map::sentinel)
+
+            let args = allocate(Value, 2)
+            args[0] = charp_str(left, state)
+            args[1] = charp_str(right, state)
+
+            let call_ret = make_local_value(builtins::int_, null, state)
+            let call = make_insn_dbg(InsnKind::CALL, loc)
+            (@call).value.call = {
+                name = {
+                    kind = ValueKind::GLOBAL,
+                    name = "strcmp"
+                } !Value,
+                ret = call_ret,
+                args = args
+            } !InsnCall
+            push_insn(call, state)
+
+            var op: string
+            switch (@node).kind !int {
+                case parser::NodeKind::EQ:  op = i_eq
+                case parser::NodeKind::NEQ: op = i_ne
+                case parser::NodeKind::GT:  op = i_ugt
+                case parser::NodeKind::LT:  op = i_ult
+                case parser::NodeKind::GEQ: op = i_uge
+                case parser::NodeKind::LEQ: op = i_ule
+                case: assert(false)
+            }
+
+            let cmp_ret = make_local_value(builtins::bool_, null, state)
+            let cmp = make_insn_dbg(InsnKind::ICMP, loc)
+            (@cmp).value.cmp = {
+                op = op,
+                ret = cmp_ret,
+                left = call_ret,
+                right = {
+                    kind = ValueKind::INT,
+                    tpe = builtins::int_,
+                    i = 0,
+                    sign = 1
+                } !Value
+            } !InsnCmp
+            push_insn(cmp, state)
+
+            return cmp_ret
+        }
+    }
+    return NO_VALUE
+}
+
+def walk_ComparisionOp(node: *parser::Node, state: *State) -> Value {
+    let loc = make_location(node, state)
+    let left = (@node).value.bin_op.left
+    let right = (@node).value.bin_op.right
+
+    if not left or not right { return NO_VALUE }
+    if not (@left).tpe or not (@right).tpe { return NO_VALUE }
+
+    if (@left).kind >= parser::NodeKind::EQ and (@left).kind <= parser::NodeKind::LEQ {
+        let value_left = walk_expression(left, state)
+        // These two values get compared
+        let value_leftc = walk_expression((@left).value.bin_op.right, state)
+        let value_rightc = walk_expression(right, state)
+        let value = compare(node, value_leftc, value_rightc, state)
+        
+        let ret = make_local_value(builtins::bool_, null, state)
+
+        let insn_and = make_insn_dbg(InsnKind::AND, loc)
+        (@insn_and).value.arith = {
+            ret = ret,
+            left = value_left,
+            right = value
+        } !InsnArithmetic
+
+        push_insn(insn_and, state)
+
+        return ret
+    } else {
+        let value_left = walk_expression(left, state)
+        let value_right = walk_expression(right, state)
+        return compare(node, value_left, value_right, state)
+    }
+}
+
+def walk_PointerOp(node: *parser::Node, kind: InsnKind, state: *State) -> Value {
+    let loc = make_location(node, state)
+    // TODO This is not the correct type
+    let value_left = convert_to(node, walk_expression((@node).value.bin_op.left, state), builtins::size_t_, state)
+    let value_right = convert_to(node, walk_expression((@node).value.bin_op.right, state), builtins::size_t_, state)
+
+    let ret_arith = make_local_value(builtins::size_t_, null, state)
+
+    let arith = make_insn_dbg(kind, loc)
+    (@arith).value.arith = {
+        ret = ret_arith,
+        left = value_left,
+        right = value_right
+    } !InsnArithmetic
+    push_insn(arith, state)
+
+    let ret_inttoptr = make_local_value((@node).tpe, null, state)
+
+    let inttoptr = make_insn_dbg(InsnKind::INTTOPTR, loc)
+    (@inttoptr).value.convert = {
+        ret = ret_inttoptr,
+        value = ret_arith
+    } !InsnConvert
+    push_insn(inttoptr, state)
+
+    return ret_inttoptr
+}
+
+export def walk_expression(node: *parser::Node, state: *State) -> Value {
+    if not node { return NO_VALUE }
+    switch (@node).kind !int {
+        case parser::NodeKind::NULL:
+            return walk_Null(node, state)
+        case parser::NodeKind::IDENTIFIER:
+            return walk_Identifier(node, state)
+        case parser::NodeKind::INTEGER:
+            return walk_Integer(node, state)
+        case parser::NodeKind::FLOAT:
+            return walk_Float(node, state)
+        case parser::NodeKind::BOOLEAN:
+            return walk_Boolean(node, state)
+        case parser::NodeKind::CHAR:
+            return walk_Char(node, state)
+        case parser::NodeKind::STRING:
+            return walk_String(node, state)
+        case parser::NodeKind::SIZE_OF:
+            return walk_SizeOf(node, state)
+        case parser::NodeKind::ALIGN_OF:
+            return walk_AlignOf(node, state)
+        case parser::NodeKind::CAST:
+            return walk_Cast(node, state)
+        case parser::NodeKind::USUB:
+            return walk_USub(node, state)
+        case parser::NodeKind::UADD:
+            return walk_UAdd(node, state)
+        case parser::NodeKind::NOT:
+            return walk_Not(node, state)
+        case parser::NodeKind::AND:
+            return walk_And(node, state)
+        case parser::NodeKind::OR:
+            return walk_Or(node, state)
+        case parser::NodeKind::ADD:
+            return walk_Add(node, state)
+        case parser::NodeKind::SUB:
+            return walk_Sub(node, state)
+        case parser::NodeKind::MUL:
+            return walk_Mul(node, state)
+        case parser::NodeKind::MOD:
+            return walk_Mod(node, state)
+        case parser::NodeKind::DIV:
+            return walk_Div(node, state)
+        case parser::NodeKind::SHL:
+            return walk_Shl(node, state)
+        case parser::NodeKind::SHR:
+            return walk_Shr(node, state)
+        case parser::NodeKind::BAND:
+            return walk_BAnd(node, state)
+        case parser::NodeKind::BOR:
+            return walk_BOr(node, state)
+        case parser::NodeKind::BXOR:
+            return walk_BXor(node, state)
+        case parser::NodeKind::PADD:
+            return walk_PointerOp(node, InsnKind::ADD, state)
+        case parser::NodeKind::PSUB:
+            return walk_PointerOp(node, InsnKind::SUB, state)
+        case parser::NodeKind::EQ..=parser::NodeKind::LEQ:
+            return walk_ComparisionOp(node, state)
+        case parser::NodeKind::FUNC_CALL:
+            return walk_Call(node, state)
+        case parser::NodeKind::ASSIGN:
+            return walk_Assign(node, state)
+        case parser::NodeKind::PADD_EQ..=parser::NodeKind::SHR_EQ:
+            return walk_AssignEq(node, state)
+        case parser::NodeKind::DEREF:
+            return walk_Deref(node, state)
+        case parser::NodeKind::PTR:
+            return walk_Ptr(node, state)
+        case parser::NodeKind::MEMBER_ACCESS:
+            return walk_MemberAccess(node, state)
+        case parser::NodeKind::ARRAY_SUBSCRIPT:
+            return walk_ArraySubscript(node, state)
+        case parser::NodeKind::STRUCT_LIT:
+            return walk_StructLit(node, state)
+        case parser::NodeKind::ARRAY_LIT:
+            return walk_ArrayLit(node, state)
+        case parser::NodeKind::PTR_T:
+            return {
+                kind = ValueKind::TYPE, 
+                tpe = typechecking::type_, 
+                value_tpe = typechecking::pointer(walk_expression((@node).value.t_parr.tpe, state).value_tpe)
+            } !Value
+        case:
+            error((@node).kind, "\n")
+            assert(false)
+    }
+}
+
+def walk_If(node: *parser::Node, state: *State) {
+    let loc = make_location(node, state)
+
+    let cond = convert_to(node, walk_expression((@node).value.if_.cond, state), builtins::bool_, state)
+    let entry_label = make_label(state)
+    var entry = make_insn_dbg(InsnKind::BR, loc)
+    (@entry).value.br = {
+        cond = cond,
+        if_true = entry_label
+    } !InsnBr
+
+    let exit = make_insn_dbg(InsnKind::BR_UNC, loc)
+
+    push_insn(entry, state)
+    push_label(entry_label, state)
+    push_scope(node, state)
+    for var i in 0..vector::length((@node).value.if_.body) {
+        let stmt = vector::get((@node).value.if_.body, i) !*parser::Node
+        walk(stmt, state)
+    }
+    pop_scope(state)
+    push_insn(exit, state)
+
+    for var i in 0..vector::length((@node).value.if_.else_if) {
+        let br_label = make_label(state)
+        (@entry).value.br.if_false = br_label
+        push_label(br_label, state)
+        
+        let else_if = vector::get((@node).value.if_.else_if, i) !*parser::Node
+        let cond = walk_expression((@else_if).value.else_if.cond, state)
+
+        entry = make_insn_dbg(InsnKind::BR, loc)
+        (@entry).value.br = {
+            cond = cond
+        } !InsnBr
+        push_insn(entry, state)
+        let entry_label = make_label(state)
+        (@entry).value.br.if_true = entry_label
+
+        push_label(entry_label, state)
+        push_scope(else_if, state)
+        for var i in 0..vector::length((@else_if).value.else_if.body) {
+            let stmt = vector::get((@else_if).value.else_if.body, i) !*parser::Node
+            walk(stmt, state)
+        }
+        pop_scope(state)
+        push_insn(exit, state)
+    }
+
+    let else_ = (@node).value.if_.else_
+    if else_ {
+        let entry_label = make_label(state)
+        (@entry).value.br.if_false = entry_label
+        push_label(entry_label, state)
+        push_scope(else_, state)
+        for var i in 0..vector::length((@else_).value.body) {
+            let stmt = vector::get((@else_).value.body, i) !*parser::Node
+            walk(stmt, state)
+        }
+        pop_scope(state)
+        push_insn(exit, state)
+    }
+
+    let exit_label = make_label(state)
+    if not else_ {
+        (@entry).value.br.if_false = exit_label
+    }
+    (@exit).value.br_unc.label_ = exit_label
+    push_label(exit_label, state)
+}
+
+let max_cases = 25
+
+def walk_Switch(node: *parser::Node, state: *State) {
+    let loc = make_location(node, state)
+    let swexpr = walk_expression((@node).value.switch_.expr, state)
+    let tpe = (@(@node).value.switch_.expr).tpe
+    
+    let switch_values = vector::make()
+    let swtch = make_insn_dbg(InsnKind::SWITCH, loc)
+    (@swtch).value.switch_ = {
+        value = swexpr,
+        switch_values = switch_values
+    } !InsnSwitch
+    push_insn(swtch, state)
+
+    let end = make_insn_dbg(InsnKind::BR_UNC, loc)
+
+    var otherwise: *parser::Node = null
+    let if_stmts = vector::make()
+
+    // TODO We need to check if the ranges overlap
+    for var i in 0..vector::length((@node).value.switch_.body) {
+        let cse = vector::get((@node).value.switch_.body, i) !*parser::Node
+        let len = vector::length((@cse).value.case_.expr)
+
+        if len == 0 {
+            if otherwise {
+                typechecking::errorn(cse, "More than one default case\n")
+                return
+            } else {
+                otherwise = cse
+            }
+        } else {
+            var out_of_bounds = false
+            for var j in 0..len {
+                let expr = vector::get((@cse).value.case_.expr, j) !*parser::Node
+                if (@expr).kind == parser::NodeKind::RANGE or
+                    (@expr).kind == parser::NodeKind::RANGE_INC {
+                    let left = (@expr).value.bin_op.left
+                    let right = (@expr).value.bin_op.right
+                    // TODO We might not want to evaluate these twice
+                    let min = @(typechecking::evaluate_constant(left) !*uint64)
+                    let max = @(typechecking::evaluate_constant(right) !*uint64)
+                    if (max >= min) and (max - min > max_cases) {
+                        vector::push(if_stmts, cse)
+                        out_of_bounds = true
+                        break
+                    }
+                }
+            }
+            if not out_of_bounds {
+                let start = make_label(state)
+                push_label(start, state)
+
+                for var j in 0..len {
+                    let expr = vector::get((@cse).value.case_.expr, j) !*parser::Node
+                    if (@expr).kind == parser::NodeKind::RANGE or
+                        (@expr).kind == parser::NodeKind::RANGE_INC {
+                        let left = (@expr).value.bin_op.left
+                        let right = (@expr).value.bin_op.right
+                        var min = @(typechecking::evaluate_constant(left) !*uint64)
+                        var max = @(typechecking::evaluate_constant(right) !*uint64)
+                        if (max >= min) {
+                            if (@expr).kind == parser::NodeKind::RANGE_INC {
+                                max += 1
+                            }
+                            for var k in min..max {
+                                let svalue = allocate(SwitchValue)
+                                (@svalue).label_ = start
+                                (@svalue).value = { kind = ValueKind::INT, i = k, sign = 1, tpe = tpe } !Value
+                                vector::push(switch_values, svalue)
+                            } 
+                        } else {
+                            typechecking::errorn(expr, "Invalid range\n")
+                            return
+                        }
+                    } else {
+                        let value = @(typechecking::evaluate_constant(expr) !*uint64)
+                        let svalue = allocate(SwitchValue)
+                        (@svalue).label_ = start
+                        (@svalue).value = { kind = ValueKind::INT, i = value, sign = 1, tpe = tpe } !Value
+                        vector::push(switch_values, svalue)
+                    }
+                }
+                
+                push_scope(cse, state)
+                for var j in 0..vector::length((@cse).value.case_.body) {
+                    let expr = vector::get((@cse).value.case_.body, j) !*parser::Node
+                    walk(expr, state)
+                }
+                pop_scope(state)
+
+                push_insn(end, state)
+            }
+        }  
+    }
+
+    let olabel = make_label(state)
+    push_label(olabel, state)
+
+    for var i in 0..vector::length(if_stmts) {
+        let cse = vector::get(if_stmts, i) !*parser::Node
+        let len = vector::length((@cse).value.case_.expr)
+
+        let brs = vector::make()
+        var last: *Insn = null
+        for var j in 0..len {
+            if last {
+                let lbl = make_label(state)
+                push_label(lbl, state)
+                (@last).value.br.if_false = lbl
+            }
+            let expr = vector::get((@cse).value.case_.expr, j) !*parser::Node
+            if (@expr).kind == parser::NodeKind::RANGE or 
+                (@expr).kind == parser::NodeKind::RANGE_INC {
+                let left = (@expr).value.bin_op.left
+                let right = (@expr).value.bin_op.right
+                let min = @(typechecking::evaluate_constant(left) !*uint64)
+                let max = @(typechecking::evaluate_constant(right) !*uint64)
+
+                if max < min {
+                    typechecking::errorn(expr, "Invalid range\n")
+                    return
+                }
+                
+                let sub_ret = make_local_value(tpe, null, state)
+                let sub = make_insn_dbg(InsnKind::SUB, loc)
+                (@sub).value.arith = {
+                    ret = sub_ret,
+                    left = swexpr,
+                    right = { kind = ValueKind::INT, i = min, sign = 1, tpe = tpe } !Value
+                } !InsnArithmetic
+                push_insn(sub, state)
+
+                var op = i_ule
+                if (@expr).kind == parser::NodeKind::RANGE {
+                    op = i_ult
+                }
+                let cmp_ret = make_local_value(builtins::bool_, null, state)
+                let cmp = make_insn_dbg(InsnKind::ICMP, loc)
+                (@cmp).value.cmp = {
+                    op = op,
+                    ret = cmp_ret,
+                    left = sub_ret,
+                    right = { kind = ValueKind::INT, i = max - min, sign = 1, tpe = tpe } !Value
+                } !InsnCmp
+                push_insn(cmp, state)
+
+                let br = make_insn_dbg(InsnKind::BR, loc)
+                (@br).value.br = {
+                    cond = cmp_ret
+                } !InsnBr
+                push_insn(br, state)
+                
+                last = br
+                vector::push(brs, br)
+            } else {
+                let value = @(typechecking::evaluate_constant(expr) !*uint64)
+
+                let cmp_ret = make_local_value(builtins::bool_, null, state)
+                let cmp = make_insn_dbg(InsnKind::ICMP, loc)
+                (@cmp).value.cmp = {
+                    op = i_eq,
+                    ret = cmp_ret,
+                    left = swexpr,
+                    right = { kind = ValueKind::INT, i = value, sign = 1, tpe = tpe } !Value
+                } !InsnCmp
+                push_insn(cmp, state)
+
+                let br = make_insn_dbg(InsnKind::BR, loc)
+                (@br).value.br = {
+                    cond = cmp_ret
+                } !InsnBr
+                push_insn(br, state)
+                
+                last = br
+                vector::push(brs, br)
+            }
+        }
+
+        let lbl = make_label(state)
+        push_label(lbl, state)
+
+        for var i in 0..vector::length(brs) {
+            let br = vector::get(brs, i) !*Insn
+            (@br).value.br.if_true = lbl
+        }
+
+        push_scope(cse, state)
+        for var j in 0..vector::length((@cse).value.case_.body) {
+            let expr = vector::get((@cse).value.case_.body, j) !*parser::Node
+            walk(expr, state)
+        }
+        pop_scope(state)
+
+        push_insn(end, state)
+
+        if last {
+            let lbl = make_label(state)
+            push_label(lbl, state)
+            (@last).value.br.if_false = lbl
+        }
+    }
+
+    if otherwise {
+        push_scope(otherwise, state)
+        for var i in 0..vector::length((@otherwise).value.case_.body) {
+            let expr = vector::get((@otherwise).value.case_.body, i) !*parser::Node
+            walk(expr, state)
+        }
+        pop_scope(state)
+    }
+
+    push_insn(end, state)
+    (@swtch).value.switch_.otherwise = olabel
+
+    let end_label = make_label(state)
+    push_label(end_label, state)
+    (@end).value.br_unc.label_ = end_label
+}
+
+def walk_Return(node: *parser::Node, state: *State) {
+    let loc = make_location(node, state)
+    let current_function = (@state).current_function
+    if not current_function { return }
+
+    var value = NO_VALUE
+    if (@current_function).multiple_returns {
+        let ret_args = allocate(Value, vector::length((@node).value.body))
+        for var i in 0..ret_args.size {
+            let n = vector::get((@node).value.body, i) !*parser::Node
+            let tpe = (@(@current_function).ret).fields[i].tpe
+            ret_args[i] = convert_to(n, walk_expression(n, state), tpe, state)
+        }
+        value = {
+            kind = ValueKind::STRUCT,
+            values = ret_args,
+            tpe = (@current_function).ret
+        } !Value
+    } else {
+        let tpe = (@current_function).ret
+        if tpe {
+            let arg = vector::peek((@node).value.body) !*parser::Node
+            value = convert_to(arg, walk_expression(arg, state), tpe, state)
+        }
+    }
+
+    let ret = make_insn_dbg(InsnKind::RET, loc)
+    (@ret).value.ret.value = value
+
+    push_insn(ret, state)
+    (@state).counter += 1
+}
+
+def walk_Break(node: *parser::Node, state: *State) {
+    let break_insn = get_break_insn(state)
+    if not break_insn {
+        typechecking::errorn(node, "break used outside of a loop\n")
+        return
+    }
+    push_insn(break_insn, state)
+    (@state).counter += 1
+}
+
+def walk_Continue(node: *parser::Node, state: *State) {
+    let continue_insn = get_continue_insn(state)
+    if not continue_insn {
+        typechecking::errorn(node, "continue used outside of a loop\n")
+        return
+    }
+    push_insn(continue_insn, state)
+    (@state).counter += 1
+}
+
+def walk_Loop(node: *parser::Node, state: *State) {
+    push_loop_state(state)
+    let continue_insn = get_continue_insn(state)
+    let break_insn = get_break_insn(state)
+
+    push_insn(continue_insn, state)
+    let start_label = make_label(state)
+    push_label(start_label, state)
+    push_scope(node, state)
+    for var i in 0..vector::length((@node).value.body) {
+        let n = vector::get((@node).value.body, i) !*parser::Node
+        walk(n, state)
+    }
+    pop_scope(state)
+    push_insn(continue_insn, state)
+    let end_label = make_label(state)
+    push_label(end_label, state)
+
+    (@continue_insn).value.br_unc.label_ = start_label
+    (@break_insn).value.br_unc.label_ = end_label
+    pop_loop_state(state)
+}
+
+def walk_While(node: *parser::Node, state: *State) {
+    let loc = make_location(node, state)
+    push_loop_state(state)
+    let continue_insn = get_continue_insn(state)
+    let break_insn = get_break_insn(state)
+
+    push_insn(continue_insn, state)
+    let start_label = make_label(state)
+    push_label(start_label, state)
+
+    let cond = convert_to(node, walk_expression((@node).value.while_loop.expr, state), builtins::bool_, state)
+    
+    let br = make_insn_dbg(InsnKind::BR, loc)
+    (@br).value.br = {
+        cond = cond
+    } !InsnBr
+    
+    push_insn(br, state)
+
+    let inner = make_label(state)
+    push_label(inner, state)
+    (@br).value.br.if_true = inner
+
+    push_scope(node, state)
+    for var i in 0..vector::length((@node).value.while_loop.body) {
+        let n = vector::get((@node).value.while_loop.body, i) !*parser::Node
+        walk(n, state)
+    }
+    pop_scope(state)
+
+    push_insn(continue_insn, state)
+    let end_label = make_label(state)
+    push_label(end_label, state)
+    (@br).value.br.if_false = end_label
+
+    (@continue_insn).value.br_unc.label_ = start_label
+    (@break_insn).value.br_unc.label_ = end_label
+    pop_loop_state(state)
+}
+
+// TODO Allow arrays
+// TODO The locations seem off for this
+def walk_For(node: *parser::Node, state: *State) {
+    let range = (@node).value.for_loop.expr
+    assert((@range).kind == parser::NodeKind::RANGE or (@range).kind == parser::NodeKind::RANGE_INC)
+    
+    var op = i_slt
+    if (@range).kind == parser::NodeKind::RANGE_INC {
+        op = i_sle
+    }
+    let iddecl = (@node).value.for_loop.iddecl
+    let tpe = (@iddecl).tpe
+
+    let left = (@range).value.bin_op.left
+    let right = (@range).value.bin_op.right
+    let startv = convert_to(left, walk_expression((@range).value.bin_op.left, state), tpe, state)
+    let endv = convert_to(right, walk_expression(right, state), tpe, state)
+
+    push_scope(node, state)
+    let loc = make_location(node, state)
+    var locv: Value
+    if (@iddecl).kind == parser::NodeKind::FOR_ID_DECL {
+        let value = scope::get((@iddecl).scope, (@iddecl).value.for_id_decl.ident)
+        if not value { return }
+
+        let ret = {
+            kind = ValueKind::LOCAL,
+            name = (@value).assembly_name,
+            tpe = tpe
+        } !Value
+
+        let alloca = make_insn_dbg(InsnKind::ALLOCA, loc)
+        (@alloca).value.alloca = {
+            ret = ret
+        } !InsnAlloca
+        push_insn(alloca, state)
+
+        ret.tpe = typechecking::pointer(tpe)
+        push_declare((@iddecl).value.for_id_decl.ident, ret, (@value).name, state)
+
+        locv = {
+            kind = ValueKind::LOCAL,
+            name = (@value).assembly_name,
+            tpe = typechecking::pointer(tpe)
+        } !Value
+    } else {
+        let addr = walk_expression(iddecl, state).addr
+        if not addr { return }
+        locv = @addr
+    }
+    
+    let store = make_insn_dbg(InsnKind::STORE, loc)
+    (@store).value.store = {
+        loc = locv,
+        value = startv
+    } !InsnStore
+
+    push_insn(store, state)
+
+    push_loop_state(state)
+    let continue_insn = get_continue_insn(state)
+    let break_insn = get_break_insn(state)
+    let start_insn = make_insn_dbg(InsnKind::BR_UNC, loc)
+
+    push_insn(start_insn, state)
+    let start_label = make_label(state)
+    push_label(start_label, state)
+
+    let load_ret = make_local_value(builtins::int_, null, state)
+    let load = make_insn_dbg(InsnKind::LOAD, loc)
+    (@load).value.load = {
+        value = load_ret,
+        loc = locv
+    } !InsnLoad
+
+    push_insn(load, state)
+
+    let tpe2 = typechecking::common_type(load_ret.tpe, endv.tpe)
+    let left2 = convert_to(node, load_ret, tpe2, state)
+    let right2 = convert_to(node, endv, tpe2, state)
+
+    let cmp_ret = make_local_value(builtins::bool_, null, state)
+    let cmp = make_insn_dbg(InsnKind::ICMP, loc)
+    (@cmp).value.cmp = {
+        op = op,
+        ret = cmp_ret,
+        left = left2,
+        right = right2
+    } !InsnCmp
+
+    push_insn(cmp, state)
+
+    let br = make_insn_dbg(InsnKind::BR, loc)
+    (@br).value.br = {
+        cond = cmp_ret
+    } !InsnBr
+    
+    push_insn(br, state)
+
+    let inner = make_label(state)
+    push_label(inner, state)
+    (@br).value.br.if_true = inner
+
+    for var i in 0..vector::length((@node).value.for_loop.body) {
+        let n = vector::get((@node).value.for_loop.body, i) !*parser::Node
+        walk(n, state)
+    }
+
+    push_insn(continue_insn, state)
+    let inc_label = make_label(state)
+    push_label(inc_label, state)
+
+    let add_ret = make_local_value(builtins::int_, null, state)
+    let add = make_insn_dbg(InsnKind::ADD, loc)
+    (@add).value.arith = {
+        ret = add_ret,
+        left = load_ret,
+        right = { kind = ValueKind::INT, i = 1, tpe = builtins::int_ } !Value
+    } !InsnArithmetic
+
+    push_insn(add, state)
+
+    let store2 = make_insn_dbg(InsnKind::STORE, loc)
+    (@store2).value.store = {
+        loc = locv,
+        value = add_ret
+    } !InsnStore
+
+    push_insn(store2, state)
+
+    push_insn(start_insn, state)
+    let end_label = make_label(state)
+    push_label(end_label, state)
+    (@br).value.br.if_false = end_label
+
+    (@start_insn).value.br_unc.label_ = start_label
+    (@continue_insn).value.br_unc.label_ = inc_label
+    (@break_insn).value.br_unc.label_ = end_label
+    pop_loop_state(state)
+
+    pop_scope(state)
+}
+
+def walk_VarDecl(node: *parser::Node, state: *State) {
+    let loc = make_location(node, state)
+    let left = (@node).value.var_decl.left
+    let right = (@node).value.var_decl.right
+
+    let assign_left = vector::make()
+
+    for var i in 0..vector::length(left) {
+        let n = vector::get(left, i) !*parser::Node
+        if (@n).kind == parser::NodeKind::ID_DECL {
+            let v = (@n).value.id_decl.value
+            let tpe = (@v).tpe
+
+            let value = scope::get((@node).scope, v)
+            if not value { continue }
+            let name = (@value).assembly_name
+
+            let ret = {
+                kind = ValueKind::LOCAL,
+                name = name,
+                tpe = tpe
+            } !Value
+
+            let insn = make_insn_dbg(InsnKind::ALLOCA, loc)
+            (@insn).value.alloca = {
+                ret = ret
+            } !InsnAlloca
+            push_insn(insn, state)
+
+            ret.tpe = typechecking::pointer(tpe)
+            push_declare(v, ret, (@value).name, state)
+
+            vector::push(assign_left, v)
+        } else {
+            vector::push(assign_left, (@n).value.expr)
+        }
+    }
+
+    if vector::length(right) > 0 {
+        let assign = allocate(parser::Node)
+        (@assign).kind = parser::NodeKind::ASSIGN
+        (@assign).loc = (@node).loc
+        (@assign).scope = (@node).scope
+        (@assign).value.assign = {
+            left = assign_left,
+            right = right
+        } !parser::NodeAssign
+        walk_Assign(assign, state)
+    }
+}
+
+export def walk(node: *parser::Node, state: *State) {
+    if not node { return }
+    switch (@node).kind !int {
+        case parser::NodeKind::VAR_DECL:
+            walk_VarDecl(node, state)
+        case parser::NodeKind::RETURN:
+            walk_Return(node, state)
+        case parser::NodeKind::BREAK:
+            walk_Break(node, state)
+        case parser::NodeKind::CONTINUE:
+            walk_Continue(node, state)
+        case parser::NodeKind::IF:
+            walk_If(node, state)
+        case parser::NodeKind::SWITCH:
+            walk_Switch(node, state)
+        case parser::NodeKind::LOOP:
+            walk_Loop(node, state)
+        case parser::NodeKind::WHILE:
+            walk_While(node, state)
+        case parser::NodeKind::FOR:
+            walk_For(node, state)
+        case: walk_expression(node, state)
+    }
+}
+
+def di_basic_type(tpe: *typechecking::Type, name: string, c: string, state: *State) -> *Value {
+    let debug_values = allocate(DebugParam, 4)
+    debug_values[0] = {
+        name = "name", value = { kind = DebugValueKind::STRING, s = name } !DebugValue
+    } !DebugParam
+    debug_values[1] = {
+        name = "size", value = { kind = DebugValueKind::INT, i = (@tpe).size * 8 } !DebugValue
+    } !DebugParam
+    debug_values[2] = {
+        name = "align", value = { kind = DebugValueKind::INT, i = (@tpe).align * 8 } !DebugValue
+    } !DebugParam
+    debug_values[3] = {
+        name = "encoding", value = { kind = DebugValueKind::CONST, name = c } !DebugValue
+    } !DebugParam
+    let di = allocate(Value)
+    @di = {
+        kind = ValueKind::DEBUG_INFO,
+        name = "DIBasicType",
+        debug_values = debug_values
+    } !Value
+    return di
+}
+
+def di_composite_type(value: *Value, tpe: *typechecking::Type, name: string, c: string, state: *State) -> *Value {
+    let elementsarr = allocate(Value, (@tpe).fields.size)
+    for var i in 0..(@tpe).fields.size {
+        let elem = (@tpe).fields[i]
+        let debug_values = allocate(DebugParam, 8)
+        debug_values[0] = {
+            name = "tag", value = { kind = DebugValueKind::CONST, name = "DW_TAG_member" } !DebugValue
+        } !DebugParam
+        debug_values[1] = {
+            name = "name", value = { kind = DebugValueKind::STRING, s = elem.name } !DebugValue
+        } !DebugParam
+        debug_values[2] = {
+            name = "scope", value = meta_to_debug_value(value)
+        } !DebugParam
+        debug_values[3] = {
+            name = "file", value = meta_to_debug_value((@state).difile)
+        } !DebugParam
+        debug_values[4] = {
+            name = "line", value = { kind = DebugValueKind::INT, i = elem.line + 1 } !DebugValue
+        } !DebugParam
+        debug_values[5] = {
+            name = "baseType", value = meta_to_debug_value(di_type(elem.tpe, state))
+        } !DebugParam
+        debug_values[6] = {
+            name = "size", value = { kind = DebugValueKind::INT, i = (@elem.tpe).size * 8 } !DebugValue
+        } !DebugParam
+        debug_values[7] = {
+            name = "offset", value = { kind = DebugValueKind::INT, i = elem.offset * 8 } !DebugValue
+        } !DebugParam
+
+        let di = allocate(Value)
+        @di = {
+            kind = ValueKind::DEBUG_INFO,
+            name = "DIDerivedType",
+            debug_values = debug_values
+        } !Value
+        elementsarr[i] = @push_meta(di, state)
+    }
+    
+    let elements = allocate(Value)
+    @elements = {
+        kind = ValueKind::STRUCT,
+        metadata = true,
+        values = elementsarr
+    } !Value
+    let elementsp = push_meta(elements, state)
+
+    let debug_values = allocate(DebugParam, 6)
+    debug_values[0] = {
+        name = "tag", value = { kind = DebugValueKind::CONST, name = c } !DebugValue
+    } !DebugParam
+    debug_values[1] = {
+        name = "file", value = meta_to_debug_value((@state).difile)
+    } !DebugParam
+    debug_values[2] = {
+        name = "line", value = { kind = DebugValueKind::INT, i = (@tpe).line + 1 } !DebugValue
+    } !DebugParam
+    debug_values[3] = {
+        name = "size", value = { kind = DebugValueKind::INT, i = (@tpe).size * 8 } !DebugValue
+    } !DebugParam
+    debug_values[4] = {
+        name = "elements", value = meta_to_debug_value(elementsp)
+    } !DebugParam
+    debug_values[5] = {
+        name = "name", value = { kind = DebugValueKind::STRING, s = name } !DebugValue
+    } !DebugParam
+
+    let di = allocate(Value)
+    @di = {
+        kind = ValueKind::DEBUG_INFO,
+        name = "DICompositeType",
+        debug_values = debug_values
+    } !Value
+    return di
+}
+
+def di_forward_declare(tpe: *typechecking::Type, name: string, state: *State) -> *Value {
+    let debug_values = allocate(DebugParam, 5)
+    debug_values[0] = {
+        name = "tag", value = { kind = DebugValueKind::CONST, name = "DW_TAG_structure_type" } !DebugValue
+    } !DebugParam
+    debug_values[1] = {
+        name = "file", value = meta_to_debug_value((@state).difile)
+    } !DebugParam
+    debug_values[2] = {
+        name = "line", value = { kind = DebugValueKind::INT, i = (@tpe).line + 1 } !DebugValue
+    } !DebugParam
+    debug_values[3] = {
+        name = "name", value = { kind = DebugValueKind::STRING, s = name } !DebugValue
+    } !DebugParam
+    debug_values[4] = {
+        name = "flags", value = { kind = DebugValueKind::CONST, name = "DIFlagFwdDecl" } !DebugValue
+    } !DebugParam
+
+    let di = allocate(Value)
+    @di = {
+        kind = ValueKind::DEBUG_INFO,
+        name = "DICompositeType",
+        debug_values = debug_values
+    } !Value
+    return di
+}
+
+def di_subroutine_type(tpe: *typechecking::Type, state: *State) -> *Value {
+    let values = allocate(Value, vector::length((@tpe).parameter_t) + 1)
+
+    var ret_tpe: *typechecking::Type = null
+    if vector::length((@tpe).return_t) > 1 {
+        ret_tpe = make_return_type(tpe)
+    } else if vector::length((@tpe).return_t) == 1 {
+        ret_tpe = vector::get((@tpe).return_t, 0) !*typechecking::Type
+    }
+
+    if ret_tpe {
+        values[0] = @di_type(ret_tpe, state)
+    } else {
+        values[0] = NO_VALUE
+    }
+
+    for var i in 0..vector::length((@tpe).parameter_t) {
+        let np = vector::get((@tpe).parameter_t, i) !*typechecking::NamedParameter
+        values[i + 1] = @di_type((@np).value, state)
+    }
+
+    let types = allocate(Value)
+    @types = {
+        kind = ValueKind::STRUCT,
+        metadata = true,
+        values = values
+    } !Value
+    let typesp = push_meta(types, state)
+
+    let debug_values = allocate(DebugParam, 1)
+    debug_values[0] = {
+        name = "types", value = meta_to_debug_value(typesp)
+    } !DebugParam
+
+    let di = allocate(Value)
+    @di = {
+        kind = ValueKind::DEBUG_INFO,
+        name = "DISubroutineType",
+        debug_values = debug_values
+    } !Value
+
+    return push_meta(di, state)
+}
+
+def di_function_type(tpe: *typechecking::Type, state: *State) -> *Value {
+    let diftpe = di_subroutine_type(tpe, state)
+
+    let debug_values = allocate(DebugParam, 3)
+    debug_values[0] = {
+        name = "tag", value = { kind = DebugValueKind::CONST, name = "DW_TAG_pointer_type" } !DebugValue
+    } !DebugParam
+    debug_values[1] = {
+        name = "baseType", value = meta_to_debug_value(diftpe)
+    } !DebugParam
+    debug_values[2] = {
+        name = "size", value = { kind = DebugValueKind::INT, i = (size_of type () -> ()) * 8 } !DebugValue
+    } !DebugParam
+
+    let di = allocate(Value)
+    @di = {
+        kind = ValueKind::DEBUG_INFO,
+        name = "DIDerivedType",
+        debug_values = debug_values
+    } !Value
+    return di
+}
+
+def di_pointer_type(tpe: *typechecking::Type, state: *State) -> *Value {
+    let debug_values = allocate(DebugParam, 3)
+    debug_values[0] = {
+        name = "tag", value = { kind = DebugValueKind::CONST, name = "DW_TAG_pointer_type" } !DebugValue
+    } !DebugParam
+    debug_values[1] = {
+        name = "baseType", value = meta_to_debug_value(di_type((@tpe).tpe, state))
+    } !DebugParam
+    debug_values[2] = {
+        name = "size", value = { kind = DebugValueKind::INT, i = (size_of type *) * 8 } !DebugValue
+    } !DebugParam
+
+    let di = allocate(Value)
+    @di = {
+        kind = ValueKind::DEBUG_INFO,
+        name = "DIDerivedType",
+        debug_values = debug_values
+    } !Value
+    return di
+}
+
+// TODO More dimensions
+def di_static_array_type(tpe: *typechecking::Type, state: *State) -> *Value {
+    
+    let debug_values1 = allocate(DebugParam, 1)
+    debug_values1[0] = {
+        name = "count", value = { kind = DebugValueKind::INT, i = (@tpe).length } !DebugValue
+    } !DebugParam
+    let value = allocate(Value)
+    @value = {
+        kind = ValueKind::DEBUG_INFO,
+        name = "DISubrange",
+        debug_values = debug_values1
+    } !Value
+
+    let values = allocate(Value, 1)
+    values[0] = @push_meta(value, state)
+    let elements = allocate(Value)
+    @elements = {
+        kind = ValueKind::STRUCT,
+        metadata = true,
+        values = values
+    } !Value
+
+    let debug_values = allocate(DebugParam, 4)
+    debug_values[0] = {
+        name = "tag", value = { kind = DebugValueKind::CONST, name = "DW_TAG_array_type" } !DebugValue
+    } !DebugParam
+    debug_values[1] = {
+        name = "baseType", value = meta_to_debug_value(di_type((@tpe).tpe, state))
+    } !DebugParam
+    debug_values[2] = {
+        name = "size", value = { kind = DebugValueKind::INT, i = (@tpe).size * 8 } !DebugValue
+    } !DebugParam
+    debug_values[3] = {
+        name = "elements", value = meta_to_debug_value(push_meta(elements, state))
+    } !DebugParam
+
+    let di = allocate(Value)
+    @di = {
+        kind = ValueKind::DEBUG_INFO,
+        name = "DICompositeType",
+        debug_values = debug_values
+    } !Value
+    return di
+}
+
+def di_array_type(value: *Value, tpe: *typechecking::Type, state: *State) -> *Value {
+    // TODO This should probably be an array type instead (see documentation)
+    let array = typechecking::copy(builtins::array)
+    (@array).fields[1].tpe = typechecking::pointer((@tpe).tpe)
+    return di_composite_type(value, array, "<array>", "DW_TAG_structure_type", state)
+}
+
+def di_type(tpe: *typechecking::Type, state: *State) -> *Value {
+    if not tpe { return null }
+
+    let anonymous = length((@tpe).type_name) == 0
+    var ditpe: *Value = null
+    if not anonymous {
+        ditpe = map::get((@state).ditypes, (@tpe).type_name) !*Value
+    }
+    if ditpe { return ditpe }
+
+    var name = (@tpe).type_name
+    if anonymous {
+        name = "<anonymous>"
+    }
+
+    ditpe = allocate(Value)
+    let ditpep = push_meta(ditpe, state)
+    if not anonymous {
+        map::put((@state).ditypes, (@tpe).type_name, ditpep)
+    }
+
+    switch (@tpe).kind !int {
+        // TODO compare with char for special casing
+        case typechecking::TypeKind::WORD:
+            if (@tpe).unsig {
+                @ditpe = @di_basic_type(tpe, name, "DW_ATE_unsigned", state)
+            } else {
+                @ditpe = @di_basic_type(tpe, name, "DW_ATE_signed", state)
+            }
+        case typechecking::TypeKind::FLOAT:
+            @ditpe = @di_basic_type(tpe, name, "DW_ATE_float", state)
+        case typechecking::TypeKind::BOOL:
+            @ditpe = @di_basic_type(tpe, name, "DW_ATE_unsigned", state)
+        case typechecking::TypeKind::STRUCT:
+            @ditpe = @di_composite_type(ditpep, tpe, name, "DW_TAG_structure_type", state)
+        case typechecking::TypeKind::UNION:
+            @ditpe = @di_composite_type(ditpep, tpe, name, "DW_TAG_union_type", state)
+        case typechecking::TypeKind::ENUM:
+            // TODO Use enumeration type
+            if (@(@tpe).tpe).unsig {
+                @ditpe = @di_basic_type((@tpe).tpe, name, "DW_ATE_unsigned", state)
+            } else {
+                @ditpe = @di_basic_type((@tpe).tpe, name, "DW_ATE_signed", state)
+            }
+        case typechecking::TypeKind::FUNCTION:
+            @ditpe = @di_function_type(tpe, state)
+        case typechecking::TypeKind::POINTER:
+            @ditpe = @di_pointer_type(tpe, state)
+        case typechecking::TypeKind::STATIC_ARRAY:
+            @ditpe = @di_static_array_type(tpe, state)
+        case typechecking::TypeKind::ARRAY:
+            @ditpe = @di_array_type(ditpep, tpe, state)
+        case typechecking::TypeKind::STUB:
+            @ditpe = @di_forward_declare(tpe, name, state)
+        case:
+            error((@tpe).kind, "\n") 
+            assert(false)
+    }
+    return ditpep
+}
+
+def create_function(node: *parser::Node, tpe: *typechecking::Type, body: *vector::Vector, scpe: *scope::Scope, state: *State) {
+    var line = -1
+    if node { line = (@node).loc.line }
+
+    let function = allocate(Function)
+    (@function).name = typechecking::mangle_function_name((@tpe).type_name, (@tpe).parameter_t)
+    (@function).unmangled = (@tpe).type_name
+    (@function).multiple_returns = false
+    (@function).forward_declare = true
+    (@function).debug = null
+    if body {
+        (@function).forward_declare = false
+    }
+
+    if toolchain::debug_sym and body {
+        let debug_values = allocate(DebugParam, 7)
+        // TODO We might have to use the mangled name here
+        debug_values[0] = {
+            name = "name", value = { kind = DebugValueKind::STRING, s = (@function).name } !DebugValue
+        } !DebugParam
+        debug_values[1] = {
+            name = "scope", value = meta_to_debug_value(vector::peek((@state).discope) !*Value)
+        } !DebugParam
+        debug_values[2] = {
+            name = "file", value = meta_to_debug_value((@state).difile)
+        } !DebugParam
+        debug_values[3] = {
+            name = "line", value = { kind = DebugValueKind::INT, i = line + 1 } !DebugValue
+        } !DebugParam
+        debug_values[4] = {
+            name = "type", value = meta_to_debug_value(di_subroutine_type(tpe, state))
+        } !DebugParam
+        debug_values[5] = {
+            name = "scopeLine", value = { kind = DebugValueKind::INT, i = line + 1 } !DebugValue
+        } !DebugParam
+        debug_values[6] = {
+            name = "unit", value = meta_to_debug_value((@state).diunit)
+        } !DebugParam
+
+        let disub = allocate(Value)
+        @disub = {
+            kind = ValueKind::DEBUG_INFO,
+            name = "DISubprogram",
+            distinct = true,
+            debug_values = debug_values
+        } !Value
+        let disubp = push_meta(disub, state)
+        (@function).debug = disubp
+
+        vector::push((@state).discope, disubp)
+    }
+
+    if vector::length((@tpe).return_t) > 1 {
+        (@function).ret = make_return_type(tpe)
+        (@function).multiple_returns = true
+    } else {
+        (@function).ret = vector::peek((@tpe).return_t) !*typechecking::Type
+    }
+
+    (@function).args = vector::make()
+    for var i in 0..vector::length((@tpe).parameter_t) {
+        let np = allocate(typechecking::NamedParameter)
+        (@np) = @(vector::get((@tpe).parameter_t, i) !*typechecking::NamedParameter)
+        vector::push((@function).args, np)
+    }
+
+    map::put((@(@state).result).functions, (@function).name, function)
+
+    if body {
+        (@state).current_function = function
+        (@state).counter = 0
+        
+        let block = allocate(Block)
+        (@block).label_ = "start"
+        (@block).insn = vector::make()
+        (@block).next = null
+
+        (@function).block = block
+        (@state).current_block = block
+
+        // Create function arguments
+        for var i in 0..vector::length((@function).args) {
+            let np = vector::get((@function).args, i) !*typechecking::NamedParameter
+            /*let vars = map::keys((@scpe).fields)
+            for var i in 0..vars.size {
+                let v = vars[i]
+                print(v, "\n")
+            }*/
+            let oldname = (@np).name
+            let name = (@scope::get(scpe, parser::make_identifier([(@np).name]))).assembly_name
+            let buf = buffer::make_buffer()
+            buffer::append_str(*buf, name)
+            buffer::append_str(*buf, ".value")
+            // Rename to name.value
+            (@np).name = buffer::to_string(*buf)
+            // Insert alloca and store instructions
+
+            let ret = {
+                kind = ValueKind::LOCAL,
+                name = name,
+                tpe = (@np).value
+            } !Value
+
+            let alloca = make_insn(InsnKind::ALLOCA)
+            (@alloca).value.alloca = {
+                ret = ret
+            } !InsnAlloca
+            push_insn(alloca, state)
+
+            if (@np).node {
+                ret.tpe = typechecking::pointer((@np).value)
+                push_declare_arg((@np).node, ret, oldname, i + 1, state)
+            }
+            
+            let store = make_insn(InsnKind::STORE)
+            (@store).value.store = {
+                value = {
+                    kind = ValueKind::LOCAL,
+                    name = (@np).name,
+                    tpe = (@np).value
+                } !Value,
+                loc = {
+                    kind = ValueKind::LOCAL,
+                    name = name,
+                    tpe = typechecking::pointer((@np).value)
+                } !Value
+            } !InsnStore
+
+            push_insn(store, state)
+        }
+
+        for var i in 0..vector::length(body) {
+            let node = vector::get(body, i) !*parser::Node
+            walk(node, state)
+        }
+
+        // TODO Make another compiler pass that checks for missing return statements and dead code
+        // Check for missing return statement
+        let last_insn = vector::peek((@(@state).current_block).insn) !*Insn
+        if not last_insn or (@last_insn).kind != InsnKind::RET {
+            var value = NO_VALUE
+            if (@function).ret {
+                value = {
+                    kind = ValueKind::UNDEF,
+                    tpe = (@function).ret
+                } !Value
+            }
+            
+            let ret = make_insn(InsnKind::RET)
+            (@ret).value.ret.value = value
+            push_insn(ret, state)
+        }
+
+        if toolchain::debug_sym {
+            vector::pop((@state).discope)
+        }
+    }
+}
+
+def walk_Def(node: *parser::Node, state: *State){
+    create_function(node, (@node).tpe, (@node).value.def_.body, (@node).scope, state)
+}
+
+def walk_TypeDecl(node: *parser::Node, state: *State) {
+    let left = (@node).value.type_decl.left
+    for var i in 0..vector::length(left) {
+        let n = vector::get(left, i) !*parser::Node
+        let tpe = (@n).tpe
+        if not tpe { continue }
+        if (@tpe).kind == typechecking::TypeKind::STRUCT or
+            (@tpe).kind == typechecking::TypeKind::UNION {
+            map::put((@(@state).result).structures, (@tpe).type_name, tpe)
+        }
+    }
+}
+
+def walk_top_VarDecl(node: *parser::Node, body: *vector::Vector, state: *State) {
+    let left = vector::make()
+    for var i in 0..vector::length((@node).value.var_decl.left) {
+        let n = vector::get((@node).value.var_decl.left, i) !*parser::Node
+        if (@n).kind == parser::NodeKind::ID_DECL {
+            let v = (@n).value.id_decl.value
+            let value = scope::get((@node).scope, v)
+            if not value { continue }
+            let name = (@value).assembly_name
+            
+            let global = allocate(Global)
+            @global = {
+                name = name,
+                tpe = (@v).tpe,
+                line = (@v).loc.line
+            } !Global
+            map::put((@(@state).result).globals, (@global).name, global)
+            vector::push(left, (@n).value.id_decl.value)
+        } else {
+            vector::push(left, (@n).value.expr)
+        }
+    }
+    if vector::length((@node).value.var_decl.right) > 0 {
+        let node_assign = allocate(parser::Node)
+        (@node_assign).kind = parser::NodeKind::ASSIGN
+        (@node_assign).loc = (@node).loc
+        (@node_assign).scope = (@node).scope
+        (@node_assign).value.assign = {
+            left = left,
+            right = (@node).value.var_decl.right
+        } !NodeAssign
+        vector::push(body, node_assign)
+    }
+}
+
+let imported_modules = map::make()
+def walk_top_Import(node: *parser::Node, body: *vector::Vector, state: *State) {
+    let imports = (@node).value.body
+    for var i in 0..vector::length(imports) {
+        let imprt = vector::get(imports, i) !*parser::Node
+        let name = (@imprt).value.import_module.name
+        var alias = (@imprt).value.import_module.alias 
+        if not alias {
+            alias = name
+        }
+
+        let filename = toolchain::find_module_file(name)
+        if length(filename) == 0 { continue }
+        
+        if map::contains(imported_modules, filename) {
+            continue
+        }
+
+        let args = vector::make()
+        let arg = parser::make_identifier(["args"])
+        (@arg).scope = (@node).scope
+        (@arg).tpe = typechecking::array(builtins::string_)
+        (@arg).svalue = scope::get((@arg).scope, arg)
+        vector::push(args, arg)
+
+        let name_size = vector::length((@name).value.body)
+        let array = allocate(string, name_size + 1)
+        for var j in 0..name_size {
+            array[j] = @(vector::get((@name).value.body, j) !*string)
+        }
+        array[array.size - 1] = "main"
+        let ident = parser::make_identifier(array)
+        (@ident).scope = (@node).scope
+
+        let sc = (@scope::get((@node).scope, alias)).scope
+
+        let main_value = map::get((@sc).fields, "main") !*scope::Value
+        if not main_value { continue }
+
+        let call = allocate(parser::Node)
+        (@call).kind = parser::NodeKind::FUNC_CALL
+        (@call).scope = (@node).scope
+        (@call).tpe = null
+        (@call).function = (@main_value).tpe
+        (@call).loc = (@node).loc
+        (@call).value.func_call = {
+            left = ident,
+            args = args,
+            kwargs = vector::make()
+        } !parser::NodeFuncCall
+
+        vector::push(body, call)
+
+        map::put(imported_modules, filename, map::sentinel)
+    }
+}
+
+export def compile(module: *toolchain::Module) -> *Result {
+    let node = (@module).node
+    assert((@node).kind == parser::NodeKind::PROGRAM)
+    let body = vector::make()
+
+    let state = allocate(State)
+    @state = {
+        module = module,
+        counter = 0,
+        global_counter = 0,
+        meta_counter = 0,
+        loops = vector::make(),
+        result = allocate(Result),
+        ditypes = map::make(),
+        discope = vector::make()
+    } !State
+
+    @(@state).result = {
+        functions = map::make(),
+        structures = map::make(),
+        globals = map::make(),
+        constants = map::make(),
+        metadata = map::make()
+    } !Result
+
+    var globals: *Value = null
+    // Create compilation unit and file
+    if toolchain::debug_sym {
+        var dirname = util::dirname((@module).filename)
+        if length(dirname) == 0 { dirname = "." }
+        let abspath = allocate(char, PATH_MAX)
+        absolute_path(dirname, abspath.value)
+        abspath.size = strlen(abspath) + 1
+        let file = util::basename((@module).filename)
+
+        let dvalues1 = allocate(DebugParam, 2)
+        dvalues1[0] = {
+            name = "filename", value = { kind = DebugValueKind::STRING, s = file } !DebugValue
+        } !DebugParam
+        dvalues1[1] = {
+            name = "directory", value = { kind = DebugValueKind::STRING, s = abspath } !DebugValue
+        } !DebugParam
+
+        let difile = allocate(Value)
+        @difile = {
+            kind = ValueKind::DEBUG_INFO,
+            metadata = true,
+            name = "DIFile",
+            debug_values = dvalues1
+        } !Value
+        (@state).difile = push_meta(difile, state)
+        vector::push((@state).discope, (@state).difile)
+
+        globals = allocate(Value)
+        let dvalues2 = allocate(DebugParam, 6)
+        dvalues2[0] = {
+            name = "language", value = { kind = DebugValueKind::CONST, name = "DW_LANG_C99" } !DebugValue
+        } !DebugParam
+        dvalues2[1] = {
+            name = "file", value = meta_to_debug_value((@state).difile)
+        } !DebugParam
+        dvalues2[2] = {
+            name = "producer", value = { kind = DebugValueKind::STRING, s = toolchain::version } !DebugValue
+        } !DebugParam
+        dvalues2[3] = {
+            name = "isOptimized", value = { kind = DebugValueKind::BOOL, i = 0 } !DebugValue
+        } !DebugParam
+        dvalues2[4] = {
+            name = "emissionKind", value = { kind = DebugValueKind::CONST, name = "FullDebug" } !DebugValue
+        } !DebugParam
+        dvalues2[5] = {
+            name = "globals", value = meta_to_debug_value(push_meta(globals, state))
+        } !DebugParam
+
+        let diunit = allocate(Value)
+        @diunit = {
+            kind = ValueKind::DEBUG_INFO,
+            metadata = true,
+            distinct = true,
+            name = "DICompileUnit",
+            debug_values = dvalues2
+        } !Value
+        (@state).diunit = push_meta(diunit, state)
+
+        let values = allocate(Value, 1)
+        values[0] = @(@state).diunit
+        let dbgcu = allocate(Value)
+        @dbgcu = {
+            kind = ValueKind::STRUCT,
+            metadata = true,
+            values = values
+        } !Value
+        map::put((@(@state).result).metadata, "llvm.dbg.cu", dbgcu)
+
+        let values2 = allocate(Value, 3)
+        values2[0] = { ValueKind::INT, i = 7, sign = 1, tpe = builtins::int_ } !Value
+        values2[1] = { ValueKind::STRING, metadata = true, s = "Dwarf Version" } !Value
+        values2[2] = { ValueKind::INT, i = 4, sign = 1, tpe = builtins::int_ } !Value
+        let dwarfv = allocate(Value)
+        @dwarfv = {
+            kind = ValueKind::STRUCT,
+            metadata = true,
+            values = values2
+        } !Value
+        let dwarfvp = push_meta(dwarfv, state)
+
+        let values3 = allocate(Value, 3)
+        values3[0] = { ValueKind::INT, i = 2, sign = 1, tpe = builtins::int_ } !Value
+        values3[1] = { ValueKind::STRING, metadata = true, s = "Debug Info Version" } !Value
+        values3[2] = { ValueKind::INT, i = 3, sign = 1, tpe = builtins::int_ } !Value
+        let div = allocate(Value)
+        @div = {
+            kind = ValueKind::STRUCT,
+            metadata = true,
+            values = values3
+        } !Value
+        let divp = push_meta(div, state)
+
+        let values4 = allocate(Value, 3)
+        values4[0] = { ValueKind::INT, i = 1, sign = 1, tpe = builtins::int_ } !Value
+        values4[1] = { ValueKind::STRING, metadata = true, s = "wchar_size" } !Value
+        values4[2] = { ValueKind::INT, i = 4, sign = 1, tpe = builtins::int_ } !Value
+        let wchars = allocate(Value)
+        @wchars = {
+            kind = ValueKind::STRUCT,
+            metadata = true,
+            values = values4
+        } !Value
+        let wcharsp = push_meta(wchars, state)
+        
+        let values5 = allocate(Value, 3)
+        values5[0] = @dwarfvp
+        values5[1] = @divp
+        values5[2] = @wcharsp
+        let flags = allocate(Value)
+        @flags = {
+            kind = ValueKind::STRUCT,
+            metadata = true,
+            values = values5
+        } !Value
+        map::put((@(@state).result).metadata, "llvm.module.flags", flags)
+
+        let values6 = allocate(Value, 1)
+        values6[0] = { ValueKind::STRING, metadata = true, s = toolchain::version } !Value
+        let identv = allocate(Value)
+        @identv = {
+            kind = ValueKind::STRUCT,
+            metadata = true,
+            values = values6
+        } !Value
+        let identp = push_meta(identv, state)
+
+        let values7 = allocate(Value, 1)
+        values7[0] = @identp
+        let ident = allocate(Value)
+        @ident = {
+            kind = ValueKind::STRUCT,
+            metadata = true,
+            values = values7
+        } !Value
+        map::put((@(@state).result).metadata, "llvm.ident", ident)
+    }
+    
+    // Forward declare functions from other files
+    // TODO This doesn't work for functions that return multiple parameters
+    let sc = (@node).scope
+    if (@sc).imports {
+        for var i in 0..vector::length((@sc).imports) {
+            let module = vector::get((@sc).imports, i) !*toolchain::Module
+            let m_scope = (@module).scope
+            let keys = map::keys((@m_scope).fields)
+            for var i in 0..keys.size {
+                let value = map::get((@m_scope).fields, keys[i]) !*scope::Value
+                if (@value).share !int & parser::ShareMarker::EXPORT !int {
+                    if typechecking::is_function((@value).tpe) {
+                        create_function(null, (@value).tpe, null, sc, state)
+                    } else if not typechecking::is_type((@value).tpe) {
+                        let name = (@value).assembly_name
+                        let global = allocate(Global)
+                        (@global) = {
+                            name = name,
+                            tpe = (@value).tpe,
+                            external = true,
+                            line = -1
+                        } !Global
+                        map::put((@(@state).result).globals, name, global)
+                    }
+                }
+            }
+        }
+    }
+
+    let ident = parser::make_identifier(["main"])
+    (@ident).loc.module = (@module).module
+    (@ident).loc.filename = (@module).filename
+    (@ident).loc.line = 0
+    (@ident).loc.column = 0
+    let main_tpe = typechecking::make_type(typechecking::TypeKind::FUNCTION, ident)
+    
+    let string_array_tpe = typechecking::array(builtins::string_)
+    
+    let named = allocate(typechecking::NamedParameter)
+    (@named).name = "args"
+    (@named).value = string_array_tpe
+    (@named).varargs = false
+    (@named).node = null
+    let args = vector::make()
+    vector::push(args, named)
+
+    (@main_tpe).parameter_t = args
+    // TODO Infer return types
+    (@main_tpe).return_t = vector::make()
+    (@main_tpe).macro = null
+    (@main_tpe).proto = null
+
+    scope::create_function((@node).scope, ident, parser::ShareMarker::EXPORT, main_tpe, false)
+    
+    for var i in 0..vector::length((@node).value.body) {
+        let n = vector::get((@node).value.body, i) !*parser::Node
+        switch (@n).kind !int {
+            case parser::NodeKind::DEF:
+                walk_Def(n, state)
+            case parser::NodeKind::TYPE_DECL:
+                walk_TypeDecl(n, state)
+            case parser::NodeKind::VAR_DECL:
+                walk_top_VarDecl(n, body, state)
+            case parser::NodeKind::IMPORT:
+                walk_top_Import(n, body, state)
+            case:
+                vector::push(body, n)
+        }
+    }
+
+    create_function(ident, main_tpe, body, (@node).scope, state)
+
+    if toolchain::debug_sym {
+        let keys = map::keys((@(@state).result).globals)
+        let values = allocate(Value, keys.size)
+        for var i in 0..keys.size {
+            let global = map::get((@(@state).result).globals, keys[i]) !*Global
+
+            let debug_values = allocate(DebugParam, 6)
+            debug_values[0] = {
+                name = "name", value = { kind = DebugValueKind::STRING, s = (@global).name } !DebugValue
+            } !DebugParam
+            debug_values[1] = {
+                name = "scope", value = meta_to_debug_value((@state).diunit)
+            } !DebugParam
+            debug_values[2] = {
+                name = "file", value = meta_to_debug_value((@state).difile)
+            } !DebugParam
+            debug_values[3] = {
+                name = "line", value = { kind = DebugValueKind::INT, i = (@global).line + 1 } !DebugValue
+            } !DebugParam
+            debug_values[4] = {
+                name = "type", value = meta_to_debug_value(di_type((@global).tpe, state))
+            } !DebugParam
+            debug_values[5] = {
+                name = "isDefinition", value = { kind = DebugValueKind::BOOL, i = (not (@global).external) !int } !DebugValue
+            } !DebugParam
+
+            let diglobal = allocate(Value)
+            @diglobal = {
+                kind = ValueKind::DEBUG_INFO,
+                name = "DIGlobalVariable",
+                debug_values = debug_values,
+                distinct = true
+            } !Value
+            let diglobalp = push_meta(diglobal, state)
+
+            let debug_values2 = allocate(DebugParam, 2)
+            debug_values2[0] = {
+                name = "var", value = meta_to_debug_value(diglobalp)
+            } !DebugParam
+            debug_values2[1] = {
+                name = "expr", value = { kind = DebugValueKind::DIEXP } !DebugValue
+            } !DebugParam
+
+            let diglobal_expr = allocate(Value)
+            @diglobal_expr = {
+                kind = ValueKind::DEBUG_INFO,
+                name = "DIGlobalVariableExpression",
+                debug_values = debug_values2
+            } !Value
+            let diglobal_exprp = push_meta(diglobal_expr, state)
+
+            values[i] = @diglobal_exprp
+            (@global).debug = diglobal_exprp
+        }
+        @globals = {
+            kind = ValueKind::STRUCT,
+            metadata = true,
+            values = values
+        } !Value
+    }
+
+    return (@state).result
+}

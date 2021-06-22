@@ -1,0 +1,206 @@
+// This file handles all global state related to compiling
+// TODO Sorry for the mess of imports, but right now there's no better way
+
+import vector
+import util
+import buffer
+import map
+
+// Contains the scopes for already compiled modules 
+// map of Module
+export let modules = map::make()
+export var include_path: [string]
+export var outfolder = "."
+export var error_count = 0
+export var outfile = "a.out"
+export let version = "Princess 0.0.1"
+
+// Debug stuff 
+export var print_ast = false
+// This flag controls emitting debug information to llvm
+export var debug_sym = false
+
+type scope::Scope
+type parser::Node
+type compiler::Result
+type compiler::Value
+
+export type Module = struct {
+    // This is true if the module has been forward declared
+    // By use of type module::Type
+    forward_declared: bool
+    filename: string
+    llfile: string
+    module: string
+    node: *parser::Node
+    scope: *scope::Scope
+    result: *compiler::Result
+    imported: *map::Map
+    difile: *compiler::Value
+}
+
+export def compile_file(filename: string, mod: string, forward_declared: *Module) -> *Module
+export def compile_module(module: *parser::Node) -> *Module
+export def find_module_file(module: *parser::Node) -> string
+export def get_forward_declared_scope(ident: *parser::Node) -> *scope::Scope
+
+import lexer
+import parser
+import typechecking
+import scope
+import codegen
+import debug
+import builtins
+import compiler
+
+export def get_forward_declared_scope(ident: *parser::Node) -> *scope::Scope {
+
+    let buf = buffer::make_buffer()
+    let len = vector::length((@ident).value.body) - 1
+    for var i in 0..len {
+        buffer::append_str(*buf, @(vector::get((@ident).value.body, i) !*string))
+        if i < len - 1 {
+            buffer::append_str(*buf, "::")
+        }
+    }
+    let modulename = buffer::to_string(*buf)
+
+    var module = map::get(modules, modulename) !*Module
+    if module {
+        return (@module).scope
+    }
+    
+    module = allocate(Module)
+    (@module).forward_declared = true
+    (@module).scope = scope::enter_function_scope(builtins::builtins)
+
+    map::put(modules, modulename, module)
+
+    return (@module).scope
+}
+
+export def find_module_file(module: *parser::Node) -> string {
+    assert((@module).kind == parser::NodeKind::IDENTIFIER)
+    let ident = (@module).value.body
+    let path = zero_allocate(char, PATH_MAX)
+
+    let len = vector::length(ident)
+    for var i in 0..len {
+        var str = @(vector::get(ident, i) !*string)
+        concat(path, str)
+        if i < len - 1 {
+            concat(path, "/")
+        }
+    }
+    for var i in 0..include_path.size {
+        let module_path = zero_allocate(char, PATH_MAX)
+        concat(module_path, include_path[i])
+        concat(module_path, "/", path, ".pr")
+        module_path.size = strlen(module_path) + 1
+        
+        if util::exists(module_path) {
+            return module_path
+        }
+    }
+    return ""
+}
+
+export def compile_file(filename: string, modulename: string, forward_declared: *Module) -> *Module {
+    let fh = open(filename, "rb")
+    if not fh {
+        error("File \"", filename, "\" doesn't exist\n")
+    } else {
+        let buf = util::read_all(fh)
+        close(fh)
+        let lines = util::split_lines(buf)
+
+        let tokens = lexer::lex(buf)
+        free(buf)
+        let node = parser::parse(tokens, lines, filename, modulename)
+        if print_ast {
+            debug::print_node(node)
+        }
+        
+        var sc: *scope::Scope
+        var module: *Module
+        if forward_declared { 
+            module = forward_declared 
+            sc = (@forward_declared).scope
+        } else {
+            module = allocate(Module)
+            sc = scope::enter_function_scope(builtins::builtins)
+        }
+
+        (@module).forward_declared = false
+        (@module).filename = filename
+        (@module).module = modulename
+        (@module).node = node
+        (@module).scope = sc
+        (@module).imported = map::make()
+
+        map::put(modules, modulename, module)
+        typechecking::typecheck(module)       
+        let result = compiler::compile(module)
+        (@module).result = result
+
+        return module
+    }
+    return null
+}
+
+// name is an identifier
+export def compile_module(name: *parser::Node) -> *Module {
+    let modulename = parser::identifier_to_str(name)
+    var module = map::get(modules, modulename) !*Module
+    if not module or (@module).forward_declared {
+        let filename = find_module_file(name)
+        if length(filename) == 0 {
+            return null
+        }
+        module = compile_file(filename, modulename, module)
+    }
+
+    return module
+}
+
+export def compile_main_file(filename: string) {
+    let module = compile_file(filename, "main", null)
+
+    if module and error_count == 0 {
+        let exe_folder = util::exe_folder()
+        let compile_header = buffer::make_buffer()
+        buffer::append_str(*compile_header, "clang-12 -S -emit-llvm -o ")
+        buffer::append_str(*compile_header, outfolder)
+        buffer::append_str(*compile_header, "/princess.ll -x c ")
+        buffer::append_str(*compile_header, exe_folder)
+        buffer::append_str(*compile_header, "/../princess.h")
+        system(buffer::to_string(*compile_header))
+
+        let link_command = buffer::make_buffer()
+        buffer::append_str(*link_command, "llvm-link-12 -S -o ")
+        buffer::append_str(*link_command, outfolder)
+        buffer::append_str(*link_command, "/out.ll ")
+        buffer::append_str(*link_command, outfolder)
+        buffer::append_str(*link_command, "/princess.ll ")
+
+        let filenames = map::keys(modules)
+        for var i in 0..filenames.size {
+            let filename = filenames[i]
+            let module = map::get(modules, filename) !*Module
+            codegen::gen(module)
+
+            buffer::append_str(*link_command, (@module).llfile)
+            buffer::append_char(*link_command, ' ')
+        }
+        system(buffer::to_string(*link_command))
+
+        let compile_command = buffer::make_buffer()
+        buffer::append_str(*compile_command, "clang-12 -lm --output ")
+        buffer::append_str(*compile_command, outfile)
+        buffer::append_char(*compile_command, ' ')
+        buffer::append_str(*compile_command, outfolder)
+        buffer::append_str(*compile_command, "/out.ll")
+
+        system(buffer::to_string(*compile_command))
+    }
+}

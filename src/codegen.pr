@@ -1,0 +1,873 @@
+import vector
+import buffer
+import map
+import util
+import typechecking
+import compiler
+import scope
+import debug
+
+def type_to_str(tpe: *typechecking::Type) -> string {
+    if not tpe { return "void" }
+    let buf = buffer::make_buffer()
+    switch (@tpe).kind !int {
+        case typechecking::TypeKind::BOOL:
+            buffer::append_str(*buf, "i1")
+        case typechecking::TypeKind::WORD:
+            buffer::append_char(*buf, 'i')
+            buffer::append_str(*buf, util::int_to_str((@tpe).size * 8))
+        case typechecking::TypeKind::FLOAT:
+            switch (@tpe).size {
+                case 4: buffer::append_str(*buf, "float")
+                case 8: buffer::append_str(*buf, "double")
+                case: assert(false)
+            }
+        case typechecking::TypeKind::POINTER:
+            if (@tpe).tpe {
+                buffer::append_str(*buf, type_to_str((@tpe).tpe))
+                buffer::append_char(*buf, '*')
+            } else {
+                // void pointer is i8*
+                buffer::append_str(*buf, "i8*")
+            }
+        case typechecking::TypeKind::ARRAY:
+            buffer::append_str(*buf, "{i")
+            buffer::append_str(*buf, util::int_to_str((size_of size_t) * 8))
+            buffer::append_str(*buf, ", ")
+            if (@tpe).tpe {
+                buffer::append_str(*buf, type_to_str((@tpe).tpe))
+                buffer::append_char(*buf, '*')
+            } else {
+                buffer::append_str(*buf, "i8*")
+            }
+            buffer::append_str(*buf, "}")
+        case typechecking::TypeKind::STATIC_ARRAY:
+            buffer::append_char(*buf, '[')
+            buffer::append_str(*buf, util::int_to_str((@tpe).length))
+            buffer::append_str(*buf, " x ")
+            buffer::append_str(*buf, type_to_str((@tpe).tpe))
+            buffer::append_char(*buf, ']')
+        case typechecking::TypeKind::STRUCT:
+            if length((@tpe).type_name) > 0 {
+                buffer::append_str(*buf, "%\"")
+                buffer::append_str(*buf, (@tpe).type_name)
+                buffer::append_char(*buf, '"')
+            } else {
+                // Anonymous struct
+                buffer::append_char(*buf, '{')
+                let len = (@tpe).fields.size
+                for var i in 0..len {
+                    let member = (@tpe).fields[i]
+                    let tpe = member.tpe
+                    buffer::append_str(*buf, type_to_str(tpe))
+                    if i < len - 1 {
+                        buffer::append_str(*buf, ", ")
+                    }
+                }
+                buffer::append_char(*buf, '}')
+            }
+        case typechecking::TypeKind::UNION:
+            if length((@tpe).type_name) > 0 {
+                buffer::append_str(*buf, "%\"")
+                buffer::append_str(*buf, (@tpe).type_name)
+                buffer::append_char(*buf, '"')
+            } else {
+                buffer::append_str(*buf, "{[")
+                buffer::append_str(*buf, util::int_to_str((@tpe).size))
+                buffer::append_str(*buf, " x i8]}")
+            }
+        case typechecking::TypeKind::ENUM:
+            return type_to_str((@tpe).tpe)
+        case typechecking::TypeKind::FUNCTION:
+            assert(vector::length((@tpe).return_t) <= 1)
+            if vector::length((@tpe).return_t) == 1 {
+                let ret = vector::get((@tpe).return_t, 0) !*typechecking::Type
+                buffer::append_str(*buf, type_to_str(ret))
+            } else {
+                buffer::append_str(*buf, "void")
+            }
+            buffer::append_str(*buf, " (")
+            let len = vector::length((@tpe).parameter_t)
+            for var i in 0..len {
+                let param = vector::get((@tpe).parameter_t, i) !*typechecking::NamedParameter
+                buffer::append_str(*buf, type_to_str((@param).value))
+                if i < len - 1 {
+                    buffer::append_str(*buf, ", ")
+                }
+            }
+            buffer::append_str(*buf, ")")
+        case typechecking::TypeKind::NULL:
+            buffer::append_str(*buf, "null")
+        case: 
+            error((@tpe).kind, "\n")
+            assert(false)
+    }
+    return buffer::to_string(*buf)
+}
+
+def debug_value_to_str(value: compiler::DebugValue) -> string {
+    let buf = buffer::make_buffer()
+    switch value.kind !int {
+        case compiler::DebugValueKind::NULL:
+            buffer::append_str(*buf, "null")
+        case compiler::DebugValueKind::STRING:
+            buffer::append_str(*buf, util::repr(value.s, false))
+        case compiler::DebugValueKind::INT:
+            buffer::append_str(*buf, util::int_to_str(value.i))
+        case compiler::DebugValueKind::BOOL:
+            if value.i {
+                buffer::append_str(*buf, "true")
+            } else {
+                buffer::append_str(*buf, "false")
+            }
+        case compiler::DebugValueKind::CONST:
+            buffer::append_str(*buf, value.name)
+        case compiler::DebugValueKind::METADATA:
+            buffer::append_char(*buf, '!')
+            buffer::append_str(*buf, value.name)
+        case compiler::DebugValueKind::DIEXP:
+            buffer::append_str(*buf, "!DIExpression()")
+    }
+    return buffer::to_string(*buf)
+}
+
+def value_to_str(value: compiler::Value) -> string {
+    let buf = buffer::make_buffer()
+    switch value.kind !int {
+        case compiler::ValueKind::ZEROINITIALIZER:
+            buffer::append_str(*buf, "zeroinitializer")
+        case compiler::ValueKind::NULL:
+            buffer::append_str(*buf, "null")
+        case compiler::ValueKind::UNDEF:
+            buffer::append_str(*buf, "undef")
+        case compiler::ValueKind::METADATA:
+            buffer::append_char(*buf, '!')
+            buffer::append_str(*buf, value.name)
+        case compiler::ValueKind::LOCAL:
+            buffer::append_char(*buf, '%')
+            buffer::append_str(*buf, value.name)
+        case compiler::ValueKind::GLOBAL:
+            buffer::append_str(*buf, "@\"")
+            buffer::append_str(*buf, value.name)
+            buffer::append_char(*buf, '"')
+        case compiler::ValueKind::BOOL:
+            if value.i {
+                buffer::append_str(*buf, "true")
+            } else {
+                buffer::append_str(*buf, "false")
+            }
+        case compiler::ValueKind::INT:
+            buffer::append_str(*buf, util::uint_to_str_sign(value.sign, value.i))
+        case compiler::ValueKind::FLOAT:
+            buffer::append_str(*buf, util::double_to_hex_str(value.f))
+        case compiler::ValueKind::STRUCT:
+            if value.metadata {
+                buffer::append_char(*buf, '!')
+            }
+            buffer::append_char(*buf, '{')
+            for var i in 0..value.values.size {
+                // TODO Figure out why we need that cast
+                let val = value.values[i] !compiler::Value
+                if val.tpe {
+                    buffer::append_str(*buf, type_to_str(val.tpe))
+                    buffer::append_char(*buf, ' ')
+                }
+                buffer::append_str(*buf, value_to_str(val))
+                if i < value.values.size - 1 {
+                    buffer::append_str(*buf, ", ")
+                }
+            }
+            buffer::append_char(*buf, '}')
+        case compiler::ValueKind::ARRAY:
+            buffer::append_char(*buf, '[')
+            for var i in 0..value.values.size {
+                let val = value.values[i] !compiler::Value
+                if val.tpe {
+                    buffer::append_str(*buf, type_to_str(val.tpe))
+                    buffer::append_char(*buf, ' ')
+                }
+                buffer::append_str(*buf, value_to_str(val))
+                if i < value.values.size - 1 {
+                    buffer::append_str(*buf, ", ")
+                }
+            }
+            buffer::append_char(*buf, ']')
+        case compiler::ValueKind::STRING:
+            if value.metadata {
+                buffer::append_char(*buf, '!')
+            } else {
+                buffer::append_char(*buf, 'c')
+            }
+            buffer::append_str(*buf, util::repr(value.s, not value.metadata))
+        case compiler::ValueKind::DEBUG_INFO:
+            if value.distinct {
+                buffer::append_str(*buf, "distinct ")
+            }
+            buffer::append_char(*buf, '!')
+            buffer::append_str(*buf, value.name)
+            buffer::append_char(*buf, '(')
+            for var i in 0..value.debug_values.size {
+                let val = value.debug_values[i] !compiler::DebugParam
+                buffer::append_str(*buf, val.name)
+                buffer::append_str(*buf, ": ")
+                buffer::append_str(*buf, debug_value_to_str(val.value))
+                if i < value.debug_values.size - 1 {
+                    buffer::append_str(*buf, ", ")
+                }
+            }
+            buffer::append_char(*buf, ')')
+        case: 
+            error(value.kind, "\n")
+            assert(false)
+    }
+    return buffer::to_string(*buf)
+}
+
+def emit_arithmetic(fp: File, name: string, insn: *compiler::Insn) {
+    write_string(fp, value_to_str((@insn).value.arith.ret))
+    write_string(fp, " = ")
+    write_string(fp, name, " ")
+    write_string(fp, type_to_str((@insn).value.arith.ret.tpe))
+    write_string(fp, " ")
+    write_string(fp, value_to_str((@insn).value.arith.left))
+    write_string(fp, ", ")
+    write_string(fp, value_to_str((@insn).value.arith.right))
+}
+
+def emit_ret(fp: File, insn: *compiler::Insn) {
+    write_string(fp, "ret ")
+    write_string(fp, type_to_str((@insn).value.ret.value.tpe))
+    if (@insn).value.ret.value.tpe {
+        write_string(fp, " ", value_to_str((@insn).value.ret.value))
+    }
+}
+
+def emit_call(fp: File, insn: *compiler::Insn) {
+    if (@insn).value.call.ret.tpe {
+        write_string(fp, value_to_str((@insn).value.call.ret))
+        write_string(fp, " = ")
+    }
+    write_string(fp, "call ")
+    write_string(fp, type_to_str((@insn).value.call.ret.tpe))
+    write_string(fp, " ")
+    let protosize = (@insn).value.call.proto.size
+    if protosize > 0 {
+        write_string(fp, "(")
+        for var i in 0..protosize {
+            let arg = (@insn).value.call.proto[i]
+            if arg.varargs {
+                write_string(fp, "...")
+            } else {
+                write_string(fp, type_to_str(arg.value))
+            }
+            if i < protosize - 1 {
+                write_string(fp, ", ")
+            }
+        }
+        write_string(fp, ") ")
+    }
+    write_string(fp, value_to_str((@insn).value.call.name))
+    write_string(fp, "(")
+    let argsize = (@insn).value.call.args.size
+    for var i in 0..argsize {
+        let arg = (@insn).value.call.args[i]
+        if arg.metadata {
+            write_string(fp, "metadata ")
+        }
+        if arg.tpe {
+            write_string(fp, type_to_str(arg.tpe), " ")
+        }
+        write_string(fp, value_to_str(arg))
+        if i < argsize - 1 {
+            write_string(fp, ", ")
+        }
+    }
+    write_string(fp, ")")
+}
+
+def emit_alloca(fp: File, insn: *compiler::Insn) {
+    write_string(fp, value_to_str((@insn).value.alloca.ret))
+    write_string(fp, " = alloca ")
+    write_string(fp, type_to_str((@insn).value.alloca.ret.tpe))
+}
+
+def emit_store(fp: File, insn: *compiler::Insn) {
+    write_string(fp, "store ")
+    write_string(fp, type_to_str((@insn).value.store.value.tpe))
+    write_string(fp, " ")
+    write_string(fp, value_to_str((@insn).value.store.value))
+    write_string(fp, ", ")
+    write_string(fp, type_to_str((@insn).value.store.loc.tpe))
+    write_string(fp, " ")
+    write_string(fp, value_to_str((@insn).value.store.loc))
+}
+
+def emit_load(fp: File, insn: *compiler::Insn) {
+    write_string(fp, value_to_str((@insn).value.load.value))
+    write_string(fp, " = load ")
+    write_string(fp, type_to_str((@insn).value.load.value.tpe))
+    write_string(fp, ", ")
+    write_string(fp, type_to_str((@insn).value.load.loc.tpe))
+    write_string(fp, " ")
+    write_string(fp, value_to_str((@insn).value.load.loc))
+}
+
+def emit_br(fp: File, insn: *compiler::Insn) {
+    write_string(fp, "br ")
+    write_string(fp, type_to_str((@insn).value.br.cond.tpe))
+    write_string(fp, " ")
+    write_string(fp, value_to_str((@insn).value.br.cond))
+    write_string(fp, ", label %")
+    write_string(fp, (@insn).value.br.if_true.name)
+    write_string(fp, ", label %")
+    write_string(fp, (@insn).value.br.if_false.name)
+}
+
+def emit_br_unc(fp: File, insn: *compiler::Insn) {
+    write_string(fp, "br label %")
+    write_string(fp, (@insn).value.br_unc.label_.name)
+}
+
+def emit_insert_value(fp: File, insn: *compiler::Insn) {
+    write_string(fp, value_to_str((@insn).value.insert_value.ret))
+    write_string(fp, " = insertvalue ")
+    write_string(fp, type_to_str((@insn).value.insert_value.value.tpe))
+    write_string(fp, " ")
+    write_string(fp, value_to_str((@insn).value.insert_value.value))
+    write_string(fp, ", ")
+    write_string(fp, type_to_str((@insn).value.insert_value.element.tpe))
+    write_string(fp, " ")
+    write_string(fp, value_to_str((@insn).value.insert_value.element))
+    write_string(fp, ", ")
+
+    let index = (@insn).value.insert_value.index
+    for var i in 0..index.size {
+        write_string(fp, util::int_to_str(index[i]))
+        if i < index.size - 1 {
+            write_string(fp, ", ")
+        }
+    }
+}
+
+def emit_extract_value(fp: File, insn: *compiler::Insn) {
+    write_string(fp, value_to_str((@insn).value.extract_value.ret))
+    write_string(fp, " = extractvalue ")
+    write_string(fp, type_to_str((@insn).value.extract_value.value.tpe))
+    write_string(fp, " ")
+    write_string(fp, value_to_str((@insn).value.extract_value.value))
+    write_string(fp, ", ")
+
+    let index = (@insn).value.extract_value.index
+    for var i in 0..index.size {
+        write_string(fp, util::int_to_str(index[i]))
+        if i < index.size - 1 {
+            write_string(fp, ", ")
+        }
+    }
+}
+
+def emit_convert(fp: File, name: string, insn: *compiler::Insn) {
+    write_string(fp, value_to_str((@insn).value.convert.ret))
+    write_string(fp, " = ", name, " ")
+    write_string(fp, type_to_str((@insn).value.convert.value.tpe))
+    write_string(fp, " ")
+    write_string(fp, value_to_str((@insn).value.convert.value))
+    write_string(fp, " to ")
+    write_string(fp, type_to_str((@insn).value.convert.ret.tpe))
+}
+
+def emit_gep(fp: File, insn: *compiler::Insn) {
+    write_string(fp, value_to_str((@insn).value.gep.ret))
+    write_string(fp, " = getelementptr ")
+    write_string(fp, type_to_str((@insn).value.gep.tpe))
+    write_string(fp, ", ")
+    write_string(fp, type_to_str((@insn).value.gep.value.tpe))
+    write_string(fp, " ")
+    write_string(fp, value_to_str((@insn).value.gep.value))
+    write_string(fp, ", ")
+        
+    let index = (@insn).value.gep.index
+    for var i in 0..index.size {
+        write_string(fp, type_to_str(index[i].tpe))
+        write_string(fp, " ")
+        write_string(fp, value_to_str(index[i]))
+        if i < index.size - 1 {
+            write_string(fp, ", ")
+        }
+    }
+}
+
+def emit_compare(fp: File, name: string, insn: *compiler::Insn) {
+    write_string(fp, value_to_str((@insn).value.cmp.ret))
+    write_string(fp, " = ", name, " ", (@insn).value.cmp.op, " ")
+    write_string(fp, type_to_str((@insn).value.cmp.left.tpe))
+    write_string(fp, " ")
+    write_string(fp, value_to_str((@insn).value.cmp.left))
+    write_string(fp, ", ")
+    write_string(fp, value_to_str((@insn).value.cmp.right))
+}
+
+def emit_fneg(fp: File, insn: *compiler::Insn) {
+    write_string(fp, value_to_str((@insn).value.fneg.ret))
+    write_string(fp, " = fneg ")
+    write_string(fp, type_to_str((@insn).value.fneg.value.tpe))
+    write_string(fp, " ")
+    write_string(fp, value_to_str((@insn).value.fneg.value))
+}
+
+def emit_switch(fp: File, insn: *compiler::Insn) {
+    write_string(fp, "switch ")
+    write_string(fp, type_to_str((@insn).value.switch_.value.tpe))
+    write_string(fp, " ")
+    write_string(fp, value_to_str((@insn).value.switch_.value))
+    write_string(fp, ", label %")
+    write_string(fp, (@insn).value.switch_.otherwise.name)
+    write_string(fp, " [\n")
+    for var i in 0..vector::length((@insn).value.switch_.switch_values) {
+        let sw = vector::get((@insn).value.switch_.switch_values, i) !*compiler::SwitchValue
+        write_string(fp, "\t\t")
+        write_string(fp, type_to_str((@sw).value.tpe))
+        write_string(fp, " ")
+        write_string(fp, value_to_str((@sw).value))
+        write_string(fp, ", label %")
+        write_string(fp, (@sw).label_.name)
+        write_string(fp, "\n")
+    }
+    write_string(fp, "\t]")
+}
+
+def emit(fp: File, insn: *compiler::Insn) {
+    write_string(fp, "\t")
+    switch (@insn).kind !int {
+        case compiler::InsnKind::FNEG:
+            emit_fneg(fp, insn)
+        case compiler::InsnKind::ADD:
+            emit_arithmetic(fp, "add", insn)
+        case compiler::InsnKind::FADD:
+            emit_arithmetic(fp, "fadd", insn)
+        case compiler::InsnKind::SUB:
+            emit_arithmetic(fp, "sub", insn)
+        case compiler::InsnKind::FSUB:
+            emit_arithmetic(fp, "fsub", insn)
+        case compiler::InsnKind::MUL:
+            emit_arithmetic(fp, "mul", insn)
+        case compiler::InsnKind::FMUL:
+            emit_arithmetic(fp, "fmul", insn)
+        case compiler::InsnKind::SREM:
+            emit_arithmetic(fp, "srem", insn)
+        case compiler::InsnKind::UREM:
+            emit_arithmetic(fp, "urem", insn)
+        case compiler::InsnKind::FREM:
+            emit_arithmetic(fp, "frem", insn)
+        case compiler::InsnKind::SDIV:
+            emit_arithmetic(fp, "sdiv", insn)
+        case compiler::InsnKind::UDIV:
+            emit_arithmetic(fp, "udiv", insn)
+        case compiler::InsnKind::FDIV:
+            emit_arithmetic(fp, "fdiv", insn)
+        case compiler::InsnKind::AND:
+            emit_arithmetic(fp, "and", insn)
+        case compiler::InsnKind::OR:
+            emit_arithmetic(fp, "or", insn)
+        case compiler::InsnKind::XOR:
+            emit_arithmetic(fp, "xor", insn)
+        case compiler::InsnKind::ASHR:
+            emit_arithmetic(fp, "ashr", insn)
+        case compiler::InsnKind::SHL:
+            emit_arithmetic(fp, "shl", insn)
+        case compiler::InsnKind::TRUNC:
+            emit_convert(fp, "trunc", insn)
+        case compiler::InsnKind::ZEXT:
+            emit_convert(fp, "zext", insn)
+        case compiler::InsnKind::SEXT:
+            emit_convert(fp, "sext", insn)
+        case compiler::InsnKind::FPTRUNC:
+            emit_convert(fp, "fptrunc", insn)
+        case compiler::InsnKind::FPEXT:
+            emit_convert(fp, "fpext", insn)
+        case compiler::InsnKind::FPTOUI:
+            emit_convert(fp, "fptoui", insn)
+        case compiler::InsnKind::FPTOSI:
+            emit_convert(fp, "fptosi", insn)
+        case compiler::InsnKind::UITOFP:
+            emit_convert(fp, "uitofp", insn)
+        case compiler::InsnKind::SITOFP:
+            emit_convert(fp, "sitofp", insn)
+        case compiler::InsnKind::PTRTOINT:
+            emit_convert(fp, "ptrtoint", insn)
+        case compiler::InsnKind::INTTOPTR:
+            emit_convert(fp, "inttoptr", insn)
+        case compiler::InsnKind::BITCAST:
+            emit_convert(fp, "bitcast", insn)
+        case compiler::InsnKind::ICMP:
+            emit_compare(fp, "icmp", insn)
+        case compiler::InsnKind::FCMP:
+            emit_compare(fp, "fcmp", insn)
+        case compiler::InsnKind::SWITCH:
+            emit_switch(fp, insn)
+        case compiler::InsnKind::GETELEMENTPTR:
+            emit_gep(fp, insn)
+        case compiler::InsnKind::INSERTVALUE:
+            emit_insert_value(fp, insn)
+        case compiler::InsnKind::EXTRACTVALUE:
+            emit_extract_value(fp, insn)
+        case compiler::InsnKind::ALLOCA:
+            emit_alloca(fp, insn)
+        case compiler::InsnKind::STORE:
+            emit_store(fp, insn)
+        case compiler::InsnKind::LOAD:
+            emit_load(fp, insn)
+        case compiler::InsnKind::CALL:
+            emit_call(fp, insn)
+        case compiler::InsnKind::BR:
+            emit_br(fp, insn)
+        case compiler::InsnKind::BR_UNC:
+            emit_br_unc(fp, insn)
+        case compiler::InsnKind::RET:
+            emit_ret(fp, insn)
+        case compiler::InsnKind::UNREACHABLE:
+            write_string(fp, "unreachable")
+        case: assert(false)
+    }
+    if (@insn).debug {
+        write_string(fp, ", !dbg ")
+        write_string(fp, value_to_str(@(@insn).debug))
+    }
+    write_string(fp, "\n")
+}
+
+def emit_block(fp: File, block: *compiler::Block) {
+    write_string(fp, (@block).label_, ":\n")
+    for var i in 0..vector::length((@block).insn) {
+        let insn = vector::get((@block).insn, i) !*compiler::Insn
+        emit(fp, insn)
+    }
+}
+
+def emit_function(fp: File, function: *compiler::Function) {
+    if (@function).forward_declare {
+        write_string(fp, "declare ")
+    } else {
+        write_string(fp, "define ")
+    }
+    write_string(fp, type_to_str((@function).ret), " ")
+    write_string(fp, "@\"", (@function).name, "\"(")
+
+    let len = vector::length((@function).args)
+    for var i in 0..len {
+        let np = vector::get((@function).args, i) !*typechecking::NamedParameter
+        let tpe = (@np).value
+        let name = (@np).name
+
+        write_string(fp, type_to_str(tpe))
+        if not (@function).forward_declare {
+            write_string(fp, " ")
+            write_string(fp, "%", name)
+        }
+        if i < len - 1 {
+            write_string(fp, ", ")
+        }
+    }
+
+    write_string(fp, ")")
+    if (@function).debug {
+        write_string(fp, " !dbg ")
+        write_string(fp, value_to_str(@(@function).debug))
+    }
+    if not (@function).forward_declare {
+        write_string(fp, " {\n")
+        var block = (@function).block
+        while block {
+            emit_block(fp, block)
+            block = (@block).next
+        }
+        write_string(fp, "}\n")
+    } else {
+        write_string(fp, "\n")
+    }
+}
+
+def emit_structure(fp: File, structure: *typechecking::Type) {
+    write_string(fp, "%\"", (@structure).type_name, "\"")
+    write_string(fp, " = type ")
+    if (@structure).packed {
+        write_string(fp, "<")
+    }
+    write_string(fp, "{")
+    let len = (@structure).fields.size
+    for var i in 0..len {
+        let member = (@structure).fields[i]
+        let tpe = member.tpe
+        write_string(fp, type_to_str(tpe))
+        if i < len - 1 {
+            write_string(fp, ", ")
+        }
+    }
+    write_string(fp, "}")
+    if (@structure).packed {
+        write_string(fp, ">")
+    }
+    write_string(fp, "\n")
+}
+
+def emit_union(fp: File, union_: *typechecking::Type) {
+    write_string(fp, "%\"", (@union_).type_name, "\"")
+    write_string(fp, " = type {")
+    write_string(fp, "[", util::int_to_str((@union_).size), " x i8]")
+    write_string(fp, "}\n")
+}
+
+def emit_stub(fp: File, stub: *typechecking::Type) {
+    write_string(fp, "%\"", (@stub).type_name, "\"")
+    write_string(fp, " = type opaque\n")
+}
+
+def emit_global(fp: File, global: *compiler::Global) {
+    write_string(fp, "@\"", (@global).name, "\"")
+    write_string(fp, " = ")
+    if (@global).external {
+        write_string(fp, "external ")
+    }
+    if (@global).private {
+        write_string(fp, "private ")
+    }
+    write_string(fp, "global ")
+    
+    write_string(fp, type_to_str((@global).tpe))
+    write_string(fp, " ")
+    if (@global).value {
+        write_string(fp, value_to_str(@(@global).value))
+    } else if not (@global).external {
+        write_string(fp, "zeroinitializer")
+    }
+    if (@global).debug {
+        write_string(fp, ", !dbg ")
+        write_string(fp, value_to_str(@(@global).debug))
+    }
+    write_string(fp, "\n")
+}
+
+def gen_main_function(fp: File) {
+    write_string(fp, "define i32 @main(i32 %argc, i8** %argv) {\n")
+    write_string(fp, "\t%size = zext i32 %argc to i64\n")
+    write_string(fp, "\t%size.1 = mul i64 %size, ", size_of string, "\n")
+    write_string(fp, "\t%args = call i8* @malloc(i64 %size.1)\n")
+    write_string(fp, "\t%args.1 = bitcast i8* %args to {i64, i8*}*\n")
+    write_string(fp, "\t%args.2 = insertvalue {i64, {i64, i8*}*} undef, i64 %size, 0\n")
+    write_string(fp, "\t%args.3 = insertvalue {i64, {i64, i8*}*} %args.2, {i64, i8*}* %args.1, 1\n")
+    write_string(fp, "\t%i = alloca i32\n")
+    write_string(fp, "\tstore i32 0, i32* %i\n")
+    write_string(fp, "\tbr label %loop\n")
+    write_string(fp, "loop:\n")
+    write_string(fp, "\t%i.1 = load i32, i32* %i\n")
+    write_string(fp, "\t%cond = icmp eq i32 %argc, %i.1\n")
+    write_string(fp, "\tbr i1 %cond, label %end, label %inner\n")
+    write_string(fp, "inner:\n")
+    write_string(fp, "\t%arg = getelementptr i8*, i8** %argv, i32 %i.1\n")
+    write_string(fp, "\t%arg.1 = load i8*, i8** %arg\n")
+    write_string(fp, "\t%arg.2 = getelementptr {i64, i8*}, {i64, i8*}* %args.1, i32 %i.1\n")
+    write_string(fp, "\t%arglen = call i64 @strlen(i8* %arg.1)\n")
+    write_string(fp, "\t%arglen.1 = add i64 %arglen, 1\n")
+    write_string(fp, "\t%arg.3 = insertvalue {i64, i8*} undef, i64 %arglen.1, 0\n")
+    write_string(fp, "\t%arg.4 = insertvalue {i64, i8*} %arg.3, i8* %arg.1, 1\n")
+    write_string(fp, "\tstore {i64, i8*} %arg.4, {i64, i8*}* %arg.2\n")
+    write_string(fp, "\t%i.2 = add i32 %i.1, 1\n")
+    write_string(fp, "\tstore i32 %i.2, i32* %i\n")
+    write_string(fp, "\tbr label %loop\n")
+    write_string(fp, "end:\n")
+    write_string(fp, "\tcall void @\"_F10main::main__AAi8\"({i64, {i64, i8*}*} %args.3)\n")
+    write_string(fp, "\tcall void @free(i8* %args)\n")
+    write_string(fp, "\tret i32 0\n")
+    write_string(fp, "}\n")
+}
+
+import toolchain
+
+def gen_cstdlib_includes(fp: File, module: *toolchain::Module) {
+    let exe_folder = util::exe_folder()
+
+    let keys = map::keys((@module).imported)
+    let cmd_buffer = buffer::make_buffer()
+
+    // TODO Windows
+    buffer::append_str(*cmd_buffer, "python3.9 ")
+    buffer::append_str(*cmd_buffer, exe_folder)
+    buffer::append_str(*cmd_buffer, "/../cstdlib/genll.py ")
+    for var i in 0..keys.size {
+        let cfunc = keys[i]
+        buffer::append_str(*cmd_buffer, cfunc)
+        buffer::append_char(*cmd_buffer, ' ')
+    }
+
+    let header_buffer = buffer::make_buffer()
+    buffer::append_str(*header_buffer, exe_folder)
+    buffer::append_str(*header_buffer, "/../cstdlib/header.ll")
+    system(buffer::to_string(*cmd_buffer))
+    let fp2 = open(buffer::to_string(*header_buffer), "r")
+    let header = util::read_all(fp2)
+    close(fp2)
+
+    write_string(fp, header)
+    free(header)
+
+    if toolchain::debug_sym {
+        write_string(fp, "declare void @llvm.dbg.declare(metadata, metadata, metadata)\n")
+    }
+}
+
+def gen_header(fp: File, module: *toolchain::Module) {
+    write_string(fp, "source_filename = \"", (@module).filename, "\"\n")
+    write_string(fp, "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128\"\n")
+    // TODO Windows
+    write_string(fp, "target triple = \"x86_64-pc-linux-gnu\"\n")
+}
+
+type State = struct {
+    structures: *map::Map
+    cached: *map::Map
+    module: *toolchain::Module
+}
+
+def import_structures(tpe: *typechecking::Type, state: *State)
+
+def import_structure(tpe: *typechecking::Type, state: *State) {
+    if not map::contains((@state).cached, (@tpe).type_name) {
+        map::put((@state).cached, (@tpe).type_name, map::sentinel)
+        let size = (@tpe).fields.size
+        if size > 0 {
+            map::put((@state).structures, (@tpe).type_name, tpe)
+            for var i in 0..size {
+                let field = (@tpe).fields[i]
+                import_structures(field.tpe, state)
+            }
+        }
+    }
+}
+
+def import_structures(tpe: *typechecking::Type, state: *State) {
+    if not tpe { return }
+    switch (@tpe).kind !int {
+        case typechecking::TypeKind::STRUCT..=typechecking::TypeKind::UNION:
+            import_structure(tpe, state)
+        case typechecking::TypeKind::ARRAY:
+            import_structures((@tpe).tpe, state)
+        case typechecking::TypeKind::STATIC_ARRAY:
+            import_structures((@tpe).tpe, state)
+        case typechecking::TypeKind::POINTER:
+            import_structures((@tpe).tpe, state)
+        case typechecking::TypeKind::FUNCTION:
+            for var i in 0..vector::length((@tpe).parameter_t) {
+                let param = vector::get((@tpe).parameter_t, i) !*typechecking::NamedParameter
+                import_structures((@param).value, state)
+            }
+            for var i in 0..vector::length((@tpe).return_t) {
+                let t = vector::get((@tpe).return_t, i) !*typechecking::Type
+                import_structures(t, state)
+            }
+        case typechecking::TypeKind::STUB:
+            if not map::contains((@state).structures, (@tpe).type_name) {
+                map::put((@state).structures, (@tpe).type_name, tpe)
+            }
+    }
+}
+
+def import_top_level_structures(sc: *scope::Scope, state: *State) {
+    let keys = map::keys((@sc).fields)
+    for var i in 0..keys.size {
+        let key = keys[i]
+        let value = map::get((@sc).fields, key) !*scope::Value
+        if (@(@value).tpe).kind == typechecking::TypeKind::NAMESPACE {
+            import_top_level_structures((@value).scope, state)
+        } else if typechecking::is_function((@value).tpe) {
+            import_structures((@value).tpe, state)
+        } else if typechecking::is_type((@value).tpe) {
+            let tpe = (@value).value !*typechecking::Type
+            import_structures(tpe, state)
+        } else {
+            import_structures((@value).tpe, state)
+        }
+    }   
+}
+
+export def gen(module: *toolchain::Module) -> string {
+    let result = (@module).result
+
+    // TODO This really shouldn't be necessaray, figure out a way to have
+    // a less brute forced approach than going through all declarations again
+    let state = {
+        (@result).structures,
+        map::make(),
+        module
+    } !State
+    import_top_level_structures((@module).scope, *state)
+
+    let buf = buffer::make_buffer()
+    buffer::append_str(*buf, toolchain::outfolder)
+    buffer::append_char(*buf, '/')
+    buffer::append_str(*buf, util::replace_all((@module).module, "::", "."))
+    buffer::append_str(*buf, ".ll")
+    let outfile = buffer::to_string(*buf)
+    (@module).llfile = outfile
+
+    let fp = open(outfile, "w")
+    
+    write_string(fp, "; This file was compiled by the grace of your highness Princess Vic Nightfall\n")
+
+    gen_header(fp, module)
+
+    let keys_structures = map::keys((@result).structures)
+    for var i in 0..keys_structures.size {
+        let structure = map::get((@result).structures, keys_structures[i]) !*typechecking::Type
+        switch (@structure).kind !int {
+            case typechecking::TypeKind::STRUCT:
+                emit_structure(fp, structure)
+            case typechecking::TypeKind::UNION:
+                emit_union(fp, structure)
+            case typechecking::TypeKind::STUB:
+                emit_stub(fp, structure)
+        }
+    }
+
+    let keys_functions = map::keys((@result).functions)
+    for var i in 0..keys_functions.size {
+        let function = map::get((@result).functions, keys_functions[i]) !*compiler::Function
+        emit_function(fp, function)
+    }
+
+    let keys_globals = map::keys((@result).globals)
+    for var i in 0..keys_globals.size {
+        let global = map::get((@result).globals, keys_globals[i]) !*compiler::Global
+        emit_global(fp, global)
+    }
+    let keys_constants = map::keys((@result).constants)
+    for var i in 0..keys_constants.size {
+        let global = map::get((@result).constants, keys_constants[i]) !*compiler::Global
+        emit_global(fp, global)
+    }
+    
+    map::put((@module).imported, "stdin", map::sentinel)
+    map::put((@module).imported, "stdout", map::sentinel)
+    map::put((@module).imported, "stderr", map::sentinel)
+
+    if (@module).module == "main" {
+        map::put((@module).imported, "malloc", map::sentinel)
+        map::put((@module).imported, "free", map::sentinel)
+        map::put((@module).imported, "strlen", map::sentinel)
+        gen_main_function(fp)
+    }
+
+    gen_cstdlib_includes(fp, module)
+    
+    let keys_meta = map::keys((@result).metadata)
+    for var i in 0..keys_meta.size {
+        let key = keys_meta[i]
+        let value = map::get((@result).metadata, key) !*compiler::Value
+        write_string(fp, "!", key)
+        write_string(fp, " = ")
+        write_string(fp, value_to_str(@value))
+        write_string(fp, "\n")
+    }
+
+    close(fp)
+    return outfile
+}
