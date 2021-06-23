@@ -825,72 +825,91 @@ def walk_Identifier(node: *parser::Node, state: *State) {
     }
 }
 
-def collapse_types(right: *vector::Vector, types: *vector::Vector, nodes: *vector::Vector, state: *State) { 
-    for var i in 0..vector::length(right) {
-        let value = vector::get(right, i) !*parser::Node
-        if not value { continue }
-        walk(value, state)
-        let tpe = (@value).tpe
-        if tpe and (@tpe).kind == TypeKind::TUPLE {
-            for var j in 0..vector::length((@tpe).return_t) {
-                let t = vector::get((@tpe).return_t, j) !*Type
-                vector::push(types, t)
-                vector::push(nodes, value)
-            }
-        } else {
-            vector::push(types, tpe)
-            vector::push(nodes, value)
-        }
-    }
-}
-
-def implicit_conversion(node: *parser::Node, tpe: *Type, rhstpe: *Type) -> *Type {
+def implicit_conversion(node: *parser::Node, tpe: *Type) {
+    if not tpe { return }
     // TODO For integers we need to check the boundaries
     // TODO What about stuff like --10? I mean its kinda useless but for completeness
     if (@node).kind == parser::NodeKind::NULL and is_pointer(tpe) or
-        (@node).kind == parser::NodeKind::STRUCT_LIT and is_struct(tpe) or
         is_arithmetic(tpe) and ((@node).kind == parser::NodeKind::INTEGER or
         ((@node).kind == parser::NodeKind::USUB or (@node).kind == parser::NodeKind::UADD) and 
         (@(@node).value.expr).kind == parser::NodeKind::INTEGER) {
 
         (@node).tpe = tpe
-        return tpe
     }
-    return rhstpe
+}
+
+def infer_struct_type(node: *parser::Node, tpe: *Type) {
+    if (@node).kind != parser::NodeKind::STRUCT_LIT { return }
+    if not is_struct(tpe) {
+        errorn(node, "Incompatible types, ")
+        error(debug::type_to_str(tpe), " is not a structure type\n")
+        return
+    }
+    (@node).tpe = tpe
+}
+
+def collapse_types(ltypes: *vector::Vector, right: *vector::Vector, state: *State) -> *vector::Vector {
+    let rtypes = vector::make()
+    var k = 0
+    for var i in 0..vector::length(right) {
+        let value = vector::get(right, i) !*parser::Node
+        if not value { continue }
+
+        var ltpe: *Type = null
+        if k < vector::length(ltypes) {
+            ltpe = vector::get(ltypes, k) !*Type
+            infer_struct_type(value, ltpe)
+        }
+        
+        walk(value, state)
+        let rtpe = (@value).tpe
+        if rtpe and (@rtpe).kind == TypeKind::TUPLE {
+            for var j in 0..vector::length((@rtpe).return_t) {
+                let t = vector::get((@rtpe).return_t, j) !*Type
+                vector::push(rtypes, t)
+                k += 1
+            }
+        } else {
+            implicit_conversion(value, ltpe)
+            vector::push(rtypes, (@value).tpe)
+            k += 1
+        }
+    }
+    return rtypes
 }
 
 def walk_Assign(node: *parser::Node, state: *State) {
     let left = (@node).value.assign.left
     let right = (@node).value.assign.right
 
-    let types = vector::make()
-    let nodes = vector::make()
-    collapse_types(right, types, nodes, state)
+    let ltypes = vector::make()
+    for var i in 0..vector::length(left) {
+        let l = vector::get(left, i) !*parser::Node
+        walk(l, state)
+        vector::push(ltypes, (@l).tpe)
+    }
+    let rtypes = collapse_types(ltypes, right, state)
 
-    if vector::length(types) != vector::length(left) {
+    if vector::length(ltypes) != vector::length(rtypes) {
         errorn(node, "Unbalanced assignment\n")
         return
     }
 
     for var i in 0..vector::length(left) {
-        let node = vector::get(left, i) !*parser::Node
-        walk(node, state)
-        if not check_is_identifier_assignable(node, state) {
+        let l = vector::get(left, i) !*parser::Node
+        let ltpe = (@l).tpe
+        if not check_is_identifier_assignable(l, state) {
             continue
         }
-        var tpe = vector::get(types, i) !*Type
-        let n = vector::get(nodes, i) !*parser::Node
+        var rtpe = vector::get(rtypes, i) !*Type
 
-        tpe = implicit_conversion(n, (@node).tpe, tpe)
-
-        if not tpe or not (@node).tpe { continue }
-
-        if not is_assignable((@node).tpe, tpe) {
-            errorn(node, "Incompatible types ")
-            error(debug::type_to_str((@node).tpe), " and ", debug::type_to_str(tpe), "\n")
+        if not ltpe or not rtpe { continue }
+        if not is_assignable(ltpe, rtpe) {
+            errorn(l, "Incompatible types ")
+            error(debug::type_to_str(rtpe), " and ", debug::type_to_str(ltpe), "\n")
         }
     }
-    (@node).tpe = vector::head(types) !*Type
+    (@node).tpe = (@(vector::peek(ltypes) !*parser::Node)).tpe
 }
 
 // TODO We should declare all variables, always, to prevent multiple errors to occur
@@ -905,95 +924,80 @@ def walk_VarDecl(node: *parser::Node, state: *State) {
             errorn(node, "Can't share non top level variable\n")
         }
     }
+    
+    let ltypes = vector::make()
+    for var i in 0..vector::length(left) {
+        let node = vector::get(left, i) !*parser::Node
+        if (@node).kind == parser::NodeKind::ID_DECL {
+            let tpe_node = (@node).value.id_decl.tpe
+            if tpe_node {
+                let tpe = type_lookup(tpe_node, state)
+                vector::push(ltypes, tpe)
+            } else {
+                vector::push(ltypes, null)
+            }
+        } else {
+            let n = (@node).value.expr
+            walk(n, state)
+            vector::push(ltypes, (@n).tpe)
+        }
+    }
 
-    let types = vector::make()
-    let nodes = vector::make()
-    collapse_types(right, types, nodes, state)
+    let rtypes = collapse_types(ltypes, right, state)
 
     if (kw == parser::VarDecl::CONST or 
         kw == parser::VarDecl::LET) and 
-        vector::length(types) != vector::length(left) {
+        vector::length(ltypes) != vector::length(rtypes) {
         
         errorn(node, "Unbalanced assignment\n")
         return
     }
 
-    if vector::length(types) > vector::length(left) {
-        errorn(node, "Too many values to assign\n")
-        return
-    }
-
     for var i in 0..vector::length(left) {
+        var ltpe = vector::get(ltypes, i) !*Type
         let node = vector::get(left, i) !*parser::Node
         if (@node).kind == parser::NodeKind::ID_DECL {
-            var tpe_node = (@node).value.id_decl.tpe
-            var tpe: *Type = null
-            if tpe_node {
-                tpe = type_lookup(tpe_node, state)
-
-                if i < vector::length(types) {
-                    var rhstpe = vector::get(types, i) !*Type
-                    let n = vector::get(nodes, i) !*parser::Node
-                    
-                    rhstpe = implicit_conversion(n, tpe, rhstpe)
-
-                    if not tpe or not rhstpe { continue }
-
-                    if not is_assignable(tpe, rhstpe) {
-                        errorn(node, "Incompatible types ")
-                        error(debug::type_to_str(tpe), " and ", debug::type_to_str(rhstpe), "\n")
-                    }
-                } 
-            } else {
-                if i < vector::length(types) {
-                    tpe = vector::get(types, i) !*Type
-                } else {
-                    errorn(node, "Need to specify a type\n")
-                    continue
+            if not ltpe and i < vector::length(rtypes) {
+                ltpe = vector::get(rtypes, i) !*Type
+            }
+            if not ltpe {
+                errorn(node, "Need to specify a type\n")
+                continue
+            }
+            if i < vector::length(rtypes) {
+                let rtpe = vector::get(rtypes, i) !*Type
+                if not is_assignable(ltpe, rtpe) {
+                    errorn(node, "Incompatible types ")
+                    error(debug::type_to_str(rtpe), " and ", debug::type_to_str(ltpe), "\n")
                 }
             }
 
             let ident = (@node).value.id_decl.value
-
-            assert((@ident).kind == parser::NodeKind::IDENTIFIER)
-
             (@ident).scope = (@state).scope
-            (@ident).tpe = tpe
+            (@ident).tpe = ltpe
+
             // TODO Implement constants (set a value)
-            scope::create_variable((@state).scope, ident, share, kw, tpe, null)
+            scope::create_variable((@state).scope, ident, share, kw, ltpe, null)
             (@ident).svalue = scope::get((@state).scope, ident)
 
-        } else if (@node).kind == parser::NodeKind::ID_ASSIGN {
+        } else {
             let n = (@node).value.expr
-            walk(n, state)
-            
             if not check_is_identifier_assignable(n, state) {
                 continue
             }
 
-            let tpe = (@(@node).value.expr).tpe
-
-            if not tpe { continue }
-            // TODO tpe might be null, check if you can actually assign to the expression
-            // Write a seperate function to check, also see walk_Assign
-
-            if i >= vector::length(types) {
+            if i >= vector::length(rtypes) {
                 errorn(node, "Must assign a value\n")
                 continue
             }
+            let rtpe = vector::get(rtypes, i) !*Type
 
-            var rhstpe = vector::get(types, i) !*Type
-            let n2 = vector::get(nodes, i) !*parser::Node
-
-            rhstpe = implicit_conversion(n2, tpe, rhstpe)
-
-            if not tpe or not rhstpe { continue }
-
-            if not is_assignable(tpe, rhstpe) {
+            if not ltpe or not rtpe { continue }
+            if not is_assignable(ltpe, rtpe) {
                 errorn(node, "Incompatible types ")
-                error(debug::type_to_str(tpe), " and ", debug::type_to_str(rhstpe), "\n")
+                error(debug::type_to_str(rtpe), " and ", debug::type_to_str(ltpe), "\n")
             }
-        } else { assert(false) }
+        }
     }
 }
 
@@ -1377,22 +1381,19 @@ def walk_Return(node: *parser::Node, state: *State) {
         return
     }
     
-    let types = vector::make()
-    let nodes = vector::make()
-    collapse_types(body, types, nodes, state)
-    let returns = (@current_fun).return_t
+    
+    let ltypes = (@current_fun).return_t
+    let rtypes = collapse_types(ltypes, body, state)
 
-    if vector::length(types) != vector::length(returns) {
+    if vector::length(ltypes) != vector::length(rtypes) {
         // TODO Improve error message
         errorn(node, "Wrong number of arguments to return\n")
     }
 
-    for var i in 0..vector::length(returns) {
-        let argtpe = vector::get(returns, i) !*Type
-        var rettpe = vector::get(types, i) !*Type
-        let n = vector::get(nodes, i) !*parser::Node
+    for var i in 0..vector::length(ltypes) {
+        let argtpe = vector::get(ltypes, i) !*Type
+        var rettpe = vector::get(rtypes, i) !*Type
         
-        rettpe = implicit_conversion(n, argtpe, rettpe)
         if not argtpe or not rettpe { continue }
         if not is_assignable(argtpe, rettpe) {
             // TODO This doesn't point to the actual value
@@ -1491,7 +1492,7 @@ def walk_Call(node: *parser::Node, state: *State) {
             rhstpe = (@np).value
         }
         
-        implicit_conversion(n, rhstpe, null)
+        implicit_conversion(n, rhstpe)
     }
     for var i in 0..vector::length((@node).value.func_call.kwargs) {
         let n = vector::get((@node).value.func_call.kwargs, i) !*parser::Node
@@ -1506,7 +1507,7 @@ def walk_Call(node: *parser::Node, state: *State) {
                 break
             }
         }
-        implicit_conversion(arg, rhstpe, null)
+        implicit_conversion(arg, rhstpe)
     }
     var return_t = (@tpe).return_t
     if (@tpe).proto {
@@ -1769,7 +1770,7 @@ def walk_StructLit(node: *parser::Node, state: *State) {
         walk(n, state)
         
         var ntpe = (@tpe).fields[i].tpe
-        ntpe = implicit_conversion(n, (@n).tpe, ntpe)
+        ntpe = implicit_conversion(n, ntpe)
 
         if not ntpe or not (@n).tpe { continue }
         if not is_assignable(ntpe, (@n).tpe) {
@@ -1791,7 +1792,7 @@ def walk_StructLit(node: *parser::Node, state: *State) {
                 found = true
 
                 var ntpe = field.tpe
-                ntpe = implicit_conversion(n, (@n).tpe, ntpe)
+                ntpe = implicit_conversion(n, ntpe)
 
                 if not ntpe or not (@n).tpe { continue }
                 if not is_assignable(ntpe, (@n).tpe) {
