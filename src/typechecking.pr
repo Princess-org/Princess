@@ -563,6 +563,23 @@ export def last_ident_to_str(node: *parser::Node) -> string {
     return @(vector::get((@node).value.body, 0) !*string)
 }
 
+def flatten_return_type(node: *parser::Node, return_t: *vector::Vector) -> *Type {
+    let len = vector::length(return_t) 
+    if len > 1 {
+        // TODO size and alignment! Same as a struct,
+        // also refactor type_lookup and compiler (functions with multiple return types)
+        // into a single function for calculating the size and alignmenet of a struct
+        let return_tpe = make_type_raw(TypeKind::TUPLE)
+        (@return_tpe).line = (@node).loc.line
+        (@return_tpe).return_t = return_t
+        return return_tpe
+    } else if len == 1 {
+        return vector::peek(return_t) !*Type
+    }
+
+    return null
+}
+
 import scope
 import builtins
 import debug
@@ -768,10 +785,10 @@ export def common_type(a: *Type, b: *Type) -> *Type {
     return null
 }
 
-def walk(node: *parser::Node, state: *State)
+def walk(parent: *parser::Node, node: *parser::Node, state: *State)
 
 def walk_PtrT(node: *parser::Node, state: *State) {
-    walk((@node).value.t_parr.tpe, state)
+    walk(node, (@node).value.t_parr.tpe, state)
     (@node).tpe = type_
 }
 
@@ -801,8 +818,8 @@ def walk_Char(node: *parser::Node, state: *State) {
 }
 
 def walk_Range(node: *parser::Node, state: *State) {
-    walk((@node).value.bin_op.left, state)
-    walk((@node).value.bin_op.right, state)
+    walk(node, (@node).value.bin_op.left, state)
+    walk(node, (@node).value.bin_op.right, state)
 
     var kind = TypeKind::RANGE
     if (@node).kind == parser::NodeKind::RANGE_INC {
@@ -820,8 +837,29 @@ def walk_Identifier(node: *parser::Node, state: *State) {
     if not value {
         errorn(node, "Unknown identifier ")
         error(parser::identifier_to_str(node), "\n")
-    } else {
-        (@node).tpe = (@value).tpe
+        return
+    }
+
+    (@node).tpe = (@value).tpe
+
+    if is_function((@node).tpe) and 
+        (@(@node).parent).kind != parser::NodeKind::FUNC_CALL and
+        (@(@node).parent).kind != parser::NodeKind::PTR {
+            
+        let parent = (@node).parent
+        let old_node = parser::copy_node(node)
+        (@old_node).tpe = flatten_return_type(old_node, (@(@node).tpe).return_t)
+
+        @node = {
+            kind = parser::NodeKind::FUNC_CALL,
+            loc = (@node).loc
+        } !parser::Node
+        (@node).value.func_call = {
+            left = old_node,
+            args = vector::make(),
+            kwargs = vector::make()
+        } !parser::NodeFuncCall
+        walk(parent, node, state)
     }
 }
 
@@ -848,7 +886,7 @@ def infer_struct_type(node: *parser::Node, tpe: *Type) {
     (@node).tpe = tpe
 }
 
-def collapse_types(ltypes: *vector::Vector, right: *vector::Vector, state: *State) -> *vector::Vector {
+def collapse_types(node: *parser::Node, ltypes: *vector::Vector, right: *vector::Vector, state: *State) -> *vector::Vector {
     let rtypes = vector::make()
     var k = 0
     for var i in 0..vector::length(right) {
@@ -861,7 +899,7 @@ def collapse_types(ltypes: *vector::Vector, right: *vector::Vector, state: *Stat
             infer_struct_type(value, ltpe)
         }
         
-        walk(value, state)
+        walk(node, value, state)
         let rtpe = (@value).tpe
         if rtpe and (@rtpe).kind == TypeKind::TUPLE {
             for var j in 0..vector::length((@rtpe).return_t) {
@@ -887,10 +925,10 @@ def walk_Assign(node: *parser::Node, state: *State) {
     let ltypes = vector::make()
     for var i in 0..vector::length(left) {
         let l = vector::get(left, i) !*parser::Node
-        walk(l, state)
+        walk(node, l, state)
         vector::push(ltypes, (@l).tpe)
     }
-    let rtypes = collapse_types(ltypes, right, state)
+    let rtypes = collapse_types(node, ltypes, right, state)
 
     if vector::length(ltypes) != vector::length(rtypes) {
         errorn(node, "Unbalanced assignment\n")
@@ -940,12 +978,12 @@ def walk_VarDecl(node: *parser::Node, state: *State) {
             }
         } else {
             let n = (@node).value.expr
-            walk(n, state)
+            walk(node, n, state)
             vector::push(ltypes, (@n).tpe)
         }
     }
 
-    let rtypes = collapse_types(ltypes, right, state)
+    let rtypes = collapse_types(node, ltypes, right, state)
 
     if (kw == parser::VarDecl::CONST or 
         kw == parser::VarDecl::LET) and 
@@ -1004,7 +1042,7 @@ def walk_VarDecl(node: *parser::Node, state: *State) {
 }
 
 def walk_Not(node: *parser::Node, state: *State) {
-    walk((@node).value.expr, state)
+    walk(node, (@node).value.expr, state)
     let tpe = (@(@node).value.expr).tpe
     if not tpe { return }
     if not is_boolean(tpe) {
@@ -1015,7 +1053,7 @@ def walk_Not(node: *parser::Node, state: *State) {
 }
 
 def walk_BNot(node: *parser::Node, state: *State) {
-    walk((@node).value.expr, state)
+    walk(node, (@node).value.expr, state)
     let tpe = (@(@node).value.expr).tpe
     if not tpe { return }
     if not is_integer(tpe) {
@@ -1026,7 +1064,7 @@ def walk_BNot(node: *parser::Node, state: *State) {
 }
 
 def walk_UAdd(node: *parser::Node, state: *State) {
-    walk((@node).value.expr, state)
+    walk(node, (@node).value.expr, state)
     let tpe = (@(@node).value.expr).tpe
     if not tpe { return }
     if not is_arithmetic(tpe) {
@@ -1037,7 +1075,7 @@ def walk_UAdd(node: *parser::Node, state: *State) {
 }
 
 def walk_USub(node: *parser::Node, state: *State) {
-    walk((@node).value.expr, state)
+    walk(node, (@node).value.expr, state)
     let tpe = (@(@node).value.expr).tpe
     if not tpe { return }
     if not is_arithmetic(tpe) {
@@ -1056,8 +1094,8 @@ def walk_ArithmeticOp(node: *parser::Node, state: *State) {
     let right = (@node).value.bin_op.right
     if not left or not right { return }
 
-    walk(left, state)
-    walk(right, state)
+    walk(node, left, state)
+    walk(node, right, state)
 
     if not (@left).tpe or not (@right).tpe { return }
     (@node).tpe = common_type((@left).tpe, (@right).tpe)
@@ -1068,8 +1106,8 @@ def walk_BitwiseOp(node: *parser::Node, state: *State) {
     let right = (@node).value.bin_op.right
     if not left or not right { return }
 
-    walk(left, state)
-    walk(right, state)
+    walk(node, left, state)
+    walk(node, right, state)
 
     if not (@left).tpe or not (@right).tpe { return }
     if not is_integer((@left).tpe) or not is_integer((@right).tpe) {
@@ -1085,8 +1123,8 @@ def walk_BooleanOp(node: *parser::Node, state: *State) {
     let right = (@node).value.bin_op.right
     if not left or not right { return }
 
-    walk(left, state)
-    walk(right, state)
+    walk(node, left, state)
+    walk(node, right, state)
 
     if not (@left).tpe or not (@right).tpe { return }
     if not is_boolean((@left).tpe) or not is_boolean((@right).tpe) {
@@ -1103,8 +1141,8 @@ def walk_AssignEqArithmetic(node: *parser::Node, state: *State) {
     let right = (@node).value.bin_op.right
     if not left or not right { return }
 
-    walk(left, state)
-    walk(right, state)
+    walk(node, left, state)
+    walk(node, right, state)
     if not check_is_identifier_assignable(left, state) {
         return
     }
@@ -1127,8 +1165,8 @@ def walk_AssignEqBitwise(node: *parser::Node, state: *State) {
     let right = (@node).value.bin_op.right
     if not left or not right { return }
 
-    walk(left, state)
-    walk(right, state)
+    walk(node, left, state)
+    walk(node, right, state)
     if not check_is_identifier_assignable(left, state) {
         return
     }
@@ -1151,8 +1189,8 @@ def walk_AssignEqPtr(node: *parser::Node, state: *State) {
     let right = (@node).value.bin_op.right
     if not left or not right { return }
 
-    walk(left, state)
-    walk(right, state)
+    walk(node, left, state)
+    walk(node, right, state)
     if not check_is_identifier_assignable(left, state) {
         return
     }
@@ -1175,7 +1213,6 @@ def walk_Cast(node: *parser::Node, state: *State) {
     let right = (@node).value.bin_op.right
     if not left or not right { return }
 
-    //walk(right, state)
     let tpe = type_lookup(right, state)
     if not tpe { return }
     (@node).tpe = tpe
@@ -1195,7 +1232,7 @@ def walk_Cast(node: *parser::Node, state: *State) {
             return
         }
     }
-    walk(left, state)
+    walk(node, left, state)
 }
 
 def walk_Import(node: *parser::Node, state: *State) {
@@ -1285,7 +1322,7 @@ def walk_Def(node: *parser::Node, state: *State) {
     if body {
         push_function(state, tpe)
         for var i in 0..vector::length(body) {
-            walk(vector::get(body, i) !*parser::Node, state)
+            walk(node, vector::get(body, i) !*parser::Node, state)
         }
         (@node).scope = (@state).scope
         (@state).scope = scope::exit_scope((@state).scope)
@@ -1383,9 +1420,8 @@ def walk_Return(node: *parser::Node, state: *State) {
         return
     }
     
-    
     let ltypes = (@current_fun).return_t
-    let rtypes = collapse_types(ltypes, body, state)
+    let rtypes = collapse_types(node, ltypes, body, state)
 
     if vector::length(ltypes) != vector::length(rtypes) {
         // TODO Improve error message
@@ -1411,7 +1447,7 @@ def walk_Call(node: *parser::Node, state: *State) {
 
     for var i in 0..vector::length((@node).value.func_call.args) {
         let n = vector::get((@node).value.func_call.args, i) !*parser::Node
-        walk(n, state)
+        walk(node, n, state)
         let np = allocate(NamedParameter)
         (@np).name = ""
         (@np).value = (@n).tpe
@@ -1422,7 +1458,7 @@ def walk_Call(node: *parser::Node, state: *State) {
     let parameter_map = map::make()
     for var i in 0..vector::length((@node).value.func_call.kwargs) {
         let n = vector::get((@node).value.func_call.kwargs, i) !*parser::Node
-        walk((@n).value.named_arg.value, state)
+        walk(node, (@n).value.named_arg.value, state)
         let name = last_ident_to_str((@n).value.named_arg.name)
 
         if map::contains(parameter_map, name) {
@@ -1447,7 +1483,7 @@ def walk_Call(node: *parser::Node, state: *State) {
     let left = (@node).value.func_call.left
     if not left { return }
 
-    walk(left, state)
+    walk(node, left, state)
     tpe = (@left).tpe
     if not is_function_pointer(tpe) {
         if (@left).kind == parser::NodeKind::IDENTIFIER {
@@ -1455,8 +1491,13 @@ def walk_Call(node: *parser::Node, state: *State) {
 
             if not function {
                 errorn(left, "Function \"")
-                error(parser::identifier_to_str(left), "\" not found. Arguments were of type ")
+                error(parser::identifier_to_str(left), "\" not found. ")
                 let len = vector::length(arguments)
+                if len > 0 {
+                    error("Arguments were of type ")
+                } else {
+                    error("No arguments.")
+                }
                 for var i in 0..len {
                     let arg = vector::get(arguments, i) !*NamedParameter
                     error(debug::type_to_str((@arg).value))
@@ -1516,26 +1557,13 @@ def walk_Call(node: *parser::Node, state: *State) {
         return_t = (@tpe).proto((@node).value.func_call.args, (@node).value.func_call.kwargs, state)
     }
 
-    let len = vector::length(return_t) 
-    if len > 1 {
-        // TODO size and alignment! Same as a struct,
-        // also refactor type_lookup and compiler (functions with multiple return types)
-        // into a single function for calculating the size and alignmenet of a struct
-        let return_tpe = make_type_raw(TypeKind::TUPLE)
-        (@return_tpe).line = (@node).loc.line
-        (@return_tpe).return_t = return_t
-        (@node).tpe = return_tpe
-    } else if len == 1 {
-        (@node).tpe = vector::peek(return_t) !*Type
-    } else {
-        (@node).tpe = null
-    }
+    (@node).tpe = flatten_return_type(node, return_t)
 }
 
 def walk_Case(node: *parser::Node, state: *State) {
     for var i in 0..vector::length((@node).value.case_.expr) {
         let expr = vector::get((@node).value.case_.expr, i) !*parser::Node
-        walk(expr, state)
+        walk(node, expr, state)
         if not (is_arithmetic((@expr).tpe) or is_enum((@expr).tpe) or is_range((@expr).tpe)){
             errorn(expr, "Incompatible type, expected arithmetic type, range or enum, got ")
             error(debug::type_to_str((@expr).tpe), "\n")
@@ -1544,13 +1572,13 @@ def walk_Case(node: *parser::Node, state: *State) {
     }
     for var i in 0..vector::length((@node).value.case_.body) {
         let expr = vector::get((@node).value.case_.body, i) !*parser::Node
-        walk(expr, state)
+        walk(node, expr, state)
     }
 }
 
 def walk_Switch(node: *parser::Node, state: *State) {
     let expr = (@node).value.switch_.expr
-    walk(expr, state)
+    walk(node, expr, state)
     if not (is_arithmetic((@expr).tpe) or is_enum((@expr).tpe) ){
         errorn(expr, "Incompatible type, expected arithmetic type or enum, got ")
         error(debug::type_to_str((@expr).tpe), "\n")
@@ -1558,13 +1586,13 @@ def walk_Switch(node: *parser::Node, state: *State) {
     }
 
     for var i in 0..vector::length((@node).value.switch_.body) {
-        walk(vector::get((@node).value.switch_.body, i) !*parser::Node, state)
+        walk(node, vector::get((@node).value.switch_.body, i) !*parser::Node, state)
     }
 }
 
 def walk_If(node: *parser::Node, state: *State) {
     let cond = (@node).value.if_.cond
-    walk(cond, state)
+    walk(node, cond, state)
     let tpe = (@cond).tpe
     if not tpe { return }
     if not is_boolean(tpe) {
@@ -1575,7 +1603,7 @@ def walk_If(node: *parser::Node, state: *State) {
     (@state).scope = scope::enter_scope((@state).scope)
     for var i in 0..vector::length((@node).value.if_.body) {
         let n = vector::get((@node).value.if_.body, i) !*parser::Node
-        walk(n, state)
+        walk(node, n, state)
     }
     (@state).scope = scope::exit_scope((@state).scope)
 
@@ -1583,7 +1611,7 @@ def walk_If(node: *parser::Node, state: *State) {
         let n = vector::get((@node).value.if_.else_if, i) !*parser::Node
         
         let cond = (@n).value.else_if.cond
-        walk(cond, state)
+        walk(node, cond, state)
         let tpe = (@cond).tpe
         
         if not is_boolean(tpe) {
@@ -1594,7 +1622,7 @@ def walk_If(node: *parser::Node, state: *State) {
         (@state).scope = scope::enter_scope((@state).scope)
         for var i in 0..vector::length((@n).value.else_if.body) {
             let n2 = vector::get((@n).value.else_if.body, i) !*parser::Node
-            walk(n2, state)
+            walk(node, n2, state)
         }   
         (@state).scope = scope::exit_scope((@state).scope)
     }
@@ -1604,7 +1632,7 @@ def walk_If(node: *parser::Node, state: *State) {
         (@state).scope = scope::enter_scope((@state).scope)
         for var i in 0..vector::length((@else_).value.body) {
             let n = vector::get((@else_).value.body, i) !*parser::Node
-            walk(n, state)
+            walk(node, n, state)
         }
         (@state).scope = scope::exit_scope((@state).scope)
     }
@@ -1614,14 +1642,14 @@ def walk_Loop(node: *parser::Node, state: *State) {
     (@state).scope = scope::enter_scope((@state).scope)
     for var i in 0..vector::length((@node).value.body) {
         let n = vector::get((@node).value.body, i) !*parser::Node
-        walk(n, state)
+        walk(node, n, state)
     }
     (@state).scope = scope::exit_scope((@state).scope)
 }
 
 def walk_While(node: *parser::Node, state: *State) {
     let expr = (@node).value.while_loop.expr
-    walk(expr, state)
+    walk(node, expr, state)
     if not is_boolean((@expr).tpe) {
         errorn(node, "Incompatible type ")
         error(debug::type_to_str((@expr).tpe), ", must be boolean type\n")
@@ -1630,14 +1658,14 @@ def walk_While(node: *parser::Node, state: *State) {
     (@state).scope = scope::enter_scope((@state).scope)
     for var i in 0..vector::length((@node).value.while_loop.body) {
         let n = vector::get((@node).value.while_loop.body, i) !*parser::Node
-        walk(n, state)
+        walk(node, n, state)
     }
     (@state).scope = scope::exit_scope((@state).scope)
 }
 
 def walk_For(node: *parser::Node, state: *State) {
     let expr = (@node).value.for_loop.expr
-    walk(expr, state)
+    walk(node, expr, state)
     (@state).scope = scope::enter_scope((@state).scope)
 
     let iddecl = (@node).value.for_loop.iddecl
@@ -1657,7 +1685,7 @@ def walk_For(node: *parser::Node, state: *State) {
         )
     
     } else {
-        walk(iddecl, state)
+        walk(node, iddecl, state)
         if not equals(tpe, (@iddecl).tpe) {
             errorn(iddecl, "Type didn't match, expected ")
             error(debug::type_to_str(tpe), ", got ", debug::type_to_str((@iddecl).tpe))
@@ -1666,13 +1694,13 @@ def walk_For(node: *parser::Node, state: *State) {
 
     for var i in 0..vector::length((@node).value.for_loop.body) {
         let n = vector::get((@node).value.for_loop.body, i) !*parser::Node
-        walk(n, state)
+        walk(node, n, state)
     }
     (@state).scope = scope::exit_scope((@state).scope)
 }
 
 def walk_Deref(node: *parser::Node, state: *State) {
-    walk((@node).value.expr, state)
+    walk(node, (@node).value.expr, state)
     let tpe = (@(@node).value.expr).tpe
     if not tpe { return }
     if not is_pointer(tpe) {
@@ -1684,7 +1712,7 @@ def walk_Deref(node: *parser::Node, state: *State) {
 }
 
 def walk_Ptr(node: *parser::Node, state: *State) {
-    walk((@node).value.expr, state)
+    walk(node, (@node).value.expr, state)
     let tpe = (@(@node).value.expr).tpe
     (@node).tpe = pointer(tpe)
 }
@@ -1692,7 +1720,7 @@ def walk_Ptr(node: *parser::Node, state: *State) {
 def walk_MemberAccess(node: *parser::Node, state: *State) {
     let right = (@node).value.bin_op.right
     let left = (@node).value.bin_op.left
-    walk(left, state)
+    walk(node, left, state)
     let tpe = (@left).tpe
 
     if is_pointer(tpe) {
@@ -1703,7 +1731,7 @@ def walk_MemberAccess(node: *parser::Node, state: *State) {
         } !parser::Node
         (@left).value.expr = old_left
 
-        walk(node, state)
+        walk(node, node, state)
         return
     }
 
@@ -1747,8 +1775,8 @@ def walk_ArraySubscript(node: *parser::Node, state: *State) {
     let left = (@node).value.bin_op.left
     let right = (@node).value.bin_op.right
 
-    walk(left, state)
-    walk(right, state)
+    walk(node, left, state)
+    walk(node, right, state)
 
     if not left or not right { return }
     let tpe = (@left).tpe
@@ -1782,7 +1810,7 @@ def walk_StructLit(node: *parser::Node, state: *State) {
             errorn(n, "Too many arguments to array literal\n")
             return
         }
-        walk(n, state)
+        walk(node, n, state)
         
         var ntpe = (@tpe).fields[i].tpe
         implicit_conversion(n, ntpe)
@@ -1797,7 +1825,7 @@ def walk_StructLit(node: *parser::Node, state: *State) {
     for var i in 0..vector::length((@node).value.struct_lit.kwargs) {
         let kwarg = vector::get((@node).value.struct_lit.kwargs, i) !*parser::Node
         let n = (@kwarg).value.named_arg.value
-        walk(n, state)
+        walk(node, n, state)
         let name = last_ident_to_str((@kwarg).value.named_arg.name)
 
         var found = false
@@ -1835,7 +1863,7 @@ def walk_ArrayLit(node: *parser::Node, state: *State) {
     let len = vector::length((@node).value.body)
     for var i in 0..len {
         let n = vector::get((@node).value.body, i) !*parser::Node
-        walk(n, state)
+        walk(node, n, state)
         let t = (@n).tpe
         if not tpe { tpe = t }
         else {
@@ -1879,7 +1907,7 @@ def walk_SizeOf(node: *parser::Node, state: *State) {
     } else {
         (@expr).tpe = type_lookup(expr, state)
         if not (@expr).tpe {
-            walk(expr, state)
+            walk(node, expr, state)
         }
     }
 
@@ -1904,7 +1932,7 @@ def walk_AlignOf(node: *parser::Node, state: *State) {
     } else {
         (@expr).tpe = type_lookup(expr, state)
         if not (@expr).tpe {
-            walk(expr, state)
+            walk(node, expr, state)
         }
     }
 
@@ -1914,8 +1942,8 @@ def walk_AlignOf(node: *parser::Node, state: *State) {
 def walk_ComparisionOp(node: *parser::Node, state: *State) {
     let left = (@node).value.bin_op.left
     let right = (@node).value.bin_op.right
-    walk(left, state)
-    walk(right, state)
+    walk(node, left, state)
+    walk(node, right, state)
     // TODO We can compare almost everything
     (@node).tpe = builtins::bool_
 }
@@ -1923,8 +1951,8 @@ def walk_ComparisionOp(node: *parser::Node, state: *State) {
 def walk_PAdd(node: *parser::Node, state: *State) {
     let left = (@node).value.bin_op.left
     let right = (@node).value.bin_op.right
-    walk(left, state)
-    walk(right, state)
+    walk(node, left, state)
+    walk(node, right, state)
     if not is_pointer((@left).tpe) {
         errorn(left, "Must be pointer type, got ")
         error(debug::type_to_str((@left).tpe), "\n")
@@ -1941,9 +1969,10 @@ def walk_PSub(node: *parser::Node, state: *State) {
     walk_PAdd(node, state)
 }
 
-def walk(node: *parser::Node, state: *State) {
+def walk(parent: *parser::Node, node: *parser::Node, state: *State) {
     if not node { return }
     (@node).scope = (@state).scope
+    (@node).parent = parent
 
     switch (@node).kind !int {
         case parser::NodeKind::NULL:
@@ -2068,7 +2097,7 @@ export def typecheck(module: *toolchain::Module) {
     (@value).global = false
 
     for var i in 0..vector::length((@node).value.body) {
-        walk(vector::get((@node).value.body, i) !*parser::Node, *state)
+        walk(node, vector::get((@node).value.body, i) !*parser::Node, *state)
     }
 }
 
