@@ -282,6 +282,14 @@ export type State = struct {
 
 def di_type(tpe: *typechecking::Type, state: *State) -> *Value
 
+def make_block(state: *State) -> *Block {
+    let block = allocate(Block)
+    (@block).label_ = "start"
+    (@block).insn = vector::make()
+    (@block).next = null
+    return block
+}
+
 export def make_insn_dbg(kind: InsnKind, debug: *Value) -> *Insn {
     let insn = allocate(Insn)
     (@insn).kind = kind
@@ -3483,7 +3491,6 @@ def create_function(node: *parser::Node, tpe: *typechecking::Type, body: *vector
 
     if toolchain::debug_sym and body {
         let debug_values = allocate(DebugParam, 7)
-        // TODO We might have to use the mangled name here
         debug_values[0] = {
             name = "name", value = { kind = DebugValueKind::STRING, s = (@function).name } !DebugValue
         } !DebugParam
@@ -3539,10 +3546,7 @@ def create_function(node: *parser::Node, tpe: *typechecking::Type, body: *vector
         (@state).current_function = function
         (@state).counter = 0
         
-        let block = allocate(Block)
-        (@block).label_ = "start"
-        (@block).insn = vector::make()
-        (@block).next = null
+        let block = make_block(state)
 
         (@function).block = block
         (@state).current_block = block
@@ -3626,8 +3630,32 @@ def create_function(node: *parser::Node, tpe: *typechecking::Type, body: *vector
     }
 }
 
-def walk_Def(node: *parser::Node, state: *State){
+def walk_Def(node: *parser::Node, state: *State) {
     create_function(node, (@node).tpe, (@node).value.def_.body, (@node).scope, state)
+}
+
+def make_string(str: string, state: *State) -> Value {
+    let cp = charp(str, state)
+    
+    let values = allocate(Value, 2)
+    values[0] = { kind = ValueKind::INT, tpe = builtins::size_t_, sign = 1, i = str.size } !Value
+    values[1] = { kind = ValueKind::UNDEF, tpe = typechecking::pointer(builtins::char_) } !Value
+    let ret = make_local_value(builtins::string_, null, state)
+    let index = allocate(int, 1)
+    index[0] = 1
+    let insert = make_insn(InsnKind::INSERTVALUE)
+    (@insert).value.insert_value = {
+        ret = ret,
+        value = { 
+            kind = ValueKind::STRUCT, 
+            tpe = builtins::string_,
+            values = values 
+        } !Value,
+        element = cp,
+        index = index
+    } !InsnInsertValue
+    push_insn(insert, state)
+    return ret
 }
 
 def walk_TypeDecl(node: *parser::Node, state: *State) {
@@ -3636,9 +3664,74 @@ def walk_TypeDecl(node: *parser::Node, state: *State) {
         let n = vector::get(left, i) !*parser::Node
         let tpe = (@n).tpe
         if not tpe { continue }
-        if (@tpe).kind == typechecking::TypeKind::STRUCT or
-            (@tpe).kind == typechecking::TypeKind::UNION {
+        if typechecking::is_struct(tpe) {
             map::put((@(@state).result).structures, (@tpe).type_name, tpe)
+        } else if typechecking::is_enum(tpe) {
+            let parameter_t = vector::make()
+            let np = allocate(typechecking::NamedParameter)
+            @np = {
+                name = "enum",
+                value = tpe
+            } !typechecking::NamedParameter
+            vector::push(parameter_t, np)
+
+            let function = allocate(Function)
+            @function = {
+                name = typechecking::mangle_function_name("to_string", parameter_t),
+                unmangled = "to_string",
+                args = parameter_t,
+                ret = builtins::string_
+            } !Function
+
+            let block = make_block(state)
+            (@function).block = block
+            (@state).current_block = block
+            (@state).current_function = function
+            (@state).counter = 0
+
+            let switch_values = vector::make()
+            let swtch = make_insn(InsnKind::SWITCH)
+            (@swtch).value.switch_ = {
+                value = { 
+                    kind = ValueKind::LOCAL, 
+                    name = "enum",
+                    tpe = (@tpe).tpe
+                } !Value,
+                switch_values = switch_values
+            } !InsnSwitch
+            push_insn(swtch, state)
+            
+            // Create enum strings
+            let scpe = (@tpe).scope
+            let keys = map::keys((@scpe).fields)
+            for var i in 0..keys.size {
+                let name = keys[i]
+                // TODO Enum values might be negative
+                let value = (@(map::get((@scpe).fields, name) !*scope::Value)).value !*uint64
+                let label_ = make_label(state)
+                push_label(label_, state)
+
+                let sv = allocate(SwitchValue)
+                (@sv).value = make_value(tpe, value)
+                (@sv).label_ = label_
+                vector::push(switch_values, sv)
+            
+                let ret = make_string(name, state)
+                let retinsn = make_insn(InsnKind::RET)
+                (@retinsn).value.ret.value = ret
+                push_insn(retinsn, state)
+            }
+            let otherwise = make_label(state)
+            (@swtch).value.switch_.otherwise = otherwise
+            push_label(otherwise, state)
+            
+            let invalid = "INVALID!!"
+            let ret = make_string(invalid, state)
+            let retinsn = make_insn(InsnKind::RET)
+            (@retinsn).value.ret.value = ret
+            push_insn(retinsn, state)
+            
+            map::put((@(@state).result).functions, (@function).name, function)
         }
     }
 }
