@@ -1469,8 +1469,12 @@ def walk_Return(node: *parser::Node, state: *State) {
 }
 
 def walk_Call(node: *parser::Node, state: *State) {
-    var arguments = vector::make()
+    let left = (@node).value.func_call.left
+    if not left { return }
+    walk(node, left, state)
+    var tpe = (@left).tpe
 
+    var arguments = vector::make()
     for var i in 0..vector::length((@node).value.func_call.args) {
         let n = vector::get((@node).value.func_call.args, i) !*parser::Node
         walk(node, n, state)
@@ -1502,15 +1506,7 @@ def walk_Call(node: *parser::Node, state: *State) {
             vector::push(arguments, np)
         }
     }
-    // TODO What about function pointers and foo.bar(baz) == bar(foo, baz)
 
-    var tpe: *Type = null
-    
-    let left = (@node).value.func_call.left
-    if not left { return }
-
-    walk(node, left, state)
-    tpe = (@left).tpe
     if not is_function_pointer(tpe) {
         if (@left).kind == parser::NodeKind::IDENTIFIER {
             var function = scope::get_function((@state).scope, left, arguments)
@@ -1743,6 +1739,46 @@ def walk_Ptr(node: *parser::Node, state: *State) {
     (@node).tpe = pointer(tpe)
 }
 
+def walk_MemberAccess_ucs(node: *parser::Node, state: *State) -> bool {
+    let right = (@node).value.bin_op.right
+    let left = (@node).value.bin_op.left
+    let parent = (@node).parent
+    let tpe = (@left).tpe
+
+    if (@parent).kind == parser::NodeKind::FUNC_CALL and
+        (@parent).value.func_call.left == node {
+        @(@parent).value.func_call.left = @right
+        vector::prepend((@parent).value.func_call.args, left)
+    } else {
+        let parameter_t = vector::make()
+        let np = allocate(NamedParameter)
+        @np = {
+            name = "",
+            value = (@left).tpe
+        } !NamedParameter
+        vector::push(parameter_t, np)
+
+        let function = scope::get_function((@node).scope, right, parameter_t)
+        if not function { return false }
+
+        let args = vector::make()
+        vector::push(args, left)
+        @node = {
+            kind = parser::NodeKind::FUNC_CALL,
+            loc = (@node).loc,
+            parent = parent
+        } !parser::Node
+        (@node).value.func_call = {
+            left = right,
+            args = args,
+            kwargs = vector::make()
+        } !parser::NodeFuncCall
+        
+        walk(parent, node, state)
+    }
+    return true
+}
+
 def walk_MemberAccess(node: *parser::Node, state: *State) {
     let right = (@node).value.bin_op.right
     let left = (@node).value.bin_op.left
@@ -1775,6 +1811,7 @@ def walk_MemberAccess(node: *parser::Node, state: *State) {
             }
         }
         if not rtpe {
+            if walk_MemberAccess_ucs(node, state) { return }
             errorn(node, "Unknown field \"")
             error(name, "\"\n")
             return
@@ -1787,11 +1824,12 @@ def walk_MemberAccess(node: *parser::Node, state: *State) {
         } else if name == "value" {
             (@node).tpe = pointer((@tpe).tpe)
         } else {
+            if walk_MemberAccess_ucs(node, state) { return }
             errorn(node, "Expected size or value\n")
         }
     // TODO Enums might have ordinal and some other information
     } else {
-        // TODO obj.method() -> method(obj)
+        if walk_MemberAccess_ucs(node, state) { return }
         errorn(node, "Expected aggregate type, got ")
         error(debug::type_to_str(tpe), "\n")
     }
