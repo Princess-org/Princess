@@ -1935,9 +1935,11 @@ def walk_Ptr(node: *parser::Node, state: *State) -> Value {
     return @(value.addr)
 }
 
-def walk_MemberAccess_gep(node: *parser::Node, tpe: *typechecking::Type, value: Value, index: [Value], state: *State) -> Value {
+def walk_MemberAccess_gep(node: *parser::Node, tpe: *typechecking::Type, 
+    mtpe: *typechecking::Type, value: Value, index: [Value], state: *State) -> Value {
+
     let loc = make_location(node, state)
-    let gep_ret = make_local_value(typechecking::pointer((@node).tpe), null, state) 
+    let gep_ret = make_local_value(typechecking::pointer(mtpe), null, state) 
     let gep = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
     (@gep).value.gep = {
         ret = gep_ret,
@@ -1950,7 +1952,7 @@ def walk_MemberAccess_gep(node: *parser::Node, tpe: *typechecking::Type, value: 
     let addr = allocate(Value)
     @addr = gep_ret
 
-    let ret = make_local_value((@node).tpe, addr, state)
+    let ret = make_local_value(mtpe, addr, state)
     let load = make_insn_dbg(InsnKind::LOAD, loc)
     (@load).value.load = {
         value = ret,
@@ -1961,15 +1963,98 @@ def walk_MemberAccess_gep(node: *parser::Node, tpe: *typechecking::Type, value: 
     return ret
 }
 
+type Member = struct {
+    index: int
+    tpe: *typechecking::Type
+}
+
+// This list needs to be reversed to find the actual indices
+def resolve_member(vec: *vector::Vector, tpe: *typechecking::Type, name: string) -> bool {
+    let fields = (@tpe).fields
+    for var i in 0..fields.size {
+        let field = fields[i]
+        if length(field.name) > 0 {
+            if field.name == name {
+                let member = allocate(Member)
+                @member = {
+                    index = i,
+                    tpe = field.tpe
+                } !Member
+                vector::push(vec, member)
+                return true
+            }
+        } else {
+            let found = resolve_member(vec, field.tpe, name)
+            if found {
+                let member = allocate(Member)
+                @member = {
+                    index = i,
+                    tpe = field.tpe
+                } !Member
+                vector::push(vec, member)
+                return true
+            }
+        }
+    }
+    return false
+}
+
+def walk_MemberAccess_struct(node: *parser::Node, tpe: *typechecking::Type, member: *Member, value: Value, state: *State) -> Value {
+    let loc = make_location(node, state)
+    
+    if (@tpe).kind == typechecking::TypeKind::UNION {
+
+        let index = allocate(Value, 3)
+        index[0] = make_int_value(0)
+        index[1] = make_int_value(0)
+        index[2] = make_int_value(0)
+
+        let gep_ret = make_local_value(typechecking::pointer(builtins::char_), null, state)
+        let gep = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
+        (@gep).value.gep = {
+            ret = gep_ret,
+            tpe = tpe,
+            value = @value.addr,
+            index = index
+        } !InsnGetElementPtr
+        push_insn(gep, state)
+
+        let bitcast_ret = make_local_value(typechecking::pointer((@member).tpe), null, state)
+        let bitcast = make_insn_dbg(InsnKind::BITCAST, loc)
+        (@bitcast).value.convert = {
+            ret = bitcast_ret,
+            value = gep_ret
+        } !InsnConvert
+        push_insn(bitcast, state)
+
+        let addr = allocate(Value)
+        (@addr) = bitcast_ret
+        let load_ret = make_local_value((@member).tpe, addr, state)
+        let load = make_insn_dbg(InsnKind::LOAD, loc)
+        (@load).value.load = {
+            value = load_ret,
+            loc = bitcast_ret
+        } !InsnLoad
+        push_insn(load, state)
+
+        return load_ret
+    } else {
+        let index = allocate(Value, 2)
+        index[0] = make_int_value(0)
+        index[1] = make_int_value((@member).index)
+        return walk_MemberAccess_gep(node, tpe, (@member).tpe, value, index, state)
+    }
+}
+
 def walk_MemberAccess(node: *parser::Node, state: *State) -> Value {
     let loc = make_location(node, state)
     if not (@node).tpe { return NO_VALUE }
 
     let left = (@node).value.bin_op.left
     let right = (@node).value.bin_op.right
-    let tpe = (@left).tpe
+    var tpe = (@left).tpe
 
-    let value = walk_expression(left, state)
+    var value = walk_expression(left, state)
     if not value.addr {
         typechecking::errorn(node, "Can't use member access, expression has no address\n")
         return NO_VALUE
@@ -2014,74 +2099,20 @@ def walk_MemberAccess(node: *parser::Node, state: *State) -> Value {
             assert(false)
         }
 
-        return walk_MemberAccess_gep(node, tpe, value, index, state)
-    } else if (@tpe).kind == typechecking::TypeKind::UNION {
-
-        var member: typechecking::StructMember
-        for var i in 0..(@tpe).fields.size {
-            let m = (@tpe).fields[i]
-            if m.name == name {
-                member = m
-                break
-            }
-        }
-
-        let index = allocate(Value, 3)
-        index[0] = make_int_value(0)
-        index[1] = make_int_value(0)
-        index[2] = make_int_value(0)
-
-        let gep_ret = make_local_value(typechecking::pointer(builtins::char_), null, state)
-        let gep = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
-        (@gep).value.gep = {
-            ret = gep_ret,
-            tpe = tpe,
-            value = @value.addr,
-            index = index
-        } !InsnGetElementPtr
-        push_insn(gep, state)
-
-        let bitcast_ret = make_local_value(typechecking::pointer(member.tpe), null, state)
-        let bitcast = make_insn_dbg(InsnKind::BITCAST, loc)
-        (@bitcast).value.convert = {
-            ret = bitcast_ret,
-            value = gep_ret
-        } !InsnConvert
-        push_insn(bitcast, state)
-
-        let addr = allocate(Value)
-        (@addr) = bitcast_ret
-        let load_ret = make_local_value(member.tpe, addr, state)
-        let load = make_insn_dbg(InsnKind::LOAD, loc)
-        (@load).value.load = {
-            value = load_ret,
-            loc = bitcast_ret
-        } !InsnLoad
-        push_insn(load, state)
-
-        return load_ret
+        return walk_MemberAccess_gep(node, tpe, (@node).tpe, value, index, state)
     } else {
-        let index = allocate(Value, 2)
-        index[0] = make_int_value(0)
-
-        var found = false
-        for var i in 0..(@tpe).fields.size {
-            let member = (@tpe).fields[i]
-            if member.name == name {
-                index[1] = {
-                    kind = ValueKind::INT,
-                    sign = 1,
-                    i = i,
-                    tpe = builtins::int_
-                } !Value
-                found = true
-                break
-            }
-        }
-        if not found {
+        let vec = vector::make()
+        if not resolve_member(vec, tpe, name) {
             assert(false)
         }
-        return walk_MemberAccess_gep(node, tpe, value, index, state)
+        let len = vector::length(vec)
+        for var i in 0..len {
+            let j = len - i - 1
+            let member = vector::get(vec, j) !*Member
+            value = walk_MemberAccess_struct(node, tpe, member, value, state)
+            tpe = (@member).tpe
+        }
+        return value
     }
 }
 
