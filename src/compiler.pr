@@ -1,9 +1,3 @@
-// TODO Right now pretty much every operation is adding a load instruction
-// This is because every sub expression can be used as a value, even if only 
-// the address is used. A potential fix would be to add a flag to walk_expression
-// only when the value is needed. The optimizer discards the load instructions
-// but its still better if they aren't present in the first place
-
 import buffer
 import parser
 import vector
@@ -519,6 +513,14 @@ export def make_int_value(v: int) -> Value {
     return value
 }
 
+export def make_address_value(tpe: *typechecking::Type, addr: *Value, state: *State) -> Value {
+    return {
+        kind = ValueKind::NULL,
+        tpe = tpe,
+        addr = addr
+    } !Value
+}
+
 export def make_local_value(tpe: *typechecking::Type, addr: *Value, state: *State) -> Value {
     return {
         kind = ValueKind::LOCAL,
@@ -552,6 +554,22 @@ export def make_global_value(tpe: *typechecking::Type, name: string, value: *Val
         tpe = typechecking::pointer(tpe),
         addr = null
     } !Value
+}
+
+export def load_value(node: *parser::Node, value: Value, state: *State) -> Value {
+    let loc = make_location(node, state)
+    if value.addr {
+        let ret = make_local_value(value.tpe, value.addr, state)
+        let load = make_insn_dbg(InsnKind::LOAD, loc)
+        (@load).value.load = {
+            value = ret,
+            loc = @value.addr
+        } !InsnLoad
+        push_insn(load, state)
+        return ret
+    } else {
+        return value
+    }
 }
 
 export def charp_str(value: Value, state: *State) -> Value {
@@ -717,6 +735,11 @@ export def import_structures(tpe: *typechecking::Type, state: *State) {
 
 export def walk_expression(node: *parser::Node, state: *State) -> Value
 export def walk(node: *parser::Node, state: *State)
+
+export def walk_and_load_expression(node: *parser::Node, state: *State) -> Value {
+    let expr = walk_expression(node, state)
+    return load_value(node, expr, state)
+}
 
 def walk_Null(node: *parser::Node, state: *State) -> Value {
     let tpe = (@node).tpe
@@ -1132,7 +1155,7 @@ def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Type, stat
 }
 
 def walk_Cast(node: *parser::Node, state: *State) -> Value {
-    let value = walk_expression((@node).value.expr, state)
+    let value = walk_and_load_expression((@node).value.expr, state)
     import_structures((@node).tpe, state)
     return convert_to(node, value, (@node).tpe, state)
 }
@@ -1183,7 +1206,7 @@ def walk_StructLitUnion(node: *parser::Node, state: *State) -> Value {
         }
     }
 
-    let value = convert_to(arg, walk_expression(arg, state), arg_tpe, state)
+    let value = convert_to(arg, walk_and_load_expression(arg, state), arg_tpe, state)
     
     let alloca_ret = make_local_value(tpe, null, state)
     let alloca = make_insn_dbg(InsnKind::ALLOCA, loc)
@@ -1254,13 +1277,13 @@ def walk_StructLit(node: *parser::Node, state: *State) -> Value {
     }
     for var i in 0..vector::length(args) {
         let arg = vector::get(args, i) !*parser::Node
-        let value = walk_expression(arg, state)
+        let value = walk_and_load_expression(arg, state)
         values[i] = convert_to(arg, value, (@tpe).fields[i].tpe, state)
     }
     for var i in 0..vector::length(kwargs) {
         let kwarg = vector::get(kwargs, i) !*parser::Node
         let name = typechecking::last_ident_to_str((@kwarg).value.named_arg.name)
-        let value = walk_expression((@kwarg).value.named_arg.value, state)
+        let value = walk_and_load_expression((@kwarg).value.named_arg.value, state)
         
         for var j in 0..(@tpe).fields.size {
             let field = (@tpe).fields[j]
@@ -1312,7 +1335,7 @@ def walk_ArrayLit(node: *parser::Node, state: *State) -> Value {
     let values = allocate(Value, len)
     for var i in 0..len {
         let v = vector::get((@node).value.body, i) !*parser::Node
-        values[i] = walk_expression(v, state)
+        values[i] = walk_and_load_expression(v, state)
     }
 
     var value = {
@@ -1372,8 +1395,8 @@ def walk_ArrayLit(node: *parser::Node, state: *State) -> Value {
 
 def walk_ArithmeticOp(node: *parser::Node, insn_kind: InsnKind, tpe: *typechecking::Type, state: *State) -> Value {
     let loc = make_location(node, state)
-    let left = convert_to(node, walk_expression((@node).value.bin_op.left, state), tpe, state)
-    let right = convert_to(node, walk_expression((@node).value.bin_op.right, state), tpe, state)
+    let left = convert_to(node, walk_and_load_expression((@node).value.bin_op.left, state), tpe, state)
+    let right = convert_to(node, walk_and_load_expression((@node).value.bin_op.right, state), tpe, state)
 
     let value = make_local_value(tpe, null, state)
     let insn = make_insn_dbg(insn_kind, loc)
@@ -1391,7 +1414,7 @@ def walk_ArithmeticOp(node: *parser::Node, insn_kind: InsnKind, tpe: *typechecki
 def walk_USub(node: *parser::Node, state: *State) -> Value {
     let loc = make_location(node, state)
     let tpe = (@node).tpe
-    let expr = walk_expression((@node).value.expr, state)
+    let expr = walk_and_load_expression((@node).value.expr, state)
 
     let ret = make_local_value(tpe, null, state)
     if (@tpe).kind == typechecking::TypeKind::FLOAT {
@@ -1414,12 +1437,12 @@ def walk_USub(node: *parser::Node, state: *State) -> Value {
 }
 
 def walk_UAdd(node: *parser::Node, state: *State) -> Value {
-    return walk_expression((@node).value.expr, state)
+    return walk_and_load_expression((@node).value.expr, state)
 }
 
 def walk_Not(node: *parser::Node, state: *State) -> Value {
     let loc = make_location(node, state)
-    let expr = convert_to(node, walk_expression((@node).value.expr, state), builtins::bool_, state)
+    let expr = convert_to(node, walk_and_load_expression((@node).value.expr, state), builtins::bool_, state)
     
     let ret = make_local_value(builtins::bool_, null, state)
     let xor = make_insn_dbg(InsnKind::XOR, loc)
@@ -1436,7 +1459,7 @@ def walk_Not(node: *parser::Node, state: *State) -> Value {
 // TODO It would be nice if and/or could work by returning the values themselves
 def walk_And(node: *parser::Node, state: *State) -> Value {
     let loc = make_location(node, state)
-    let left = convert_to(node, walk_expression((@node).value.bin_op.left, state), builtins::bool_, state)
+    let left = convert_to(node, walk_and_load_expression((@node).value.bin_op.left, state), builtins::bool_, state)
 
     let ret_alloca = make_local_value(builtins::bool_, null, state)
     let alloca = make_insn_dbg(InsnKind::ALLOCA, loc)
@@ -1471,7 +1494,7 @@ def walk_And(node: *parser::Node, state: *State) -> Value {
     let if_true = make_label(state)
     push_label(if_true, state)
 
-    let right = convert_to(node, walk_expression((@node).value.bin_op.right, state), builtins::bool_, state)
+    let right = convert_to(node, walk_and_load_expression((@node).value.bin_op.right, state), builtins::bool_, state)
 
     let store2 = make_insn_dbg(InsnKind::STORE, loc)
     (@store2).value.store = {
@@ -1503,7 +1526,7 @@ def walk_And(node: *parser::Node, state: *State) -> Value {
 
 def walk_Or(node: *parser::Node, state: *State) -> Value {
     let loc = make_location(node, state)
-    let left = convert_to(node, walk_expression((@node).value.bin_op.left, state), builtins::bool_, state)
+    let left = convert_to(node, walk_and_load_expression((@node).value.bin_op.left, state), builtins::bool_, state)
 
     let ret_alloca = make_local_value(builtins::bool_, null, state)
     let alloca = make_insn_dbg(InsnKind::ALLOCA, loc)
@@ -1538,7 +1561,7 @@ def walk_Or(node: *parser::Node, state: *State) -> Value {
     let if_false = make_label(state)
     push_label(if_false, state)
 
-    let right = convert_to(node, walk_expression((@node).value.bin_op.right, state), builtins::bool_, state)
+    let right = convert_to(node, walk_and_load_expression((@node).value.bin_op.right, state), builtins::bool_, state)
 
     let store2 = make_insn_dbg(InsnKind::STORE, loc)
     (@store2).value.store = {
@@ -1676,7 +1699,7 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
             p = vector::peek(parameter_t) !*typechecking::NamedParameter
             if not (@p).varargs { return NO_VALUE }
         }
-        var expr = walk_expression(n, state)
+        var expr = walk_and_load_expression(n, state)
         expr = convert_to(n, expr, (@p).value, state)
         args[i] = expr
     }
@@ -1689,7 +1712,7 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
         for var j in 0..vector::length(parameter_t) {
             let p = vector::get(parameter_t, j) !*typechecking::NamedParameter
             if (@p).name == name {
-                var expr = walk_expression(value, state)
+                var expr = walk_and_load_expression(value, state)
                 expr = convert_to(n, expr, (@p).value, state)
                 args[j] = expr
             }
@@ -1709,7 +1732,7 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
         } else {
             ret = vector::peek((@tpe).return_t) !*typechecking::Type
         }
-        name_v = walk_expression((@node).value.func_call.left, state)
+        name_v = walk_and_load_expression((@node).value.func_call.left, state)
     } else {    
         var name = (@tpe).type_name
         let function = map::get((@(@state).result).functions, name) !*Function
@@ -1797,14 +1820,7 @@ def walk_Identifier(node: *parser::Node, state: *State) -> Value {
     } !Value
 
     if not typechecking::is_function(tpe) {
-        let value = make_local_value(tpe, locv, state)
-        
-        let insn = make_insn_dbg(InsnKind::LOAD, loc)
-        (@insn).value.load = {
-            value = value,
-            loc = @locv
-        } !InsnLoad
-        push_insn(insn, state)
+        let value = make_address_value(tpe, locv, state)
         return value
     } else {
         (@locv).name = (@tpe).type_name
@@ -1831,7 +1847,7 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
     for var i in 0..vector::length(right) {
         let n = vector::get(right, i) !*parser::Node
         if not n { break }
-        var value = walk_expression(n, state)
+        var value = walk_and_load_expression(n, state)
         let tpe = (@n).tpe
         if not tpe { continue }
         if (@tpe).kind == typechecking::TypeKind::TUPLE {
@@ -1890,7 +1906,6 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
         } else {
             if j >= vector::length(left) { return NO_VALUE }
             let l = vector::get(left, j) !*parser::Node
-            // TODO This adds a useless load instruction
             let addr = walk_expression(l, state).addr
             if not addr { 
                 typechecking::errorn(l, "Can't assign, expression has no address\n")
@@ -1959,26 +1974,18 @@ def walk_AssignEq(node: *parser::Node, state: *State) -> Value {
         right = right_vec
     } !parser::NodeAssign
 
-    return walk_expression(assign_eq_node, state)
+    return walk_and_load_expression(assign_eq_node, state)
 }
 
 def walk_Deref(node: *parser::Node, state: *State) -> Value {
     let loc = make_location(node, state)
-    let value = walk_expression((@node).value.expr, state)
+    let value = walk_and_load_expression((@node).value.expr, state)
     let tpe = value.tpe
     if not tpe { return NO_VALUE }
 
     let addr = allocate(Value)
     (@addr) = value
-    let ret = make_local_value((@tpe).tpe, addr, state)
-
-    let load = make_insn_dbg(InsnKind::LOAD, loc)
-    (@load).value.load = {
-        value = ret,
-        loc = value
-    } !InsnLoad
-
-    push_insn(load, state)
+    let ret = make_address_value((@tpe).tpe, addr, state)
     return ret
 }
 
@@ -2006,14 +2013,7 @@ def walk_MemberAccess_gep(node: *parser::Node, tpe: *typechecking::Type,
     let addr = allocate(Value)
     @addr = gep_ret
 
-    let ret = make_local_value(mtpe, addr, state)
-    let load = make_insn_dbg(InsnKind::LOAD, loc)
-    (@load).value.load = {
-        value = ret,
-        loc = gep_ret
-    } !InsnLoad
-    push_insn(load, state)
-
+    let ret = make_address_value(mtpe, addr, state)
     return ret
 }
 
@@ -2083,15 +2083,8 @@ def walk_MemberAccess_struct(node: *parser::Node, tpe: *typechecking::Type, memb
 
         let addr = allocate(Value)
         (@addr) = bitcast_ret
-        let load_ret = make_local_value((@member).tpe, addr, state)
-        let load = make_insn_dbg(InsnKind::LOAD, loc)
-        (@load).value.load = {
-            value = load_ret,
-            loc = bitcast_ret
-        } !InsnLoad
-        push_insn(load, state)
-
-        return load_ret
+        let ret = make_address_value((@member).tpe, addr, state)
+        return ret
     } else {
         let index = allocate(Value, 2)
         index[0] = make_int_value(0)
@@ -2179,8 +2172,8 @@ def walk_ArraySubscript(node: *parser::Node, state: *State) -> Value {
     let right = (@node).value.bin_op.right
     
     let array_tpe = (@left).tpe
-    let left_value = walk_expression(left, state)
-    let right_value = walk_expression(right, state)
+    var left_value = walk_expression(left, state)
+    let right_value = walk_and_load_expression(right, state)
 
     if (@array_tpe).kind == typechecking::TypeKind::ARRAY {
         let index1 = allocate(Value, 2)
@@ -2220,18 +2213,11 @@ def walk_ArraySubscript(node: *parser::Node, state: *State) -> Value {
         
         let addr = allocate(Value)
         (@addr) = gep_ret2
-        let ret = make_local_value((@node).tpe, addr, state)
-
-        let load2 = make_insn_dbg(InsnKind::LOAD, loc)
-        (@load2).value.load = {
-            value = ret,
-            loc = gep_ret2
-        } !InsnLoad
+        let ret = make_address_value((@node).tpe, addr, state)
 
         push_insn(gep1, state)
         push_insn(load1, state)
         push_insn(gep2, state)
-        push_insn(load2, state)
         
         return ret
     } else if (@array_tpe).kind == typechecking::TypeKind::STATIC_ARRAY {  
@@ -2251,19 +2237,13 @@ def walk_ArraySubscript(node: *parser::Node, state: *State) -> Value {
 
         let addr = allocate(Value)
         (@addr) = gep_ret
-        let ret = make_local_value((@node).tpe, addr, state)
-
-        let load = make_insn_dbg(InsnKind::LOAD, loc)
-        (@load).value.load = {
-            value = ret,
-            loc = gep_ret
-        } !InsnLoad
+        let ret = make_address_value((@node).tpe, addr, state)
 
         push_insn(gep, state)
-        push_insn(load, state)
-
         return ret
     } else if typechecking::is_pointer(array_tpe) {
+        left_value = load_value(node, left_value, state)
+
         var index = allocate(Value, 1)
         index[0] = right_value
 
@@ -2279,17 +2259,9 @@ def walk_ArraySubscript(node: *parser::Node, state: *State) -> Value {
 
         let addr = allocate(Value)
         (@addr) = gep_ret
-        let ret = make_local_value((@node).tpe, addr, state)
+        let ret = make_address_value((@node).tpe, addr, state)
 
-        let load = make_insn_dbg(InsnKind::LOAD, loc)
-        (@load).value.load = {
-            value = ret,
-            loc = gep_ret
-        } !InsnLoad
-
-        push_insn(gep, state)
-        push_insn(load, state)
-        
+        push_insn(gep, state)        
         return ret
     } else {
         assert(false)
@@ -2463,10 +2435,10 @@ def walk_ComparisionOp(node: *parser::Node, state: *State) -> Value {
     if not (@left).tpe or not (@right).tpe { return NO_VALUE }
 
     if (@left).kind >= parser::NodeKind::EQ and (@left).kind <= parser::NodeKind::LEQ {
-        let value_left = walk_expression(left, state)
+        let value_left = walk_and_load_expression(left, state)
         // These two values get compared
-        let value_leftc = walk_expression((@left).value.bin_op.right, state)
-        let value_rightc = walk_expression(right, state)
+        let value_leftc = walk_and_load_expression((@left).value.bin_op.right, state)
+        let value_rightc = walk_and_load_expression(right, state)
         let value = compare(node, value_leftc, value_rightc, state)
         
         let ret = make_local_value(builtins::bool_, null, state)
@@ -2482,8 +2454,8 @@ def walk_ComparisionOp(node: *parser::Node, state: *State) -> Value {
 
         return ret
     } else {
-        let value_left = walk_expression(left, state)
-        let value_right = walk_expression(right, state)
+        let value_left = walk_and_load_expression(left, state)
+        let value_right = walk_and_load_expression(right, state)
         return compare(node, value_left, value_right, state)
     }
 }
@@ -2491,8 +2463,8 @@ def walk_ComparisionOp(node: *parser::Node, state: *State) -> Value {
 def walk_PointerOp(node: *parser::Node, kind: InsnKind, state: *State) -> Value {
     let loc = make_location(node, state)
     // TODO This is not the correct type
-    let value_left = convert_to(node, walk_expression((@node).value.bin_op.left, state), builtins::size_t_, state)
-    let value_right = convert_to(node, walk_expression((@node).value.bin_op.right, state), builtins::size_t_, state)
+    let value_left = convert_to(node, walk_and_load_expression((@node).value.bin_op.left, state), builtins::size_t_, state)
+    let value_right = convert_to(node, walk_and_load_expression((@node).value.bin_op.right, state), builtins::size_t_, state)
 
     let ret_arith = make_local_value(builtins::size_t_, null, state)
 
@@ -2597,7 +2569,7 @@ export def walk_expression(node: *parser::Node, state: *State) -> Value {
             return {
                 kind = ValueKind::TYPE, 
                 tpe = typechecking::type_, 
-                value_tpe = typechecking::pointer(walk_expression((@node).value.t_parr.tpe, state).value_tpe)
+                value_tpe = typechecking::pointer(walk_and_load_expression((@node).value.t_parr.tpe, state).value_tpe)
             } !Value
         case:
             error((@node).kind, "\n")
@@ -2608,7 +2580,7 @@ export def walk_expression(node: *parser::Node, state: *State) -> Value {
 def walk_If(node: *parser::Node, state: *State) {
     let loc = make_location(node, state)
 
-    let cond = convert_to(node, walk_expression((@node).value.if_.cond, state), builtins::bool_, state)
+    let cond = convert_to(node, walk_and_load_expression((@node).value.if_.cond, state), builtins::bool_, state)
     let entry_label = make_label(state)
     var entry = make_insn_dbg(InsnKind::BR, loc)
     (@entry).value.br = {
@@ -2634,7 +2606,7 @@ def walk_If(node: *parser::Node, state: *State) {
         push_label(br_label, state)
         
         let else_if = vector::get((@node).value.if_.else_if, i) !*parser::Node
-        let cond = walk_expression((@else_if).value.else_if.cond, state)
+        let cond = walk_and_load_expression((@else_if).value.else_if.cond, state)
 
         entry = make_insn_dbg(InsnKind::BR, loc)
         (@entry).value.br = {
@@ -2680,7 +2652,7 @@ let max_cases = 25
 
 def walk_Switch(node: *parser::Node, state: *State) {
     let loc = make_location(node, state)
-    let swexpr = walk_expression((@node).value.switch_.expr, state)
+    let swexpr = walk_and_load_expression((@node).value.switch_.expr, state)
     let tpe = (@(@node).value.switch_.expr).tpe
     
     let switch_values = vector::make()
@@ -2908,7 +2880,7 @@ def walk_Return(node: *parser::Node, state: *State) {
         for var i in 0..ret_args.size {
             let n = vector::get((@node).value.body, i) !*parser::Node
             let tpe = (@(@current_function).ret).fields[i].tpe
-            ret_args[i] = convert_to(n, walk_expression(n, state), tpe, state)
+            ret_args[i] = convert_to(n, walk_and_load_expression(n, state), tpe, state)
         }
         value = {
             kind = ValueKind::STRUCT,
@@ -2919,7 +2891,7 @@ def walk_Return(node: *parser::Node, state: *State) {
         let tpe = (@current_function).ret
         if tpe {
             let arg = vector::peek((@node).value.body) !*parser::Node
-            value = convert_to(arg, walk_expression(arg, state), tpe, state)
+            value = convert_to(arg, walk_and_load_expression(arg, state), tpe, state)
         }
     }
 
@@ -2983,7 +2955,7 @@ def walk_While(node: *parser::Node, state: *State) {
     let start_label = make_label(state)
     push_label(start_label, state)
 
-    let cond = convert_to(node, walk_expression((@node).value.while_loop.expr, state), builtins::bool_, state)
+    let cond = convert_to(node, walk_and_load_expression((@node).value.while_loop.expr, state), builtins::bool_, state)
     
     let br = make_insn_dbg(InsnKind::BR, loc)
     (@br).value.br = {
@@ -3028,8 +3000,8 @@ def walk_For(node: *parser::Node, state: *State) {
 
     let left = (@range).value.bin_op.left
     let right = (@range).value.bin_op.right
-    let startv = convert_to(left, walk_expression((@range).value.bin_op.left, state), tpe, state)
-    let endv = convert_to(right, walk_expression(right, state), tpe, state)
+    let startv = convert_to(left, walk_and_load_expression((@range).value.bin_op.left, state), tpe, state)
+    let endv = convert_to(right, walk_and_load_expression(right, state), tpe, state)
 
     push_scope(node, state)
     let loc = make_location(node, state)
@@ -3059,7 +3031,7 @@ def walk_For(node: *parser::Node, state: *State) {
             tpe = typechecking::pointer(tpe)
         } !Value
     } else {
-        let addr = walk_expression(iddecl, state).addr
+        let addr = walk_and_load_expression(iddecl, state).addr
         if not addr { return }
         locv = @addr
     }
