@@ -20,8 +20,8 @@ export type TypeKind = enum {
     TUPLE
     POINTER
     REFERENCE
-    STATIC_ARRAY
     ARRAY
+    STATIC_ARRAY
     RANGE
     RANGE_INC
     // Used for enums
@@ -103,6 +103,7 @@ export type State = struct {
 
 export def errorn(node: *parser::Node, msg: string)
 export def common_type(a: *Type, b: *Type) -> *Type
+export def type_lookup_default(node: *parser::Node, state: *State) -> *Type
 export def type_lookup(node: *parser::Node, state: *State) -> *Type
 export def evaluate_constant(node: *parser::Node) -> *
 export def mangle_function_name(name: string, parameter_t: *vector::Vector) -> string
@@ -194,6 +195,11 @@ export def is_range(tpe: *Type) -> bool {
     if not tpe { return false }
     return (@tpe).kind == TypeKind::RANGE or
         (@tpe).kind == TypeKind::RANGE_INC
+}
+
+export def is_stub(tpe: *Type) -> bool {
+    if not tpe { return true }
+    return (@tpe).kind == TypeKind::STUB
 }
 
 export def append_module(name: string, module: string) -> string {
@@ -324,7 +330,8 @@ export def equals(a: *Type, b: *Type) -> bool {
     }
     if kind == TypeKind::ENUM or
         kind == TypeKind::STRUCT or
-        kind == TypeKind::UNION {
+        kind == TypeKind::UNION or
+        kind == TypeKind::STUB {
 
         return (@a).type_name == (@b).type_name        
     }
@@ -653,12 +660,21 @@ export def evaluate_constant(node: *parser::Node) -> * {
     assert(false)
 }
 
-export def type_lookup(node: *parser::Node, state: *State) -> *Type {
+// This returns a stub type if the node points at a non existing type
+export def type_lookup_default(node: *parser::Node, state: *State) -> *Type {
     if not node { return null }
     if (@node).kind == parser::NodeKind::IDENTIFIER {
-        return scope::get_type((@state).scope, node)
+        let value = scope::get((@state).scope, node)
+        var tpe: *Type = null
+        if value {
+            assert(value.modifier == parser::VarDecl::TYPE)
+            tpe = value.value !*Type
+        } else {
+            tpe = make_type(TypeKind::STUB, node)
+        }
+        return tpe
     } else if (@node).kind == parser::NodeKind::PTR_T {
-        let tpe = type_lookup((@node).value.t_parr.tpe, state)
+        let tpe = type_lookup_default((@node).value.t_parr.tpe, state)
         return pointer(tpe)
     } else if (@node).kind == parser::NodeKind::STRUCT_T {
         let tpe = make_anonymous_type(TypeKind::STRUCT)
@@ -686,13 +702,13 @@ export def type_lookup(node: *parser::Node, state: *State) -> *Type {
             if (@field).kind == parser::NodeKind::ID_DECL_STRUCT {
                 let ident = (@field).value.id_decl_struct.ident
                 name = last_ident_to_str(ident)
-                tpe = type_lookup((@field).value.id_decl_struct.tpe, state)
+                tpe = type_lookup_default((@field).value.id_decl_struct.tpe, state)
             } else if (@field).kind == parser::NodeKind::STRUCT_T or
                 (@field).kind == parser::NodeKind::UNION_T {
-                tpe = type_lookup(field, state)
+                tpe = type_lookup_default(field, state)
             }
             
-            if not tpe {
+            if is_stub(tpe) {
                 fields[i] = { line, name, null, 0 } !StructMember
                 continue 
             }
@@ -736,13 +752,13 @@ export def type_lookup(node: *parser::Node, state: *State) -> *Type {
             if (@field).kind == parser::NodeKind::ID_DECL_STRUCT {
                 let ident = (@field).value.id_decl_struct.ident
                 name = last_ident_to_str(ident)
-                tpe = type_lookup((@field).value.id_decl_struct.tpe, state)
+                tpe = type_lookup_default((@field).value.id_decl_struct.tpe, state)
             } else if (@field).kind == parser::NodeKind::STRUCT_T or
                 (@field).kind == parser::NodeKind::UNION_T {
-                tpe = type_lookup(field, state)
+                tpe = type_lookup_default(field, state)
             }
             
-            if not tpe {
+            if is_stub(tpe) {
                 fields[i] = { line, name, null, 0 } !StructMember
                 continue 
             }
@@ -762,7 +778,7 @@ export def type_lookup(node: *parser::Node, state: *State) -> *Type {
     } else if (@node).kind == parser::NodeKind::ENUM_T {
         var enum_tpe = builtins::int_
         if (@node).value.t_enum.tpe {
-            enum_tpe = type_lookup((@node).value.t_enum.tpe, state)
+            enum_tpe = type_lookup_default((@node).value.t_enum.tpe, state)
         }
         let tpe = make_anonymous_type(TypeKind::ENUM)
         (@tpe).line = (@node).loc.line
@@ -772,7 +788,7 @@ export def type_lookup(node: *parser::Node, state: *State) -> *Type {
 
         return tpe
     } else if (@node).kind == parser::NodeKind::ARRAY_T {
-        let array_tpe = type_lookup((@node).value.t_parr.tpe, state)
+        let array_tpe = type_lookup_default((@node).value.t_parr.tpe, state)
         let tpe = make_type_raw(TypeKind::ARRAY)
         (@tpe).line = (@node).loc.line
         (@tpe).tpe = array_tpe
@@ -781,7 +797,7 @@ export def type_lookup(node: *parser::Node, state: *State) -> *Type {
 
         return tpe
     } else if (@node).kind == parser::NodeKind::ARRAY_STATIC_T {
-        let array_tpe = type_lookup((@node).value.t_arrs.tpe, state)
+        let array_tpe = type_lookup_default((@node).value.t_arrs.tpe, state)
 
         return make_static_array(array_tpe, (@(@node).value.t_arrs.n).value.i)
     } else if (@node).kind == parser::NodeKind::FUNCTION_T {
@@ -793,19 +809,25 @@ export def type_lookup(node: *parser::Node, state: *State) -> *Type {
             let np = allocate(NamedParameter)
             (@np).varargs = false
             (@np).name = ""
-            (@np).value = type_lookup(arg, state)
+            (@np).value = type_lookup_default(arg, state)
             (@np).node = arg
             vector::push((@tpe).parameter_t, np)
         }
         (@tpe).return_t = vector::make()
         for var i in 0..vector::length((@node).value.t_func.ret) {
             let arg = vector::get((@node).value.t_func.ret, i) !*parser::Node
-            vector::push((@tpe).return_t, type_lookup(arg, state))
+            vector::push((@tpe).return_t, type_lookup_default(arg, state))
         }
         return pointer(tpe)
     }
 
     return null
+}
+
+export def type_lookup(node: *parser::Node, state: *State) -> *Type {
+    let tpe = type_lookup_default(node, state)
+    if is_stub(tpe) { return null }
+    return tpe
 }
 
 // Returns the common type of two arithmetic types
@@ -1298,17 +1320,7 @@ def walk_Import(node: *parser::Node, state: *State) {
     for var i in 0..vector::length(imports) {
         let imprt = vector::get(imports, i) !*parser::Node
         var name = (@imprt).value.import_module.name
-        var alias = (@imprt).value.import_module.alias
-        if not alias {
-            alias = name
-        }
-        let module = toolchain::compile_module(name)
-        if not module {
-            errorn(name, "Module ")
-            error(parser::identifier_to_str(name), " could not be found\n")
-            return
-        }
-        scope::insert_module((@state).scope, alias, module)
+        toolchain::compile_module(name)
     }
 }
 
@@ -1420,7 +1432,7 @@ def walk_TypeDecl(node: *parser::Node, state: *State) {
         
         if value {
             tpe = copy(type_lookup(value, state))
-            if not tpe { return }
+            if not tpe { continue }
             (@tpe).name = parser::identifier_to_str(name)
             if (@value).kind == parser::NodeKind::STRUCT_T or
                 (@value).kind == parser::NodeKind::UNION_T or
@@ -2210,14 +2222,9 @@ export def typecheck(module: *toolchain::Module) {
     (@value).global = false
     
     if state.module != "cstd" and state.module != "std" {
-        // import standard library
-        let cstd_ident = parser::make_identifier(["cstd"])
-        let cstd = toolchain::compile_module(cstd_ident)
-        scope::insert_module(state.scope, cstd_ident, cstd)
-        
-        let std_ident = parser::make_identifier(["std"])
-        let std = toolchain::compile_module(std_ident)
-        scope::insert_module(state.scope, std_ident, std)
+        // compile standard library
+        toolchain::compile_module(parser::make_identifier(["cstd"]))
+        toolchain::compile_module(parser::make_identifier(["std"]))
     }
 
     for var i in 0..vector::length((@node).value.body) {
