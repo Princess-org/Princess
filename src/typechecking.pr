@@ -103,7 +103,7 @@ export type State = struct {
 
 export def errorn(node: *parser::Node, msg: string)
 export def common_type(a: *Type, b: *Type) -> *Type
-export def type_lookup_default(node: *parser::Node, state: *State) -> *Type
+export def type_lookup(node: *parser::Node, state: *State, lookup_default: bool) -> *Type
 export def type_lookup(node: *parser::Node, state: *State) -> *Type
 export def evaluate_constant(node: *parser::Node) -> *
 export def mangle_function_name(name: string, parameter_t: *vector::Vector) -> string
@@ -619,6 +619,8 @@ def flatten_return_type(node: *parser::Node, return_t: *vector::Vector) -> *Type
     return null
 }
 
+export def walk(parent: *parser::Node, node: *parser::Node, state: *State)
+
 import scope
 import builtins
 import debug
@@ -660,21 +662,25 @@ export def evaluate_constant(node: *parser::Node) -> * {
     assert(false)
 }
 
-// This returns a stub type if the node points at a non existing type
-export def type_lookup_default(node: *parser::Node, state: *State) -> *Type {
+export def type_lookup(node: *parser::Node, state: *State, lookup_default: bool) -> *Type {
     if not node { return null }
     if (@node).kind == parser::NodeKind::IDENTIFIER {
-        let value = scope::get((@state).scope, node)
-        var tpe: *Type = null
-        if value {
-            assert(value.modifier == parser::VarDecl::TYPE)
-            tpe = value.value !*Type
+        if not lookup_default {
+            return scope::get_type(state.scope, node)
         } else {
-            tpe = make_type(TypeKind::STUB, node)
+            let value = scope::get((@state).scope, node)
+            var tpe: *Type = null
+            if value {
+                assert(value.modifier == parser::VarDecl::TYPE)
+                tpe = value.value !*Type
+            } else {
+                tpe = make_type(TypeKind::STUB, node)
+                scope::create_type(state.scope, node, parser::ShareMarker::NONE, tpe)
+            }
+            return tpe
         }
-        return tpe
     } else if (@node).kind == parser::NodeKind::PTR_T {
-        let tpe = type_lookup_default((@node).value.t_parr.tpe, state)
+        let tpe = type_lookup((@node).value.t_parr.tpe, state, lookup_default)
         return pointer(tpe)
     } else if (@node).kind == parser::NodeKind::STRUCT_T {
         let tpe = make_anonymous_type(TypeKind::STRUCT)
@@ -702,10 +708,10 @@ export def type_lookup_default(node: *parser::Node, state: *State) -> *Type {
             if (@field).kind == parser::NodeKind::ID_DECL_STRUCT {
                 let ident = (@field).value.id_decl_struct.ident
                 name = last_ident_to_str(ident)
-                tpe = type_lookup_default((@field).value.id_decl_struct.tpe, state)
+                tpe = type_lookup((@field).value.id_decl_struct.tpe, state, lookup_default)
             } else if (@field).kind == parser::NodeKind::STRUCT_T or
                 (@field).kind == parser::NodeKind::UNION_T {
-                tpe = type_lookup_default(field, state)
+                tpe = type_lookup(field, state, lookup_default)
             }
             
             if is_stub(tpe) {
@@ -752,10 +758,10 @@ export def type_lookup_default(node: *parser::Node, state: *State) -> *Type {
             if (@field).kind == parser::NodeKind::ID_DECL_STRUCT {
                 let ident = (@field).value.id_decl_struct.ident
                 name = last_ident_to_str(ident)
-                tpe = type_lookup_default((@field).value.id_decl_struct.tpe, state)
+                tpe = type_lookup((@field).value.id_decl_struct.tpe, state, lookup_default)
             } else if (@field).kind == parser::NodeKind::STRUCT_T or
                 (@field).kind == parser::NodeKind::UNION_T {
-                tpe = type_lookup_default(field, state)
+                tpe = type_lookup(field, state, lookup_default)
             }
             
             if is_stub(tpe) {
@@ -778,7 +784,7 @@ export def type_lookup_default(node: *parser::Node, state: *State) -> *Type {
     } else if (@node).kind == parser::NodeKind::ENUM_T {
         var enum_tpe = builtins::int_
         if (@node).value.t_enum.tpe {
-            enum_tpe = type_lookup_default((@node).value.t_enum.tpe, state)
+            enum_tpe = type_lookup((@node).value.t_enum.tpe, state, lookup_default)
         }
         let tpe = make_anonymous_type(TypeKind::ENUM)
         (@tpe).line = (@node).loc.line
@@ -788,7 +794,7 @@ export def type_lookup_default(node: *parser::Node, state: *State) -> *Type {
 
         return tpe
     } else if (@node).kind == parser::NodeKind::ARRAY_T {
-        let array_tpe = type_lookup_default((@node).value.t_parr.tpe, state)
+        let array_tpe = type_lookup((@node).value.t_parr.tpe, state, lookup_default)
         let tpe = make_type_raw(TypeKind::ARRAY)
         (@tpe).line = (@node).loc.line
         (@tpe).tpe = array_tpe
@@ -797,7 +803,7 @@ export def type_lookup_default(node: *parser::Node, state: *State) -> *Type {
 
         return tpe
     } else if (@node).kind == parser::NodeKind::ARRAY_STATIC_T {
-        let array_tpe = type_lookup_default((@node).value.t_arrs.tpe, state)
+        let array_tpe = type_lookup((@node).value.t_arrs.tpe, state, lookup_default)
 
         return make_static_array(array_tpe, (@(@node).value.t_arrs.n).value.i)
     } else if (@node).kind == parser::NodeKind::FUNCTION_T {
@@ -809,14 +815,14 @@ export def type_lookup_default(node: *parser::Node, state: *State) -> *Type {
             let np = allocate(NamedParameter)
             (@np).varargs = false
             (@np).name = ""
-            (@np).value = type_lookup_default(arg, state)
+            (@np).value = type_lookup(arg, state, lookup_default)
             (@np).node = arg
             vector::push((@tpe).parameter_t, np)
         }
         (@tpe).return_t = vector::make()
         for var i in 0..vector::length((@node).value.t_func.ret) {
             let arg = vector::get((@node).value.t_func.ret, i) !*parser::Node
-            vector::push((@tpe).return_t, type_lookup_default(arg, state))
+            vector::push((@tpe).return_t, type_lookup(arg, state, lookup_default))
         }
         return pointer(tpe)
     }
@@ -825,9 +831,7 @@ export def type_lookup_default(node: *parser::Node, state: *State) -> *Type {
 }
 
 export def type_lookup(node: *parser::Node, state: *State) -> *Type {
-    let tpe = type_lookup_default(node, state)
-    if is_stub(tpe) { return null }
-    return tpe
+    return type_lookup(node, state, false)
 }
 
 // Returns the common type of two arithmetic types
@@ -858,8 +862,6 @@ export def common_type(a: *Type, b: *Type) -> *Type {
     }
     return null
 }
-
-def walk(parent: *parser::Node, node: *parser::Node, state: *State)
 
 def walk_PtrT(node: *parser::Node, state: *State) {
     walk(node, (@node).value.t_parr.tpe, state)
@@ -906,14 +908,14 @@ def walk_Range(node: *parser::Node, state: *State) {
 }
 
 def walk_Identifier(node: *parser::Node, state: *State) {
-    let value = scope::get((@state).scope, node)
-    (@node).svalue = value
+    var value = scope::get((@state).scope, node)
     if not value {
         errorn(node, "Unknown identifier \"")
         error(parser::identifier_to_str(node), "\"\n")
         return
     }
 
+    (@node).svalue = value
     (@node).tpe = (@value).tpe
 
     if is_function((@node).tpe) and 
@@ -2093,7 +2095,7 @@ def walk_PSub(node: *parser::Node, state: *State) {
     walk_PAdd(node, state)
 }
 
-def walk(parent: *parser::Node, node: *parser::Node, state: *State) {
+export def walk(parent: *parser::Node, node: *parser::Node, state: *State) {
     if not node { return }
     (@node).scope = (@state).scope
     (@node).parent = parent
@@ -2228,7 +2230,11 @@ export def typecheck(module: *toolchain::Module) {
     }
 
     for var i in 0..vector::length((@node).value.body) {
-        walk(node, vector::get((@node).value.body, i) !*parser::Node, *state)
+        let n = vector::get((@node).value.body, i) !*parser::Node
+        switch n.kind !int {
+            case parser::NodeKind::DEF, parser::NodeKind::VAR_DECL, parser::NodeKind::TYPE_DECL:
+            case: walk(node, n, *state)
+        }
     }
 }
 

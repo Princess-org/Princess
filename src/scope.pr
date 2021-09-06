@@ -29,6 +29,9 @@ export type Value = struct {
     global: bool
     // No mangling if extern
     extern: bool
+    // Definition of the value
+    node: *parser::Node
+    state: *typechecking::State
 }
 
 export type Scope = struct {
@@ -181,24 +184,33 @@ export def get_function(scope: *Scope, id: *parser::Node, parameter_t: *vector::
 
 // TODO We need to error if you reference an overloaded function
 // I kinda want this syntax here to be able to reference an overload:
-// some_fuction::(int, int)
+// some_function::(int, int)
 export def get(scope: *Scope, id: *parser::Node) -> *Value {
     if not scope { return null }
     assert((@id).kind == parser::NodeKind::IDENTIFIER)
     if vector::length((@id).value.body) == 1 {
         let name = @(vector::get((@id).value.body, 0) !*string)
         var value = map::get((@scope).fields, name) !*Value
+        if value and value.forward_declare {
+            typechecking::walk(value.node.parent, value.node, value.state)
+            value = map::get((@scope).fields, name) !*Value
+        }
         if value { return value }
         if (@scope).imports {
             for var i in 0..vector::length((@scope).imports) {
                 let module = vector::get((@scope).imports, i) !*toolchain::Module
                 let scope2 = (@module).scope
                 var value2 = map::get((@scope2).fields, name) !*Value
+                
                 if value2 and (@value2).share !int & parser::ShareMarker::EXPORT !int {
                     if value {
                         // TODO save location of values to give better error messages
                         typechecking::errorn(id, "Ambiguous reference\n")
                         return null
+                    }
+                    if value2.forward_declare {
+                        typechecking::walk(value2.node.parent, value2.node, value2.state)
+                        value2 = map::get((@scope2).fields, name) !*Value
                     }
                     value = value2
                 }
@@ -286,18 +298,17 @@ def last_path_element(node: *parser::Node) -> string {
     return @(vector::get((@node).value.body, length - 1) !*string)
 }
 
-import debug
-
 // TODO Give better error messages, where was the function/variable declared previously?
 export def create_function(
-    scope: *Scope, node: *parser::Node, share: parser::ShareMarker, 
-    tpe: *typechecking::Type, forward_declare: bool) {
+    scope: *Scope, name_node: *parser::Node, share: parser::ShareMarker, 
+    tpe: *typechecking::Type, forward_declare: bool, node: *parser::Node,
+    state: *typechecking::State) {
 
     assert((@tpe).kind == typechecking::TypeKind::FUNCTION)
 
-    scope = create_path(scope, node)
+    scope = create_path(scope, name_node)
     if not scope { return }
-    let name = last_path_element(node)
+    let name = last_path_element(name_node)
     
     let v = allocate(Value)
     @v = {
@@ -307,20 +318,22 @@ export def create_function(
         assembly_name = name,
         tpe = tpe,
         forward_declare = forward_declare,
-        global = is_global(scope)
+        global = is_global(scope),
+        node = node,
+        state = state
     } !Value
 
     if map::contains((@scope).fields, name) {
         var val = map::get((@scope).fields, name) !*Value
         if not typechecking::is_function((@val).tpe) {
-            typechecking::errorn(node, "Redeclaration of ")
+            typechecking::errorn(name_node, "Redeclaration of ")
             error("\"", name, "\"\n")
         }
         var next = val
         while next {
             if typechecking::overload_score((@next).tpe, (@tpe).parameter_t, true) == 0 {
                 if not (@next).forward_declare {
-                    typechecking::errorn(node, "Function ")
+                    typechecking::errorn(name_node, "Function ")
                     error("\"", name, "\" was already declared previously (same arguments)\n")
                 } else if not forward_declare {
                     @next = @v
@@ -339,6 +352,12 @@ export def create_function(
     }
 }
 
+export def create_function(
+    scope: *Scope, node: *parser::Node, share: parser::ShareMarker, 
+    tpe: *typechecking::Type, forward_declare: bool) {
+    create_function(scope, node, share, tpe, forward_declare, null, null)
+}
+
 def append_scope_count(scope: *Scope, name: string) -> string {
     let scope_count = get_scope_count(scope)
     if scope_count {
@@ -352,12 +371,13 @@ def append_scope_count(scope: *Scope, name: string) -> string {
 }
 
 export def create_variable_ext(
-    scope: *Scope, node: *parser::Node, share: parser::ShareMarker, 
-    modifier: parser::VarDecl, tpe: *typechecking::Type, extern: bool, value: *) {
+    scope: *Scope, name_node: *parser::Node, share: parser::ShareMarker, 
+    modifier: parser::VarDecl, tpe: *typechecking::Type, extern: bool, value: *, 
+    forward_declare: bool, node: *parser::Node, state: *typechecking::State) {
     
-    scope = create_path(scope, node)
+    scope = create_path(scope, name_node)
     if not scope { return }
-    let name = last_path_element(node)
+    let name = last_path_element(name_node)
 
     let global = is_global(scope)
     let v = allocate(Value)
@@ -368,23 +388,38 @@ export def create_variable_ext(
         tpe = tpe,
         value = value,
         global = global,
-        extern = extern
+        extern = extern,
+        forward_declare = forward_declare,
+        node = node,
+        state = state
     } !Value
 
     if extern {
         (@v).assembly_name = name
     } else if global {
-        (@v).assembly_name = typechecking::append_module(name, (@node).loc.module)
+        (@v).assembly_name = typechecking::append_module(name, (@name_node).loc.module)
     } else {
         (@v).assembly_name = append_scope_count(scope, name)
     }
 
-    if map::contains((@scope).fields, name) {
-        typechecking::errorn(node, "Redeclaration of ")
-        error("\"", name, "\"\n")
+    let val = map::get(scope.fields, name) !*Value
+    if val {
+        if val.forward_declare {
+            @val = @v
+        } else {
+            typechecking::errorn(name_node, "Redeclaration of ")
+            error("\"", name, "\"\n")
+        }
     } else {
         map::put((@scope).fields, name, v)
     }
+}
+
+export def create_variable_ext(
+    scope: *Scope, name_node: *parser::Node, share: parser::ShareMarker, 
+    modifier: parser::VarDecl, tpe: *typechecking::Type, extern: bool, value: *) {
+    
+    create_variable_ext(scope, name_node, share, modifier, tpe, extern, value, false, null, null)
 }
 
 export def create_variable(
@@ -395,12 +430,13 @@ export def create_variable(
 }
 
 export def create_type(
-    scope: *Scope, node: *parser::Node, 
-    share: parser::ShareMarker, tpe: *typechecking::Type) -> bool {
+    scope: *Scope, name_node: *parser::Node, 
+    share: parser::ShareMarker, tpe: *typechecking::Type, 
+    forward_declare: bool, node: *parser::Node, state: *typechecking::State) -> bool {
     
-    scope = create_path(scope, node)
+    scope = create_path(scope, name_node)
     if not scope { return false }
-    let name = last_path_element(node)
+    let name = last_path_element(name_node)
 
     let v = allocate(Value)
     @v = {
@@ -411,7 +447,10 @@ export def create_type(
         tpe = typechecking::type_,
         value = tpe,
         scope = (@tpe).scope,
-        global = is_global(scope)
+        global = is_global(scope),
+        forward_declare = forward_declare,
+        node = node,
+        state = state
     } !Value
 
     let value = map::get((@scope).fields, name) !*Value
@@ -423,8 +462,7 @@ export def create_type(
             typechecking::errorn(node, "Redeclaration of ")
             error("\"", name, "\"\n")
             return false
-        } else if (@tpe2).kind == typechecking::TypeKind::STUB and
-            (@tpe).kind != typechecking::TypeKind::STUB {
+        } else if (@tpe2).kind == typechecking::TypeKind::STUB {
             @tpe2 = @tpe
             @value = @v
         }
@@ -432,6 +470,13 @@ export def create_type(
         map::put((@scope).fields, name, v)
     }
     return true
+}
+
+export def create_type(
+    scope: *Scope, node: *parser::Node, 
+    share: parser::ShareMarker, tpe: *typechecking::Type) -> bool {
+
+    return create_type(scope, node, share, tpe, false, null, null)
 }
 
 export def enter_namespace(scope: *Scope, node: *parser::Node) -> *Scope {
