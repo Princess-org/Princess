@@ -1,10 +1,9 @@
 #!/bin/bash
 set -e
 
-VERSION="0.0.3"
-SOURCE_URL="https://github.com/Princess-org/Princess/releases/download/v${VERSION}-alpha/princess-${VERSION}.tar.gz"
+source version.sh
 
-echo "Downloading Princess compiler from github..."
+echo "Downloading Princess compiler from Github..."
 mkdir -p bin build
 wget -O bin/princess-dl.tar.gz $SOURCE_URL
 mkdir bin/princess-dl && tar xf bin/princess-dl.tar.gz -C bin/princess-dl --strip-components 1
@@ -16,8 +15,10 @@ echo "Building standard library..."
 python3.9 include/gencstd.py
 echo "Building the compiler..."
 ./bin/princess -d --include=src --buildfolder=build --outfile=bin/princess2 src/main.pr
+echo "Building test suite..."
+./bin/princess2 -d --include=src --buildfolder=build --outfile=bin/testsuite src/tests.pr
 echo "Running test suite..."
-./bin/princess2 --test
+./bin/testsuite
 echo "Compiling secondary test..."
 ./bin/princess2 -d --include=src --buildfolder=build --outfile=bin/test src/test/test.pr
 ./bin/test
