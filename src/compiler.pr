@@ -3533,7 +3533,36 @@ def di_type(tpe: *typechecking::Type, state: *State) -> *Value {
     return ditpep
 }
 
+def predeclare_function(node: *parser::Node, tpe: *typechecking::Type, body: *vector::Vector, scpe: *scope::Scope, state: *State) {
+    let function = allocate(Function)
+    @function = {
+        name = (@tpe).type_name,
+        unmangled = (@tpe).name,
+        forward_declare = true
+    } !Function
+    
+    if vector::length((@tpe).return_t) > 1 {
+        function.ret = make_return_type(tpe)
+        function.multiple_returns = true
+    } else {
+        function.ret = vector::peek((@tpe).return_t) !*typechecking::Type
+    }
+
+    (@function).args = vector::make()
+    for var i in 0..vector::length((@tpe).parameter_t) {
+        let np = allocate(typechecking::NamedParameter)
+        (@np) = @(vector::get((@tpe).parameter_t, i) !*typechecking::NamedParameter)
+        vector::push((@function).args, np)
+    }
+
+    map::put((@(@state).result).functions, (@function).name, function)
+}
+
 def create_function(node: *parser::Node, tpe: *typechecking::Type, body: *vector::Vector, scpe: *scope::Scope, state: *State) {
+    let function = map::get(state.result.functions, tpe.type_name) !*Function
+    if not function { return }
+    function.forward_declare = false
+    
     if body {
         import_structures(tpe, state)
         map::put((@(@state).module).imported, (@tpe).type_name, map::sentinel)
@@ -3541,16 +3570,6 @@ def create_function(node: *parser::Node, tpe: *typechecking::Type, body: *vector
 
     var line = -1
     if node { line = (@node).loc.line }
-
-    let function = allocate(Function)
-    (@function).name = (@tpe).type_name
-    (@function).unmangled = (@tpe).name
-    (@function).multiple_returns = false
-    (@function).forward_declare = true
-    (@function).debug = null
-    if body {
-        (@function).forward_declare = false
-    }
 
     if toolchain::debug_sym and body {
         let debug_values = allocate(DebugParam, 7)
@@ -3588,22 +3607,6 @@ def create_function(node: *parser::Node, tpe: *typechecking::Type, body: *vector
 
         vector::push((@state).discope, disubp)
     }
-
-    if vector::length((@tpe).return_t) > 1 {
-        (@function).ret = make_return_type(tpe)
-        (@function).multiple_returns = true
-    } else {
-        (@function).ret = vector::peek((@tpe).return_t) !*typechecking::Type
-    }
-
-    (@function).args = vector::make()
-    for var i in 0..vector::length((@tpe).parameter_t) {
-        let np = allocate(typechecking::NamedParameter)
-        (@np) = @(vector::get((@tpe).parameter_t, i) !*typechecking::NamedParameter)
-        vector::push((@function).args, np)
-    }
-
-    map::put((@(@state).result).functions, (@function).name, function)
 
     if body {
         (@state).current_function = function
@@ -3690,12 +3693,6 @@ def create_function(node: *parser::Node, tpe: *typechecking::Type, body: *vector
         if toolchain::debug_sym {
             vector::pop((@state).discope)
         }
-    }
-}
-
-def walk_Def(node: *parser::Node, state: *State) {
-    if node.tpe {
-        create_function(node, node.tpe, node.value.def_.body, node.scope, state)
     }
 }
 
@@ -4083,7 +4080,7 @@ export def compile(module: *toolchain::Module) -> *Result {
                 while value {
                     if (@value).share !int & parser::ShareMarker::EXPORT !int {
                         if typechecking::is_function((@value).tpe) {
-                            create_function(null, (@value).tpe, null, sc, state)
+                            predeclare_function(null, (@value).tpe, null, sc, state)
                         } else if not typechecking::is_type((@value).tpe) {
                             let name = (@value).assembly_name
                             let global = allocate(Global)
@@ -4122,11 +4119,20 @@ export def compile(module: *toolchain::Module) -> *Result {
 
     scope::create_function((@node).scope, ident, parser::ShareMarker::EXPORT, main_tpe, false)
     
+    for var i in 0..vector::length(node.value.body) {
+        let n = vector::get(node.value.body, i) !*parser::Node
+        if n.kind == parser::NodeKind::DEF {
+            predeclare_function(n, n.tpe, n.value.def_.body, n.scope, state)
+        }
+    }
+
     for var i in 0..vector::length((@node).value.body) {
         let n = vector::get((@node).value.body, i) !*parser::Node
         switch (@n).kind !int {
             case parser::NodeKind::DEF:
-                walk_Def(n, state)
+                if n.value.def_.is_used {
+                    create_function(n, n.tpe, n.value.def_.body, n.scope, state)
+                }
             case parser::NodeKind::TYPE_DECL:
                 walk_TypeDecl(n, state)
             case parser::NodeKind::VAR_DECL:
@@ -4138,7 +4144,8 @@ export def compile(module: *toolchain::Module) -> *Result {
         }
     }
 
-    create_function(ident, main_tpe, body, (@node).scope, state)
+    predeclare_function(ident, main_tpe, body, node.scope, state)
+    create_function(ident, main_tpe, body, node.scope, state)
 
     if toolchain::debug_sym {
         let keys = map::keys((@(@state).result).globals)
