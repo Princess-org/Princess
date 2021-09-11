@@ -33,6 +33,8 @@ export type Value = struct {
     // Definition of the value
     node: *parser::Node
     state: *typechecking::State
+    // For imported scopes, this checks if a value is exported before accessing it
+    imported: bool
 }
 
 export type Scope = struct {
@@ -71,10 +73,11 @@ export def enter_scope(scope: *Scope) -> *Scope {
     if scope_count {
         (@scope_count) += 1
     }
-    (@s).scope_count = -1
-    (@s).parent = scope
-    (@s).fields = map::make()
-    (@s).imports = null
+    @s = {
+        scope_count = -1,
+        parent = scope,
+        fields = map::make()
+    } !Scope
     return s
 }
 
@@ -123,7 +126,7 @@ def find_function(node: *parser::Node, v: *Value, parameter_t: *vector::Vector, 
     return found
 }
 
-export def get_function(scope: *Scope, id: *parser::Node, parameter_t: *vector::Vector) -> *Value {
+export def get_function(scope: *Scope, id: *parser::Node, parameter_t: *vector::Vector, check_export: bool) -> *Value {
     assert((@id).kind == parser::NodeKind::IDENTIFIER)
     if vector::length((@id).value.body) == 1 {
         let name = @(vector::get((@id).value.body, 0) !*string)
@@ -157,7 +160,7 @@ export def get_function(scope: *Scope, id: *parser::Node, parameter_t: *vector::
                 return null
             }
         }
-        if value { 
+        if value and (not check_export or value.share !int & parser::ShareMarker::EXPORT !int) { 
             if value.node {
                 typechecking::walk(value.node.parent, value.node, value.state)
             }
@@ -182,16 +185,20 @@ export def get_function(scope: *Scope, id: *parser::Node, parameter_t: *vector::
                 typechecking::errorn(id, "Use of :: on non namespace\n")
                 return null
             }
-            return get_function((@s).scope, id_tail, parameter_t)
+            return get_function((@s).scope, id_tail, parameter_t, s.imported)
         }
         return null
     }
 }
 
+export def get_function(scope: *Scope, id: *parser::Node, parameter_t: *vector::Vector) -> *Value {
+    return get_function(scope, id, parameter_t, false)
+}
+
 // TODO We need to error if you reference an overloaded function
 // I kinda want this syntax here to be able to reference an overload:
 // some_function::(int, int)
-export def get(scope: *Scope, id: *parser::Node, force_compile: bool) -> *Value {
+export def get(scope: *Scope, id: *parser::Node, force_compile: bool, check_export: bool) -> *Value {
     if not scope { return null }
     assert((@id).kind == parser::NodeKind::IDENTIFIER)
     if vector::length((@id).value.body) == 1 {
@@ -220,7 +227,9 @@ export def get(scope: *Scope, id: *parser::Node, force_compile: bool) -> *Value 
                 }
             }
         }
-        if value { return value }
+        if value and (not check_export or value.share !int & parser::ShareMarker::EXPORT !int) {
+            return value
+        }
         if (@scope).parent {
             return get((@scope).parent, id)
         }
@@ -240,14 +249,14 @@ export def get(scope: *Scope, id: *parser::Node, force_compile: bool) -> *Value 
                 typechecking::errorn(id, "Use of :: on non namespace\n")
                 return null
             }
-            return get((@s).scope, id_tail)
+            return get((@s).scope, id_tail, force_compile, s.imported)
         }
         return null
     }
 }
 
 export def get(scope: *Scope, id: *parser::Node) -> *Value {
-    return get(scope, id, true)
+    return get(scope, id, true, false)
 }
 
 export def get_const_value(scope: *Scope, id: *parser::Node) -> *Value {
@@ -495,13 +504,12 @@ export def create_type(
     return create_type(scope, node, share, tpe, false, null, null)
 }
 
-export def enter_namespace(scope: *Scope, node: *parser::Node) -> *Scope {
+export def enter_namespace(scope: *Scope, scope2: *Scope, node: *parser::Node) -> *Value {
     
     scope = create_path(scope, node)
     if not scope { return null }
     let name = last_path_element(node)
     let tpe = typechecking::make_type(typechecking::TypeKind::NAMESPACE, node)
-    let scope2 = enter_scope(scope)
 
     let v = allocate(Value)
     @v = {
@@ -514,12 +522,19 @@ export def enter_namespace(scope: *Scope, node: *parser::Node) -> *Scope {
         global = is_global(scope)
     } !Value
 
-    if map::contains((@scope).fields, name) {
+    let value = map::get(scope.fields, name) !*Value
+    if value and not value.scope {
         typechecking::errorn(node, "Redeclaration of ")
         error("\"", name, "\"\n")
     } else {
         map::put((@scope).fields, name, v)
     }
+    return v
+}
+
+export def enter_namespace(scope: *Scope, node: *parser::Node) -> *Scope {
+    let scope2 = enter_scope(scope)
+    enter_namespace(scope, scope2, node)
     return scope2
 }
 
@@ -532,21 +547,9 @@ export def insert_module(scope: *Scope, alias: *parser::Node, module: *toolchain
         }
     }
 
-    let v = get(scope, alias)
-    var ns: *Scope = null
-    if v and (@(@v).tpe).kind == typechecking::TypeKind::NAMESPACE {
-        ns = (@v).scope
-    } else {
-        ns = enter_namespace(scope, alias)
-    }
-    if not ns { return }
-    let values = map::keys((@(@module).scope).fields)
-    for var i in 0..values.size {
-        let value = map::get((@(@module).scope).fields, values[i]) !*Value
-        if (@value).share !int & parser::ShareMarker::EXPORT !int {
-            map::put((@ns).fields, values[i], value)
-        }
-    }
+    let v = enter_namespace(scope, module.scope, alias)
+    v.imported = true
+
     if not (@scope).imports {
         (@scope).imports = vector::make()
     }
