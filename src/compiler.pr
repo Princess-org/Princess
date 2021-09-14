@@ -1320,24 +1320,14 @@ def walk_StructLit(node: *parser::Node, state: *State) -> Value {
     return value
 }
 
-def walk_ArrayLit(node: *parser::Node, state: *State) -> Value {
-    let loc = make_location(node, state)
-    let tpe = (@node).tpe
-
-    let len = vector::length((@node).value.body)
-    let values = allocate(Value, len)
-    for var i in 0..len {
-        let v = vector::get((@node).value.body, i) !*parser::Node
-        values[i] = walk_and_load_expression(v, state)
-    }
-
+def push_array_lit(tpe: *typechecking::Type, loc: *Value, values: [Value], state: *State) -> Value {
     var value = {
         kind = ValueKind::ARRAY,
         values = values,
         tpe = tpe
     } !Value
 
-    for var i in 0..len {
+    for var i in 0..values.size {
         let val = values[i]
 
         if val.kind == ValueKind::LOCAL or val.kind == ValueKind::GLOBAL {
@@ -1350,7 +1340,7 @@ def walk_ArrayLit(node: *parser::Node, state: *State) -> Value {
             
             let index = allocate(int, 1)
             index[0] = i
-            let insert = make_insn_dbg(InsnKind::INSERTVALUE, loc )
+            let insert = make_insn_dbg(InsnKind::INSERTVALUE, loc)
             (@insert).value.insert_value = {
                 ret = ret,
                 value = value,
@@ -1384,6 +1374,20 @@ def walk_ArrayLit(node: *parser::Node, state: *State) -> Value {
     push_insn(store, state)
 
     return value
+}
+
+def walk_ArrayLit(node: *parser::Node, state: *State) -> Value {
+    let loc = make_location(node, state)
+    let tpe = (@node).tpe
+
+    let len = vector::length((@node).value.body)
+    let values = allocate(Value, len)
+    for var i in 0..len {
+        let v = vector::get((@node).value.body, i) !*parser::Node
+        values[i] = walk_and_load_expression(v, state)
+    }
+
+    return push_array_lit(tpe, loc, values, state)
 }
 
 def walk_ArithmeticOp(node: *parser::Node, insn_kind: InsnKind, tpe: *typechecking::Type, state: *State) -> Value {
@@ -1678,23 +1682,40 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
     if not tpe { return NO_VALUE }
     let parameter_t = (@tpe).parameter_t
 
-    let args = allocate(Value, 
-        vector::length((@node).value.func_call.args) + 
-        vector::length((@node).value.func_call.kwargs))
+    var args: [Value]
+    var varargs: [Value]
+
+    let len = vector::length(parameter_t)
+    let last_arg = vector::peek(parameter_t) !*typechecking::NamedParameter
+    let total_args = vector::length((@node).value.func_call.args) + 
+        vector::length((@node).value.func_call.kwargs)
+    let num_varargs = total_args - len + 1
+
+    if last_arg and last_arg.varargs and last_arg.value {
+        args = allocate(Value, len)
+        varargs = allocate(Value, num_varargs)
+    } else {
+        args = allocate(Value, total_args)
+    }
 
     for var i in 0..vector::length((@node).value.func_call.args) {
         let n = vector::get((@node).value.func_call.args, i) !*parser::Node
-
-        var p: *typechecking::NamedParameter = null
-        if i < vector::length(parameter_t) {
-            p = vector::get(parameter_t, i) !*typechecking::NamedParameter
+        if i < len - 1 or i == len - 1 and not last_arg.varargs {
+            let p = vector::get(parameter_t, i) !*typechecking::NamedParameter
+            var expr = walk_and_load_expression(n, state)
+            expr = convert_to(n, expr, (@p).value, state)
+            args[i] = expr
+        } else if last_arg.varargs {
+            if last_arg.value {
+                var expr = walk_and_load_expression(n, state)
+                expr = convert_to(n, expr, last_arg.value, state)
+                varargs[i - len + 1] = expr
+            } else {
+                args[i] = walk_and_load_expression(n, state)
+            }
         } else {
-            p = vector::peek(parameter_t) !*typechecking::NamedParameter
-            if not (@p).varargs { return NO_VALUE }
+            return NO_VALUE
         }
-        var expr = walk_and_load_expression(n, state)
-        expr = convert_to(n, expr, (@p).value, state)
-        args[i] = expr
     }
     for var i in 0..vector::length((@node).value.func_call.kwargs) {
         let n = vector::get((@node).value.func_call.kwargs, i) !*parser::Node
@@ -1712,7 +1733,14 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
         }
     }
 
+    if last_arg and last_arg.varargs and last_arg.value {
+        let sarray_t = typechecking::make_static_array(last_arg.value, num_varargs)
+        let value = push_array_lit(sarray_t, null, varargs, state)
+        args[args.size - 1] = convert_to(node, value, typechecking::array(last_arg.value), state)
+    }
+
     if (@tpe).macro {
+        // TODO We kinda have to cache the return value here too
         return (@tpe).macro(node, args, state)
     }
 
@@ -3613,6 +3641,10 @@ def create_function(node: *parser::Node, tpe: *typechecking::Type, body: *vector
         // Create function arguments
         for var i in 0..vector::length((@function).args) {
             let np = vector::get((@function).args, i) !*typechecking::NamedParameter
+            var value = np.value
+            if np.varargs and value {
+                value = typechecking::array(value)
+            }
             /*let vars = map::keys((@scpe).fields)
             for var i in 0..vars.size {
                 let v = vars[i]
@@ -3630,7 +3662,7 @@ def create_function(node: *parser::Node, tpe: *typechecking::Type, body: *vector
             let ret = {
                 kind = ValueKind::LOCAL,
                 name = name,
-                tpe = (@np).value
+                tpe = value
             } !Value
 
             let alloca = make_insn(InsnKind::ALLOCA)
@@ -3640,7 +3672,7 @@ def create_function(node: *parser::Node, tpe: *typechecking::Type, body: *vector
             push_insn(alloca, state)
 
             if (@np).node {
-                ret.tpe = typechecking::pointer((@np).value)
+                ret.tpe = typechecking::pointer(value)
                 push_declare_arg((@np).node, ret, oldname, i + 1, state)
             }
             
@@ -3649,12 +3681,12 @@ def create_function(node: *parser::Node, tpe: *typechecking::Type, body: *vector
                 value = {
                     kind = ValueKind::LOCAL,
                     name = (@np).name,
-                    tpe = (@np).value
+                    tpe = value
                 } !Value,
                 loc = {
                     kind = ValueKind::LOCAL,
                     name = name,
-                    tpe = typechecking::pointer((@np).value)
+                    tpe = typechecking::pointer(value)
                 } !Value
             } !InsnStore
 
