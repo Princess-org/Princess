@@ -24,6 +24,15 @@ def reset_state {
 
 import eval
 
+export def make_value(value: compiler::Value) -> *scope::Value {
+    let svalue = zero_allocate(scope::Value)
+    let valuep = allocate(compiler::Value)
+    @valuep = value
+    svalue.value = valuep
+    svalue.tpe = value.tpe
+    return svalue
+}
+
 // If we store the state we need to create a permanent copy
 def copy_state(state: *typechecking::State) -> *typechecking::State {
     let new_state = allocate(typechecking::State)
@@ -32,8 +41,16 @@ def copy_state(state: *typechecking::State) -> *typechecking::State {
     return new_state
 }
 
-def walk_boolean_expr(parent: *parser::Node, node: *parser::Node, state: *typechecking::State) -> compiler::Value {
-    typechecking::walk(parent, node, state)
+export def expr(parent: *parser::Node, node: *parser::Node, state: *typechecking::State) -> compiler::Value {
+    typechecking::walk(node.parent, node, state)
+    var result = compiler::walk_expression(node, compiler_state)
+    result = eval::eval_expression(compiler_state.current_block, result)
+    reset_state()
+    return result
+}
+
+export def boolean_expr(parent: *parser::Node, node: *parser::Node, state: *typechecking::State) -> compiler::Value {
+    typechecking::walk(node.parent, node, state)
     var result = compiler::walk_expression(node, compiler_state)
     result = compiler::convert_to(node, result, builtins::bool_, compiler_state)
     result = eval::eval_expression(compiler_state.current_block, result)
@@ -42,7 +59,7 @@ def walk_boolean_expr(parent: *parser::Node, node: *parser::Node, state: *typech
 }
 
 def walk_StaticIf(node: *parser::Node, state: *typechecking::State) {
-    var result = walk_boolean_expr(node, node.value.if_.cond, state)
+    var result = boolean_expr(node, node.value.if_.cond, state)
 
     var body: *vector::Vector = null
     if result.i {
@@ -50,7 +67,7 @@ def walk_StaticIf(node: *parser::Node, state: *typechecking::State) {
     } else {
         for var i in 0..vector::length(node.value.if_.else_if) {
             let else_if = vector::get(node.value.if_.else_if, i) !*parser::Node
-            result = walk_boolean_expr(else_if, else_if.value.else_if.cond, state)
+            result = boolean_expr(else_if, else_if.value.else_if.cond, state)
             if result.i { 
                 body = else_if.value.else_if.body
                 break
@@ -136,6 +153,7 @@ def walk_Def(node: *parser::Node, state: *typechecking::State) {
     }
 }
 
+import debug
 def walk_TypeDecl(node: *parser::Node, state: *typechecking::State) {
     let share = node.value.type_decl.share
     let left = node.value.type_decl.left
@@ -164,17 +182,60 @@ def walk_TypeDecl(node: *parser::Node, state: *typechecking::State) {
         }
 
         if value {
-            let typedef = parser::copy_node(node)
-            typedef.value.type_decl.left = vector::make()
-            vector::push(typedef.value.type_decl.left, name)
-            typedef.value.type_decl.right = vector::make()
-            vector::push(typedef.value.type_decl.right, value)
+            if value.kind == parser::NodeKind::ENUM_T {
+                tpe = typechecking::copy(typechecking::type_lookup(value, state))
+                tpe.name = parser::identifier_to_str(name)
+                tpe.type_name = typechecking::append_module(tpe.name, value.loc.module)
 
-            scope::create_type(state.scope, name, share, tpe, true, typedef, copy_state(state))
+                var constant: int64 = 0
+                // Create all the constants
+                let scpe = scope::enter_scope(state.scope)
+                for var i in 0..vector::length(value.value.t_enum.body) {
+                    let iddecl = vector::get(value.value.t_enum.body, i) !*parser::Node
+                    if iddecl.value.id_decl_enum.value {
+                        constant = expr(value, iddecl.value.id_decl_enum.value, state).i
+                    }
+
+                    let c = allocate(compiler::Value)
+                    @c = { kind = compiler::ValueKind::INT, tpe = tpe.tpe, i = constant } !compiler::Value
+                    scope::create_variable(scpe, iddecl.value.id_decl_enum.ident, 
+                        share, parser::VarDecl::CONST, tpe, c)
+
+                    constant += 1
+                }
+
+                (@tpe).scope = scpe
+
+                // Create to_string function
+                let parameter_t = vector::make()
+                let return_t = vector::make()
+                let np = allocate(NamedParameter)
+                @np = {
+                    name = "enum",
+                    value = tpe
+                } !NamedParameter
+                vector::push(parameter_t, np)
+                vector::push(return_t, builtins::string_)
+
+                let ident = parser::make_identifier(["to_string"])
+                let ftpe = make_function_type_n(ident, parameter_t, return_t, false)
+                scope::create_function(state.scope, ident, parser::ShareMarker::EXPORT, ftpe, false)
+
+                scope::create_type(state.scope, name, share, tpe)
+            } else {
+                let typedef = parser::copy_node(node)
+                typedef.value.type_decl.left = vector::make()
+                vector::push(typedef.value.type_decl.left, name)
+                typedef.value.type_decl.right = vector::make()
+                vector::push(typedef.value.type_decl.right, value)
+
+                tpe = scope::create_type(state.scope, name, share, tpe, true, typedef, copy_state(state))
+            }
         } else {
-            scope::create_type(state.scope, name, share, tpe)
+            tpe = scope::create_type(state.scope, name, share, tpe)
         }
-        
+
+        name.tpe = tpe
     }
 }
 

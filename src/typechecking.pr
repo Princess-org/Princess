@@ -12,6 +12,7 @@ import builtins
 import debug
 import toolchain
 import compiler
+import preprocess
 
 export type TypeKind = enum {
     TYPE
@@ -637,20 +638,6 @@ def check_is_identifier_assignable(ident: *parser::Node, state: *State) -> bool 
     return true
 }
 
-//TODO Move this into its own file, along with a more sophisticated execution engine...
-export def evaluate_constant(node: *parser::Node) -> * {
-    if (@node).kind == parser::NodeKind::INTEGER or (@node).kind == parser::NodeKind::CHAR {
-        let i = allocate(uint64)
-        @i = (@node).value.i
-        return i
-    } else if (@node).kind == parser::NodeKind::IDENTIFIER {
-        let value = scope::get_const_value((@node).scope, node)
-        return (@value).value
-    }
-    error((@node).kind, "\n")
-    assert(false)
-}
-
 export def type_lookup(node: *parser::Node, state: *State, lookup_default: bool) -> *Type {
     if not node { return null }
     if (@node).kind == parser::NodeKind::IDENTIFIER {
@@ -665,7 +652,7 @@ export def type_lookup(node: *parser::Node, state: *State, lookup_default: bool)
                     error(" is not a type\n")
                     return null
                 }
-                tpe = value.value !*Type
+                tpe = value.value.value_tpe
             } else {
                 tpe = make_type(TypeKind::STUB, node)
                 tpe = scope::create_type(state.scope, node, parser::ShareMarker::NONE, tpe)
@@ -1425,46 +1412,6 @@ def walk_TypeDecl(node: *parser::Node, state: *State) {
                 // Name anonymous struct or union
                 (@tpe).type_name = append_module((@tpe).name, (@node).loc.module)
             }
-            if (@value).kind == parser::NodeKind::ENUM_T {
-                // Create all the constants
-                let scpe = scope::enter_scope(state.scope)
-                
-                // TODO Do something about negative values (btw evaluate_constant can't handle them now)
-                var last_value: uint64 = 0
-                for var i in 0..vector::length((@value).value.t_enum.body) {
-                    let iddecl = vector::get((@value).value.t_enum.body, i) !*parser::Node
-
-                    var constant: *uint64 = null
-                    if (@iddecl).value.id_decl_enum.value {
-                        constant = evaluate_constant((@iddecl).value.id_decl_enum.value) !*uint64
-                    } else {
-                        constant = allocate(uint64)
-                        @constant = last_value
-                    }
-
-                    scope::create_variable(scpe, (@iddecl).value.id_decl_enum.ident, 
-                        share, parser::VarDecl::CONST, tpe, constant)
-
-                    last_value = @constant + 1
-                }
-
-                (@tpe).scope = scpe
-
-                // Create to_string function
-                let parameter_t = vector::make()
-                let return_t = vector::make()
-                let np = allocate(NamedParameter)
-                @np = {
-                    name = "enum",
-                    value = tpe
-                } !NamedParameter
-                vector::push(parameter_t, np)
-                vector::push(return_t, builtins::string_)
-
-                let ident = parser::make_identifier(["to_string"])
-                let ftpe = make_function_type_n(ident, parameter_t, return_t, false)
-                scope::create_function(state.scope, ident, parser::ShareMarker::EXPORT, ftpe, false)
-            }
             tpe = scope::create_type(state.scope, name, share, tpe)
         }
         (@name).tpe = tpe
@@ -1628,7 +1575,17 @@ def walk_Case(node: *parser::Node, state: *State) {
             error(debug::type_to_str((@expr).tpe), "\n")
             return
         }
+
+        if expr.kind == parser::NodeKind::RANGE or expr.kind == parser::NodeKind::RANGE_INC {
+            let left = expr.value.bin_op.left
+            let right = expr.value.bin_op.right
+            left.svalue = preprocess::make_value(preprocess::expr(expr, left, state))
+            right.svalue = preprocess::make_value(preprocess::expr(expr, right, state))
+        } else {
+            expr.svalue = preprocess::make_value(preprocess::expr(node, expr, state))
+        }
     }
+
     for var i in 0..vector::length((@node).value.case_.body) {
         let expr = vector::get((@node).value.case_.body, i) !*parser::Node
         walk(node, expr, state)
@@ -1997,7 +1954,7 @@ def walk_SizeOf(node: *parser::Node, state: *State) {
             return
         }
         if (@value).modifier == parser::VarDecl::TYPE {
-            (@expr).tpe = (@value).value !*Type
+            (@expr).tpe = (@value).value.value_tpe
         } else {
             (@expr).tpe = (@value).tpe
         }
@@ -2022,7 +1979,7 @@ def walk_AlignOf(node: *parser::Node, state: *State) {
             return
         }
         if (@value).modifier == parser::VarDecl::TYPE {
-            (@expr).tpe = (@value).value !*Type
+            (@expr).tpe = (@value).value.value_tpe
         } else {
             (@expr).tpe = (@value).tpe
         }
