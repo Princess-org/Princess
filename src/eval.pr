@@ -8,6 +8,7 @@ import scope
 type StackFrame = struct {
     // Map of compiler::Value
     locals: *map::Map
+    function_name: string
 }
 
 type State = struct {
@@ -44,15 +45,47 @@ def get_value(value: compiler::Value, state: *State) -> compiler::Value {
     }
 }
 
+def set_value(addr: compiler::Value, value: compiler::Value, state: *State) {
+    let valuep = allocate(compiler::Value)
+    @valuep = value
+    switch addr.kind !int {
+        case compiler::ValueKind::LOCAL:
+            map::put(get_stack_frame(state).locals, addr.name, valuep)
+        case compiler::ValueKind::GLOBAL:
+            let global = map::get(preprocess::compiler_state.result.constants, addr.name) !*compiler::Global
+            if not global {
+                errorv("Unknown value \"")
+                error(value.name, "\"\n")
+                return
+            }
+            global.value = valuep
+        case: assert(false)
+    }
+}
+
+def eval_Load(insn: *compiler::Insn, state: *State) {
+    let loc = insn.value.load.loc
+    let value = get_value(loc, state)
+    set_value(insn.value.load.value, value, state)
+}
+
+def eval_Store(insn: *compiler::Insn, state: *State) {
+    let loc = insn.value.store.loc
+    let value = get_value(insn.value.store.value, state)
+    set_value(loc, value, state)
+}
+
+def eval_Alloca(insn: *compiler::Insn, state: *State) {
+    set_value(insn.value.alloca.ret, compiler::NO_VALUE, state)
+}
+
 def eval_Add(insn: *compiler::Insn, state: *State) {
     let left = get_value(insn.value.arith.left, state)
     let right = get_value(insn.value.arith.right, state)
     let ret = insn.value.arith.ret
 
     var result = left.i + right.i
-    let value = allocate(compiler::Value)
-    @value = { kind = ValueKind::INT, tpe = ret.tpe, i = result } !compiler::Value
-    map::put(get_stack_frame(state).locals, ret.name, value)
+    set_value(ret, { kind = ValueKind::INT, tpe = ret.tpe, i = result } !compiler::Value, state)
 }
 
 // TODO This is slow af with all the string comparisons
@@ -88,9 +121,7 @@ def eval_Icmp(insn: *compiler::Insn, state: *State) {
         assert(false)
     }
 
-    let value = allocate(compiler::Value)
-    @value = { kind = ValueKind::BOOL, tpe = ret.tpe, i = result !int64 } !compiler::Value
-    map::put(get_stack_frame(state).locals, ret.name, value)
+    set_value(ret, { kind = ValueKind::BOOL, tpe = ret.tpe, i = result !int64 } !compiler::Value, state)
 }
 
 def eval_insn(insn: *compiler::Insn, state: *State) {
@@ -99,6 +130,12 @@ def eval_insn(insn: *compiler::Insn, state: *State) {
             eval_Add(insn, state)
         case compiler::InsnKind::ICMP:
             eval_Icmp(insn, state)
+        case compiler::InsnKind::ALLOCA:
+            eval_Alloca(insn, state)
+        case compiler::InsnKind::STORE:
+            eval_Store(insn, state)
+        case compiler::InsnKind::LOAD:
+            eval_Load(insn, state)
         case:
             error(insn.kind, "\n") 
             assert(false)
@@ -116,7 +153,8 @@ def eval_block(block: *compiler::Block, state: *State) {
 def make_state(block: *compiler::Block) -> State {
     let stack_frame = allocate(StackFrame)
     @stack_frame = {
-        locals = map::make()
+        locals = map::make(),
+        function_name = "<inline>"
     }
 
     let state = {
