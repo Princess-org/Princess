@@ -10,19 +10,21 @@ import typechecking
 import compiler
 import builtins
 
-let module = zero_allocate(toolchain::Module)
-@module = {
+export let const_module = zero_allocate(toolchain::Module)
+@const_module = {
+    module = "const",
     imported = map::make()
 } !toolchain::Module
 
 // This is for compiling expressions
-export let compiler_state = compiler::create_state(module)
+export let compiler_state = compiler::create_state(const_module)
+const_module.result = compiler_state.result
+
+import eval
 
 def reset_state {
     compiler_state.current_block = compiler::make_block()
 }
-
-import eval
 
 export def make_value(value: compiler::Value) -> *scope::Value {
     let svalue = zero_allocate(scope::Value)
@@ -59,6 +61,9 @@ export def boolean_expr(parent: *parser::Node, node: *parser::Node, state: *type
 }
 
 def walk_StaticIf(node: *parser::Node, state: *typechecking::State) {
+    state.is_static = true
+    walk(node, node.value.if_.cond, state)
+    state.is_static = false
     var result = boolean_expr(node, node.value.if_.cond, state)
 
     var body: *vector::Vector = null
@@ -67,6 +72,9 @@ def walk_StaticIf(node: *parser::Node, state: *typechecking::State) {
     } else {
         for var i in 0..vector::length(node.value.if_.else_if) {
             let else_if = vector::get(node.value.if_.else_if, i) !*parser::Node
+            state.is_static = true
+            walk(else_if, else_if.value.else_if.cond, state)
+            state.is_static = false
             result = boolean_expr(else_if, else_if.value.else_if.cond, state)
             if result.i { 
                 body = else_if.value.else_if.body
@@ -153,7 +161,6 @@ def walk_Def(node: *parser::Node, state: *typechecking::State) {
     }
 }
 
-import debug
 def walk_TypeDecl(node: *parser::Node, state: *typechecking::State) {
     let share = node.value.type_decl.share
     let left = node.value.type_decl.left
@@ -247,12 +254,18 @@ def walk_top_VarDecl(node: *parser::Node, state: *typechecking::State) {
     let extern = node.value.var_decl.extern
 
     if kw == parser::VarDecl::CONST {
+        for var i in 0..vector::length(right) {
+            state.is_static = true
+            walk(node, vector::get(right, i) !*parser::Node, state)
+            state.is_static = false
+        }
+
         typechecking::walk_VarDecl(node, state)
-        let body = vector::make()
-        compiler::walk_top_VarDecl(node, body, compiler_state)
-        compiler::walk_expression(vector::peek(body) !*parser::Node, compiler_state)
+        let assign = compiler::walk_top_VarDecl(node, compiler_state)
+        compiler::walk_expression(assign, compiler_state)
         eval::eval(compiler_state.current_block)
         reset_state()
+
         return
     }
 
@@ -310,7 +323,16 @@ def walk_Return(node: *parser::Node, state: *typechecking::State) {
 }
 
 def walk_Call(node: *parser::Node, state: *typechecking::State) {
-    walk(node, node.value.func_call.left, state)
+    let left = node.value.func_call.left
+    walk(node, left, state)
+    if state.is_static {
+        typechecking::walk(node, left, state)
+        if left.svalue.node {
+            let node = left.svalue.node
+            compiler::predeclare_function(node.tpe, compiler_state)
+            compiler::create_function(node, node.tpe, node.value.def_.body, node.inner_scope, compiler_state)
+        }
+    }
     for var i in 0..vector::length(node.value.func_call.args) {
         walk(node, vector::get(node.value.func_call.args, i) !*parser::Node, state)
     }
