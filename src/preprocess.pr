@@ -46,7 +46,8 @@ def copy_state(state: *typechecking::State) -> *typechecking::State {
 export def expr(parent: *parser::Node, node: *parser::Node, state: *typechecking::State) -> compiler::Value {
     typechecking::walk(node.parent, node, state)
     var result = compiler::walk_expression(node, compiler_state)
-    result = eval::eval_expression(compiler_state.current_block, result)
+    let estate = eval::eval(compiler_state.current_block)
+    result = eval::get_value(result, estate)
     reset_state()
     return result
 }
@@ -55,15 +56,17 @@ export def boolean_expr(parent: *parser::Node, node: *parser::Node, state: *type
     typechecking::walk(node.parent, node, state)
     var result = compiler::walk_expression(node, compiler_state)
     result = compiler::convert_to(node, result, builtins::bool_, compiler_state)
-    result = eval::eval_expression(compiler_state.current_block, result)
+    let estate = eval::eval(compiler_state.current_block)
+    result = eval::get_value(result, estate)
     reset_state()
     return result
 }
 
 def walk_StaticIf(node: *parser::Node, state: *typechecking::State) {
+    let is_static = state.is_static
     state.is_static = true
     walk(node, node.value.if_.cond, state)
-    state.is_static = false
+    state.is_static = is_static
     var result = boolean_expr(node, node.value.if_.cond, state)
 
     var body: *vector::Vector = null
@@ -72,9 +75,10 @@ def walk_StaticIf(node: *parser::Node, state: *typechecking::State) {
     } else {
         for var i in 0..vector::length(node.value.if_.else_if) {
             let else_if = vector::get(node.value.if_.else_if, i) !*parser::Node
+            let is_static = state.is_static
             state.is_static = true
             walk(else_if, else_if.value.else_if.cond, state)
-            state.is_static = false
+            state.is_static = is_static
             result = boolean_expr(else_if, else_if.value.else_if.cond, state)
             if result.i { 
                 body = else_if.value.else_if.body
@@ -255,16 +259,27 @@ def walk_top_VarDecl(node: *parser::Node, state: *typechecking::State) {
 
     if kw == parser::VarDecl::CONST {
         for var i in 0..vector::length(right) {
+            let is_static = state.is_static
             state.is_static = true
             walk(node, vector::get(right, i) !*parser::Node, state)
-            state.is_static = false
+            state.is_static = is_static
         }
 
-        typechecking::walk_VarDecl(node, state)
-        let assign = compiler::walk_top_VarDecl(node, compiler_state)
+        typechecking::walk_VarDecl(node, state, true)
+        let assign = compiler::walk_top_VarDecl(node, compiler_state, true)
         compiler::walk_expression(assign, compiler_state)
         eval::eval(compiler_state.current_block)
         reset_state()
+
+        for var i in 0..vector::length(left) {
+            let n = vector::get(left, i) !*parser::Node
+            if n.kind != parser::NodeKind::ID_DECL {
+                typechecking::errorn(n, "Can't assign in const statement\n")
+                return
+            }
+            let value = map::get(compiler_state.result.globals, n.svalue.assembly_name) !*compiler::Global
+            n.svalue.value = value.value
+        }
 
         return
     }
@@ -287,14 +302,47 @@ def walk_top_VarDecl(node: *parser::Node, state: *typechecking::State) {
 }
 
 def walk_VarDecl(node: *parser::Node, state: *typechecking::State) {
-    for var i in 0..vector::length(node.value.var_decl.left) {
-        let left = vector::get(node.value.var_decl.left, i) !*parser::Node
+    let kw = node.value.var_decl.kw
+    let left = node.value.var_decl.left
+    let right = node.value.var_decl.right
+
+    if kw == parser::VarDecl::CONST {
+        for var i in 0..vector::length(right) {
+            let is_static = state.is_static
+            state.is_static = true
+            walk(node, vector::get(right, i) !*parser::Node, state)
+            state.is_static = is_static
+        }
+
+        typechecking::walk_VarDecl(node, state, true)
+        compiler::walk_VarDecl(node, compiler_state, true)
+        let estate = eval::eval(compiler_state.current_block)
+        let locals = eval::get_stack_frame(estate).locals
+
+        for var i in 0..vector::length(left) {
+            let n = vector::get(left, i) !*parser::Node
+            if n.kind != parser::NodeKind::ID_DECL {
+                typechecking::errorn(n, "Can't assign in const statement\n")
+                return
+            }
+            let name = n.value.id_decl.value
+            let value = scope::get(state.scope, name)
+            let constant = map::get(locals, value.assembly_name) !*compiler::Value
+            value.value = constant
+        }
+
+        reset_state()
+        return
+    }
+
+    for var i in 0..vector::length(left) {
+        let left = vector::get(left, i) !*parser::Node
         if left.kind != parser::NodeKind::ID_DECL {
             walk(node, left, state)
         }
     }
-    for var i in 0..vector::length(node.value.var_decl.right) {
-        walk(node, vector::get(node.value.var_decl.right, i) !*parser::Node, state)
+    for var i in 0..vector::length(right) {
+        walk(node, vector::get(right, i) !*parser::Node, state)
     }
 }
 
@@ -327,8 +375,8 @@ def walk_Call(node: *parser::Node, state: *typechecking::State) {
     walk(node, left, state)
     if state.is_static {
         typechecking::walk(node, left, state)
-        if left.svalue.node {
-            let node = left.svalue.node
+        let node = left.svalue.node
+        if node and not map::contains(compiler_state.result.functions, node.tpe.type_name) {
             compiler::predeclare_function(node.tpe, compiler_state)
             compiler::create_function(node, node.tpe, node.value.def_.body, node.inner_scope, compiler_state)
         }
