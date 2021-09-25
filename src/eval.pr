@@ -6,12 +6,12 @@ import preprocess
 import scope
 
 export type StackFrame = struct {
-    // Map of compiler::Value
     locals: *map::Map
     function_name: string
 }
 
 export type State = struct {
+    globals: *map::Map
     // Map of compiler::Block
     jump_table: *map::Map
     // Vector of StackFrame
@@ -29,44 +29,91 @@ export def get_stack_frame(state: *State) -> *StackFrame {
     return vector::peek(state.stack) !*StackFrame
 }
 
-export def get_value(value: compiler::Value, state: *State) -> compiler::Value {
-    switch value.kind !int {
-        case compiler::ValueKind::LOCAL:
-            return @(map::get(get_stack_frame(state).locals, value.name) !*compiler::Value)
-        case compiler::ValueKind::GLOBAL:
-            let global = map::get(preprocess::compiler_state.result.constants, value.name) !*compiler::Global
-            if not global {
-                errorv("Unknown value \"")
-                error(value.name, "\"\n")
-                return compiler::NO_VALUE
+def get(mem: *, tpe: *typechecking::Type) -> compiler::Value {
+    switch tpe.kind !int {
+        case typechecking::TypeKind::WORD:
+            let size = tpe.size
+            var result: int64 = 0
+            for var i in 0..size {
+                result |= (@((mem !*uint8) ++ i) !uint64 << (size - 1))
             }
-            return @global.value
-        case: return value
+            if tpe.unsig {
+                let sign = (result >> (size - 1)) & 0x80
+                result &= ~sign
+                if sign {
+                    result |= 0x80000000
+                }
+            }
+            return { kind = compiler::ValueKind::INT, tpe = tpe, i = result } !compiler::Value
+        case typechecking::TypeKind::POINTER:
+            return { kind = compiler::ValueKind::INT, tpe = tpe, i = @(mem !*int64) }
+        case: assert(false)
     }
 }
 
-def set_value(addr: compiler::Value, value: compiler::Value, state: *State) {
-    let valuep = allocate(compiler::Value)
-    @valuep = value
-    switch addr.kind !int {
-        case compiler::ValueKind::LOCAL:
-            map::put(get_stack_frame(state).locals, addr.name, valuep)
-        case compiler::ValueKind::GLOBAL:
-            let global = map::get(preprocess::compiler_state.result.constants, addr.name) !*compiler::Global
-            if not global {
-                errorv("Unknown value \"")
-                error(value.name, "\"\n")
-                return
+export def get_value(loc: compiler::Value, state: *State) -> compiler::Value {
+    if loc.kind == compiler::ValueKind::LOCAL {
+        let mem = map::get(get_stack_frame(state).locals, loc.name)
+        assert(mem != null)
+        return get(mem, loc.tpe)
+    } else if loc.kind == compiler::ValueKind::GLOBAL {
+        var mem = map::get(state.globals, loc.name)
+        if not mem {
+            mem = allocate(loc.tpe.size)
+            let global = map::get(preprocess::compiler_state.result.globals, loc.name) !*compiler::Global
+            if global.value {
+                set(mem, loc.tpe.tpe, @global.value)
             }
-            global.value = valuep
+            map::put(state.globals, loc.name, mem)
+        }
+        assert(typechecking::is_pointer(loc.tpe))
+        return { kind = compiler::ValueKind::INT, tpe = loc.tpe, i = @(mem !*int64) }
+    } else {
+        return loc
+    }
+}
+
+def set(mem: *, tpe: *typechecking::Type, value: compiler::Value) {
+    switch tpe.kind !int {
+        case typechecking::TypeKind::WORD:
+            var v = value.value.i
+            var sign = false
+            if not tpe.unsig and v < 0 {
+                v *= -1
+                sign = true
+            }
+            let size = tpe.size
+            v = v >> ((size_of int64) - size)
+            if sign {
+                v |= 0x80 << size - 1
+            }
+            for var i in 0..size {
+                @(mem !*uint8 ++ i) = (v >> ((size_of int64) - i)) !uint8
+            }
+        case typechecking::TypeKind::POINTER:
+            (@(mem !*int64)) = value.value.i
         case: assert(false)
+    }
+}
+
+export def set_value(loc: compiler::Value, value: compiler::Value, state: *State) {
+    assert(typechecking::equals(loc.tpe, value.tpe))
+    if loc.kind == compiler::ValueKind::LOCAL {
+        var mem = map::get(get_stack_frame(state).locals, loc.name)
+        if not mem {
+            mem = allocate(loc.tpe.size)
+            map::put(get_stack_frame(state).locals, loc.name, mem)
+        }
+        set(mem, loc.tpe, value)
+    } else {
+        assert(false)
     }
 }
 
 def eval_Load(insn: *compiler::Insn, state: *State) {
     let loc = insn.value.load.loc
-    let value = get_value(loc, state)
-    set_value(insn.value.load.value, value, state)
+    let mem = get_value(loc, state).i !*
+    set_value(insn.value.load.value, get(mem, loc.tpe), state)
 }
 
 def eval_Store(insn: *compiler::Insn, state: *State) {
@@ -168,6 +215,7 @@ export def eval(block: *compiler::Block) -> *State {
 
     let state = allocate(State)
     @state = {
+        globals = map::make(),
         jump_table = map::make(),
         stack = vector::make()
     } !State
@@ -180,5 +228,16 @@ export def eval(block: *compiler::Block) -> *State {
     }
 
     eval(start, state)
+
+    let global_keys = map::keys(state.globals)
+    for var i in 0..global_keys.size {
+        let key = global_keys[i]
+        let mem = map::get(state.globals, key)
+        let global = map::get(preprocess::compiler_state.result.globals, key) !*compiler::Global
+        let valuep = allocate(compiler::Value)
+        @valuep = get(mem, global.tpe)
+        global.value = valuep
+    }
+
     return state
 }
