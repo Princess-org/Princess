@@ -35,17 +35,20 @@ def get(mem: *, tpe: *typechecking::Type) -> compiler::Value {
             let size = tpe.size
             var result: int64 = 0
             for var i in 0..size {
-                result |= (@((mem !*uint8) ++ i) !uint64 << (size - 1))
+                result |= (@((mem !*uint8) ++ i) !uint64 << (i * 8))
             }
             if tpe.unsig {
-                let sign = (result >> (size - 1)) & 0x80
+                let sign = (result >> (size - 1) * 8) & 0x80
                 result &= ~sign
                 if sign {
                     result |= 0x80000000
                 }
             }
             return { kind = compiler::ValueKind::INT, tpe = tpe, i = result } !compiler::Value
+        case typechecking::TypeKind::BOOL:
+            return { kind = compiler::ValueKind::BOOL, tpe = tpe, i = (@(mem !*int8)) !int64 } !compiler::Value
         case typechecking::TypeKind::POINTER:
+            // TODO We might want a pointer type
             return { kind = compiler::ValueKind::INT, tpe = tpe, i = @(mem !*int64) }
         case: assert(false)
     }
@@ -57,6 +60,7 @@ export def get_value(loc: compiler::Value, state: *State) -> compiler::Value {
         assert(mem != null)
         return get(mem, loc.tpe)
     } else if loc.kind == compiler::ValueKind::GLOBAL {
+        assert(typechecking::is_pointer(loc.tpe))
         var mem = map::get(state.globals, loc.name)
         if not mem {
             mem = allocate(loc.tpe.size)
@@ -66,8 +70,7 @@ export def get_value(loc: compiler::Value, state: *State) -> compiler::Value {
             }
             map::put(state.globals, loc.name, mem)
         }
-        assert(typechecking::is_pointer(loc.tpe))
-        return { kind = compiler::ValueKind::INT, tpe = loc.tpe, i = @(mem !*int64) }
+        return { kind = compiler::ValueKind::INT, tpe = loc.tpe, i = mem !int64 }
     } else {
         return loc
     }
@@ -76,35 +79,35 @@ export def get_value(loc: compiler::Value, state: *State) -> compiler::Value {
 def set(mem: *, tpe: *typechecking::Type, value: compiler::Value) {
     switch tpe.kind !int {
         case typechecking::TypeKind::WORD:
-            var v = value.value.i
+            var v = value.i
             var sign = false
             if not tpe.unsig and v < 0 {
                 v *= -1
                 sign = true
             }
             let size = tpe.size
-            v = v >> ((size_of int64) - size)
             if sign {
                 v |= 0x80 << size - 1
             }
             for var i in 0..size {
-                @(mem !*uint8 ++ i) = (v >> ((size_of int64) - i)) !uint8
+                @(mem !*uint8 ++ i) = (v >> (i * 8)) !uint8
             }
         case typechecking::TypeKind::POINTER:
-            (@(mem !*int64)) = value.value.i
+            (@(mem !*int64)) = value.i
+        case typechecking::TypeKind::BOOL:
+            (@(mem !*int8)) = value.i !int8
         case: assert(false)
     }
 }
 
 export def set_value(loc: compiler::Value, value: compiler::Value, state: *State) {
-    assert(typechecking::equals(loc.tpe, value.tpe))
     if loc.kind == compiler::ValueKind::LOCAL {
         var mem = map::get(get_stack_frame(state).locals, loc.name)
         if not mem {
             mem = allocate(loc.tpe.size)
             map::put(get_stack_frame(state).locals, loc.name, mem)
         }
-        set(mem, loc.tpe, value)
+        set(mem, value.tpe, value)
     } else {
         assert(false)
     }
@@ -118,12 +121,16 @@ def eval_Load(insn: *compiler::Insn, state: *State) {
 
 def eval_Store(insn: *compiler::Insn, state: *State) {
     let loc = insn.value.store.loc
+    let mem = get_value(loc, state).i !*
     let value = get_value(insn.value.store.value, state)
-    set_value(loc, value, state)
+    set(mem, value.tpe, value)
 }
 
 def eval_Alloca(insn: *compiler::Insn, state: *State) {
-    set_value(insn.value.alloca.ret, compiler::NO_VALUE, state)
+    let ret = insn.value.alloca.ret
+    let mem = allocate(ret.tpe.size)
+    let ptr = { kind = compiler::ValueKind::INT, tpe = typechecking::pointer(ret.tpe), i = mem !int64 } !compiler::Value
+    set_value(ret, ptr, state)
 }
 
 def eval_Add(insn: *compiler::Insn, state: *State) {
