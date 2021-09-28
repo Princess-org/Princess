@@ -167,7 +167,22 @@ class FunctionDecl:
             args.append("...")
 
         ret = f"export import def #extern {self.name}({', '.join(args)})"
-        if self.ret != 'void': ret += " -> " + str(self.ret)
+        if self.ret != "void": ret += " -> " + str(self.ret)
+        if not self.variadic:
+            # TODO It might be impossible to call those
+            ret += f"\ndef _F{self.name}(args: [*], ret: *) {{\n    "
+            if self.ret != "void":
+                ret += f"@(ret !*{self.ret}) = "
+
+            args = []
+            i = 0
+            for (name, tpe) in self.args:
+                args.append(f"@(args[{i}] !*{tpe})")
+                i += 1
+
+            ret += f"{self.name}({', '.join(args)})\n"
+            ret += "}"
+            
         return ret
 
 PRIMITIVES = {
