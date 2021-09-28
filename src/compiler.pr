@@ -225,6 +225,7 @@ export type Function = struct {
     // First node
     block: *Block
     debug: *Value
+    allocas: *vector::Vector
 }
 
 export type Result = struct {
@@ -262,6 +263,7 @@ export type State = struct {
     counter: int
     global_counter: int
     meta_counter: int
+    local_counter: int
     // TODO Make this a stack for nested functions
     current_function: *Function
     current_block: *Block
@@ -404,6 +406,10 @@ export def push_insn(insn: *Insn, state: *State) {
     vector::push((@(@state).current_block).insn, insn)
 }
 
+def push_alloca(insn: *Insn, state: *State) {
+    vector::push(state.current_function.allocas, insn)
+}
+
 def push_declare_arg(node: *parser::Node, val: Value, name: string, arg: int, state: *State) {
     if not toolchain::debug_sym { return }
     var line = (@node).loc.line
@@ -490,6 +496,22 @@ export def make_local_value(tpe: *typechecking::Type, addr: *Value, state: *Stat
     return {
         kind = ValueKind::LOCAL,
         name = make_unique_name(state),
+        tpe = tpe,
+        addr = addr
+    } !Value
+}
+
+export def make_named_local(tpe: *typechecking::Type, addr: *Value, state: *State) -> Value {
+    let buf = buffer::make_buffer()
+    buffer::append_str(*buf, "tmp.")
+    buffer::append_str(*buf, util::int_to_str(state.local_counter))
+    let name = buffer::to_string(*buf)
+
+    state.local_counter += 1
+
+    return {
+        kind = ValueKind::LOCAL,
+        name = name,
         tpe = tpe,
         addr = addr
     } !Value
@@ -1143,12 +1165,12 @@ def walk_StructLitUnion(node: *parser::Node, state: *State) -> Value {
 
     let value = convert_to(arg, walk_and_load_expression(arg, state), arg_tpe, state)
     
-    let alloca_ret = make_local_value(tpe, null, state)
+    let alloca_ret = make_named_local(tpe, null, state)
     let alloca = make_insn_dbg(InsnKind::ALLOCA, loc)
     (@alloca).value.alloca = {
         ret = alloca_ret
     } !InsnAlloca
-    push_insn(alloca, state)
+    push_alloca(alloca, state)
 
     alloca_ret.tpe = typechecking::pointer(tpe)
     
@@ -1295,13 +1317,13 @@ def push_array_lit(tpe: *typechecking::Type, loc: *Value, values: [Value], state
         }
     }
 
-    let ret = make_local_value(tpe, null, state)
+    let ret = make_named_local(tpe, null, state)
 
     let alloca = make_insn_dbg(InsnKind::ALLOCA, loc)
     (@alloca).value.alloca = {
         ret = ret
     } !InsnAlloca
-    push_insn(alloca, state)
+    push_alloca(alloca, state)
 
     ret.tpe = typechecking::pointer(tpe)
     let retp = allocate(Value)
@@ -1400,14 +1422,14 @@ def walk_And(node: *parser::Node, state: *State) -> Value {
     let loc = make_location(node, state)
     let left = convert_to(node, walk_and_load_expression((@node).value.bin_op.left, state), builtins::bool_, state)
 
-    let ret_alloca = make_local_value(builtins::bool_, null, state)
+    let ret_alloca = make_named_local(builtins::bool_, null, state)
     let alloca = make_insn_dbg(InsnKind::ALLOCA, loc)
     (@alloca).value.alloca = {
         ret = ret_alloca
     } !InsnAlloca
     ret_alloca.tpe = typechecking::pointer(builtins::bool_)
 
-    push_insn(alloca, state)
+    push_alloca(alloca, state)
 
     let br = make_insn_dbg(InsnKind::BR, loc)
     (@br).value.br = {
@@ -1467,14 +1489,14 @@ def walk_Or(node: *parser::Node, state: *State) -> Value {
     let loc = make_location(node, state)
     let left = convert_to(node, walk_and_load_expression((@node).value.bin_op.left, state), builtins::bool_, state)
 
-    let ret_alloca = make_local_value(builtins::bool_, null, state)
+    let ret_alloca = make_named_local(builtins::bool_, null, state)
     let alloca = make_insn_dbg(InsnKind::ALLOCA, loc)
     (@alloca).value.alloca = {
         ret = ret_alloca
     } !InsnAlloca
     ret_alloca.tpe = typechecking::pointer(builtins::bool_)
 
-    push_insn(alloca, state)
+    push_alloca(alloca, state)
 
     let br = make_insn_dbg(InsnKind::BR, loc)
     (@br).value.br = {
@@ -1755,13 +1777,13 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
     var addr = NO_VALUE
     var value = NO_VALUE
     if ret {
-        addr = make_local_value(ret, null, state)
+        addr = make_named_local(ret, null, state)
         
         let alloca = make_insn(InsnKind::ALLOCA)
         (@alloca).value.alloca = {
             ret = addr
         } !InsnAlloca
-        push_insn(alloca, state)
+        push_alloca(alloca, state)
         
         addr.tpe = typechecking::pointer(ret)
         let addrp = allocate(Value)
@@ -3017,7 +3039,7 @@ def walk_For(node: *parser::Node, state: *State) {
         (@alloca).value.alloca = {
             ret = ret
         } !InsnAlloca
-        push_insn(alloca, state)
+        push_alloca(alloca, state)
 
         ret.tpe = typechecking::pointer(tpe)
         push_declare((@iddecl).value.for_id_decl.ident, ret, (@value).name, state)
@@ -3158,7 +3180,7 @@ export def walk_VarDecl(node: *parser::Node, state: *State, set_constant: bool) 
             (@insn).value.alloca = {
                 ret = ret
             } !InsnAlloca
-            push_insn(insn, state)
+            push_alloca(insn, state)
 
             ret.tpe = typechecking::pointer(tpe)
             push_declare(v, ret, (@value).name, state)
@@ -3544,7 +3566,8 @@ export def predeclare_function(tpe: *typechecking::Type, state: *State) {
     @function = {
         name = (@tpe).type_name,
         unmangled = (@tpe).name,
-        forward_declare = true
+        forward_declare = true,
+        allocas = vector::make()
     } !Function
     
     if vector::length((@tpe).return_t) > 1 {
@@ -3655,7 +3678,7 @@ export def create_function(node: *parser::Node, tpe: *typechecking::Type, body: 
             (@alloca).value.alloca = {
                 ret = ret
             } !InsnAlloca
-            push_insn(alloca, state)
+            push_alloca(alloca, state)
 
             if (@np).node {
                 ret.tpe = typechecking::pointer(value)
@@ -3679,10 +3702,13 @@ export def create_function(node: *parser::Node, tpe: *typechecking::Type, body: 
             push_insn(store, state)
         }
 
+        let first_block = state.current_block.insn
         for var i in 0..vector::length(body) {
             let node = vector::get(body, i) !*parser::Node
             walk(node, state)
         }
+
+        vector::insert(first_block, 0, function.allocas)
 
         // TODO Make another compiler pass that checks for missing return statements and dead code
         // Check for missing return statement
