@@ -6,6 +6,7 @@ import preprocess
 import scope
 
 export type StackFrame = struct {
+    jump_table: *map::Map
     locals: *map::Map
     function_name: string
     ret: compiler::Value
@@ -15,7 +16,6 @@ export type State = struct {
     cstate: *compiler::State
     globals: *map::Map
     // Map of compiler::Block
-    jump_table: *map::Map
     // Vector of StackFrame
     stack: *vector::Vector
 
@@ -37,6 +37,22 @@ def pop_stack_frame(state: *State) {
 
 export def get_stack_frame(state: *State) -> *StackFrame {
     return vector::peek(state.stack) !*StackFrame
+}
+
+def make_stack_frame(block: *compiler::Block, name: string) -> *StackFrame {
+    let stack_frame = allocate(StackFrame)
+    @stack_frame = {
+        locals = map::make(),
+        function_name = name,
+        jump_table = map::make()
+    } !StackFrame
+
+    while block {
+        map::put(stack_frame.jump_table, block.label_, block)
+        block = block.next
+    }
+
+    return stack_frame
 }
 
 def get(mem: *, tpe: *typechecking::Type) -> compiler::Value {
@@ -157,31 +173,31 @@ def eval_Sub(insn: *compiler::Insn, state: *State) {
 // TODO This is slow af with all the string comparisons
 // possibly use an integer value even tho that makes codegen slightly more complicated
 def eval_Icmp(insn: *compiler::Insn, state: *State) {
-    let left = get_value(insn.value.cmp.left, state)
-    let right = get_value(insn.value.cmp.right, state)
-    let ret = insn.value.cmp.ret
-    let op = insn.value.cmp.op
+    let left = get_value(insn.value.icmp.left, state)
+    let right = get_value(insn.value.icmp.right, state)
+    let ret = insn.value.icmp.ret
+    let op = insn.value.icmp.op
 
     var result = false
-    if op == compiler::i_eq {
+    if op == compiler::CompareInt::eq {
         result = left.i == right.i
-    } else if op == compiler::i_ne {
+    } else if op == compiler::CompareInt::ne {
         result = left.i != right.i
-    } else if op == compiler::i_ugt {
+    } else if op == compiler::CompareInt::ugt {
         result = left.i !uint64 > right.i !uint64
-    } else if op == compiler::i_uge {
+    } else if op == compiler::CompareInt::uge {
         result = left.i !uint64 >= right.i !uint64
-    } else if op == compiler::i_ult {
+    } else if op == compiler::CompareInt::ult {
         result = left.i !uint64 < right.i !uint64
-    } else if op == compiler::i_ule {
+    } else if op == compiler::CompareInt::ule {
         result = left.i !uint64 <= right.i !uint64
-    } else if op == compiler::i_sgt {
+    } else if op == compiler::CompareInt::sgt {
         result = left.i > right.i
-    } else if op == compiler::i_sge {
+    } else if op == compiler::CompareInt::sge {
         result = left.i >= right.i
-    } else if op == compiler::i_slt {
+    } else if op == compiler::CompareInt::slt {
         result = left.i < right.i
-    } else if op == compiler::i_sle {
+    } else if op == compiler::CompareInt::sle {
         result = left.i <= right.i
     } else {
         assert(false)
@@ -202,11 +218,7 @@ def eval_Call(insn: *compiler::Insn, state: *State) {
         return
     }
 
-    let stack_frame = allocate(StackFrame)
-    @stack_frame = {
-        locals = map::make(),
-        function_name = name
-    } !StackFrame
+    let stack_frame = make_stack_frame(function.block, name)
 
     for var i in 0..args.size {
         let arg = args[i]
@@ -227,9 +239,27 @@ def eval_Call(insn: *compiler::Insn, state: *State) {
 
 def eval_Ret(insn: *compiler::Insn, state: *State) {
     let ret = insn.value.ret.value
-    get_stack_frame(state).ret = ret
-    let ret_value = get_value(ret, state)
-    set_value(ret, ret_value, state)
+    get_stack_frame(state).ret = get_value(ret, state)
+    state.next = null
+}
+
+def eval_BrUnc(insn: *compiler::Insn, state: *State) {
+    let label_ = insn.value.br_unc.label_
+    state.next = map::get(get_stack_frame(state).jump_table, label_.name) !*compiler::Block
+}
+
+def eval_Br(insn: *compiler::Insn, state: *State) {
+    let if_true = insn.value.br.if_true
+    let if_false = insn.value.br.if_false
+    
+    let cond = get_value(insn.value.br.cond, state)
+    assert(cond.kind == compiler::ValueKind::BOOL)
+    
+    if cond.i {
+        state.next = map::get(get_stack_frame(state).jump_table, if_true.name) !*compiler::Block
+    } else {
+        state.next = map::get(get_stack_frame(state).jump_table, if_false.name) !*compiler::Block
+    }
 }
 
 def eval_insn(insn: *compiler::Insn, state: *State) {
@@ -250,6 +280,10 @@ def eval_insn(insn: *compiler::Insn, state: *State) {
             eval_Call(insn, state)
         case compiler::InsnKind::RET:
             eval_Ret(insn, state)
+        case compiler::InsnKind::BR_UNC:
+            eval_BrUnc(insn, state)
+        case compiler::InsnKind::BR:
+            eval_Br(insn, state)
         case:
             error(insn.kind, "\n") 
             assert(false)
@@ -257,6 +291,12 @@ def eval_insn(insn: *compiler::Insn, state: *State) {
 }
 
 def eval_block(block: *compiler::Block, state: *State) {
+    /*for var i in 0..vector::length(block.insn) {
+        let insn = vector::get(block.insn, i) !*compiler::Insn
+        print(insn.kind, "\n")
+    }
+    print("\n")*/
+
     state.next = block.next
     for var i in 0..vector::length(block.insn) {
         let insn = vector::get(block.insn, i) !*compiler::Insn
@@ -274,30 +314,19 @@ def eval(block: *compiler::Block, state: *State) {
 export def eval(cstate: *compiler::State) -> *State {
     var block = cstate.current_function.block
     vector::insert(block.insn, 0, cstate.current_function.allocas)
-    let start = block
 
-    let stack_frame = allocate(StackFrame)
-    @stack_frame = {
-        locals = map::make(),
-        function_name = "<inline>"
-    }
+    let stack_frame = make_stack_frame(block, "<inline>")
 
     let state = allocate(State)
     @state = {
         cstate = cstate,
         globals = map::make(),
-        jump_table = map::make(),
         stack = vector::make()
     } !State
 
     vector::push(state.stack, stack_frame)
 
-    while block {
-        map::put(state.jump_table, block.label_, block)
-        block = block.next
-    }
-
-    eval(start, state)
+    eval(block, state)
 
     let global_keys = map::keys(state.globals)
     for var i in 0..global_keys.size {
