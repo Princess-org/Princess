@@ -1,3 +1,4 @@
+from abc import ABC, abstractmethod
 from os import get_inheritable, sep
 import subprocess, json, ctypes, math
 import tatsu, pickle, sys
@@ -35,6 +36,9 @@ STRUCT_IDS = {}
 # Types
 
 class Type:
+    def __init__(self) -> None:
+        self.qualname = None
+
     def to_definition(self) -> str:
         return str(self)
 
@@ -144,22 +148,30 @@ class Enum(Type):
 
 #Global entities
 
-class VarDecl:
+class Declaration(ABC):
+    @abstractmethod
+    def to_declaration(self, n: int) -> str:
+        pass
+
+class VarDecl(Declaration):
     def __init__(self, name: str, type: Type):
         self.name = name
         self.type = type
 
-    def __str__(self) -> str:
-        return f"export import var #extern {self.name}: {self.type}"
+    def to_declaration(self, n: int) -> str:
+        ret = f"export import var #extern {self.name}: {self.type}"
+        ret += f"\n__NAMES[{n}] = \"{self.name}\""
+        ret += f"\n__GLOBALS[{n}] = *{self.name} !*"
+        return ret
 
-class FunctionDecl:
+class FunctionDecl(Declaration):
     def __init__(self, name: str, ret: Type, args, variadic: bool):
         self.name = name
         self.ret = ret
         self.args = args
         self.variadic = variadic
 
-    def __str__(self) -> str:
+    def to_declaration(self, n: int) -> str:
         args = []
         for (name, tpe) in self.args:
             args.append(name + ": " + str(tpe))
@@ -168,21 +180,9 @@ class FunctionDecl:
 
         ret = f"export import def #extern {self.name}({', '.join(args)})"
         if self.ret != "void": ret += " -> " + str(self.ret)
-        if not self.variadic:
-            # TODO It might be impossible to call those
-            ret += f"\ndef _F{self.name}(args: [*], ret: *) {{\n    "
-            if self.ret != "void":
-                ret += f"@(ret !*{self.ret}) = "
+        ret += f"\n__NAMES[{n}] = \"{self.name}\""
+        ret += f"\n__GLOBALS[{n}] = *{self.name} !*"
 
-            args = []
-            i = 0
-            for (name, tpe) in self.args:
-                args.append(f"@(args[{i}] !*{tpe})")
-                i += 1
-
-            ret += f"{self.name}({', '.join(args)})\n"
-            ret += "}"
-            
         return ret
 
 PRIMITIVES = {
@@ -359,13 +359,15 @@ def main():
 
     with open(folder / "header.json", "r") as fp:
         data = json.load(fp)
+    
+    with open(folder / "excluded.txt", "r") as fp:
+        excluded = set(l.rstrip("\n") for l in fp.readlines())
 
     data = data["inner"]
     for top_level in data:
         walk(top_level)
 
     with open(folder / "cstd.pr", "w") as fp:
-
         has_printed = set()
         def print_references(tpe):
             if isinstance(tpe, Pointer):
@@ -395,14 +397,22 @@ def main():
                             print(f" = {tpe.to_definition()}", file = fp)
                         else: print("", file = fp)
 
+        print(f"export var __GLOBALS: [{len(GLOBALS)}; *]", file = fp)
+        print(f"export var __NAMES: [{len(GLOBALS)}; string]", file = fp)
+
+        num_decls = 0
         for g in GLOBALS.values():
+            if g.name in excluded: continue
+
             if isinstance(g, FunctionDecl):
                 print_references(g.ret)
                 for _, tpe in g.args:
                     print_references(tpe)
             elif isinstance(g, VarDecl):
                 print_references(g.type)
-            print(str(g), file = fp)
+
+            print(g.to_declaration(num_decls), file = fp)
+            num_decls += 1
 
 
 if __name__ == "__main__":
