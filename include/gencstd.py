@@ -46,23 +46,19 @@ class Type:
 
     def to_definition(self) -> str:
         return str(self)
-
-    def _print_references(self, fp, has_printed: set):
-        pass
     
     def print_references(self, fp, has_printed: set):
-        if not self in has_printed:
-            has_printed.add(self)
-            self._print_references(fp, has_printed)
-        else: return
+        pass
 
 class Void(Type):
     def __str__(self) -> str:
         return "void"
+void = Void()
 
 class Varargs(Type):
     def __str__(self) -> str:
         return "..."
+varargs = Varargs()
 
 class VaList(Type):
     def __str__(self) -> str:
@@ -98,10 +94,10 @@ class Function(Type):
         self.ret = ret
 
     def __str__(self) -> str:
-        args = ', '.join(map(str, filter(lambda x: x != 'void', self.args)))
-        return f"({args}) -> ({self.ret if self.ret != 'void' else ''})"
+        args = ', '.join(map(str, filter(lambda x: x != void, self.args)))
+        return f"({args}) -> ({self.ret if self.ret != void else ''})"
 
-    def _print_references(self, fp, has_printed):
+    def print_references(self, fp, has_printed):
         for t in self.args:
             t.print_references(fp, has_printed)
         self.ret.print_references(fp, has_printed)
@@ -111,11 +107,11 @@ class Pointer(Type):
         self.type = tpe
 
     def __str__(self) -> str:
-        if self.type == 'void':
+        if self.type == void:
             return "*"
         else: return f"*{self.type}"
 
-    def _print_references(self, fp, has_printed):
+    def print_references(self, fp, has_printed):
         self.type.print_references(fp, has_printed)
 
 class Array(Type):
@@ -129,12 +125,14 @@ class Array(Type):
         else:
             return f"*{self.type}"
     
-    def _print_references(self, fp, has_printed):
+    def print_references(self, fp, has_printed):
         self.type.print_references(fp, has_printed)
 
 class Record(Type):
     def __init__(self) -> None:
         self.typename = None
+        self.fields = dict()
+        self.name = None
 
     def __str__(self) -> str:
         if self.qualname:
@@ -144,21 +142,25 @@ class Record(Type):
         if not name: return self.to_definition()
         else: return name
 
-    def _print_references(self, fp, has_printed):
+    def print_references(self, fp, has_printed):
         if self.typename:
             self = TYPEDEFS[self.typename]
         elif self.qualname:
             self = TAGGED[self.qualname]
+        
+        if not self in has_printed:
+            has_printed.add(self)
+        else: return
 
-            for _, t in self.fields:
-                t.print_references(fp, has_printed)
+        for _, t in self.fields:
+            t.print_references(fp, has_printed)
 
-            name = self.typename or self.name
-            if name:
-                print(f"export type {name}", file = fp, end = "")
-                if self.fields:
-                    print(f" = {self.to_definition()}", file = fp)
-                else: print("", file = fp)
+        name = self.typename or self.name
+        if name:
+            print(f"export type {name}", file = fp, end = "")
+            if self.fields:
+                print(f" = {self.to_definition()}", file = fp)
+            else: print("", file = fp)
 
 class Struct(Record):
     def __init__(self, name: str, fields):
@@ -238,7 +240,7 @@ class FunctionDecl(Declaration):
             args.append("...")
 
         ret = f"export import def #extern {self.name}({', '.join(args)})"
-        if self.ret != "void": ret += " -> " + str(self.ret)
+        if self.ret != void: ret += " -> " + str(self.ret)
         ret += f"\n__NAMES[{n}] = \"{self.name}\""
         ret += f"\n__GLOBALS[{n}] = *{self.name} !*"
 
@@ -285,10 +287,10 @@ class Walker(NodeWalker):
         return PRIMITIVES[node.ast]
     
     def walk_Void(self, node):
-        return Void()
+        return void
     
     def walk_Varargs(self, node):
-        return Varargs()
+        return varargs
     
     def walk_Pointer(self, node):
         return Pointer(self.walk(node.type))
