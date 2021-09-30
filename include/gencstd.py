@@ -33,6 +33,11 @@ TYPEDEFS = {}
 TAGGED = {}
 STRUCT_IDS = {}
 
+def escape_name(name: str) -> str:
+    if name == "type":
+        return "type_"
+    return name
+
 # Types
 
 class Type:
@@ -41,6 +46,23 @@ class Type:
 
     def to_definition(self) -> str:
         return str(self)
+
+    def _print_references(self, fp, has_printed: set):
+        pass
+    
+    def print_references(self, fp, has_printed: set):
+        if not self in has_printed:
+            has_printed.add(self)
+            self._print_references(fp, has_printed)
+        else: return
+
+class Void(Type):
+    def __str__(self) -> str:
+        return "void"
+
+class Varargs(Type):
+    def __str__(self) -> str:
+        return "..."
 
 class VaList(Type):
     def __str__(self) -> str:
@@ -79,6 +101,11 @@ class Function(Type):
         args = ', '.join(map(str, filter(lambda x: x != 'void', self.args)))
         return f"({args}) -> ({self.ret if self.ret != 'void' else ''})"
 
+    def _print_references(self, fp, has_printed):
+        for t in self.args:
+            t.print_references(fp, has_printed)
+        self.ret.print_references(fp, has_printed)
+
 class Pointer(Type):
     def __init__(self, tpe: Type):
         self.type = tpe
@@ -87,6 +114,9 @@ class Pointer(Type):
         if self.type == 'void':
             return "*"
         else: return f"*{self.type}"
+
+    def _print_references(self, fp, has_printed):
+        self.type.print_references(fp, has_printed)
 
 class Array(Type):
     def __init__(self, tpe: Type, length = None):
@@ -98,8 +128,14 @@ class Array(Type):
             return f"[{self.length}; {self.type}]"
         else:
             return f"*{self.type}"
+    
+    def _print_references(self, fp, has_printed):
+        self.type.print_references(fp, has_printed)
 
 class Record(Type):
+    def __init__(self) -> None:
+        self.typename = None
+
     def __str__(self) -> str:
         if self.qualname:
             self = TAGGED[self.qualname]
@@ -107,6 +143,22 @@ class Record(Type):
         name = self.typename or self.name
         if not name: return self.to_definition()
         else: return name
+
+    def _print_references(self, fp, has_printed):
+        if self.typename:
+            self = TYPEDEFS[self.typename]
+        elif self.qualname:
+            self = TAGGED[self.qualname]
+
+            for _, t in self.fields:
+                t.print_references(fp, has_printed)
+
+            name = self.typename or self.name
+            if name:
+                print(f"export type {name}", file = fp, end = "")
+                if self.fields:
+                    print(f" = {self.to_definition()}", file = fp)
+                else: print("", file = fp)
 
 class Struct(Record):
     def __init__(self, name: str, fields):
@@ -120,7 +172,7 @@ class Struct(Record):
             res = "struct { "
             for (name, tpe) in self.fields:
                 if name:
-                    res += name + ": "
+                    res += escape_name(name) + ": "
                 res += str(tpe) + "; "
             res += "}"
             return res
@@ -137,14 +189,21 @@ class Union(Record):
             res = "struct #union { "
             for (name, tpe) in self.fields:
                 if name:
-                    res += name + ": "
+                    res += escape_name(name) + ": "
                 res += str(tpe) + "; "
             res += "}"
             return res
 
-class Enum(Type):
-    def __init__(self, name: str):
-        self.name = name
+class Enum(Record):
+    def __init__(self, name: str, fields):
+        self.name = ("e_" + name) if name else None
+        self.typename = None
+        self.qualname = name
+        self.fields = fields
+
+    def to_definition(self) -> str:
+        pass
+        
 
 #Global entities
 
@@ -226,10 +285,10 @@ class Walker(NodeWalker):
         return PRIMITIVES[node.ast]
     
     def walk_Void(self, node):
-        return "void"
+        return Void()
     
     def walk_Varargs(self, node):
-        return "..."
+        return Varargs()
     
     def walk_Pointer(self, node):
         return Pointer(self.walk(node.type))
@@ -266,7 +325,8 @@ def walk_VarDecl(node):
 
 def walk_EnumDecl(node):
     name = node["name"] if "name" in node else ""
-    record = Enum(name)
+    fields = dict()
+    record = Enum(name, fields)
     if name:
         TAGGED[name] = record
     STRUCT_IDS[node["id"]] = record
@@ -368,35 +428,9 @@ def main():
         walk(top_level)
 
     with open(folder / "cstd.pr", "w") as fp:
+        
         has_printed = set()
-        def print_references(tpe):
-            if isinstance(tpe, Pointer):
-                print_references(tpe.type)
-            elif isinstance(tpe, Array):
-                print_references(tpe.type)
-            elif isinstance(tpe, Function):
-                for t in tpe.args:
-                    print_references(t)
-                print_references(tpe.ret)
-            elif isinstance(tpe, Record):
-                if tpe.typename:
-                    tpe = TYPEDEFS[tpe.typename]
-                elif tpe.qualname:
-                    tpe = TAGGED[tpe.qualname]
-
-                if tpe not in has_printed:
-                    has_printed.add(tpe)
-
-                    for _, t in tpe.fields:
-                        print_references(t)
-
-                    name = tpe.typename or tpe.name
-                    if name:
-                        print(f"export type {name}", file = fp, end = "")
-                        if tpe.fields:
-                            print(f" = {tpe.to_definition()}", file = fp)
-                        else: print("", file = fp)
-
+        
         print(f"export var __GLOBALS: [{len(GLOBALS)}; *]", file = fp)
         print(f"export var __NAMES: [{len(GLOBALS)}; string]", file = fp)
 
@@ -405,11 +439,11 @@ def main():
             if g.name in excluded: continue
 
             if isinstance(g, FunctionDecl):
-                print_references(g.ret)
+                g.ret.print_references(fp, has_printed)
                 for _, tpe in g.args:
-                    print_references(tpe)
+                    tpe.print_references(fp, has_printed)
             elif isinstance(g, VarDecl):
-                print_references(g.type)
+                g.type.print_references(fp, has_printed)
 
             print(g.to_declaration(num_decls), file = fp)
             num_decls += 1
