@@ -1,4 +1,4 @@
-from abc import ABC, abstractmethod
+from abc import ABC, abstractclassmethod, abstractmethod
 from os import get_inheritable, sep
 import subprocess, json, ctypes, math
 import tatsu, pickle, sys
@@ -131,7 +131,7 @@ class Array(Type):
 class Record(Type):
     def __init__(self) -> None:
         self.typename = None
-        self.fields = dict()
+        self.fields = []
         self.name = None
 
     def __str__(self) -> str:
@@ -196,15 +196,47 @@ class Union(Record):
             res += "}"
             return res
 
-class Enum(Record):
+class Enum(Type):
     def __init__(self, name: str, fields):
         self.name = ("e_" + name) if name else None
         self.typename = None
         self.qualname = name
         self.fields = fields
+    
+    def __str__(self) -> str:
+        if self.qualname:
+            self = TAGGED[self.qualname]
+
+        name = self.typename or self.name
+        if not name: return self.to_definition()
+        else: return name
 
     def to_definition(self) -> str:
-        pass
+        res =  "enum { "
+        for (name, value) in self.fields:
+            res += name
+            if value:
+                res += value
+            res += "; "
+        res += "}"
+        return res
+
+    def print_references(self, fp, has_printed):
+        if self.typename:
+            self = TYPEDEFS[self.typename]
+        elif self.qualname:
+            self = TAGGED[self.qualname]
+        
+        if not self in has_printed:
+            has_printed.add(self)
+        else: return
+
+        name = self.typename or self.name
+        if name:
+            print(f"export type {name}", file = fp, end = "")
+            if self.fields:
+                print(f" = {self.to_definition()}", file = fp)
+            else: print("", file = fp)
         
 
 #Global entities
@@ -212,6 +244,10 @@ class Enum(Record):
 class Declaration(ABC):
     @abstractmethod
     def to_declaration(self, n: int) -> str:
+        pass
+    
+    @abstractmethod
+    def print_references(self, fp, has_printed: set):
         pass
 
 class VarDecl(Declaration):
@@ -224,6 +260,9 @@ class VarDecl(Declaration):
         ret += f"\n__NAMES[{n}] = \"{self.name}\""
         ret += f"\n__GLOBALS[{n}] = *{self.name} !*"
         return ret
+
+    def print_references(self, fp, has_printed: set):
+        self.type.print_references(fp, has_printed)
 
 class FunctionDecl(Declaration):
     def __init__(self, name: str, ret: Type, args, variadic: bool):
@@ -245,6 +284,11 @@ class FunctionDecl(Declaration):
         ret += f"\n__GLOBALS[{n}] = *{self.name} !*"
 
         return ret
+
+    def print_references(self, fp, has_printed: set):
+        self.ret.print_references(fp, has_printed)
+        for _, tpe in self.args:
+            tpe.print_references(fp, has_printed)
 
 PRIMITIVES = {
     ('char'): Integer("char"),
@@ -319,6 +363,20 @@ def get_type(node) -> str:
         return tpe["desugaredQualType"]
     else: return tpe["qualType"]
 
+def walk_Expression(node):
+    kind = node["kind"]
+    if kind == "ConstantExpr":
+        return walk_Expression(node["inner"][0])
+    elif kind == "IntegerLiteral":
+        return node["value"]
+    elif kind == "UnaryOperator":
+        return node["opcode"] + " " + walk_Expression(node["inner"][0])
+    elif kind == "BinaryOperator":
+        return (walk_Expression(node["inner"][0]) + " " + 
+            node["opcode"] + " " +
+            walk_Expression(node["inner"][1]))
+    return ""
+
 def walk_VarDecl(node):
     name = node["name"]
     tpe = PARSER.parse(get_type(node), start = "type_1")
@@ -327,7 +385,16 @@ def walk_VarDecl(node):
 
 def walk_EnumDecl(node):
     name = node["name"] if "name" in node else ""
-    fields = dict()
+    fields = []
+    for decl in node["inner"]:
+        if decl["kind"] == "EnumConstantDecl":
+            field_name = decl["name"]
+            inner = None
+            if "inner" in decl:
+                inner = walk_Expression(decl["inner"][0])
+            
+            fields.append((field_name, inner))
+
     record = Enum(name, fields)
     if name:
         TAGGED[name] = record
@@ -439,13 +506,7 @@ def main():
         num_decls = 0
         for g in GLOBALS.values():
             if g.name in excluded: continue
-
-            if isinstance(g, FunctionDecl):
-                g.ret.print_references(fp, has_printed)
-                for _, tpe in g.args:
-                    tpe.print_references(fp, has_printed)
-            elif isinstance(g, VarDecl):
-                g.type.print_references(fp, has_printed)
+            g.print_references(fp, has_printed)
 
             print(g.to_declaration(num_decls), file = fp)
             num_decls += 1
