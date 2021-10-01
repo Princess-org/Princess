@@ -212,6 +212,9 @@ export type Block = struct {
 }
 
 export type Function = struct {
+    imported: bool
+    // True if we have C style varargs
+    varargs: bool
     name: string
     unmangled: string
     // Vector of typechecking::NamedParameter
@@ -3569,8 +3572,16 @@ export def predeclare_function(tpe: *typechecking::Type, state: *State) {
         name = (@tpe).type_name,
         unmangled = (@tpe).name,
         forward_declare = true,
-        allocas = vector::make()
+        allocas = vector::make(),
+        imported = (@tpe).imported
     } !Function
+
+    if vector::length(tpe.parameter_t) > 0 {
+        let last_parameter = vector::peek(tpe.parameter_t) !*typechecking::NamedParameter
+        if last_parameter.varargs and not last_parameter.value {
+            function.varargs = true
+        }
+    }
     
     if vector::length((@tpe).return_t) > 1 {
         function.ret = make_return_type(tpe)
@@ -3905,53 +3916,52 @@ def walk_top_VarDecl(node: *parser::Node, body: *vector::Vector, state: *State) 
     }
 }
 
+def insert_module_main(module: *toolchain::Module, name: *parser::Node, scpe: *scope::Scope, body: *vector::Vector, state: *State) {
+    if not module { return }
+
+    let args = vector::make()
+    let arg = parser::make_identifier(["args"])
+    (@arg).scope = scpe
+    (@arg).tpe = typechecking::array(builtins::string_)
+    (@arg).svalue = scope::get((@arg).scope, arg)
+    vector::push(args, arg)
+
+    let name_size = vector::length((@name).value.body)
+    let array = allocate(string, name_size + 1)
+    for var j in 0..name_size {
+        array[j] = @(vector::get((@name).value.body, j) !*string)
+    }
+    array[array.size - 1] = "main"
+    let ident = parser::make_identifier(array)
+    (@ident).scope = scpe
+
+    let main_value = scope::get(module.scope, parser::make_identifier(["main"]))
+    if not main_value { return }
+
+    let call = allocate(parser::Node)
+    (@call).kind = parser::NodeKind::FUNC_CALL
+    (@call).scope = scpe
+    (@call).tpe = null
+    (@call).function = (@main_value).tpe
+    (@call).value.func_call = {
+        left = ident,
+        args = args,
+        kwargs = vector::make()
+    } !parser::NodeFuncCall
+
+    predeclare_function(main_value.tpe, state)
+
+    vector::push(body, call)
+}
+
 def walk_top_Import(node: *parser::Node, body: *vector::Vector, state: *State) {
     let imports = (@node).value.body
     for var i in 0..vector::length(imports) {
         let imprt = vector::get(imports, i) !*parser::Node
         let name = (@imprt).value.import_module.name
-        var alias = (@imprt).value.import_module.alias 
-        if not alias {
-            alias = name
-        }
 
         let module = toolchain::compile_module(name)
-        if not module { continue }
-
-        let args = vector::make()
-        let arg = parser::make_identifier(["args"])
-        (@arg).scope = (@node).scope
-        (@arg).tpe = typechecking::array(builtins::string_)
-        (@arg).svalue = scope::get((@arg).scope, arg)
-        vector::push(args, arg)
-
-        let name_size = vector::length((@name).value.body)
-        let array = allocate(string, name_size + 1)
-        for var j in 0..name_size {
-            array[j] = @(vector::get((@name).value.body, j) !*string)
-        }
-        array[array.size - 1] = "main"
-        let ident = parser::make_identifier(array)
-        (@ident).scope = (@node).scope
-
-        let main_value = scope::get(module.scope, parser::make_identifier(["main"]))
-        if not main_value { continue }
-
-        let call = allocate(parser::Node)
-        (@call).kind = parser::NodeKind::FUNC_CALL
-        (@call).scope = (@node).scope
-        (@call).tpe = null
-        (@call).function = (@main_value).tpe
-        (@call).loc = (@node).loc
-        (@call).value.func_call = {
-            left = ident,
-            args = args,
-            kwargs = vector::make()
-        } !parser::NodeFuncCall
-
-        predeclare_function(main_value.tpe, state)
-
-        vector::push(body, call)
+        insert_module_main(module, name, node.scope, body, state)
     }
 }
 
@@ -3980,6 +3990,37 @@ export def create_state(module: *toolchain::Module) -> *State {
     return state
 }
 
+export def predeclare_functions(sc: *scope::Scope, state: *State) {
+    if sc.imports {
+        for var i in 0..vector::length(sc.imports) {
+            let module = vector::get(sc.imports, i) !*toolchain::Module
+            let m_scope = (@module).scope
+            let keys = map::keys((@m_scope).fields)
+            for var i in 0..keys.size {
+                var value = map::get((@m_scope).fields, keys[i]) !*scope::Value
+                while value {
+                    if (@value).share !int & parser::ShareMarker::EXPORT !int {
+                        if typechecking::is_function((@value).tpe) {
+                            predeclare_function((@value).tpe, state)
+                        } else if not typechecking::is_type((@value).tpe) {
+                            let name = (@value).assembly_name
+                            let global = allocate(Global)
+                            (@global) = {
+                                name = name,
+                                tpe = (@value).tpe,
+                                external = true,
+                                line = -1
+                            } !Global
+                            map::put((@(@state).result).globals, name, global)
+                        }
+                    }
+                    value = (@value).next
+                }
+            }
+        }
+    }
+}
+
 export def compile(module: *toolchain::Module) -> *Result {
     let node = (@module).node
     assert((@node).kind == parser::NodeKind::PROGRAM)
@@ -3997,8 +4038,12 @@ export def compile(module: *toolchain::Module) -> *Result {
 
     if module.module != "cstd" and module.module != "std" {
         // compile standard library
-        toolchain::compile_module(parser::make_identifier(["cstd"]))
-        toolchain::compile_module(parser::make_identifier(["std"]))
+        let cstd_ident = parser::make_identifier(["cstd"])
+        let std_indent = parser::make_identifier(["std"])
+        let cstd = toolchain::compile_module(cstd_ident)
+        let std = toolchain::compile_module(std_indent)
+        insert_module_main(cstd, cstd_ident, node.scope, body, state)
+        insert_module_main(std, std_indent, node.scope, body, state)
     }
 
     var globals: *Value = null
@@ -4141,35 +4186,7 @@ export def compile(module: *toolchain::Module) -> *Result {
     
     // Forward declare functions from other files
     // TODO This doesn't work for functions that return multiple parameters
-    let sc = (@node).scope
-    if (@sc).imports {
-        for var i in 0..vector::length((@sc).imports) {
-            let module = vector::get((@sc).imports, i) !*toolchain::Module
-            let m_scope = (@module).scope
-            let keys = map::keys((@m_scope).fields)
-            for var i in 0..keys.size {
-                var value = map::get((@m_scope).fields, keys[i]) !*scope::Value
-                while value {
-                    if (@value).share !int & parser::ShareMarker::EXPORT !int {
-                        if typechecking::is_function((@value).tpe) {
-                            predeclare_function((@value).tpe, state)
-                        } else if not typechecking::is_type((@value).tpe) {
-                            let name = (@value).assembly_name
-                            let global = allocate(Global)
-                            (@global) = {
-                                name = name,
-                                tpe = (@value).tpe,
-                                external = true,
-                                line = -1
-                            } !Global
-                            map::put((@(@state).result).globals, name, global)
-                        }
-                    }
-                    value = (@value).next
-                }
-            }
-        }
-    }
+    predeclare_functions(node.scope, state)
 
     let ident = parser::make_identifier(["main"])
     (@ident).loc.module = (@module).module
@@ -4187,7 +4204,7 @@ export def compile(module: *toolchain::Module) -> *Result {
     let args = vector::make()
     vector::push(args, named)
 
-    let main_tpe = typechecking::make_function_type_n(ident, args, vector::make(), false)
+    let main_tpe = typechecking::make_function_type_n(ident, args, vector::make(), false, false)
     scope::create_function((@node).scope, ident, parser::ShareMarker::EXPORT, main_tpe, false)
     
     predeclare_function(main_tpe, state)

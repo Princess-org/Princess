@@ -216,6 +216,7 @@ class Enum(Type):
         for (name, value) in self.fields:
             res += name
             if value:
+                res += " = "
                 res += value
             res += "; "
         res += "}"
@@ -500,12 +501,12 @@ def main():
         
         has_printed = set()
         
+        GLOBALS = {k:v for k,v in GLOBALS.items() if k not in excluded}
         print(f"export var __GLOBALS: [{len(GLOBALS)}; *]", file = fp)
         print(f"export var __NAMES: [{len(GLOBALS)}; string]", file = fp)
 
         num_decls = 0
         for g in GLOBALS.values():
-            if g.name in excluded: continue
             g.print_references(fp, has_printed)
 
             print(g.to_declaration(num_decls), file = fp)

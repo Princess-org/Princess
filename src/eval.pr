@@ -1,9 +1,12 @@
+import buffer
 import vector
 import map
+import util
 import compiler
 import typechecking
 import preprocess
 import scope
+import builtins
 
 export type StackFrame = struct {
     jump_table: *map::Map
@@ -20,6 +23,31 @@ export type State = struct {
     stack: *vector::Vector
 
     next: *compiler::Block
+}
+
+type FfiFunction = struct {
+    name: string
+    ptr: () -> ()
+    initialized: bool
+    ffi_cif: cstd::ffi_cif
+}
+
+var FFI = map::make()
+load_ffi(cstd::__NAMES, cstd::__GLOBALS)
+
+export def load_ffi(names: [string], globals: [*]) {
+    assert(names.size == globals.size)
+    for var i in 0..names.size {
+        let name = names[i]
+        let value = globals[i]
+        let ffi_function = allocate(FfiFunction)
+        @ffi_function = {
+            name = name,
+            ptr = value ! () -> (),
+            initialized = false
+        } !FfiFunction
+        map::put(FFI, name, ffi_function)
+    }
 }
 
 def errorv(msg: string) {
@@ -337,11 +365,54 @@ def eval_Icmp(insn: *compiler::Insn, state: *State) {
     set_value(ret, { kind = ValueKind::BOOL, tpe = ret.tpe, i = result !int64 } !compiler::Value, state)
 }
 
+def struct_to_ffi(tpe: *typechecking::Type) -> *cstd::ffi_type {
+    return null
+}
+
+def union_to_ffi(tpe: *typechecking::Type) -> *cstd::ffi_type {
+    return null
+}
+
+def type_to_ffi(tpe: *typechecking::Type) -> *cstd::ffi_type {
+    if not tpe {
+        return *cstd::ffi_type_void
+    } else if tpe.kind == typechecking::TypeKind::STRUCT {
+        return struct_to_ffi(tpe)
+    } else if tpe.kind == typechecking::TypeKind::UNION {
+        return union_to_ffi(tpe)
+    } else if typechecking::is_enum(tpe) {
+        return type_to_ffi(tpe.tpe)
+    } else if typechecking::is_pointer(tpe) {
+        return *cstd::ffi_type_pointer
+    } else if typechecking::equals(tpe, builtins::int8_) {
+        return *cstd::ffi_type_sint8
+    } else if typechecking::equals(tpe, builtins::uint8_) {
+        return *cstd::ffi_type_uint8
+    } else if typechecking::equals(tpe, builtins::int16_) {
+        return *cstd::ffi_type_sint16
+    } else if typechecking::equals(tpe, builtins::uint16_) {
+        return *cstd::ffi_type_uint16
+    } else if typechecking::equals(tpe, builtins::int32_) {
+        return *cstd::ffi_type_sint32
+    } else if typechecking::equals(tpe, builtins::uint32_) {
+        return *cstd::ffi_type_uint32
+    } else if typechecking::equals(tpe, builtins::int64_) {
+        return *cstd::ffi_type_sint64
+    } else if typechecking::equals(tpe, builtins::uint64_) {
+        return *cstd::ffi_type_uint64
+    } else if typechecking::equals(tpe, builtins::float_) {
+        return *cstd::ffi_type_float
+    } else if typechecking::equals(tpe, builtins::double_) {
+        return *cstd::ffi_type_double
+    }
+}
+
 def eval_Call(insn: *compiler::Insn, state: *State) {
     let name = insn.value.call.name.name 
     let args = insn.value.call.args
     let ret = insn.value.call.ret
 
+    if starts_with(name, "llvm.") { return }
     let function = map::get(state.cstate.result.functions, name) !*compiler::Function
     if not function {
         errorv("Function \"")
@@ -349,23 +420,72 @@ def eval_Call(insn: *compiler::Insn, state: *State) {
         return
     }
 
-    let stack_frame = make_stack_frame(function.block, name)
+    if function.imported {
+        let ffi_function = map::get(FFI, name) !*FfiFunction
+        let ffi_cif = *ffi_function.ffi_cif
 
-    for var i in 0..args.size {
-        let arg = args[i]
-        let np = vector::get(function.args, i) !*typechecking::NamedParameter
-        let arg_value = get_value(arg, state)
-        let mem = allocate(arg.tpe.size)
-        map::put(stack_frame.locals, np.name, mem)
-        set(mem, arg.tpe, arg_value)
+        let ffi_args = allocate((size_of type *cstd::ffi_type) * args.size) !**cstd::ffi_type
+        for var i in 0..args.size {
+            ffi_args[i] = type_to_ffi(args[i].tpe)
+        }
+
+        var status: cstd::ffi_status
+        if function.varargs {
+            status = cstd::ffi_prep_cif_var(ffi_cif, cstd::ffi_abi::FFI_UNIX64, (vector::length(function.args) - 1) !uint, args.size !uint, type_to_ffi(function.ret), ffi_args)
+        } else if not ffi_function.initialized {
+            // TODO Use default abi, at the moment the enum isn't generated right
+            status = cstd::ffi_prep_cif(ffi_cif, cstd::ffi_abi::FFI_UNIX64, args.size !uint, type_to_ffi(function.ret), ffi_args)
+            ffi_function.initialized = true
+        }
+        if status != cstd::ffi_status::FFI_OK {
+            errorv("Failed to prepare ffi for function \"")
+            error(function.name, "\"\n")
+            return
+        }
+
+        let avalues = allocate((size_of type *) * args.size) !**
+        for var i in 0..args.size {
+            let arg = args[i]
+            var mem: * = null
+            if arg.kind == compiler::ValueKind::LOCAL {
+                mem = map::get(get_stack_frame(state).locals, arg.name)
+            } else if arg.kind == compiler::ValueKind::GLOBAL {
+                mem = map::get(state.globals, arg.name)
+            } else {
+                // We need to allocate memory for static values
+                mem = allocate(arg.tpe.size)
+                set(mem, arg.tpe, arg)
+            }
+            avalues[i] = mem
+        }  
+
+        var rvalue: * = null
+        if ret.tpe {
+            rvalue = allocate(ret.tpe.size)
+            map::put(get_stack_frame(state).locals, ret.name, rvalue)
+        }
+        
+        cstd::ffi_call(ffi_cif, ffi_function.ptr, rvalue, avalues)
+
+    } else {
+        let stack_frame = make_stack_frame(function.block, name)
+
+        for var i in 0..args.size {
+            let arg = args[i]
+            let np = vector::get(function.args, i) !*typechecking::NamedParameter
+            let arg_value = get_value(arg, state)
+            let mem = allocate(arg.tpe.size)
+            map::put(stack_frame.locals, np.name, mem)
+            set(mem, arg.tpe, arg_value)
+        }
+
+        push_stack_frame(stack_frame, state)
+        eval(function.block, state)
+        let ret_value = get_value(stack_frame.ret, state)
+        pop_stack_frame(state)
+
+        set_value(ret, ret_value, state)
     }
-
-    push_stack_frame(stack_frame, state)
-    eval(function.block, state)
-    let ret_value = get_value(stack_frame.ret, state)
-    pop_stack_frame(state)
-
-    set_value(ret, ret_value, state)
 }
 
 def eval_Ret(insn: *compiler::Insn, state: *State) {
