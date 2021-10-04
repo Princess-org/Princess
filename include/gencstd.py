@@ -371,11 +371,23 @@ def walk_Expression(node):
     elif kind == "IntegerLiteral":
         return node["value"]
     elif kind == "UnaryOperator":
-        return node["opcode"] + " " + walk_Expression(node["inner"][0])
+        return "(" + node["opcode"] + walk_Expression(node["inner"][0]) + ")"
     elif kind == "BinaryOperator":
-        return (walk_Expression(node["inner"][0]) + " " + 
-            node["opcode"] + " " +
-            walk_Expression(node["inner"][1]))
+        opcode = node["opcode"]
+
+        if opcode == "&&": opcode = "and"
+        elif opcode == "||": opcode = "or"
+
+        return ("(" + walk_Expression(node["inner"][0]) + " " + 
+            opcode + " " + walk_Expression(node["inner"][1]) + ")")
+    elif kind == "ParenExpr":
+        return "(" + walk_Expression(node["inner"][0]) + ")"
+    elif kind == "DeclRefExpr":
+        return node["referencedDecl"]["name"]
+    elif kind == "ConditionalOperator":
+        return (walk_Expression(node["inner"][1]) + " if " +
+            walk_Expression(node["inner"][0]) + " else " +
+            walk_Expression(node["inner"][2]))
     return ""
 
 def walk_VarDecl(node):
