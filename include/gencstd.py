@@ -258,8 +258,8 @@ class VarDecl(Declaration):
 
     def to_declaration(self, n: int) -> str:
         ret = f"export import var #extern {self.name}: {self.type}"
-        ret += f"\n__NAMES[{n}] = \"{self.name}\""
-        ret += f"\n__GLOBALS[{n}] = *{self.name} !*"
+        ret += f"\n__VAR_NAMES[{n}] = \"{self.name}\""
+        ret += f"\n__VARS[{n}] = *{self.name} !*"
         return ret
 
     def print_references(self, fp, has_printed: set):
@@ -281,8 +281,8 @@ class FunctionDecl(Declaration):
 
         ret = f"export import def #extern {self.name}({', '.join(args)})"
         if self.ret != void: ret += " -> " + str(self.ret)
-        ret += f"\n__NAMES[{n}] = \"{self.name}\""
-        ret += f"\n__GLOBALS[{n}] = *{self.name} !*"
+        ret += f"\n__DEF_NAMES[{n}] = \"{self.name}\""
+        ret += f"\n__DEFS[{n}] = *{self.name} !() -> ()"
 
         return ret
 
@@ -502,13 +502,23 @@ def main():
         has_printed = set()
         
         GLOBALS = {k:v for k,v in GLOBALS.items() if k not in excluded}
-        print(f"export var __GLOBALS: [{len(GLOBALS)}; *]", file = fp)
-        print(f"export var __NAMES: [{len(GLOBALS)}; string]", file = fp)
+        DEFS = {k:v for k,v in GLOBALS.items() if isinstance(v, FunctionDecl)}
+        VARS = {k:v for k,v in GLOBALS.items() if isinstance(v, VarDecl)}
+        
+        print(f"export var __DEFS: [{len(DEFS)}; () -> ()]", file = fp)
+        print(f"export var __DEF_NAMES: [{len(DEFS)}; string]", file = fp)
+        print(f"export var __VARS: [{len(VARS)}; *]", file = fp)
+        print(f"export var __VAR_NAMES: [{len(VARS)}; string]", file = fp)
 
         num_decls = 0
-        for g in GLOBALS.values():
+        for g in DEFS.values():
             g.print_references(fp, has_printed)
+            print(g.to_declaration(num_decls), file = fp)
+            num_decls += 1
 
+        num_decls = 0
+        for g in VARS.values():
+            g.print_references(fp, has_printed)
             print(g.to_declaration(num_decls), file = fp)
             num_decls += 1
 

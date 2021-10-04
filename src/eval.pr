@@ -30,30 +30,57 @@ type FfiFunction = struct {
     ffi_cif: cstd::ffi_cif
 }
 
-var FFI = map::make()
-load_ffi(cstd::__NAMES, cstd::__GLOBALS)
+type FfiGlobal = struct {
+    name: string
+    ptr: *
+}
 
-export def load_ffi(names: [string], globals: [*]) {
-    assert(names.size == globals.size)
-    for var i in 0..names.size {
-        let name = names[i]
-        let value = globals[i]
+// Map of FfiVariable
+var FFI_GLOBALS = map::make()
+// Map of FfiFunction
+var FFI_FUNCTIONS = map::make()
+load_ffi(cstd::__DEF_NAMES, cstd::__DEFS, cstd::__VAR_NAMES, cstd::__VARS)
+
+export def load_ffi(def_names: [string], defs: [type () -> ()], var_names: [string], vars: [*]) {
+    assert(def_names.size == defs.size)
+    for var i in 0..def_names.size {
+        let name = def_names[i]
+        let value = defs[i]
         let ffi_function = allocate(FfiFunction)
         @ffi_function = {
             name = name,
-            ptr = value ! () -> (),
+            ptr = value,
             initialized = false
         } !FfiFunction
-        map::put(FFI, name, ffi_function)
+        map::put(FFI_FUNCTIONS, name, ffi_function)
+
+        let ffi_global = allocate(FfiGlobal)
+        @ffi_global = {
+            name = name,
+            ptr = value !*
+        } !FfiGlobal
+        map::put(FFI_GLOBALS, name, ffi_global)
+    }
+
+    assert(var_names.size == vars.size)
+    for var i in 0..var_names.size {
+        let name = var_names[i]
+        let value = vars[i]
+        let ffi_global = allocate(FfiGlobal)
+        @ffi_global = {
+            name = name,
+            ptr = value
+        } !FfiGlobal
+        map::put(FFI_GLOBALS, name, ffi_global)
     }
 }
 
 export def setup_globals(cstate: *compiler::State) {
-    let keys = map::keys(FFI)
+    let keys = map::keys(FFI_GLOBALS)
     for var i in 0..keys.size {
         let key = keys[i]
-        let ptr = map::get(FFI, key)
-        map::put(cstate.globals, key, ptr)
+        let global = map::get(FFI_GLOBALS, key) !*FfiGlobal
+        map::put(cstate.globals, key, global.ptr)
     }
 }
 
@@ -360,7 +387,8 @@ def eval_Convert(insn: *compiler::Insn, state: *State) {
 def eval_Load(insn: *compiler::Insn, state: *State) {
     let loc = insn.value.load.loc
     let mem = get_address(loc, state)
-    set_value(insn.value.load.value, get(mem, loc.tpe.tpe), state)
+    let value = get(mem, loc.tpe.tpe)
+    set_value(insn.value.load.value, value, state)
 }
 
 def eval_Store(insn: *compiler::Insn, state: *State) {
@@ -596,7 +624,7 @@ def eval_Call(insn: *compiler::Insn, state: *State) {
     }
 
     if function.imported {
-        let ffi_function = map::get(FFI, name) !*FfiFunction
+        let ffi_function = map::get(FFI_FUNCTIONS, name) !*FfiFunction
         let ffi_cif = *ffi_function.ffi_cif
 
         let ffi_args = allocate((size_of type *cstd::ffi_type) * args.size) !**cstd::ffi_type
@@ -848,6 +876,7 @@ export def eval(cstate: *compiler::State) -> *State {
         let mem = map::get(cstate.globals, key)
         let global = map::get(state.cstate.result.globals, key) !*compiler::Global
         if not global { continue } // Probably a constant
+        if typechecking::is_stub(global.tpe) { continue } // Didn't reference
         let valuep = allocate(compiler::Value)
         @valuep = get(mem, global.tpe)
         global.value = valuep
