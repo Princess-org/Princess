@@ -251,6 +251,18 @@ class Declaration(ABC):
     def print_references(self, fp, has_printed: set):
         pass
 
+class ConstDecl(Declaration):
+    def __init__(self, name: str, type: Type, value: str) -> None:
+        self.name = name
+        self.type = type
+        self.value = value
+
+    def to_declaration(self, n: int) -> str:
+        return f"export const {self.name}: {self.type} = {self.value}"
+
+    def print_references(self, fp, has_printed: set):
+        self.type.print_references(fp, has_printed)
+
 class VarDecl(Declaration):
     def __init__(self, name: str, type: Type):
         self.name = name
@@ -371,7 +383,11 @@ def walk_Expression(node):
     elif kind == "IntegerLiteral":
         return node["value"]
     elif kind == "UnaryOperator":
-        return "(" + node["opcode"] + walk_Expression(node["inner"][0]) + ")"
+        opcode = node["opcode"]
+        
+        if opcode == "!": opcode = "not"
+
+        return "(" + opcode + " " + walk_Expression(node["inner"][0]) + ")"
     elif kind == "BinaryOperator":
         opcode = node["opcode"]
 
@@ -407,6 +423,12 @@ def walk_EnumDecl(node):
                 inner = walk_Expression(decl["inner"][0])
             
             fields.append((field_name, inner))
+
+    if not name:
+        prev = "0"
+        for f in fields:
+            GLOBALS[f[0]] = ConstDecl(f[0], PRIMITIVES["int"], f[1] if f[1] else prev)
+            prev = f[0] + " + 1"
 
     record = Enum(name, fields)
     if name:
@@ -516,11 +538,16 @@ def main():
         GLOBALS = {k:v for k,v in GLOBALS.items() if k not in excluded}
         DEFS = {k:v for k,v in GLOBALS.items() if isinstance(v, FunctionDecl)}
         VARS = {k:v for k,v in GLOBALS.items() if isinstance(v, VarDecl)}
+        CONSTS = {k:v for k,v in GLOBALS.items() if isinstance(v, ConstDecl)}
         
         print(f"export var __DEFS: [{len(DEFS)}; () -> ()]", file = fp)
         print(f"export var __DEF_NAMES: [{len(DEFS)}; string]", file = fp)
         print(f"export var __VARS: [{len(VARS)}; *]", file = fp)
         print(f"export var __VAR_NAMES: [{len(VARS)}; string]", file = fp)
+
+        for g in CONSTS.values():
+            g.print_references(fp, has_printed)
+            print(g.to_declaration(0), file = fp)
 
         num_decls = 0
         for g in DEFS.values():
