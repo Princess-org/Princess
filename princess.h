@@ -15,6 +15,7 @@
 
 #ifndef _WIN32
 #include <linux/limits.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 extern FILE *stdout;
