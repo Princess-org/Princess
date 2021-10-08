@@ -3,15 +3,10 @@
 
 #include <stdlib.h>
 #include <stdio.h>
-#include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
-#include <stdlib.h>
-#include <math.h>
 #include <assert.h>
-#include <signal.h>
 #include <stdarg.h>
-#include <stdalign.h>
 
 #ifndef _WIN32
 #include <linux/limits.h>
