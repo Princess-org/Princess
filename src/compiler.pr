@@ -221,6 +221,7 @@ export type Insn = struct {
 // Block for CFG
 export type Block = struct {
     label_: string
+    counter: int
     // Vector of Insn
     insn: *vector::Vector
     next: *Block
@@ -275,7 +276,6 @@ type LoopState = struct {
 
 export type State = struct {
     module: *toolchain::Module
-    counter: int
     global_counter: int
     meta_counter: int
     local_counter: int
@@ -297,9 +297,10 @@ export type State = struct {
 
 export def make_block -> *Block {
     let block = allocate(Block)
-    (@block).label_ = "start"
-    (@block).insn = vector::make()
-    (@block).next = null
+    @block = {
+        label_ = "start",
+    	insn = vector::make()
+    }
     return block
 }
 
@@ -398,25 +399,22 @@ export def make_location(node: *parser::Node, state: *State) -> *Value {
 }
 
 export def make_label(state: *State) -> Label {
-    let s = util::int_to_str((@state).counter)
-    (@state).counter += 1
+    let s = util::int_to_str(state.current_block.counter)
+    state.current_block.counter += 1
     return { name = s } !Label
-}
-
-export def make_unique_name(state: *State) -> string {
-    let s = util::int_to_str((@state).counter)
-    (@state).counter += 1
-    return s
 }
 
 export def push_label(label_: Label, state: *State) {
     let block = allocate(Block)
     // TODO Might want to use the actual label here
-    (@block).label_ = label_.name
-    (@block).insn = vector::make()
-    (@block).next = null
-    (@(@state).current_block).next = block
-    (@state).current_block = block
+    @block = {
+        label_ = label_.name,
+        insn = vector::make(),
+        counter = state.current_block.counter
+    }
+    
+    state.current_block.next = block
+    state.current_block = block
 }
 
 export def push_insn(insn: *Insn, state: *State) {
@@ -510,9 +508,11 @@ export def make_address_value(tpe: *typechecking::Type, addr: *Value, state: *St
 }
 
 export def make_local_value(tpe: *typechecking::Type, addr: *Value, state: *State) -> Value {
+    let s = util::int_to_str(state.current_block.counter)
+    state.current_block.counter += 1
     return {
         kind = ValueKind::LOCAL,
-        name = make_unique_name(state),
+        name = s,
         tpe = tpe,
         addr = addr
     } !Value
@@ -534,15 +534,20 @@ export def make_named_local(tpe: *typechecking::Type, addr: *Value, state: *Stat
     } !Value
 }
 
-export def make_global_value(tpe: *typechecking::Type, name: string, value: *Value, state: *State) -> Value {
+export def make_global_name(name: string, state: *State) -> string {
     let buf = buffer::make_buffer()
     buffer::append_str(*buf, name)
     buffer::append_char(*buf, '.')
     buffer::append_str(*buf, util::int_to_str((@state).global_counter))
-    name = buffer::to_string(*buf)
     (@state).global_counter += 1
 
+    return buffer::to_string(*buf)
+}
+
+export def make_global_value(tpe: *typechecking::Type, name: string, value: *Value, state: *State) -> Value {
     let global = allocate(Global)
+    name = make_global_name(name, state)
+
     @global = {
         private = true,
         name = name,
@@ -619,7 +624,7 @@ export def charp(str: string, state: *State) -> Value {
     (@tpe).tpe = builtins::char_
     (@tpe).length = str.size
     (@tpe).size = (@tpe).length * (size_of char)
-    (@tpe).align = size_of char
+    (@tpe).align = align_of char
 
     let value = allocate(Value)
     @value = {
@@ -2347,6 +2352,7 @@ def walk_AlignOf(node: *parser::Node, state: *State) -> Value {
 }
 
 def compare(node: *parser::Node, left: Value, right: Value, state: *State) -> Value {
+    if not left.tpe or not right.tpe { return NO_VALUE }
     let loc = make_location(node, state)
 
     var tpe: *typechecking::Type = null
@@ -3028,7 +3034,7 @@ def walk_Break(node: *parser::Node, state: *State) {
         return
     }
     push_insn(break_insn, state)
-    (@state).counter += 1
+    state.current_block.counter += 1
 }
 
 def walk_Continue(node: *parser::Node, state: *State) {
@@ -3038,7 +3044,7 @@ def walk_Continue(node: *parser::Node, state: *State) {
         return
     }
     push_insn(continue_insn, state)
-    (@state).counter += 1
+    state.current_block.counter += 1
 }
 
 def walk_Loop(node: *parser::Node, state: *State) {
@@ -3695,7 +3701,8 @@ export def predeclare_function(tpe: *typechecking::Type, state: *State) {
     map::put((@(@state).result).functions, (@function).name, function)
 }
 
-export def create_function(node: *parser::Node, tpe: *typechecking::Type, body: *vector::Vector, scpe: *scope::Scope, state: *State) {
+// Block may be null
+export def create_function(node: *parser::Node, tpe: *typechecking::Type, body: *vector::Vector, scpe: *scope::Scope, block: *Block, state: *State) {
     let function = map::get(state.result.functions, tpe.type_name) !*Function
     if not function { return }
     function.forward_declare = false
@@ -3747,9 +3754,9 @@ export def create_function(node: *parser::Node, tpe: *typechecking::Type, body: 
 
     if body {
         (@state).current_function = function
-        (@state).counter = 0
-        
-        let block = make_block()
+        if not block {
+            block = make_block()
+        }
 
         (@function).block = block
         let previous_block = state.current_block
@@ -3898,7 +3905,6 @@ def walk_TypeDecl(node: *parser::Node, state: *State) {
             (@function).block = block
             (@state).current_block = block
             (@state).current_function = function
-            (@state).counter = 0
 
             let switch_values = vector::make()
             let swtch = make_insn(InsnKind::SWITCH)
@@ -4069,28 +4075,28 @@ def walk_top_Import(node: *parser::Node, body: *vector::Vector, state: *State) {
     }
 }
 
-export def create_state(module: *toolchain::Module) -> *State {
-    let state = allocate(State)
-    @state = {
-        module = module,
-        counter = 0,
-        global_counter = 0,
-        meta_counter = 0,
-        loops = vector::make(),
-        result = allocate(Result),
-        ditypes = map::make(),
-        discope = vector::make(),
-        current_block = make_block(),
-        globals = map::make()
-    } !State
-
-    @(@state).result = {
+export def make_result -> *Result {
+    let result = allocate(Result)
+    @result = {
         functions = map::make(),
         structures = map::make(),
         globals = map::make(),
         constants = map::make(),
         metadata = map::make()
     } !Result
+}
+
+export def make_state(module: *toolchain::Module) -> *State {
+    let state = allocate(State)
+    @state = {
+        module = module,
+        loops = vector::make(),
+        result = module.result,
+        ditypes = map::make(),
+        discope = vector::make(),
+        current_block = make_block(),
+        globals = map::make()
+    } !State
 
     return state
 }
@@ -4139,7 +4145,7 @@ export def compile(module: *toolchain::Module) -> *Result {
     }
 
     let body = vector::make()
-    let state = create_state(module)
+    let state = make_state(module)
 
     if module.module != "cstd" and module.module != "std" {
         // compile standard library
@@ -4326,7 +4332,7 @@ export def compile(module: *toolchain::Module) -> *Result {
         switch (@n).kind !int {
             case parser::NodeKind::DEF:
                 if n.value.def_.is_used and not (n.value.def_.share !int & parser::ShareMarker::IMPORT !int) {
-                    create_function(n, n.tpe, n.value.def_.body, n.inner_scope, state)
+                    create_function(n, n.tpe, n.value.def_.body, n.inner_scope, null, state)
                 }
             case parser::NodeKind::TYPE_DECL:
                 walk_TypeDecl(n, state)
@@ -4339,7 +4345,7 @@ export def compile(module: *toolchain::Module) -> *Result {
         }
     }
 
-    create_function(ident, main_tpe, body, node.scope, state)
+    create_function(ident, main_tpe, body, node.scope, module.code, state)
 
     if toolchain::debug_sym {
         let keys = map::keys((@(@state).result).globals)

@@ -201,11 +201,14 @@ def get_address(loc: compiler::Value, state: *State) -> * {
                 return null
             }
 
-            mem = allocate(loc.tpe.tpe.size)
+            var ptr = allocate(loc.tpe.tpe.size)
             if global.value {
-                let value = @global.value
-                set(mem, loc.tpe.tpe, value)
+                set(ptr, loc.tpe.tpe, @global.value)
             }
+
+            mem = allocate(loc.tpe.size)
+            let value = { kind = compiler::ValueKind::POINTER, tpe = loc.tpe, i = ptr !int64 } !compiler::Value
+            set(mem, loc.tpe, value)
             map::put(state.cstate.globals, loc.name, mem)
         }
         return mem
@@ -248,8 +251,7 @@ def set(mem: *, tpe: *typechecking::Type, value: compiler::Value) {
         case typechecking::TypeKind::STRUCT:
             for var i in 0..tpe.fields.size {
                 let field = tpe.fields[i]
-                mem = mem ++ field.offset
-                set(mem, field.tpe, value.values[i])
+                set(mem ++ field.offset, field.tpe, value.values[i])
             }
         case typechecking::TypeKind::UNION:
             let v = value.values[0]
@@ -344,8 +346,8 @@ def eval_GetElementPtr(insn: *compiler::Insn, state: *State) {
     let index = insn.value.gep.index
 
     var tpe =  insn.value.gep.tpe
-    var addr = get_address(value, state) ++ (index[0].i * tpe.size)
-    
+    var addr = get(get_address(value, state), value.tpe).i !* ++ (index[0].i * tpe.size)
+
     for var i in 1..index.size {
         let index = index[i].i
         if tpe.kind == typechecking::TypeKind::STRUCT {
@@ -374,6 +376,8 @@ def eval_GetElementPtr(insn: *compiler::Insn, state: *State) {
         }
     }
 
+    //assert(ret.kind == compiler::ValueKind::LOCAL)
+    //map::put(get_stack_frame(state).locals, ret.name, addr)
     set_value(ret, { kind = compiler::ValueKind::POINTER, tpe = typechecking::pointer(tpe), i = addr !int64 } !compiler::Value, state)
 }
 
@@ -388,15 +392,17 @@ def eval_Convert(insn: *compiler::Insn, state: *State) {
 def eval_Load(insn: *compiler::Insn, state: *State) {
     let loc = insn.value.load.loc
     let mem = get_address(loc, state)
-    let value = get(mem, loc.tpe.tpe)
+    let ptr = get(mem, loc.tpe).i !*
+    let value = get(ptr, loc.tpe.tpe)
     set_value(insn.value.load.value, value, state)
 }
 
 def eval_Store(insn: *compiler::Insn, state: *State) {
     let loc = insn.value.store.loc
     let mem = get_address(loc, state)
+    let ptr = get(mem, loc.tpe).i !*
     let value = get_value(insn.value.store.value, state)
-    set(mem, value.tpe, value)
+    set(ptr, value.tpe, value)
 }
 
 def eval_Alloca(insn: *compiler::Insn, state: *State) {
@@ -959,7 +965,153 @@ def eval(block: *compiler::Block, state: *State) {
     }
 }
 
-export def eval(cstate: *compiler::State) -> *State {
+// Turn pointers into their own constants
+// the first parameter is an out value, you need to pass true and it gets set to false if any of the 
+// sub expressions of value is not a constant (pointers and arrays)
+def serialize(is_constant: *bool, value: compiler::Value, global: *compiler::Global, index: *vector::Vector, module: *toolchain::Module, state: *State) -> compiler::Value {
+    if value.kind == compiler::ValueKind::POINTER {
+        @is_constant = false
+
+        var loc: compiler::Value
+        if vector::length(index) > 0 {
+            loc = compiler::make_local_value(value.tpe, null, state.cstate)
+
+            let gep = compiler::make_insn(compiler::InsnKind::GETELEMENTPTR)
+            let index_array = allocate(compiler::Value, vector::length(index) + 1)
+            index_array[0] = compiler::make_int_value(0)
+            for var i in 0..vector::length(index) {
+                index_array[i + 1] = @(vector::get(index, i) !*compiler::Value)
+            }
+            gep.value.gep = {
+                ret = loc,
+                tpe = global.tpe.tpe,
+                value = { kind = compiler::ValueKind::GLOBAL, name = global.name, tpe = global.tpe } !compiler::Value,
+                index = index_array
+            } !compiler::InsnGetElementPtr
+            compiler::push_insn(gep, state.cstate)
+        } else {
+            loc = { kind = compiler::ValueKind::GLOBAL, name = global.name, tpe = global.tpe } !compiler::Value
+        }
+
+        let new_global = allocate(compiler::Global)
+        @new_global = {
+            private = true,
+            name = compiler::make_global_name("const", state.cstate),
+            tpe = value.tpe,
+            line = -1
+        } !compiler::Global
+        map::put(module.result.constants, new_global.name, new_global)
+
+        let valuep = allocate(compiler::Value)
+        @valuep = serialize(is_constant, get(value.i !*, value.tpe.tpe), new_global, vector::make(), module, state)
+        new_global.value = valuep
+        
+        let ret = compiler::make_local_value(value.tpe, null, state.cstate)
+        let load = compiler::make_insn(compiler::InsnKind::LOAD)
+        load.value.load = {
+            value = ret,
+            loc = @valuep
+        } !compiler::InsnLoad
+        compiler::push_insn(load, state.cstate)
+        
+        let store = compiler::make_insn(compiler::InsnKind::STORE)
+        store.value.store = {
+            value = ret,
+            loc = loc
+        } !compiler::InsnStore
+        compiler::push_insn(store, state.cstate)
+
+        return { kind = compiler::ValueKind::UNDEF, tpe = value.tpe } !compiler::Value
+    } else if value.kind == compiler::ValueKind::STRUCT and value.tpe.kind == typechecking::TypeKind::ARRAY {
+        @is_constant = false
+
+        let length = value.values[0].i
+        let ptr = value.values[1].i !*
+        let values = allocate(compiler::Value, length)
+        let array_value = { kind = compiler::ValueKind::ARRAY, tpe = value.tpe, values = values } !compiler::Value
+        
+        let tpe = typechecking::make_type_raw(typechecking::TypeKind::STATIC_ARRAY)
+        tpe.tpe = builtins::char_
+        tpe.length = length
+        tpe.size = tpe.length * value.tpe.tpe.size
+        tpe.align = value.tpe.tpe.align
+
+        let new_global = allocate(compiler::Global)
+        @new_global = {
+            private = true,
+            name = compiler::make_global_name("const", state.cstate),
+            tpe = tpe,
+            line = -1
+        } !compiler::Global
+        map::put(module.result.constants, new_global.name, new_global)
+
+        for var i in 0..length {
+            let new_index = vector::make()
+            let indexp = allocate(compiler::Value)
+            @indexp = compiler::make_int_value(i)
+            vector::push(new_index, indexp)
+            values[i] = serialize(is_constant, get(ptr ++ value.tpe.tpe.size * i, value.tpe.tpe), new_global, new_index, module, state)
+        }
+
+        let loc = compiler::make_local_value(typechecking::pointer(typechecking::pointer(value.tpe.tpe)), null, state.cstate)
+        let gep = compiler::make_insn(compiler::InsnKind::GETELEMENTPTR)
+        let index_array = allocate(compiler::Value, vector::length(index) + 2)
+        index_array[0] = compiler::make_int_value(0)
+        for var i in 0..vector::length(index) {
+            index_array[i + 1] = @(vector::get(index, i) !*compiler::Value)
+        }
+        index_array[vector::length(index) + 1] = compiler::make_int_value(1)
+        gep.value.gep = {
+            ret = loc,
+            tpe = global.tpe,
+            value = { kind = compiler::ValueKind::GLOBAL, name = global.name, tpe = typechecking::pointer(global.tpe) } !compiler::Value,
+            index = index_array
+        } !compiler::InsnGetElementPtr
+        compiler::push_insn(gep, state.cstate)
+
+        let gep2_ret = compiler::make_local_value(typechecking::pointer(value.tpe.tpe), null, state.cstate)
+        let gep2 = compiler::make_insn(compiler::InsnKind::GETELEMENTPTR)
+        let index_array2 = allocate(compiler::Value, 2)
+        index_array2[0] = compiler::make_int_value(0)
+        index_array2[1] = compiler::make_int_value(0)
+        gep2.value.gep = {
+            ret = gep2_ret,
+            tpe = tpe,
+            value = { kind = compiler::ValueKind::GLOBAL, tpe = typechecking::pointer(tpe), name = new_global.name } !compiler::Value,
+            index = index_array2
+        }
+        compiler::push_insn(gep2, state.cstate)
+        
+        let store = compiler::make_insn(compiler::InsnKind::STORE)
+        store.value.store = {
+            value = gep2_ret,
+            loc = loc
+        } !compiler::InsnStore
+        compiler::push_insn(store, state.cstate)
+
+        let valuep = allocate(compiler::Value)
+        @valuep = array_value
+        new_global.value = valuep
+
+        value.values[1].kind = compiler::ValueKind::UNDEF
+        return value
+        
+    } else if value.kind == compiler::ValueKind::ARRAY or value.kind == compiler::ValueKind::STRUCT {
+        @is_constant = false
+        for var i in 0..value.values.size {
+            let new_index = vector::copy(index)
+            let indexp = allocate(compiler::Value)
+            @indexp = compiler::make_int_value(i)
+            vector::push(index, indexp)
+            value.values[i] = serialize(is_constant, value.values[i], global, new_index, module, state)
+        }
+        return value
+    } else {
+        return value
+    }
+}
+
+export def eval(cstate: *compiler::State, module: *toolchain::Module) -> *State {
     if toolchain::error_count > 0 {
         return null
     }
@@ -979,6 +1131,10 @@ export def eval(cstate: *compiler::State) -> *State {
 
     eval(block, state)
 
+    // We need to insert code to the beginning of the main function in that module
+    state.cstate.current_block = compiler::make_block()
+    module.code = state.cstate.current_block
+
     // TODO This overwrites everything, even variables that are not used
     let global_keys = map::keys(cstate.globals)
     for var i in 0..global_keys.size {
@@ -987,9 +1143,26 @@ export def eval(cstate: *compiler::State) -> *State {
         let global = map::get(state.cstate.result.globals, key) !*compiler::Global
         if not global { continue } // Probably a constant
         if typechecking::is_stub(global.tpe) { continue } // Didn't reference
+        var is_constant = true
+        let value = serialize(*is_constant, get(mem, global.tpe), global, vector::make(), module, state)
+        
         let valuep = allocate(compiler::Value)
-        @valuep = get(mem, global.tpe)
-        global.value = valuep
+        @valuep = value
+
+        if is_constant {
+            global.value = valuep
+        } else {
+            // We need to create a new global, or else the constant is getting inlined
+            let new_global = allocate(compiler::Global)
+            @new_global = {
+                private = false,
+                name = global.name,
+                tpe = global.tpe,
+                value = valuep,
+                line = -1
+            } !compiler::Global
+            map::put(module.result.constants, new_global.name, new_global)
+        }
     }
 
     return state
