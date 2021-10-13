@@ -97,11 +97,6 @@ class Function(Type):
         args = ', '.join(map(str, filter(lambda x: x != void, self.args)))
         return f"({args}) -> ({self.ret if self.ret != void else ''})"
 
-    def print_references(self, fp, has_printed):
-        for t in self.args:
-            t.print_references(fp, has_printed)
-        self.ret.print_references(fp, has_printed)
-
 class Pointer(Type):
     def __init__(self, tpe: Type):
         self.type = tpe
@@ -111,8 +106,6 @@ class Pointer(Type):
             return "*"
         else: return f"*{self.type}"
 
-    def print_references(self, fp, has_printed):
-        self.type.print_references(fp, has_printed)
 
 class Array(Type):
     def __init__(self, tpe: Type, length = None):
@@ -124,9 +117,6 @@ class Array(Type):
             return f"[{self.length}; {self.type}]"
         else:
             return f"*{self.type}"
-    
-    def print_references(self, fp, has_printed):
-        self.type.print_references(fp, has_printed)
 
 class Record(Type):
     def __init__(self) -> None:
@@ -246,10 +236,6 @@ class Declaration(ABC):
     @abstractmethod
     def to_declaration(self, n: int) -> str:
         pass
-    
-    @abstractmethod
-    def print_references(self, fp, has_printed: set):
-        pass
 
 class ConstDecl(Declaration):
     def __init__(self, name: str, type: Type, value: str) -> None:
@@ -259,9 +245,6 @@ class ConstDecl(Declaration):
 
     def to_declaration(self, n: int) -> str:
         return f"export const {self.name}: {self.type} = {self.value}"
-
-    def print_references(self, fp, has_printed: set):
-        self.type.print_references(fp, has_printed)
 
 class VarDecl(Declaration):
     def __init__(self, name: str, type: Type):
@@ -273,9 +256,6 @@ class VarDecl(Declaration):
         ret += f"\n__VAR_NAMES[{n}] = \"{self.name}\""
         ret += f"\n__VARS[{n}] = *{self.name} !*"
         return ret
-
-    def print_references(self, fp, has_printed: set):
-        self.type.print_references(fp, has_printed)
 
 class FunctionDecl(Declaration):
     def __init__(self, name: str, ret: Type, args, variadic: bool):
@@ -297,11 +277,6 @@ class FunctionDecl(Declaration):
         ret += f"\n__DEFS[{n}] = *{self.name} !() -> ()"
 
         return ret
-
-    def print_references(self, fp, has_printed: set):
-        self.ret.print_references(fp, has_printed)
-        for _, tpe in self.args:
-            tpe.print_references(fp, has_printed)
 
 PRIMITIVES = {
     ('char'): Integer("char"),
@@ -545,19 +520,21 @@ def main():
         print(f"export var __VARS: [{len(VARS)}; *]", file = fp)
         print(f"export var __VAR_NAMES: [{len(VARS)}; string]", file = fp)
 
+        for type in TYPEDEFS.values():
+            type.print_references(fp, has_printed)
+        for type in TAGGED.values():
+            type.print_references(fp, has_printed)
+
         for g in CONSTS.values():
-            g.print_references(fp, has_printed)
             print(g.to_declaration(0), file = fp)
 
         num_decls = 0
         for g in DEFS.values():
-            g.print_references(fp, has_printed)
             print(g.to_declaration(num_decls), file = fp)
             num_decls += 1
 
         num_decls = 0
         for g in VARS.values():
-            g.print_references(fp, has_printed)
             print(g.to_declaration(num_decls), file = fp)
             num_decls += 1
 
