@@ -19,39 +19,52 @@ def print_divider(c: char) {
     print("\n")
 }
 
+let stdout_file = "tmp/stdout.txt"
+let stderr_file = "tmp/stderr.txt"
+
+var test_count = 0
+var failed_test_count = 0
+// Shared memory
+var asserts: *int
+
 export def tassert(cond: bool) {
-    assert_count += 1
+    asserts[0] += 1
     if not cond {
         cstd::fprintf(debug::stdout_orig, "x".value)
-        failed_assert_count += 1
+        asserts[1] += 1
     } else {
         cstd::fprintf(debug::stdout_orig, ".".value)
     }
     cstd::fflush(debug::stdout_orig)
 }
 
-let stdout_file = "tmp/stdout.txt"
-let stderr_file = "tmp/stderr.txt"
-
-var test_count = 0
-var failed_test_count = 0
-var assert_count = 0
-var failed_assert_count = 0
-
 export def run_test(desc: string, function: () -> (), expected_out: string, expected_err: string) {
     test_count += 1
-    assert_count = 0
-    failed_assert_count = 0 
 
     var num_printed = print(">", desc, " ")
     cstd::fflush(stdout)
 
     debug::redirect_stdout_to_file(stdout_file)
     debug::redirect_stderr_to_file(stderr_file)
-    function()
+
+    asserts = cstd::mmap(null, (size_of int) * 2, 3 /*PROT_READ | PROT_WRITE*/, 33 /*MAP_SHARED | MAP_ANONYMOUS*/, -1, 0) !*int
+    asserts[0] = asserts[1] = 0
+
+    let pid = cstd::fork()
+    if pid == 0 {
+        function()
+        exit(0)
+    }
+    var segfault = false
+    var status: int
+    cstd::waitpid(pid, *status, 0)
+    if status & 0x7f == 11 /*SIGSEGV*/{
+        segfault = true
+    }
+    
     debug::restore_stdout()
     debug::restore_stderr()
-
+    
     let stdout_fh = open(stdout_file, "rb")
     let out = util::read_all(stdout_fh)
     close(stdout_fh)
@@ -65,6 +78,10 @@ export def run_test(desc: string, function: () -> (), expected_out: string, expe
     tassert(out_ok)
     tassert(err_ok)
 
+    let assert_count = asserts[0]
+    let failed_assert_count = asserts[1]
+    cstd::munmap(asserts, (size_of int) * 2)
+
     num_printed += assert_count 
     let termsize = util::get_terminal_size()
     let spacing = termsize.ws_col - num_printed - 13
@@ -77,15 +94,19 @@ export def run_test(desc: string, function: () -> (), expected_out: string, expe
         print("\n")
     }
 
-    print("[")
-    cstd::printf("%2d/%-2d".value, assert_count - failed_assert_count, assert_count)
-    if failed_assert_count == 0 {
-        print("  \x1B[32mOK\x1B[0m  ")
+    if segfault {
+        print("[  \x1B[31mSEGFAULT\x1B[0m ]")
     } else {
-        print(" \x1B[31mERROR\x1B[0m")
+        print("[")
+        cstd::printf("%2d/%-2d".value, assert_count - failed_assert_count, assert_count)
+        if failed_assert_count == 0 {
+            print("  \x1B[32mOK\x1B[0m  ")
+        } else {
+            print(" \x1B[31mERROR\x1B[0m")
+        }
+        print("]\n")
     }
-    print("]\n")
-
+    
     if not out_ok {
         print_divider('-')
         print("Expected standard out:\n")
@@ -104,7 +125,7 @@ export def run_test(desc: string, function: () -> (), expected_out: string, expe
         print_divider('-')
     }
 
-    if failed_assert_count > 0 {
+    if failed_assert_count > 0 or segfault {
         failed_test_count += 1
     }
 }

@@ -12,6 +12,8 @@
 #include <linux/limits.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
+#include <sys/wait.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 extern FILE *stdout;
