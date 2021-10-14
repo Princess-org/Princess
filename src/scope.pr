@@ -22,7 +22,7 @@ export type Value = struct {
     scope: *Scope
     // In case multiple values share one name (overloaded functions)
     next: *Value
-    forward_declare: bool
+    phase: Phase
     // True if the value is a global value
     global: bool
     // No mangling if extern
@@ -45,6 +45,10 @@ export type Scope = struct {
     // specifying the full path
     // Vector of toolchain::Module
     imports: *vector::Vector
+}
+
+export type Phase = enum {
+    DECLARED; DEFINED; COMPILED
 }
 
 def get_scope_count(scope: *Scope) -> int {
@@ -160,7 +164,7 @@ export def get_function(scope: *Scope, id: *parser::Node, parameter_t: *vector::
             }
         }
         if value and (not check_export or value.share !int & parser::ShareMarker::EXPORT !int) { 
-            if value.node {
+            if value.phase == Phase::DEFINED {
                 typechecking::walk(value.node.parent, value.node, value.state)
             }
             return value 
@@ -203,7 +207,7 @@ export def get(scope: *Scope, id: *parser::Node, force_compile: bool, check_expo
     if vector::length((@id).value.body) == 1 {
         let name = @(vector::get((@id).value.body, 0) !*string)
         var value = map::get((@scope).fields, name) !*Value
-        if value and value.node and force_compile {
+        if value and value.phase == Phase::DEFINED and force_compile {
             typechecking::walk(value.node.parent, value.node, value.state)
         }
         if value { return value }
@@ -219,7 +223,7 @@ export def get(scope: *Scope, id: *parser::Node, force_compile: bool, check_expo
                         typechecking::errorn(id, "Ambiguous reference\n")
                         return null
                     }
-                    if value2.node and force_compile {
+                    if value2.phase == Phase::DEFINED and force_compile {
                         typechecking::walk(value2.node.parent, value2.node, value2.state)
                     }
                     value = value2
@@ -319,7 +323,7 @@ def last_path_element(node: *parser::Node) -> string {
 // TODO Give better error messages, where was the function/variable declared previously?
 export def create_function(
     scope: *Scope, name_node: *parser::Node, share: parser::ShareMarker, 
-    tpe: *typechecking::Type, forward_declare: bool, node: *parser::Node,
+    tpe: *typechecking::Type, phase: Phase, node: *parser::Node,
     state: *typechecking::State) {
 
     assert((@tpe).kind == typechecking::TypeKind::FUNCTION)
@@ -335,7 +339,7 @@ export def create_function(
         name = name,
         assembly_name = name,
         tpe = tpe,
-        forward_declare = forward_declare,
+        phase = phase,
         global = is_global(scope),
         node = node,
         state = state
@@ -351,14 +355,18 @@ export def create_function(
         var prev: *Value = null
         loop {
             if typechecking::overload_score((@next).tpe, (@tpe).parameter_t, true) == 0 {
-                if not (@next).forward_declare {
+                if phase == Phase::DECLARED { return }
+                if phase == Phase::DEFINED and next.phase != Phase::DECLARED {
                     typechecking::errorn(name_node, "Function ")
                     error("\"", name, "\" was already declared previously (same arguments)\n")
-                } else if not forward_declare or node {
+                } else {
                     // Make sure we keep the chain intact
                     // TODO This is quite dodgy but its apparently needed for some reason
                     @next.tpe = @v.tpe
                     v.next = next.next
+                    if next.node {
+                        v.node = next.node
+                    }
                     if prev {
                         prev.next = v
                     } else {
@@ -381,9 +389,9 @@ export def create_function(
 }
 
 export def create_function(
-    scope: *Scope, node: *parser::Node, share: parser::ShareMarker, 
-    tpe: *typechecking::Type, forward_declare: bool) {
-    create_function(scope, node, share, tpe, forward_declare, null, null)
+    scope: *Scope, name_node: *parser::Node, share: parser::ShareMarker, 
+    tpe: *typechecking::Type) {
+    create_function(scope, name_node, share, tpe, Phase::COMPILED, null, null)
 }
 
 def append_scope_count(scope: *Scope, name: string) -> string {
@@ -395,10 +403,10 @@ def append_scope_count(scope: *Scope, name: string) -> string {
     return buffer::to_string(*buf)
 }
 
-export def create_variable_ext(
+export def create_variable(
     scope: *Scope, name_node: *parser::Node, share: parser::ShareMarker, 
     modifier: parser::VarDecl, tpe: *typechecking::Type, extern: bool, value: *compiler::Value, 
-    forward_declare: bool, node: *parser::Node, state: *typechecking::State) {
+    phase: Phase, node: *parser::Node, state: *typechecking::State) {
     
     scope = create_path(scope, name_node)
     if not scope { return }
@@ -414,7 +422,7 @@ export def create_variable_ext(
         value = value,
         global = global,
         extern = extern,
-        forward_declare = forward_declare,
+        phase = phase,
         node = node,
         state = state
     } !Value
@@ -428,45 +436,47 @@ export def create_variable_ext(
     }
 
     let val = map::get(scope.fields, name) !*Value
+
     if val {
-        if val.forward_declare and not typechecking::is_function(val.tpe) and not typechecking::is_type(val.tpe) {
+        if phase == Phase::DEFINED and val.phase != Phase::DECLARED or 
+            phase == Phase::COMPILED and val.phase != Phase::DEFINED or 
+            typechecking::is_function(val.tpe) or typechecking::is_type(val.tpe) {
+
+            typechecking::errorn(name_node, "Redeclaration of ")
+            error("\"", name, "\"\n")
+        } else {
             if v.tpe {
                 let tpe2 = val.tpe
                 @tpe2 = @v.tpe
             }
             map::put((@scope).fields, name, v)
-        } else {
-            typechecking::errorn(name_node, "Redeclaration of ")
-            error("\"", name, "\"\n")
         }
     } else {
         map::put((@scope).fields, name, v)
     }
 }
 
-export def create_variable_ext(
+export def create_variable(
     scope: *Scope, name_node: *parser::Node, share: parser::ShareMarker, 
     modifier: parser::VarDecl, tpe: *typechecking::Type, extern: bool, value: *compiler::Value) {
-    
-    create_variable_ext(scope, name_node, share, modifier, tpe, extern, value, false, null, null)
+    create_variable(scope, name_node, share, modifier, tpe, extern, value, Phase::COMPILED, null, null)
 }
 
 export def create_variable(
-    scope: *Scope, node: *parser::Node, share: parser::ShareMarker, 
+    scope: *Scope, name_node: *parser::Node, share: parser::ShareMarker, 
     modifier: parser::VarDecl, tpe: *typechecking::Type, value: *compiler::Value) {
-    
-    create_variable_ext(scope, node, share, modifier, tpe, false, value)
+    create_variable(scope, name_node, share, modifier, tpe, false, value, Phase::COMPILED, null, null)
 }
 
 export def create_type(
     scope: *Scope, name_node: *parser::Node, 
     share: parser::ShareMarker, tpe: *typechecking::Type, 
-    forward_declare: bool, node: *parser::Node, state: *typechecking::State) -> *typechecking::Type {
+    phase: Phase, node: *parser::Node, state: *typechecking::State) -> *typechecking::Type {
     
     scope = create_path(scope, name_node)
     if not scope { return null }
     let name = last_path_element(name_node)
-
+    
     let value_tpe = allocate(compiler::Value)
     @value_tpe = { kind = compiler::ValueKind::TYPE, tpe = builtins::type_, value_tpe = tpe } !compiler::Value
 
@@ -480,22 +490,23 @@ export def create_type(
         value = value_tpe,
         scope = (@tpe).scope,
         global = is_global(scope),
-        forward_declare = forward_declare,
+        phase = phase,
         node = node,
         state = state
     } !Value
 
     let value = map::get((@scope).fields, name) !*Value
     if value {
-        let tpe2 = (@value).value
-        if (@(@value).tpe).kind != typechecking::TypeKind::TYPE or
-            (@tpe2).value_tpe.kind != typechecking::TypeKind::STUB and    
-            (@tpe).kind != typechecking::TypeKind::STUB {
+        let tpe2 = value.value
+        if phase == Phase::DEFINED and value.phase != Phase::DECLARED or 
+            phase == Phase::COMPILED and value.phase != Phase::DEFINED and not typechecking::is_stub(tpe2.value_tpe) or 
+            value.tpe.kind != typechecking::TypeKind::TYPE {
+            
             typechecking::errorn(node, "Redeclaration of ")
             error("\"", name, "\"\n")
             return null
         } 
-        if (@tpe).kind != typechecking::TypeKind::STUB or forward_declare {
+        if phase != Phase::DECLARED {
             @tpe2.value_tpe = @tpe
             v.value = tpe2
             map::put((@scope).fields, name, v)
@@ -509,10 +520,9 @@ export def create_type(
 }
 
 export def create_type(
-    scope: *Scope, node: *parser::Node, 
+    scope: *Scope, name_node: *parser::Node, 
     share: parser::ShareMarker, tpe: *typechecking::Type) -> *typechecking::Type {
-
-    return create_type(scope, node, share, tpe, false, null, null)
+    return create_type(scope, name_node, share, tpe, Phase::COMPILED, null, null)
 }
 
 export def enter_namespace(scope: *Scope, scope2: *Scope, node: *parser::Node) -> *Value {
