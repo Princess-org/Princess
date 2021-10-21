@@ -1,10 +1,11 @@
 #!/bin/bash
 set -e
 
-source build.sh
+source scripts.sh
 
-echo "Building standard library..."
-python3.9 include/gencstd.py
+mkdir -p build bin
+download
+genstdlib
 echo "Building the compiler..."
 ./bin/princess -d --include=src --buildfolder=build --outfile=bin/princess2 src/main.pr
 echo "Building test suite..."
