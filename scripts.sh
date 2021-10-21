@@ -1,20 +1,21 @@
 source version
 SOURCE_URL="https://github.com/Princess-org/Princess/releases/download/v${VERSION}-alpha/princess-${VERSION}.tar.gz"
 
+function build {
+    bin/princess -d -Isrc --buildfolder=build --outfile=bin/princess2 src/main.pr
+}
+
 function release {
     FOLDER="princess-${VERSION}"
 
-    ./bin/princess -d --include=src --buildfolder=build --outfile=bin/princess2 src/main.pr
+    build
     mkdir -p $FOLDER
     mkdir -p $FOLDER/bin
     cp ./bin/princess2 $FOLDER/bin/princess
+    cp version $FOLDER
     cp -r ./include $FOLDER/include
     tar -zcvf "${FOLDER}.tar.gz" $FOLDER
     rm -r $FOLDER
-}
-
-function build {
-    bin/princess -d -Isrc --buildfolder=build --outfile=bin/princess2 src/main.pr
 }
 
 function testsuite {
