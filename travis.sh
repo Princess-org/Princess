@@ -7,8 +7,8 @@ mkdir -p build bin
 download
 genstdlib
 echo "Building the compiler..."
-./bin/princess -d --include=src --buildfolder=build --outfile=bin/princess2 src/main.pr
+build
 echo "Building test suite..."
-./bin/princess2 -d --include=src --buildfolder=build --outfile=bin/testsuite src/test/main.pr
+testsuite
 echo "Running test suite..."
 ./bin/testsuite
