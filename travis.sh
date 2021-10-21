@@ -3,7 +3,6 @@ set -e
 
 source build.sh
 
-download
 echo "Building standard library..."
 python3.9 include/gencstd.py
 echo "Building the compiler..."
