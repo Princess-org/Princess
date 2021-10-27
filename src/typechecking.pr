@@ -1473,10 +1473,12 @@ def walk_Return(node: *parser::Node, state: *State) {
     (@node).tpe = current_fun
 }
 
-def walk_Call(node: *parser::Node, state: *State) {
-    let left = (@node).value.func_call.left
-    if not left { return }
-    walk(node, left, state)
+def walk_Call(node: *parser::Node, dry_run: bool, state: *State) -> bool {
+    var left = (@node).value.func_call.left
+    if not left { return false }
+    if not dry_run { walk(node, left, state) }
+    // We need to do this because member access overwrites the parent node
+    left = node.value.func_call.left
     var tpe = (@left).tpe
 
     var arguments = vector::make()
@@ -1514,10 +1516,11 @@ def walk_Call(node: *parser::Node, state: *State) {
 
     if not is_function_pointer(tpe) {
         if (@left).kind == parser::NodeKind::IDENTIFIER {
-            var function = scope::get_function(state.scope, left, arguments)
+            var function = scope::get_function(state.scope, left, arguments, dry_run)
             left.svalue = function
 
             if not function {
+                if dry_run { return false }
                 errorn(left, "Function \"")
                 error(parser::identifier_to_str(left), "\" not found. ")
                 let len = vector::length(arguments)
@@ -1534,13 +1537,13 @@ def walk_Call(node: *parser::Node, state: *State) {
                     }
                 }
                 error("\n")
-                return
+                return false
             }
 
             tpe = (@function).tpe
         } else {
             errorn(left, "Can't call expression\n")
-            return
+            return false
         }
     }
 
@@ -1586,6 +1589,11 @@ def walk_Call(node: *parser::Node, state: *State) {
     }
 
     (@node).tpe = flatten_return_type(node, return_t)
+    return true
+}
+
+def walk_Call(node: *parser::Node, state: *State) {
+    walk_Call(node, false, state)
 }
 
 def walk_Case(node: *parser::Node, state: *State) {
@@ -1774,8 +1782,16 @@ def walk_MemberAccess_ucs(node: *parser::Node, state: *State) -> bool {
 
     if (@parent).kind == parser::NodeKind::FUNC_CALL and
         (@parent).value.func_call.left == node {
-        @(@parent).value.func_call.left = @right
+        let old_parent = @parent
+        let old_args = vector::copy((@parent).value.func_call.args)
+        parent.value.func_call.left = right
         vector::prepend((@parent).value.func_call.args, left)
+
+        if not walk_Call(parent, true, state) {
+            @parent = old_parent
+            parent.value.func_call.args = old_args
+            return false 
+        }
     } else {
         let parameter_t = vector::make()
         let np = allocate(NamedParameter)
@@ -1785,7 +1801,7 @@ def walk_MemberAccess_ucs(node: *parser::Node, state: *State) -> bool {
         } !NamedParameter
         vector::push(parameter_t, np)
 
-        let function = scope::get_function((@node).scope, right, parameter_t)
+        let function = scope::get_function((@node).scope, right, parameter_t, true)
         if not function { return false }
 
         let args = vector::make()
@@ -1822,34 +1838,49 @@ def resolve_member(fields: [StructMember], name: string) -> *Type {
 }
 
 def walk_MemberAccess(node: *parser::Node, state: *State) {
-    let right = (@node).value.bin_op.right
     let left = (@node).value.bin_op.left
     walk(node, left, state)
     let tpe = (@left).tpe
 
     if is_pointer(tpe) {
         let old_left = parser::copy_node(left)
-        @left = {
+        let new_left = {
             kind = parser::NodeKind::DEREF,
-            loc = (@left).loc
+            loc = (@left).loc,
+            tpe = tpe.tpe
         } !parser::Node
-        (@left).value.expr = old_left
+        new_left.value.expr = old_left
+        @left = new_left
+        if walk_MemberAccess_aggregate(node, false, state) { return }
+        
+        @left = @old_left
+        if walk_MemberAccess_ucs(node, state) { return }
 
-        walk(node, node, state)
+        @left = new_left
+        walk_MemberAccess_ucs(node, state)
         return
     }
 
-    if not tpe { return }
+    walk_MemberAccess_aggregate(node, true, state)
+}
+
+def walk_MemberAccess_aggregate(node: *parser::Node, ucs: bool, state: *State) -> bool {
+    let right = (@node).value.bin_op.right
+    let left = (@node).value.bin_op.left
+    let tpe = left.tpe
+    if not tpe { return false }
 
     if (@tpe).kind == TypeKind::STRUCT or (@tpe).kind == TypeKind::UNION {
         let name = last_ident_to_str(right)
 
-        var rtpe = resolve_member((@tpe).fields, name)
+        let rtpe = resolve_member((@tpe).fields, name)
         if not rtpe {
-            if walk_MemberAccess_ucs(node, state) { return }
-            errorn(node, "Unknown field \"")
-            error(name, "\"\n")
-            return
+            if ucs {
+                if walk_MemberAccess_ucs(node, state) { return true }
+                errorn(node, "Unknown field \"")
+                error(name, "\"\n")
+            }
+            return false
         }
         (@node).tpe = rtpe
     } else if (@tpe).kind == TypeKind::ARRAY or (@tpe).kind == TypeKind::STATIC_ARRAY {
@@ -1859,15 +1890,22 @@ def walk_MemberAccess(node: *parser::Node, state: *State) {
         } else if name == "value" {
             (@node).tpe = pointer((@tpe).tpe)
         } else {
-            if walk_MemberAccess_ucs(node, state) { return }
-            errorn(node, "Expected size or value\n")
+            if ucs {
+                if walk_MemberAccess_ucs(node, state) { return true }
+                errorn(node, "Expected size or value\n")
+            }
+            return false
         }
     // TODO Enums might have ordinal and some other information
     } else {
-        if walk_MemberAccess_ucs(node, state) { return }
-        errorn(node, "Expected aggregate type, got ")
-        error(debug::type_to_str(tpe), "\n")
+        if ucs {
+            if walk_MemberAccess_ucs(node, state) { return true }
+            errorn(node, "Expected aggregate type, got ")
+            error(debug::type_to_str(tpe), "\n")
+        }
+        return false
     }
+    return true
 }
 
 def walk_ArraySubscript(node: *parser::Node, state: *State) {
