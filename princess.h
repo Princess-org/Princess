@@ -22,6 +22,7 @@ extern FILE *stdin;
 
 #define WIN32 0
 #else
+#include <Windows.h>
 #include <fileapi.h>
 #endif
 

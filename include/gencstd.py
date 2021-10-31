@@ -11,11 +11,12 @@ GRAMMAR = """\
     sign = 'signed' | 'unsigned';
     modifier = 'long' 'long' @:`'llong'` | 'long' | 'short';
     specifier = 'int' | 'char' | 'float' | 'double' | '__int128';
+    winptr = '__ptr32' | '__sptr' | '__uptr';
 
     identifier::Identifier      = /(?!\d)\w+/;
     tagged_idenitifier::Tagged  = ('struct' | 'union' | 'enum') identifier;
     primitive::Primitive        = [sign] [modifier] specifier | [sign] modifier | sign;
-    pointer::Pointer            = type: type '*' ['const'] ['volatile'] ['restrict'];
+    pointer::Pointer            = type: type '*' {winptr | 'const' | 'volatile' | 'restrict'};
     array::Array                = type: type '[' size: [/\d+/] ']';
     function::Function          = ret: type / \(\*\)/ '(' args: ','.{ type_1 | varargs } ')';
 
@@ -23,10 +24,13 @@ GRAMMAR = """\
     varargs::Varargs = '...';
 
     type = pointer | function | array | void | primitive | tagged_idenitifier | identifier;
-    type_1 = ['const'] ['volatile'] @:type;
+    type_1 = {winptr | 'const' | 'volatile' | '__unaligned'} @:type;
 """
 
 PARSER = tatsu.compile(GRAMMAR, asmodel = True)
+
+def parse(s):
+    return PARSER.parse(s, start = "type_1")
 
 GLOBALS = {}
 TYPEDEFS = {}
@@ -348,7 +352,10 @@ WALKER = Walker()
 def get_type(node) -> str:
     tpe = node["type"]
     if "desugaredQualType" in tpe:
-        return tpe["desugaredQualType"]
+        desugared = tpe["desugaredQualType"]
+        if is_anonymous(desugared):
+            return tpe["qualType"]
+        return desugared
     else: return tpe["qualType"]
 
 def walk_Expression(node):
@@ -383,7 +390,7 @@ def walk_Expression(node):
 
 def walk_VarDecl(node):
     name = node["name"]
-    tpe = PARSER.parse(get_type(node), start = "type_1")
+    tpe = parse(get_type(node))
     tpe = WALKER.walk(tpe)
     GLOBALS[name] = VarDecl(name, tpe)
 
@@ -410,7 +417,15 @@ def walk_EnumDecl(node):
         TAGGED[name] = record
     STRUCT_IDS[node["id"]] = record
 
+def is_anonymous(qual_type):
+    return ("anonymous struct at" in qual_type or 
+        "anonymous union" in qual_type or 
+        "anonymous at" in qual_type)
+
+last_record = None
 def walk_TypedefDecl(node):
+    global last_record
+
     name = node["name"]
     inner = node["inner"][0]
     if "ownedTagDecl" in inner:
@@ -419,25 +434,26 @@ def walk_TypedefDecl(node):
         struct.typename = name
         TYPEDEFS[name] = struct
     else:
-        tpe = PARSER.parse(get_type(inner), start = "type_1")
-        TYPEDEFS[name] = WALKER.walk(tpe)
+        tpe = get_type(inner)
+        if is_anonymous(tpe):
+            record = last_record
+        else:
+            record = WALKER.walk(parse(tpe))
+        TYPEDEFS[name] = record
 
 def walk_RecordDecl(node):
+    global last_record
     name = node["name"] if "name" in node else ""
 
     fields = []
-    last_record = None
     if "inner" in node:
         for field in node["inner"]:
             if field["kind"] == "FieldDecl":
                 qual_type = get_type(field)
-                if ("anonymous struct at" in qual_type or 
-                    "anonymous union" in qual_type or 
-                    "anonymous at" in qual_type):
+                if is_anonymous(qual_type):
                     tpe = last_record
                 else:
-                    tpe = PARSER.parse(qual_type, start = "type_1")
-                    tpe = WALKER.walk(tpe)
+                    tpe = WALKER.walk(parse(qual_type))
                 
                 fields.append((field.get("name", ""), tpe))
             elif field["kind"] == "RecordDecl":
@@ -447,6 +463,8 @@ def walk_RecordDecl(node):
         record = Struct(name, fields)
     else: record = Union(name, fields)
 
+    last_record = record
+
     if name:
         TAGGED[name] = record
     STRUCT_IDS[node["id"]] = record
@@ -455,7 +473,7 @@ def walk_RecordDecl(node):
 
 def walk_FunctionDecl(node):
     name = node["name"]
-    ret = WALKER.walk(PARSER.parse(get_type(node), start = "type_1"))
+    ret = WALKER.walk(parse(get_type(node)))
     if not "storageClass" in node or node["storageClass"] != "static":
         variadic = node.get("variadic", False)
         args = []
@@ -464,7 +482,7 @@ def walk_FunctionDecl(node):
                 if param["kind"] != "ParmVarDecl":
                     continue
                 argname = param.get("name", "_" + str(i))
-                tpe = WALKER.walk(PARSER.parse(get_type(param), start = "type_1"))
+                tpe = WALKER.walk(parse(get_type(param)))
                 args.append((argname, tpe))
 
 
