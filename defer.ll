@@ -6,16 +6,16 @@ def some_function {
 }
 
 define void @some_function() {
-    %a.0 = alloca i32
-    %b.0 = alloca i32
+    %a.0 = alloca i32*
+    %b.0 = alloca i32*
     ...
     %__defers = alloca %some_function.defers*
     store %some_function.defers* null, %some_function.defers** %__defers
     ...
-    %0 = load i32, i32* %a.0
-    %1 = insertvalue %some_function.env { i32 undef, i32 undef }, i32 %0, 0
-    %2 = load i32, i32* %b.0
-    %3 = insertvalue %some_function.env %0, i32 %2, 1 
+    %0 = load i32*, i32** %a.0
+    %1 = insertvalue %some_function.env { i32* undef, i32* undef }, i32* %0, 0
+    %2 = load i32*, i32** %b.0
+    %3 = insertvalue %some_function.env %0, i32* %2, 1 
     %4 = alloca %some_function.defers
     %5 = load %some_function.defers*, %some_function.defers** %__defers
     %6 = insertvalue %some_function.defers { %some_function.env undef, void (%some_function.env*)* undef, %some_function.defers* undef }, %some_function.env %3, 0
@@ -44,7 +44,7 @@ end:
     ret void
 }
 
-%some_function.env = type { i32, i32 }
+%some_function.env = type { i32*, i32* }
 %some_function.defers = type { %some_function.env, void (%some_function.env*)*, %some_function.defers* }
 
 define void @some_function.defer.0 (%some_function.env* %env) {
