@@ -97,6 +97,12 @@ export type NamedParameter = struct {
     value: *compiler::Value
 }
 
+export type Function = struct {
+    tpe: *Type
+    locals: *map::Map
+    has_defer: bool
+}
+
 export type State = struct {
     module: *toolchain::Module
     counter: int
@@ -108,21 +114,21 @@ export type State = struct {
     is_compiling_function: bool
 }
 
-def current_function(state: *State) -> *Type {
+export def current_function(state: *State) -> *Function {
     let length = vector::length((@state).function_stack)
     if length == 0 {
         return null
     } else {
-        return vector::get((@state).function_stack, length - 1) !*Type
+        return vector::get((@state).function_stack, length - 1) !*Function
     }
 }
 
-def push_function(state: *State, tpe: *Type) {
-    vector::push((@state).function_stack, tpe)
+export def push_function(state: *State, function: *Function) {
+    vector::push((@state).function_stack, function)
 }
 
-def pop_function(state: *State) -> *Type {
-    return vector::pop((@state).function_stack) !*Type
+export def pop_function(state: *State) -> *Function {
+    return vector::pop((@state).function_stack) !*Function
 }
 
 export def is_function(tpe: *Type) -> bool {
@@ -1069,6 +1075,8 @@ export def walk_VarDecl(node: *parser::Node, state: *State, set_constant: bool) 
         balanced = false
     }
 
+    let function = current_function(state)
+
     for var i in 0..vector::length(left) {
         var ltpe = vector::get(ltypes, i) !*Type
         let node = vector::get(left, i) !*parser::Node
@@ -1093,6 +1101,10 @@ export def walk_VarDecl(node: *parser::Node, state: *State, set_constant: bool) 
 
             scope::create_variable(state.scope, ident, share, kw, ltpe, extern, null)
             (@ident).svalue = scope::get(state.scope, ident)
+
+            if function {
+                map::put(function.locals, ident.svalue.assembly_name, ltpe)
+            }
         } else {
             let n = (@node).value.expr
             if not check_is_identifier_assignable(n, state) {
@@ -1390,11 +1402,20 @@ def walk_Def(node: *parser::Node, state: *State) {
     }
     
     if body {
-        push_function(state, tpe)
+        let function = allocate(Function)
+        @function = {
+            tpe = tpe,
+            locals = node.value.def_.locals,
+            has_defer = node.value.def_.has_defer
+        }
+
+        push_function(state, function)
         for var i in 0..vector::length(body) {
             walk(node, vector::get(body, i) !*parser::Node, state)
         }
         pop_function(state)
+
+        node.value.def_.has_defer = function.has_defer
     }
 
     node.tpe = tpe
@@ -1440,7 +1461,7 @@ def walk_TypeDecl(node: *parser::Node, state: *State) {
 }
 
 def walk_Return(node: *parser::Node, state: *State) {
-    let current_fun = current_function(state)
+    let current_fun = current_function(state).tpe
     let body = (@node).value.body
     if not current_fun {
         // TODO This is actually allowed, I just need to infer the types
@@ -2106,6 +2127,15 @@ def walk_PSub(node: *parser::Node, state: *State) {
     walk_PAdd(node, state)
 }
 
+def walk_Defer(node: *parser::Node, state: *State) {
+    let function = current_function(state)
+    if not function {
+        // TODO allow defer outside of functions
+        assert(false)
+    }
+    function.has_defer = true
+}
+
 export def walk(parent: *parser::Node, node: *parser::Node, state: *State) {
     if not node { return }
     node.parent = parent
@@ -2207,6 +2237,8 @@ export def walk(parent: *parser::Node, node: *parser::Node, state: *State) {
             walk_StructLit(node, state)
         case parser::NodeKind::ARRAY_LIT:
             walk_ArrayLit(node, state)
+        case parser::NodeKind::DEFER:
+            walk_Defer(node, state)
         case parser::NodeKind::PTR_T:
             walk_PtrT(node, state)
         case:

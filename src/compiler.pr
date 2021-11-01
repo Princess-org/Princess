@@ -242,6 +242,11 @@ export type Function = struct {
     block: *Block
     debug: *Value
     allocas: *vector::Vector
+
+    locals: *map::Map
+    has_defer: bool
+    defers: *typechecking::Type
+    env: *typechecking::Type
 }
 
 export type Result = struct {
@@ -3341,6 +3346,17 @@ def walk_VarDecl(node: *parser::Node, state: *State) {
     walk_VarDecl(node, state, false)
 }
 
+def walk_Defer(node: *parser::Node, state: *State) {
+    let function = state.current_function
+    let keys = map::keys(function.locals)
+    for var i in 0..keys.size {
+        let key = keys[i]
+        let tpe = map::get(function.locals, key) !*typechecking::Type
+        print(key, ": ", debug::type_to_str(tpe), "\n")
+    }
+    print("Has defer: ", function.has_defer, "\n")
+}
+
 export def walk(node: *parser::Node, state: *State) {
     if not node { return }
     switch (@node).kind !int {
@@ -3365,6 +3381,8 @@ export def walk(node: *parser::Node, state: *State) {
             walk_While(node, state)
         case parser::NodeKind::FOR:
             walk_For(node, state)
+        case parser::NodeKind::DEFER:
+            walk_Defer(node, state)
         case: walk_expression(node, state)
     }
 }
@@ -3697,6 +3715,75 @@ def di_type(tpe: *typechecking::Type, state: *State) -> *Value {
     return ditpep
 }
 
+def generate_defer_types(state: *State) {
+    let function = state.current_function
+    if not function.has_defer { return }
+
+    var buf = buffer::make_buffer()
+    buffer::append_str(*buf, function.name)
+    buffer::append_str(*buf, ".env")
+    let env_name = buffer::to_string(*buf)
+
+    let env = typechecking::make_type_raw(typechecking::TypeKind::STRUCT)
+    env.type_name = env_name
+    env.fields = allocate(typechecking::StructMember, map::size(function.locals))
+
+    let keys = map::keys(function.locals)
+    for var i in 0..keys.size {
+        let tpe = map::get(function.locals, keys[i]) !*typechecking::Type
+        env.fields[i] = {
+            tpe = tpe
+        } !typechecking::StructMember
+    }
+
+    map::put(state.result.structures, env_name, env)
+    function.env = env
+
+    buf = buffer::make_buffer()
+    buffer::append_str(*buf, function.name)
+    buffer::append_str(*buf, ".defers")
+    let defers_name = buffer::to_string(*buf)
+
+    let defers = typechecking::make_type_raw(typechecking::TypeKind::STRUCT)
+    defers.type_name = defers_name
+    defers.fields = allocate(typechecking::StructMember, 3)
+    defers.fields[0] = {
+        tpe = env
+    } !typechecking::StructMember
+
+    let defer_function = typechecking::make_type_raw(typechecking::TypeKind::FUNCTION)
+    defer_function.parameter_t = vector::make()
+    let p = allocate(typechecking::NamedParameter)
+    @p = {
+        tpe = typechecking::pointer(env)
+    } !typechecking::NamedParameter
+    vector::push(defer_function.parameter_t, p)
+    defer_function.return_t = vector::make()
+    defers.fields[1] = {
+        tpe = typechecking::pointer(defer_function)
+    } !typechecking::StructMember
+    defers.fields[2] = {
+        tpe = typechecking::pointer(defers)
+    } !typechecking::StructMember
+
+    map::put(state.result.structures, defers_name, defers)
+    function.defers = defers
+
+    // Generate defer stack
+    let alloca = make_insn(InsnKind::ALLOCA)
+    alloca.value.alloca = {
+        ret = { kind = ValueKind::LOCAL, tpe = typechecking::pointer(defers), name = "__defer" } !Value
+    } !InsnAlloca
+    push_insn(alloca, state)
+
+    let store = make_insn(InsnKind::STORE)
+    store.value.store = {
+        value = { kind = ValueKind::NULL, tpe = typechecking::pointer(defers) } !Value,
+        loc = { kind = ValueKind::LOCAL, tpe = typechecking::pointer(typechecking::pointer(defers)), name = "__defer" } !Value
+    } !InsnStore
+    push_insn(store, state)
+}
+
 export def predeclare_function(tpe: *typechecking::Type, state: *State) {
     let function = allocate(Function)
     @function = {
@@ -3736,7 +3823,9 @@ export def create_function(node: *parser::Node, tpe: *typechecking::Type, body: 
     let function = map::get(state.result.functions, tpe.type_name) !*Function
     if not function { return }
     function.forward_declare = false
-    
+    function.locals = node.value.def_.locals
+    function.has_defer = node.value.def_.has_defer
+
     if body {
         import_structures(tpe, state)
         map::put((@(@state).module).imported, (@tpe).type_name, map::sentinel)
@@ -3846,6 +3935,8 @@ export def create_function(node: *parser::Node, tpe: *typechecking::Type, body: 
 
             push_insn(store, state)
         }
+
+        generate_defer_types(state)
 
         for var i in 0..vector::length(body) {
             let node = vector::get(body, i) !*parser::Node
