@@ -47,8 +47,8 @@ end:
 %some_function.env = type { i32*, i32* }
 %some_function.defers = type { %some_function.env, void (%some_function.env*)*, %some_function.defers* }
 
-define void @some_function.defer.0 (%some_function.env* %env) {
-    %a.0 = getelementptr %some_function.env, %some_function.env* %env, i64 0, i64 0
+define void @some_function.defer.0 (%some_function.env* %__env) {
+    %a.0 = getelementptr %some_function.env, %some_function.env* %__env, i64 0, i64 0
        
     %1 = bitcast i32* %a.0 to i8*
     call @free(%1)
