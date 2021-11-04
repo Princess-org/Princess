@@ -15,6 +15,7 @@
 #include <sys/wait.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <termios.h>
 
 extern FILE *stdout;
 extern FILE *stderr;
