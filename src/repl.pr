@@ -1,7 +1,16 @@
 import buffer
 import vector
+import map
 import toolchain
 import util
+import lexer
+import parser
+import compiler
+import preprocess
+import typechecking
+import eval
+import builtins
+import scope
 
 def read_input {
     var history = allocate(size_of string) !*string
@@ -13,7 +22,6 @@ def read_input {
         var lines = allocate(size_of buffer::Buffer) !*buffer::Buffer
         lines[0] = buffer::make_buffer()
 
-        var num_lines = 1
         var line = 0
         var column = 0
 
@@ -237,22 +245,85 @@ def read_input {
             print("... ")
             cont = true
         }
+
+        let buf = buffer::make_buffer()
+        for var i in 0..=line {
+            buffer::append_str(*buf, buffer::to_string(*lines[i]))
+            buffer::append_char(*buf, '\n')
+        }
+        execute(buffer::to_string(*buf))
     }
 }
+
+var default_term: cstd::s_termios
+var raw_term: cstd::s_termios
 
 export def run {
     print(toolchain::version, "\n")
     print("Press ctrl+c to quit\n")
 
-    var old: cstd::s_termios
-    cstd::tcgetattr(0, *old)
-    var term: cstd::s_termios
-    cstd::tcgetattr(0, *term)
-    cstd::cfmakeraw(*term)
-    cstd::tcsetattr(0, 1 /* TCSADRAIN */, *term)
+    cstd::tcgetattr(0, *default_term)
+    cstd::tcgetattr(0, *raw_term)
+    cstd::cfmakeraw(*raw_term)
+    cstd::tcsetattr(0, 1 /* TCSADRAIN */, *raw_term)
     cstd::setbuf(cstd::stdin, null)
 
     read_input()
 
-    cstd::tcsetattr(0, 1 /* TCSADRAIN */, *old)
+    cstd::tcsetattr(0, 1 /* TCSADRAIN */, *default_term)
+}
+
+var module: *toolchain::Module = null
+var _args: [string] = args
+var state_initialized = false
+var cstate: compiler::State
+
+def execute(source: string) {
+    cstd::tcsetattr(0, 1 /* TCSADRAIN */, *default_term)
+    toolchain::error_count = 0
+
+    let tokens = lexer::lex(source)
+    let lines = util::split_lines(source)
+    let node = parser::parse(tokens, lines, "<stdin>", "main")
+    if not module {
+        let scope = scope::enter_function_scope(builtins::builtins)
+        module = allocate(toolchain::Module)
+        @module = {
+            filename = "<stdin>",
+            module = "main",
+            node = node,
+            scope = scope,
+            result = compiler::make_result(),
+            imported = map::make()
+        } !compiler::Module
+    }
+    module.node = node
+    preprocess::preprocess(module)
+    typechecking::typecheck(module)
+    if not state_initialized {
+        cstate = compiler::make_state(module)
+        state_initialized = true
+    }
+    compiler::compile(*cstate)
+
+    if toolchain::error_count == 0 {
+        let keys = map::keys(module.result.functions)
+        let main_function = map::get(module.result.functions, "_F10main::main__AAi8") !*compiler::Function
+        let estate = {
+            cstate = *cstate,
+            stack = vector::make()
+        } !eval::State
+
+        let stack_frame = eval::make_stack_frame(main_function.block, "main")
+
+        let mem = allocate(size_of type *) !**
+        @mem = (*_args) !*
+        map::put(stack_frame.locals, "args", mem)
+
+        eval::push_stack_frame(stack_frame, *estate)
+        eval::eval(main_function.block, *estate)
+        eval::pop_stack_frame(*estate)
+    }
+    
+    cstd::tcsetattr(0, 1 /* TCSADRAIN */, *raw_term)
 }
