@@ -280,11 +280,13 @@ var cstate: compiler::State
 
 def execute(source: string) {
     cstd::tcsetattr(0, 1 /* TCSADRAIN */, *default_term)
+    defer cstd::tcsetattr(0, 1 /* TCSADRAIN */, *raw_term)
+
     toolchain::error_count = 0
 
     let tokens = lexer::lex(source)
     let lines = util::split_lines(source)
-    let node = parser::parse(tokens, lines, "<stdin>", "main")
+    var node = parser::parse(tokens, lines, "<stdin>", "main")
     if not module {
         let scope = scope::enter_function_scope(builtins::builtins)
         module = allocate(toolchain::Module)
@@ -298,8 +300,41 @@ def execute(source: string) {
         } !compiler::Module
     }
     module.node = node
+
     preprocess::preprocess(module)
     typechecking::typecheck(module)
+
+    assert(node.kind == parser::NodeKind::PROGRAM)
+    node = vector::peek(node.value.body) !*parser::Node
+    if not node { return }
+    switch node.kind !int {
+        case parser::NodeKind::INTEGER..=parser::NodeKind::SHR_EQ,
+            parser::NodeKind::ASSIGN, parser::NodeKind::ARRAY_SUBSCRIPT,
+            parser::NodeKind::FUNC_CALL:
+
+            if node.tpe and node.tpe.kind != typechecking::TypeKind::TUPLE {
+                let old_node = parser::copy_node(node)
+
+                let new_line = allocate(parser::Node)
+                new_line.kind = parser::NodeKind::STRING
+                new_line.value.str = "\n"
+
+                let args = vector::make()
+                vector::push(args, old_node)
+                vector::push(args, new_line)
+
+                node.kind = parser::NodeKind::FUNC_CALL
+                node.value.func_call = {
+                    left = parser::make_identifier(["print"]),
+                    args = args,
+                    kwargs = vector::make()
+                } !parser::NodeFuncCall
+
+                // TODO its a bit wasteful to do this twice
+                typechecking::typecheck(module)
+            }
+    }
+
     if not state_initialized {
         cstate = compiler::make_state(module)
         state_initialized = true
@@ -323,7 +358,5 @@ def execute(source: string) {
         eval::push_stack_frame(stack_frame, *estate)
         eval::eval(main_function.block, *estate)
         eval::pop_stack_frame(*estate)
-    }
-    
-    cstd::tcsetattr(0, 1 /* TCSADRAIN */, *raw_term)
+    }    
 }
