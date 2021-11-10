@@ -2,13 +2,16 @@ source version
 SOURCE_URL="https://github.com/Princess-org/Princess/releases/download/v${VERSION}-alpha/princess-${VERSION}.tar.gz"
 
 function build {
-    bin/princess -d -Isrc --buildfolder=build --outfile=bin/princess2 src/main.pr
+    bin/princess -d -Isrc --buildfolder=build --outfile=bin/princess2 src/main.pr "$@"
 }
 
 function release {
     FOLDER="princess-${VERSION}"
 
+    echo "First compilation pass"
     build
+    echo "Second compilation pass"
+    bin/princess2 -d -Isrc --buildfolder=build --outfile=bin/princess3 src/main.pr 
     mkdir -p $FOLDER
     mkdir -p $FOLDER/bin
     cp princess.h $FOLDER

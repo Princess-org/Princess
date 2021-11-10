@@ -9,7 +9,7 @@ if [[ ! -f bin/princess ]]; then
 fi
 
 if [[ -z $1 ]]; then
-    build
+    build "${@:1}"
 else
     case $1 in 
         "release") release ;;
@@ -19,6 +19,6 @@ else
             rm -f princess*.tar.gz
             ;;
         "download") download ;;
-        *) echo "Usage: $0 [release | test | clean | download]" ;;
+        *) build "${@:1}" ;;
     esac
 fi
