@@ -9,7 +9,7 @@ if [[ ! -f bin/princess ]]; then
 fi
 
 if [[ -z $1 ]]; then
-    build "${@:1}"
+    build
 else
     case $1 in 
         "release") release ;;
