@@ -13,7 +13,7 @@ if [[ -z $1 ]]; then
 else
     case $1 in 
         "release") release ;;
-        "test") testsuite ;;
+        "test") testsuite "${@:2}" ;;
         "clean")
             rm -rf build
             rm -f princess*.tar.gz

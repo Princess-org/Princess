@@ -26,7 +26,7 @@ function testsuite {
     if [[ ! -f bin/princess2 ]]; then
         build 
     fi
-    bin/princess2 -d -Isrc --buildfolder=build --outfile=bin/testsuite src/test/main.pr
+    bin/princess2 -d -Isrc --buildfolder=build --outfile=bin/testsuite src/test/main.pr "$@"
 }
 
 function download {
