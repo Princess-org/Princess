@@ -65,6 +65,7 @@ export type Type = struct {
     // TODO Add kw (parser::VarDecl) for arrays and pointers
     // Static array
     length: size_t
+    kw: parser::VarDecl
     // Type both used for array/pointer and enum
     tpe: *Type
     packed: bool
@@ -266,29 +267,45 @@ export def make_function_type_n(name: *parser::Node, parameter_t: *vector::Vecto
     return tpe
 }
 
-export def pointer(tpe: *Type) -> *Type {
+export def pointer(tpe: *Type, kw: parser::VarDecl) -> *Type {
     var t = make_type_raw(TypeKind::POINTER)
     (@t).tpe = tpe
+    (@t).kw = kw
     (@t).size = (size_of type *)
     (@t).align = (align_of type *)
     return t
 }
 
-export def array(tpe: *Type) -> *Type {
+// TODO Use default arguments for this, right now its bugged (it doesn't define the type)
+export def pointer(tpe: *Type) -> *Type {
+    return pointer(tpe, parser::VarDecl::VAR)
+}
+
+export def array(tpe: *Type, kw: parser::VarDecl) -> *Type {
     var t = make_type_raw(TypeKind::ARRAY)
     (@t).tpe = tpe
     (@t).size = (size_of string)
     (@t).align = (align_of string)
+    (@t).kw = kw
     return t
 }
 
-export def make_static_array(array_tpe: *Type, size: size_t) -> *Type {
+export def array(tpe: *Type) -> *Type {
+    return array(tpe, parser::VarDecl::VAR)
+}
+
+export def make_static_array(array_tpe: *Type, size: size_t, kw: parser::VarDecl) -> *Type {
     let tpe = make_type_raw(TypeKind::STATIC_ARRAY)
     (@tpe).tpe = array_tpe
     (@tpe).length = size
     (@tpe).size = (@tpe).length * (@array_tpe).size
     (@tpe).align = (@array_tpe).align
+    (@tpe).kw = kw
     return tpe
+}
+
+export def make_static_array(array_tpe: *Type, size: size_t) -> *Type {
+    return make_static_array(array_tpe, size, parser::VarDecl::VAR)
 }
 
 def make_unique_name(name: string, state: *State) -> string {
@@ -326,6 +343,10 @@ export def equals(a: *Type, b: *Type) -> bool {
     }
     if not a or not b { return false }
 
+    if a.kind == TypeKind::STUB or b.kind == TypeKind::STUB {
+        return a.type_name == b.type_name
+    }
+
     if (@a).kind != (@b).kind { return false }
 
     let kind = (@a).kind
@@ -340,8 +361,8 @@ export def equals(a: *Type, b: *Type) -> bool {
         kind == TypeKind::STRUCT or
         kind == TypeKind::UNION or
         kind == TypeKind::STUB {
-
-        return (@a).type_name == (@b).type_name        
+        
+        return (@a).type_name == (@b).type_name
     }
     if kind == TypeKind::ARRAY or
         kind == TypeKind::POINTER or
@@ -637,19 +658,10 @@ def flatten_return_type(node: *parser::Node, return_t: *vector::Vector) -> *Type
     return null
 }
 
-// TODO Remove state, it's not needed here
-def check_is_identifier_assignable(ident: *parser::Node, state: *State) -> bool {
-    if (@ident).kind == parser::NodeKind::IDENTIFIER {
-        let value = scope::get(state.scope, ident)
-        if value {
-            if (@value).modifier != parser::VarDecl::VAR {
-                errors::errorn(ident, "Assignment to non var")
-                return false
-            }
-        } else {
-            errors::errorn(ident, "Unknown variable `", parser::identifier_to_str(ident), "`")
-            return false
-        }
+def check_is_identifier_assignable(node: *parser::Node, state: *State) -> bool {
+    if node.kw != parser::VarDecl::VAR {
+        errors::errorn(node, "Assignment to non var")
+        return false
     }
     return true
 }
@@ -676,7 +688,7 @@ export def type_lookup(node: *parser::Node, state: *State, lookup_default: bool)
         }
     } else if (@node).kind == parser::NodeKind::PTR_T {
         let tpe = type_lookup((@node).value.t_parr.tpe, state, lookup_default)
-        return pointer(tpe)
+        return pointer(tpe, node.value.t_parr.kw)
     } else if (@node).kind == parser::NodeKind::STRUCT_T {
         let tpe = make_anonymous_type(TypeKind::STRUCT)
         (@tpe).type_name = make_unique_name("<anonymous>", state)
@@ -793,11 +805,11 @@ export def type_lookup(node: *parser::Node, state: *State, lookup_default: bool)
         return tpe
     } else if (@node).kind == parser::NodeKind::ARRAY_T {
         let array_tpe = type_lookup((@node).value.t_parr.tpe, state, lookup_default)
-        return array(array_tpe)
+        return array(array_tpe, node.value.t_parr.kw)
     } else if (@node).kind == parser::NodeKind::ARRAY_STATIC_T {
         let array_tpe = type_lookup((@node).value.t_arrs.tpe, state, lookup_default)
 
-        return make_static_array(array_tpe, (@(@node).value.t_arrs.n).value.i)
+        return make_static_array(array_tpe, (@(@node).value.t_arrs.n).value.i, node.value.t_arrs.kw)
     } else if (@node).kind == parser::NodeKind::FUNCTION_T {
         let tpe = make_function_type()
         (@tpe).line = (@node).loc.line
@@ -913,7 +925,8 @@ def walk_Identifier(node: *parser::Node, state: *State) {
 
     (@node).svalue = value
     (@node).tpe = (@value).tpe
-
+    node.kw = value.modifier
+    
     if is_function((@node).tpe) and 
         (@(@node).parent).kind != parser::NodeKind::FUNC_CALL and
         (@(@node).parent).kind != parser::NodeKind::PTR {
@@ -1080,6 +1093,7 @@ export def walk_VarDecl(node: *parser::Node, state: *State, set_constant: bool) 
 
     for var i in 0..vector::length(left) {
         var ltpe = vector::get(ltypes, i) !*Type
+
         let node = vector::get(left, i) !*parser::Node
         if (@node).kind == parser::NodeKind::ID_DECL {
             if not ltpe and i < vector::length(rtypes) {
@@ -1774,13 +1788,14 @@ def walk_Deref(node: *parser::Node, state: *State) {
         errors::errorn(node, "Needs to be a pointer type, got ", debug::type_to_str(tpe))
         return
     }
-    (@node).tpe = (@tpe).tpe
+    node.tpe = tpe.tpe
+    node.kw = tpe.kw
 }
 
 def walk_Ptr(node: *parser::Node, state: *State) {
     walk(node, (@node).value.expr, state)
     let tpe = (@(@node).value.expr).tpe
-    (@node).tpe = pointer(tpe)
+    node.tpe = pointer(tpe, tpe.kw)
 }
 
 def walk_MemberAccess_ucs(node: *parser::Node, state: *State) -> bool {
@@ -1927,7 +1942,8 @@ def walk_ArraySubscript(node: *parser::Node, state: *State) {
     if not tpe { return }
     if is_pointer(tpe) or (@tpe).kind == TypeKind::ARRAY or
         (@tpe).kind == TypeKind::STATIC_ARRAY {
-        (@node).tpe = (@tpe).tpe
+        node.kw = tpe.kw
+        node.tpe = tpe.tpe
     } else {
         errors::errorn(left, "Expected array or pointer type, got ", debug::type_to_str(tpe))
     }
