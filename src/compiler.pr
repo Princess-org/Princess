@@ -4095,19 +4095,20 @@ def defer_unroll(state: *State) {
     br.value.br.if_false = label_end
 }
 
-export def predeclare_function(tpe: *typechecking::Type, state: *State) {
-    if map::contains(state.result.functions, tpe.type_name) {
-        return
+export def predeclare_function(tpe: *typechecking::Type, module: *toolchain::Module) -> *Function {
+    var function = map::get(module.result.functions, tpe.type_name) !*Function
+    if function {
+        return function 
     }
 
-    let function = allocate(Function)
+    function = allocate(Function)
     @function = {
         name = (@tpe).type_name,
         unmangled = (@tpe).name,
         forward_declare = true,
         allocas = vector::make(),
         imported = (@tpe).imported,
-        module = state.module
+        module = module
     } !Function
 
     if vector::length(tpe.parameter_t) > 0 {
@@ -4131,7 +4132,9 @@ export def predeclare_function(tpe: *typechecking::Type, state: *State) {
         vector::push((@function).args, np)
     }
 
-    map::put((@(@state).result).functions, (@function).name, function)
+    map::put(module.result.functions, (@function).name, function)
+
+    return function
 }
 
 def create_debug_info(node: *parser::Node, function: *Function, tpe: *typechecking::Type, state: *State) {
@@ -4180,15 +4183,15 @@ def create_debug_info(node: *parser::Node, function: *Function, tpe: *typechecki
 export def create_function(node: *parser::Node, tpe: *typechecking::Type, body: *vector::Vector, scpe: *scope::Scope, block: *Block, state: *State) {
     let function = map::get(state.result.functions, tpe.type_name) !*Function
     if not function { return }
-    if function.is_compiled { return }
 
     function.forward_declare = false
     function.locals = node.value.def_.locals
     function.has_defer = node.value.def_.has_defer
+    function.allocas = vector::make()
 
     if body {
         import_structures(tpe, state)
-        map::put((@(@state).module).imported, (@tpe).type_name, map::sentinel)
+        map::put(state.module.imported, tpe.type_name, map::sentinel)
         create_debug_info(node, function, tpe, state)
 
         (@state).current_function = function
@@ -4212,13 +4215,12 @@ export def create_function(node: *parser::Node, tpe: *typechecking::Type, body: 
                 let v = vars[i]
                 print(v, "\n")
             }*/
-            let oldname = (@np).name
-            let name = (@scope::get(scpe, parser::make_identifier([(@np).name]))).assembly_name
+            let old_name = (@np).name
+            let name = (@scope::get(scpe, parser::make_identifier([old_name]))).assembly_name
             let buf = buffer::make_buffer()
-            buffer::append_str(*buf, name)
+            buffer::append_str(*buf, old_name)
             buffer::append_str(*buf, ".value")
-            // Rename to name.value
-            (@np).name = buffer::to_string(*buf)
+            let new_name = buffer::to_string(*buf)
             // Insert alloca and store instructions
 
             let ret = {
@@ -4235,14 +4237,14 @@ export def create_function(node: *parser::Node, tpe: *typechecking::Type, body: 
 
             if (@np).node {
                 ret.tpe = typechecking::pointer(value)
-                push_declare_arg((@np).node, ret, oldname, i + 1, state)
+                push_declare_arg((@np).node, ret, old_name, i + 1, state)
             }
             
             let store = make_insn(InsnKind::STORE)
             (@store).value.store = {
                 value = {
                     kind = ValueKind::LOCAL,
-                    name = (@np).name,
+                    name = new_name,
                     tpe = value
                 } !Value,
                 loc = {
@@ -4288,8 +4290,8 @@ export def create_function(node: *parser::Node, tpe: *typechecking::Type, body: 
         pop_scope(state)
 
         state.current_block = previous_block
+        function.is_compiled = true
     }
-    function.is_compiled = true
 }
 
 def make_string(str: string, state: *State) -> Value {
@@ -4356,7 +4358,7 @@ def walk_TypeDecl(node: *parser::Node, state: *State) {
             (@swtch).value.switch_ = {
                 value = { 
                     kind = ValueKind::LOCAL, 
-                    name = "enum",
+                    name = "enum.value",
                     tpe = (@tpe).tpe
                 } !Value,
                 switch_values = switch_values
@@ -4559,13 +4561,8 @@ export def predeclare_functions(sc: *scope::Scope, state: *State) {
                 while value {
                     if (@value).share !int & parser::ShareMarker::EXPORT !int {
                         if typechecking::is_function((@value).tpe) {
-                            let fun = map::get(module.result.functions, value.tpe.type_name) !*Function
-                            if fun {
-                                map::put(state.module.result.functions, value.tpe.type_name, fun)
-                            } else {
-                                predeclare_function(value.tpe, state)
-                            }
-                            
+                            let fun = predeclare_function(value.tpe, module)
+                            map::put(state.result.functions, value.tpe.type_name, fun)
                         } else if not typechecking::is_type((@value).tpe) {
                             let name = (@value).assembly_name
                             let global = allocate(Global)
@@ -4778,12 +4775,12 @@ export def compile(state: *State) {
     let main_tpe = typechecking::make_function_type_n(ident, args, vector::make(), false, false)
     scope::create_function((@node).scope, ident, parser::ShareMarker::EXPORT, main_tpe)
     
-    predeclare_function(main_tpe, state)
+    predeclare_function(main_tpe, state.module)
 
     for var i in 0..vector::length(node.value.body) {
         let n = vector::get(node.value.body, i) !*parser::Node
         if n.kind == parser::NodeKind::DEF and n.value.def_.is_used {
-            predeclare_function(n.tpe, state)
+            predeclare_function(n.tpe, state.module)
         }
     }
 
