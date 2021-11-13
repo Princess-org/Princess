@@ -18,7 +18,6 @@ export let const_module = allocate(toolchain::Module)
     module = "const",
     scope = scope::enter_function_scope(builtins::builtins),
     result = compiler::make_result(),
-    imported = map::make(),
     dependants = vector::make()
 } !toolchain::Module
 
@@ -140,6 +139,7 @@ def walk_Import(node: *parser::Node, state: *typechecking::State) {
         }
         scope::insert_module(state.scope, alias, module)
     }
+    compiler::predeclare_functions(state.module)
 }
 
 def walk_Def(node: *parser::Node, state: *typechecking::State) {
@@ -440,16 +440,22 @@ def walk_Return(node: *parser::Node, state: *typechecking::State) {
 
 def compile_function(node: *parser::Node, state: *typechecking::State) {
     if not node { return }
-    let function = map::get(compiler_state.result.functions, node.tpe.type_name) !*compiler::Function
-    if not function or not function.is_compiled {        
+
+    let function = compiler::predeclare_function(node.tpe, node.module)
+    map::put(state.module.result.functions, function.name, function)
+    map::put(compiler_state.result.functions, function.name, function)
+    
+    if not function.is_compiled {        
         let is_compiling_function = state.is_compiling_function
+        let module = state.module
         state.is_compiling_function = true
+        state.module = node.module
         for var i in 0..vector::length(node.value.def_.body) {
             walk(node, vector::get(node.value.def_.body, i) !*parser::Node, state)
         }
         state.is_compiling_function = is_compiling_function
+        state.module = module
 
-        compiler::predeclare_function(node.tpe, compiler_state.module)
         compiler::create_function(node, node.tpe, node.value.def_.body, node.inner_scope, null, *compiler_state)
     }
 }
@@ -457,6 +463,7 @@ def compile_function(node: *parser::Node, state: *typechecking::State) {
 def walk_Call(node: *parser::Node, state: *typechecking::State) {
     let left = node.value.func_call.left
     walk(node, left, state)
+
     if state.is_static {
         let suppress_errors = errors::suppress_errors
         errors::suppress_errors = true
@@ -465,6 +472,7 @@ def walk_Call(node: *parser::Node, state: *typechecking::State) {
 
         if not left.svalue { return }
         let func = left.svalue.node
+
         compile_function(func, state)
     }
     for var i in 0..vector::length(node.value.func_call.args) {
@@ -666,7 +674,9 @@ def walk(parent: *parser::Node, node: *parser::Node, state: *typechecking::State
     if not node { return }
 
     node.parent = parent
-
+    if not node.module {
+        node.module = state.module
+    }
     if not node.scope {
         node.scope = state.scope
     }
@@ -728,30 +738,40 @@ export def preprocess(module: *toolchain::Module) {
     preprocess(*state)
 }
 
+def insert_std_module(module: *toolchain::Module) {
+     if module.module != "cstd" and module.module != "std" {
+        // import standard library
+        let cstd_ident = parser::make_identifier(["cstd"])
+        let cstd = toolchain::preprocess_module(cstd_ident)
+        scope::insert_module(module.scope, cstd_ident, cstd)
+        
+        let std_ident = parser::make_identifier(["std"])
+        let std = toolchain::preprocess_module(std_ident)
+        scope::insert_module(module.scope, std_ident, std)
+    }
+
+    compiler::predeclare_functions(module)
+}
+
 export var time_spent: int64 = 0
 
 export def preprocess(state: *typechecking::State) {
+    if not const_module.imported {
+        const_module.imported = map::make()
+        insert_std_module(const_module)
+    }
+
     let start = util::millis()
     let node = state.module.node
     assert(node.kind == parser::NodeKind::PROGRAM)
 
-    if state.module.module != "cstd" and state.module.module != "std" {
-        // import standard library
-        let cstd_ident = parser::make_identifier(["cstd"])
-        let cstd = toolchain::preprocess_module(cstd_ident)
-        scope::insert_module(state.scope, cstd_ident, cstd)
-        
-        let std_ident = parser::make_identifier(["std"])
-        let std = toolchain::preprocess_module(std_ident)
-        scope::insert_module(state.scope, std_ident, std)
-    }
+    insert_std_module(state.module)
 
     let body = vector::copy(node.value.body)
     for var i in 0..vector::length(body) {
         walk(node, vector::get(body, i) !*parser::Node, state)
     }
 
-    compiler::predeclare_functions(state.module.scope, *compiler_state)
     let end = util::millis()
     time_spent += end - start
 }
