@@ -10,6 +10,7 @@ import builtins
 import typechecking
 import preprocess
 import errors
+import eval
 
 export type Label = struct {
     name: string
@@ -55,7 +56,7 @@ export type Value = struct {
     // Address of a value
     addr: *Value
     tpe: *typechecking::Type
-    function: *Function
+    function: *eval::FunctionPtr
 }
 
 export def copy(value: Value) -> Value {
@@ -2054,11 +2055,14 @@ def walk_AssignEq(node: *parser::Node, state: *State) -> Value {
     }
 
     let arithmetic = allocate(parser::Node)
-    (@arithmetic).kind = kind
-    (@arithmetic).loc = (@node).loc
-    (@arithmetic).scope = (@node).scope
-    (@arithmetic).tpe = (@node).tpe
-    (@arithmetic).value.bin_op = {
+    @arithmetic = {
+        kind = kind,
+        loc = (@node).loc,
+        scope = (@node).scope,
+        tpe = (@node).tpe
+    } !parser::Node
+    
+    arithmetic.value.bin_op = {
         left = left,
         right = right
     } !parser::NodeBinaryOp
@@ -2069,10 +2073,13 @@ def walk_AssignEq(node: *parser::Node, state: *State) -> Value {
     vector::push(right_vec, arithmetic)
 
     let assign_eq_node = allocate(parser::Node)
-    (@assign_eq_node).kind = parser::NodeKind::ASSIGN
-    (@assign_eq_node).loc = (@node).loc
-    (@assign_eq_node).scope = (@node).scope
-    (@assign_eq_node).value.assign = {
+    @assign_eq_node = {
+        kind = parser::NodeKind::ASSIGN,
+        loc = (@node).loc,
+        scope = (@node).scope
+    }
+    
+    assign_eq_node.value.assign = {
         left = left_vec,
         right = right_vec
     } !parser::NodeAssign
@@ -3352,9 +3359,12 @@ export def walk_VarDecl(node: *parser::Node, state: *State, set_constant: bool) 
 
     if vector::length(right) > 0 {
         let assign = allocate(parser::Node)
-        (@assign).kind = parser::NodeKind::ASSIGN
-        (@assign).loc = (@node).loc
-        (@assign).scope = (@node).scope
+        @assign = {
+            kind = parser::NodeKind::ASSIGN,
+            loc = (@node).loc,
+            scope = (@node).scope
+        } !parser::Node
+        
         (@assign).value.assign = {
             left = assign_left,
             right = right
@@ -3909,28 +3919,51 @@ def generate_defer_types(state: *State) {
     env.type_name = env_name
     env.fields = allocate(typechecking::StructMember, map::size(function.locals))
 
+    var offset = 0 !size_t
+    var align = 1 !size_t
+
     let keys = map::keys(function.locals)
     for var i in 0..keys.size {
         let tpe = map::get(function.locals, keys[i]) !*typechecking::Type
+
+        offset = (ceil(offset / tpe.align !double) * tpe.align) !int
+        align = util::lcm(align !int, tpe.align !int)
+
         env.fields[i] = {
-            tpe = tpe
+            tpe = tpe,
+            offset = offset
         } !typechecking::StructMember
+
+        offset += tpe.size
     }
+    offset = (ceil(offset / align !double) * align) !int
+
+    env.align = align
+    env.size = offset
 
     map::put(state.result.structures, env_name, env)
     function.env = env
+
+    offset = 0
+    align = 1
 
     buf = buffer::make_buffer()
     buffer::append_str(*buf, function.name)
     buffer::append_str(*buf, ".defers")
     let defers_name = buffer::to_string(*buf)
 
+    offset = (ceil(offset / env.align !double) * env.align) !int
+    align = util::lcm(align !int, env.align !int)
+
     let defers = typechecking::make_type_raw(typechecking::TypeKind::STRUCT)
     defers.type_name = defers_name
     defers.fields = allocate(typechecking::StructMember, 3)
     defers.fields[0] = {
-        tpe = env
+        tpe = env,
+        offset = offset
     } !typechecking::StructMember
+
+    offset += env.size
 
     let defer_function = typechecking::make_type_raw(typechecking::TypeKind::FUNCTION)
     defer_function.parameter_t = vector::make()
@@ -3940,12 +3973,36 @@ def generate_defer_types(state: *State) {
     } !typechecking::NamedParameter
     vector::push(defer_function.parameter_t, p)
     defer_function.return_t = vector::make()
+    defer_function.align = align_of type ->
+    defer_function.size = size_of type ->
+    
+    let defer_functionp = typechecking::pointer(defer_function)
+
+    offset = (ceil(offset / defer_functionp.align !double) * defer_functionp.align) !int
+    align = util::lcm(align !int, defer_functionp.align !int)
+    
     defers.fields[1] = {
-        tpe = typechecking::pointer(defer_function)
+        tpe = defer_functionp,
+        offset = offset
     } !typechecking::StructMember
+
+    offset += defer_functionp.size
+
+    let defersp = typechecking::pointer(defers)
+
+    offset = (ceil(offset / defer_functionp.align !double) * defer_functionp.align) !int
+    align = util::lcm(align !int, defer_functionp.align !int)
+
     defers.fields[2] = {
-        tpe = typechecking::pointer(defers)
+        tpe = defersp,
+        offset = offset
     } !typechecking::StructMember
+
+    offset += defer_functionp.size
+
+    offset = (ceil(offset / align !double) * align) !int
+    defers.size = offset
+    defers.align = align
 
     map::put(state.result.structures, defers_name, defers)
     function.defers = defers
@@ -4451,13 +4508,16 @@ export def walk_top_VarDecl(node: *parser::Node, state: *State, set_constant: bo
     }
     if vector::length((@node).value.var_decl.right) > 0 {
         let node_assign = allocate(parser::Node)
-        (@node_assign).kind = parser::NodeKind::ASSIGN
-        (@node_assign).loc = (@node).loc
-        (@node_assign).scope = (@node).scope
-        (@node_assign).value.assign = {
+        @node_assign = {
+            kind = parser::NodeKind::ASSIGN,
+            loc = (@node).loc,
+            scope = (@node).scope
+        } !parser::Node
+
+        node_assign.value.assign = {
             left = left,
             right = (@node).value.var_decl.right
-        } !NodeAssign
+        } !parser::NodeAssign
         return node_assign
     }
     return null
@@ -4499,11 +4559,13 @@ def insert_module_main(module: *toolchain::Module, name: *parser::Node, scpe: *s
     if not main_value { return }
 
     let call = allocate(parser::Node)
-    (@call).kind = parser::NodeKind::FUNC_CALL
-    (@call).scope = scpe
-    (@call).tpe = null
-    (@call).function = (@main_value).tpe
-    (@call).value.func_call = {
+    @call = {
+        kind = parser::NodeKind::FUNC_CALL,
+    	scope = scpe,
+        function = (@main_value).tpe
+    } !parser::Node
+    
+    call.value.func_call = {
         left = ident,
         args = args,
         kwargs = vector::make()

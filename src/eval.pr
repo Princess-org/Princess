@@ -28,7 +28,7 @@ export type State = struct {
 
 type FfiFunction = struct {
     name: string
-    ptr: () -> ()
+    ptr: ->
     initialized: bool
     ffi_cif: cstd::ffi_cif
 }
@@ -36,6 +36,14 @@ type FfiFunction = struct {
 type FfiGlobal = struct {
     name: string
     ptr: *
+}
+
+export type FunctionPtr = struct {
+    is_fp: bool
+    struct #union {
+        fp: ->
+        function: *compiler::Function
+    }
 }
 
 // Map of FfiVariable
@@ -170,7 +178,7 @@ export def get(mem: *, tpe: *typechecking::Type) -> compiler::Value {
             values[1] = { kind = compiler::ValueKind::POINTER, tpe = typechecking::pointer(tpe.tpe), i = @((mem ++ (size_of size_t)) !*int64) } !compiler::Value
             return { kind = compiler::ValueKind::STRUCT, tpe = tpe, values = values } !compiler::Value
         case typechecking::TypeKind::FUNCTION:
-            return { kind = compiler::ValueKind::FUNCTION, tpe = tpe, function = mem !*compiler::Function } !compiler::Value
+            return { kind = compiler::ValueKind::FUNCTION, tpe = tpe, function = mem !*FunctionPtr } !compiler::Value
         case typechecking::TypeKind::ENUM:
             let value = get(mem, tpe.tpe)
             value.tpe = tpe
@@ -191,8 +199,9 @@ export def get_address(loc: compiler::Value, state: *State) -> * {
 
             let function = map::get(state.cstate.result.functions, loc.name) !*compiler::Function
             if function {
-                ptr = allocate(compiler::Function)
-                set(ptr, loc.tpe.tpe, { kind = compiler::ValueKind::FUNCTION, tpe = loc.tpe.tpe, function = function } !compiler::Value)
+                ptr = allocate(FunctionPtr)
+                (ptr !*FunctionPtr).function = function
+                set(ptr, loc.tpe.tpe, { kind = compiler::ValueKind::FUNCTION, tpe = loc.tpe.tpe, function = (ptr !*FunctionPtr) } !compiler::Value)
             } else {
                 let ffi_global = map::get(FFI_GLOBALS, loc.name) !*FfiGlobal
                 if ffi_global {
@@ -270,7 +279,7 @@ def set(mem: *, tpe: *typechecking::Type, value: compiler::Value) {
             }
         case typechecking::TypeKind::UNION:
             let v = value.values[0]
-            set(mem, v.tpe, value)
+            set(mem, v.tpe, v)
         case typechecking::TypeKind::STATIC_ARRAY:
             if typechecking::equals(tpe.tpe, builtins::char_) and value.kind == compiler::ValueKind::STRING {
                 memcopy(value.s.value, mem, tpe.length)
@@ -286,7 +295,7 @@ def set(mem: *, tpe: *typechecking::Type, value: compiler::Value) {
             @(mem !*size_t) = value.values[0].i !size_t
             @((mem ++ (size_of size_t)) !*int64) = value.values[1].i
         case typechecking::TypeKind::FUNCTION:
-            @(mem !*compiler::Function) = @value.function
+            @(mem !*FunctionPtr) = @value.function
         case typechecking::TypeKind::ENUM:
             set(mem, tpe.tpe, value)
         case:
@@ -463,7 +472,7 @@ def eval_Store(insn: *compiler::Insn, state: *State) {
 
 def eval_Alloca(insn: *compiler::Insn, state: *State) {
     let ret = insn.value.alloca.ret
-    let mem = allocate(ret.tpe.size)
+    let mem = zero_allocate(ret.tpe.size) // TODO: We shouldn't have to initalize this
     ret.tpe = typechecking::pointer(ret.tpe)
     let ptr = { kind = compiler::ValueKind::POINTER, tpe = ret.tpe, i = mem !int64 } !compiler::Value
     let addr = allocate(ret.tpe.size)
@@ -752,26 +761,84 @@ def type_to_ffi(tpe: *typechecking::Type) -> *cstd::ffi_type {
     }
 }
 
+def ffi_call(args: [compiler::Value], ret: compiler::Value, parameter_t: *vector::Vector, ret_tpe: *typechecking::Type, ffi_function: *FfiFunction, varargs: bool, state: *State) {
+    let ffi_cif = *ffi_function.ffi_cif
+
+    let ffi_args = allocate((size_of type *cstd::ffi_type) * args.size) !**cstd::ffi_type
+    for var i in 0..args.size {
+        ffi_args[i] = type_to_ffi(args[i].tpe)
+    }
+
+    var status: cstd::ffi_status = cstd::ffi_status::FFI_OK
+    if varargs {
+        status = cstd::ffi_prep_cif_var(ffi_cif, cstd::ffi_abi::FFI_DEFAULT_ABI, (vector::length(parameter_t) - 1) !uint, args.size !uint, type_to_ffi(ret_tpe), ffi_args)
+    } else if not ffi_function.initialized {
+        status = cstd::ffi_prep_cif(ffi_cif, cstd::ffi_abi::FFI_DEFAULT_ABI, args.size !uint, type_to_ffi(ret_tpe), ffi_args)
+        ffi_function.initialized = true
+    }
+    if status != cstd::ffi_status::FFI_OK {
+        errors::errorv("Failed to prepare ffi for function `", ffi_function.name, "`. Status: ", status.to_string())
+        return
+    }
+
+    let avalues = allocate((size_of type *) * args.size) !**
+    for var i in 0..args.size {
+        let arg = args[i]
+        var mem: * = null
+        if arg.kind == compiler::ValueKind::LOCAL or arg.kind == compiler::ValueKind::GLOBAL {
+            mem = get_address(arg, state)
+        } else {
+            // We need to allocate memory for static values
+            mem = allocate(arg.tpe.size)
+            set(mem, arg.tpe, arg)
+        }
+        avalues[i] = mem
+    } 
+
+    var rvalue: * = null
+    if ret.tpe {
+        // TODO Define the register size somewhere
+        var size = 8 !size_t
+        if ret_tpe.size > size {
+            size = ret_tpe.size
+        }
+        rvalue = allocate(size)
+        // TODO This will fail for function pointers
+        map::put(get_stack_frame(state).locals, ret.name, rvalue)
+    }
+    
+    cstd::ffi_call(ffi_cif, ffi_function.ptr, rvalue, avalues)
+}
+
 def eval_Call(insn: *compiler::Insn, state: *State) {
     let call = insn.value.call.name 
     let args = insn.value.call.args
     let ret = insn.value.call.ret
    
     var name = call.name
-    var function: *compiler::Function = null
+    var fp: *FunctionPtr = null
 
     if call.kind == compiler::ValueKind::LOCAL {
         let mem = get_address(call, state)
         let value = get(get(mem, call.tpe).i !*, call.tpe.tpe)
-        function = value.function
-        name = function.name
+        fp = value.function
     } else if call.kind == compiler::ValueKind::GLOBAL {
         if starts_with(name, "llvm.") { return }
-        function = map::get(state.cstate.result.functions, name) !*compiler::Function
-        if not function {
-            errors::errorv("Function `", name, "` not found")
-            return
+        let function = map::get(state.cstate.result.functions, name) !*compiler::Function
+        if function {
+            let functionptr = { is_fp = false } !FunctionPtr
+            functionptr.function = function
+            fp = *functionptr
+        } else {
+            let mem = get_address(call, state)
+            let value = get(get(mem, call.tpe).i !*, call.tpe.tpe)
+            fp = value.function
         }
+    }
+
+    if not fp {
+        errors::errorv("Function `", name, "` not found")
+        return
     }
 
     /*print(name, " ")
@@ -780,102 +847,78 @@ def eval_Call(insn: *compiler::Insn, state: *State) {
     }
     print("\n")*/
 
-    if function.imported {
-        let ffi_function = map::get(FFI_FUNCTIONS, name) !*FfiFunction
-        let ffi_cif = *ffi_function.ffi_cif
+    if fp.is_fp {
+        let ffi_function = {
+            name = name,
+            ptr = fp.fp
+        } !FfiFunction
 
-        let ffi_args = allocate((size_of type *cstd::ffi_type) * args.size) !**cstd::ffi_type
-        for var i in 0..args.size {
-            ffi_args[i] = type_to_ffi(args[i].tpe)
+        var varargs = false
+        var ret_tpe: *typechecking::Type = null
+        if vector::length(call.tpe.return_t) >= 1 {
+            ret_tpe = vector::get(call.tpe.return_t, 0) !*typechecking::Type
         }
-
-        var status: cstd::ffi_status = cstd::ffi_status::FFI_OK
-        if function.varargs {
-            status = cstd::ffi_prep_cif_var(ffi_cif, cstd::ffi_abi::FFI_DEFAULT_ABI, (vector::length(function.args) - 1) !uint, args.size !uint, type_to_ffi(function.ret), ffi_args)
-        } else if not ffi_function.initialized {
-            status = cstd::ffi_prep_cif(ffi_cif, cstd::ffi_abi::FFI_DEFAULT_ABI, args.size !uint, type_to_ffi(function.ret), ffi_args)
-            ffi_function.initialized = true
+        let last_arg = vector::peek(call.tpe.parameter_t) !*typechecking::NamedParameter
+        if last_arg {
+            varargs = last_arg.varargs
         }
-        if status != cstd::ffi_status::FFI_OK {
-            errors::errorv("Failed to prepare ffi for function `", function.name, "`. Status: ", status.to_string())
-            return
-        }
-
-        let avalues = allocate((size_of type *) * args.size) !**
-        for var i in 0..args.size {
-            let arg = args[i]
-            var mem: * = null
-            if arg.kind == compiler::ValueKind::LOCAL {
-                mem = map::get(get_stack_frame(state).locals, arg.name)
-            } else if arg.kind == compiler::ValueKind::GLOBAL {
-                mem = map::get(state.cstate.globals, arg.name)
-            } else {
-                // We need to allocate memory for static values
-                mem = allocate(arg.tpe.size)
-                set(mem, arg.tpe, arg)
-            }
-            avalues[i] = mem
-        } 
-
-        var rvalue: * = null
-        if ret.tpe {
-            // TODO Define the register size somewhere
-            var size = 8 !size_t
-            if function.ret.size > size {
-                size = function.ret.size
-            }
-            rvalue = allocate(size)
-            map::put(get_stack_frame(state).locals, ret.name, rvalue)
-        }
-        
-        cstd::ffi_call(ffi_cif, ffi_function.ptr, rvalue, avalues)
+        ffi_call(args, ret, call.tpe.parameter_t, ret_tpe, *ffi_function, varargs, state)
     } else {
-        let result = state.cstate.result
-        state.cstate.result = function.module.result
-
-        var line = 1
-        if insn.debug {
-            let debug_value = map::get(function.module.result.metadata, insn.debug.name) !*compiler::Value
-            if debug_value and debug_value.debug_values.value {
-                line = debug_value.debug_values[0].value.i !int 
-            }
-        }
-
-        let stack_frame = make_stack_frame(function.block, name, line)
-
-        for var i in 0..args.size {
-            let arg = args[i]
-            let np = vector::get(function.args, i) !*typechecking::NamedParameter
-            let arg_value = get_value(arg, state)
-            let mem = allocate(arg.tpe.size)
-
-            let buf = buffer::make_buffer()
-            buffer::append_str(*buf, np.name)
-            buffer::append_str(*buf, ".value")
-            let name = buffer::to_string(*buf)
-            map::put(stack_frame.locals, name, mem)
-            set(mem, arg.tpe, arg_value)
-        }
-
-        push_stack_frame(stack_frame, state)
-        
-        /*print(name, "\n")
-        for var i in 0..vector::length(state.stack) {
-            let frame = vector::get(state.stack, vector::length(state.stack) - 1 - i) !*StackFrame
-            print("\t", frame.function_name, ":", frame.line, "\n")
-        }*/
-        eval(function.block, state)
-
-        if ret.tpe {
-            let ret_value = get_value(stack_frame.ret, state)
-            pop_stack_frame(state)
-
-            set_value(ret, ret_value, state)
+        let function = fp.function
+        if function.imported {
+            let ffi_function = map::get(FFI_FUNCTIONS, name) !*FfiFunction
+            
+            ffi_call(args, ret, function.args, function.ret, ffi_function, function.varargs, state)
         } else {
-            pop_stack_frame(state)
+            let result = state.cstate.result
+            state.cstate.result = function.module.result
+
+            var line = 1
+            if insn.debug {
+                // TODO This points to another file
+                let debug_value = map::get(function.module.result.metadata, insn.debug.name) !*compiler::Value
+                if debug_value and debug_value.debug_values.value {
+                    line = debug_value.debug_values[0].value.i !int 
+                }
+            }
+
+            let stack_frame = make_stack_frame(function.block, name, line)
+
+            for var i in 0..args.size {
+                let arg = args[i]
+                let np = vector::get(function.args, i) !*typechecking::NamedParameter
+                let arg_value = get_value(arg, state)
+                let mem = allocate(arg.tpe.size)
+
+                let buf = buffer::make_buffer()
+                buffer::append_str(*buf, np.name)
+                buffer::append_str(*buf, ".value")
+                let name = buffer::to_string(*buf)
+                map::put(stack_frame.locals, name, mem)
+                set(mem, arg.tpe, arg_value)
+            }
+
+            push_stack_frame(stack_frame, state)
+            
+            /*print(name, "\n")
+            for var i in 0..vector::length(state.stack) {
+                let frame = vector::get(state.stack, vector::length(state.stack) - 1 - i) !*StackFrame
+                print("\t", frame.function_name, ":", frame.line, "\n")
+            }*/
+            eval(function.block, state)
+
+            if ret.tpe {
+                let ret_value = get_value(stack_frame.ret, state)
+                pop_stack_frame(state)
+
+                set_value(ret, ret_value, state)
+            } else {
+                pop_stack_frame(state)
+            }
+            state.cstate.result = result
         }
-        state.cstate.result = result
     }
+    
 }
 
 def eval_Ret(insn: *compiler::Insn, state: *State) {
