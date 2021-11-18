@@ -20,6 +20,7 @@ export type Value = struct {
     assembly_name: string
     tpe: *typechecking::Type
     value: *compiler::Value
+    // TODO is this actually used anywhere?
     scope: *Scope
     // In case multiple values share one name (overloaded functions)
     next: *Value
@@ -46,6 +47,9 @@ export type Scope = struct {
     // specifying the full path
     // Vector of toolchain::Module
     imports: *vector::Vector
+    // Current underscore
+    underscore: *Value
+    underscore_count: int
 }
 
 export type Phase = enum {
@@ -76,7 +80,8 @@ export def enter_scope(scope: *Scope) -> *Scope {
     var s = allocate(Scope)
     @s = {
         parent = scope,
-        fields = map::make()
+        fields = map::make(),
+        underscore_count = scope.underscore_count if scope else 0
     } !Scope
     let function_parent = get_function_parent(s)
     if function_parent {
@@ -144,6 +149,36 @@ def find_function(node: *parser::Node, v: *Value, parameter_t: *vector::Vector, 
         return null
     }
     return found
+}
+
+export def get_underscore(scope: *Scope) -> *Value {
+    if scope.underscore { return scope.underscore }
+    if scope.parent { return get_underscore(scope.parent) }
+    return null
+}
+
+export def create_underscore(scope: *Scope, tpe: *typechecking::Type) -> *Value {
+    let count = scope.underscore_count
+    scope.underscore_count += 1
+    
+    let buf = buffer::make_buffer()
+    buffer::append_str(*buf, "_.")
+    buffer::append_str(*buf, util::int_to_str(count))
+
+    let value = allocate(Value)
+    @value = {
+        share = parser::ShareMarker::NONE,
+        modifier = parser::VarDecl::VAR,
+        tpe = tpe,
+        global = is_global(scope),
+        phase = Phase::COMPILED,
+        name = "_",
+        assembly_name = buffer::to_string(*buf)
+    }
+
+    scope.underscore = value
+
+    return value
 }
 
 export def get_function(scope: *Scope, id: *parser::Node, parameter_t: *vector::Vector, check_export: bool, dry_run: bool) -> *Value {
@@ -224,6 +259,9 @@ export def get(scope: *Scope, id: *parser::Node, force_compile: bool, check_expo
     assert((@id).kind == parser::NodeKind::IDENTIFIER)
     if vector::length((@id).value.identifier.path) == 1 {
         let name = @(vector::get((@id).value.identifier.path, 0) !*string)
+        if name == "_" { 
+            return get_underscore(scope) 
+        }
         var value = map::get((@scope).fields, name) !*Value
         if value { 
             if id.value.identifier.types {
@@ -344,7 +382,7 @@ def create_path(scope: *Scope, node: *parser::Node) -> *Scope {
 }
 
 // Returns the last element in a path, eg Element for path::Element
-def last_path_element(node: *parser::Node) -> string {
+export def last_path_element(node: *parser::Node) -> string {
     assert((@node).kind == parser::NodeKind::IDENTIFIER)
     let length = vector::length((@node).value.identifier.path)
     return @(vector::get((@node).value.identifier.path, length - 1) !*string)
@@ -436,10 +474,10 @@ def append_scope_count(scope: *Scope, name: string) -> string {
 export def create_variable(
     scope: *Scope, name_node: *parser::Node, share: parser::ShareMarker, 
     modifier: parser::VarDecl, tpe: *typechecking::Type, extern: bool, value: *compiler::Value, 
-    phase: Phase, node: *parser::Node, state: *typechecking::State) {
+    phase: Phase, node: *parser::Node, state: *typechecking::State) -> *Value {
     
     scope = create_path(scope, name_node)
-    if not scope { return }
+    if not scope { return null }
     let name = last_path_element(name_node)
 
     let global = is_global(scope)
@@ -483,18 +521,20 @@ export def create_variable(
     } else {
         map::put((@scope).fields, name, v)
     }
+
+    return v
 }
 
 export def create_variable(
     scope: *Scope, name_node: *parser::Node, share: parser::ShareMarker, 
-    modifier: parser::VarDecl, tpe: *typechecking::Type, extern: bool, value: *compiler::Value) {
-    create_variable(scope, name_node, share, modifier, tpe, extern, value, Phase::COMPILED, null, null)
+    modifier: parser::VarDecl, tpe: *typechecking::Type, extern: bool, value: *compiler::Value) -> *Value {
+    return create_variable(scope, name_node, share, modifier, tpe, extern, value, Phase::COMPILED, null, null)
 }
 
 export def create_variable(
     scope: *Scope, name_node: *parser::Node, share: parser::ShareMarker, 
-    modifier: parser::VarDecl, tpe: *typechecking::Type, value: *compiler::Value) {
-    create_variable(scope, name_node, share, modifier, tpe, false, value, Phase::COMPILED, null, null)
+    modifier: parser::VarDecl, tpe: *typechecking::Type, value: *compiler::Value) -> *Value {
+    return create_variable(scope, name_node, share, modifier, tpe, false, value, Phase::COMPILED, null, null)
 }
 
 export def create_type(
