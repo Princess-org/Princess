@@ -256,7 +256,7 @@ export def make_function_type_n(name: *parser::Node, parameter_t: *vector::Vecto
     let tpe = make_function_type()
     (@tpe).parameter_t = parameter_t
     (@tpe).return_t = return_t
-    (@tpe).name = parser::identifier_to_str(name)
+    (@tpe).name = parser::identifier_to_str(name, false)
     if extern {
         (@tpe).type_name = (@tpe).name
     } else {
@@ -581,10 +581,10 @@ export def mangle_function_name(name: string, parameter_t: *vector::Vector) -> s
 export def last_ident_to_str(node: *parser::Node) -> string {
     if not node { return "" }
     assert((@node).kind == parser::NodeKind::IDENTIFIER)
-    if vector::length((@node).value.body) > 1 {
+    if vector::length((@node).value.identifier.path) > 1 {
         errors::errorn(node, "Expected plain identifier without path")
     }
-    return @(vector::get((@node).value.body, 0) !*string)
+    return @(vector::get((@node).value.identifier.path, 0) !*string)
 }
 
 def flatten_return_type(node: *parser::Node, return_t: *vector::Vector) -> *Type {
@@ -864,6 +864,21 @@ def walk_Range(node: *parser::Node, state: *State) {
 }
 
 def walk_Identifier(node: *parser::Node, state: *State) {
+    if node.value.identifier.args {
+        node.value.identifier.types = vector::make()
+        for var i in 0..vector::length(node.value.identifier.args) {
+            let arg = vector::get(node.value.identifier.args, i) !*parser::Node
+            let tpe = type_lookup(arg, state, true)
+
+            let np = allocate(NamedParameter)
+            @np = {
+                name = "",
+                tpe = tpe
+            } !NamedParameter
+            vector::push(node.value.identifier.types, np)
+        }
+    }
+
     var value = scope::get(state.scope, node)
     if not value {
         errors::errorn(node, "Unknown identifier `", parser::identifier_to_str(node), "`")
@@ -905,6 +920,10 @@ def implicit_conversion(node: *parser::Node, tpe: *Type) {
         (@(@node).value.expr).kind == parser::NodeKind::INTEGER) {
 
         (@node).tpe = tpe
+    } else if is_function_pointer(tpe) and 
+        node.kind == parser::NodeKind::PTR and 
+        node.value.expr and node.value.expr.kind == parser::NodeKind::IDENTIFIER {
+        node.tpe = tpe
     }
 }
 
@@ -1265,6 +1284,12 @@ def walk_Cast(node: *parser::Node, state: *State) {
             return
         }
     }
+    /*if left.kind == parser::NodeKind::PTR and left.value.expr and 
+        left.value.expr.kind == parser::NodeKind::IDENTIFIER {
+        if is_function_pointer(tpe) {
+            left.value.expr.tpe = tpe 
+        }
+    }*/
     walk(node, left, state)
 }
 
@@ -1438,6 +1463,22 @@ def walk_Return(node: *parser::Node, state: *State) {
     (@node).tpe = tpe
 }
 
+def append_arguments(buf: *buffer::Buffer, arguments: *vector::Vector) {
+    let len = vector::length(arguments)
+    if len > 0 {
+        buffer::append_str(buf, "Arguments were of type ")
+    } else {
+        buffer::append_str(buf, "No arguments.")
+    }
+    for var i in 0..len {
+        let arg = vector::get(arguments, i) !*NamedParameter
+        buffer::append_str(buf, debug::type_to_str((@arg).tpe))
+        if i < len - 1 {
+            buffer::append_str(buf, ", ")
+        }
+    }
+}
+
 def walk_Call(node: *parser::Node, dry_run: bool, state: *State) -> bool {
     var left = (@node).value.func_call.left
     if not left { return false }
@@ -1485,25 +1526,29 @@ def walk_Call(node: *parser::Node, dry_run: bool, state: *State) -> bool {
             var function = scope::get_function(state.scope, left, arguments, dry_run)
             left.svalue = function
 
+            if not function and dry_run { return false }
+
+            if left.value.identifier.types {
+                if not function {
+                    errors::errorn(left, "Function overload not found")
+                    return false
+                }
+                if overload_score(function.tpe, arguments, false) < 0 {
+                    let buf = buffer::make_buffer()
+                    buffer::append_str(*buf, "Incorrect arguments to overloaded function. ")
+                    append_arguments(*buf, arguments)
+                    errors::errorn(left, buffer::to_string(*buf))
+                    return false
+                }
+            }
+
             if not function {
-                if dry_run { return false }
                 let buf = buffer::make_buffer()
                 buffer::append_str(*buf, "Function `")
                 buffer::append_str(*buf, parser::identifier_to_str(left))
                 buffer::append_str(*buf, "` not found. ")
-                let len = vector::length(arguments)
-                if len > 0 {
-                    buffer::append_str(*buf, "Arguments were of type ")
-                } else {
-                    buffer::append_str(*buf, "No arguments.")
-                }
-                for var i in 0..len {
-                    let arg = vector::get(arguments, i) !*NamedParameter
-                    buffer::append_str(*buf, debug::type_to_str((@arg).tpe))
-                    if i < len - 1 {
-                        buffer::append_str(*buf, ", ")
-                    }
-                }
+                
+                append_arguments(*buf, arguments)
                 errors::errorn(left, buffer::to_string(*buf))
                 return false
             }
@@ -1770,7 +1815,7 @@ def walk_MemberAccess_ucs(node: *parser::Node, state: *State) -> bool {
         } !NamedParameter
         vector::push(parameter_t, np)
 
-        let function = scope::get_function((@node).scope, right, parameter_t, true)
+        let function = scope::get_function((@node).scope, right, parameter_t, false)
         if not function { return false }
 
         let args = vector::make()

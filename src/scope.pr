@@ -107,6 +107,21 @@ def find_function(node: *parser::Node, v: *Value, parameter_t: *vector::Vector, 
     if not typechecking::is_function((@v).tpe) {
         return null
     }
+
+    if node.value.identifier.types {
+        // We disregard the parameters and only look at the identifier
+        // The calling function must check the overload score manually
+        loop {
+            let s = typechecking::overload_score(v.tpe, node.value.identifier.types, true)
+            if s == 0 {
+                @score = 0
+                return v
+            }
+            v = v.next
+            if not v { break }
+        }
+        return null
+    }
     
     var found: *Value = null
     var d = false
@@ -133,8 +148,8 @@ def find_function(node: *parser::Node, v: *Value, parameter_t: *vector::Vector, 
 
 export def get_function(scope: *Scope, id: *parser::Node, parameter_t: *vector::Vector, check_export: bool, dry_run: bool) -> *Value {
     assert((@id).kind == parser::NodeKind::IDENTIFIER)
-    if vector::length((@id).value.body) == 1 {
-        let name = @(vector::get((@id).value.body, 0) !*string)
+    if vector::length((@id).value.identifier.path) == 1 {
+        let name = @(vector::get((@id).value.identifier.path, 0) !*string)
         var score = util::MAX_INT32 !int
         let first_value = find_function(id, map::get((@scope).fields, name) !*Value, parameter_t, *score, dry_run)
         let first_score = score
@@ -176,13 +191,13 @@ export def get_function(scope: *Scope, id: *parser::Node, parameter_t: *vector::
         }
         return null
     } else {
-        let head = vector::head_vec((@id).value.body)
-        let tail = vector::tail((@id).value.body)
+        let head = vector::head_vec((@id).value.identifier.path)
+        let tail = vector::tail((@id).value.identifier.path)
 
         let id_head = parser::copy_node(id)
-        (@id_head).value.body = head
+        (@id_head).value.identifier.path = head
         let id_tail = parser::copy_node(id)
-        (@id_tail).value.body = tail
+        (@id_tail).value.identifier.path = tail
 
         let s = get(scope, id_head)
         if s {
@@ -204,19 +219,30 @@ export def get_function(scope: *Scope, id: *parser::Node, parameter_t: *vector::
     return get_function(scope, id, parameter_t, false, false)
 }
 
-// TODO We need to error if you reference an overloaded function
-// I kinda want this syntax here to be able to reference an overload:
-// some_function::(int, int)
 export def get(scope: *Scope, id: *parser::Node, force_compile: bool, check_export: bool) -> *Value {
     if not scope { return null }
     assert((@id).kind == parser::NodeKind::IDENTIFIER)
-    if vector::length((@id).value.body) == 1 {
-        let name = @(vector::get((@id).value.body, 0) !*string)
+    if vector::length((@id).value.identifier.path) == 1 {
+        let name = @(vector::get((@id).value.identifier.path, 0) !*string)
         var value = map::get((@scope).fields, name) !*Value
-        if value and value.phase == Phase::DEFINED and force_compile {
-            typechecking::walk(value.node.parent, value.node, value.state)
+        if value { 
+            if id.value.identifier.types {
+                var score = 0
+                value = find_function(id, value, id.value.identifier.types, *score, true)
+            } else if typechecking::is_function_pointer(id.tpe) {
+                var score = 0
+                value = find_function(id, value, id.tpe.tpe.parameter_t, *score, true)
+            } else if is_function(value.tpe) and value.next {
+                errors::errorn(id, "Ambiguous reference")
+                return null
+            }
+
+            if value and value.phase == Phase::DEFINED and force_compile {
+                typechecking::walk(value.node.parent, value.node, value.state)
+            }
+
+            return value 
         }
-        if value { return value }
         if (@scope).imports {
             for var i in 0..vector::length((@scope).imports) {
                 let module = vector::get((@scope).imports, i) !*toolchain::Module
@@ -224,6 +250,14 @@ export def get(scope: *Scope, id: *parser::Node, force_compile: bool, check_expo
                 var value2 = map::get((@scope2).fields, name) !*Value
                 
                 if value2 and (@value2).share !int & parser::ShareMarker::EXPORT !int {
+                    if id.value.identifier.types {
+                        var score = 0
+                        value2 = find_function(id, value2, id.value.identifier.types, *score, true)
+                    } else if typechecking::is_function_pointer(id.tpe) {
+                        var score = 0
+                        value2 = find_function(id, value2, id.tpe.tpe.parameter_t, *score, true)
+                    }
+
                     if value {
                         // TODO save location of values to give better error messages
                         errors::errorn(id, "Ambiguous reference")
@@ -244,13 +278,13 @@ export def get(scope: *Scope, id: *parser::Node, force_compile: bool, check_expo
         }
         return null
     } else {
-        let head = vector::head_vec((@id).value.body)
-        let tail = vector::tail((@id).value.body)
+        let head = vector::head_vec((@id).value.identifier.path)
+        let tail = vector::tail((@id).value.identifier.path)
 
         let id_head = parser::copy_node(id)
-        (@id_head).value.body = head
+        (@id_head).value.identifier.path = head
         let id_tail = parser::copy_node(id)
-        (@id_tail).value.body = tail
+        (@id_tail).value.identifier.path = tail
 
         let s = get(scope, id_head)
         if s {
@@ -293,15 +327,15 @@ export def enter_namespace(scope: *Scope, node: *parser::Node) -> *Scope
 def create_path(scope: *Scope, node: *parser::Node) -> *Scope {
     assert((@node).kind == parser::NodeKind::IDENTIFIER)
 
-    let length = vector::length((@node).value.body)
+    let length = vector::length((@node).value.identifier.path)
     for var i in 0..length - 1 {
-        let ident = vector::get((@node).value.body, i) !*string
+        let ident = vector::get((@node).value.identifier.path, i) !*string
         let scope_v = map::get((@scope).fields, @ident) !*Value
         if not scope_v {
             let n = parser::copy_node(node)
             let vec = vector::make()
             vector::push(vec, ident)
-            (@n).value.body = vec
+            (@n).value.identifier.path = vec
             scope = enter_namespace(scope, n)
         } else {
             if not (@scope_v).scope {
@@ -318,8 +352,8 @@ def create_path(scope: *Scope, node: *parser::Node) -> *Scope {
 // Returns the last element in a path, eg Element for path::Element
 def last_path_element(node: *parser::Node) -> string {
     assert((@node).kind == parser::NodeKind::IDENTIFIER)
-    let length = vector::length((@node).value.body)
-    return @(vector::get((@node).value.body, length - 1) !*string)
+    let length = vector::length((@node).value.identifier.path)
+    return @(vector::get((@node).value.identifier.path, length - 1) !*string)
 }
 
 // TODO These following functions grew organically, they are in need of a rewrite

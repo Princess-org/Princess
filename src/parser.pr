@@ -7,6 +7,7 @@ import toolchain
 import typechecking
 import scope
 import errors
+import debug
 
 export type NodeKind = enum {
     PROGRAM
@@ -266,6 +267,13 @@ export type NodeIfExpr = struct {
     if_false: *Node
 }
 
+export type NodeIdentifier = struct {
+    path: *vector::Vector
+    args: *vector::Vector
+    // Vector of typechecking::NamedParameter
+    types: *vector::Vector
+}
+
 export type NodeValue = struct #union {
     bin_op: NodeBinaryOp
     var_decl: NodeVarDecl
@@ -292,6 +300,7 @@ export type NodeValue = struct #union {
     import_module: NodeImportModule
     def_: NodeDef
     param: NodeParam
+    identifier: NodeIdentifier
 
     body: *vector::Vector
     expr: *Node
@@ -360,7 +369,7 @@ export def make_identifier(s: [string]) -> *Node {
             module = ""
         } !SourceLoc
     } !Node
-    node.value.body = vec
+    node.value.identifier.path = vec
     return node
 }
 
@@ -371,18 +380,37 @@ export def copy_node(node: *Node) -> *Node {
     return copy
 }
 
-export def identifier_to_str(node: *Node) -> string {
+export def identifier_to_str(node: *Node, types: bool) -> string {
     assert((@node).kind == NodeKind::IDENTIFIER)
     let buf = buffer::make_buffer()
-    let len = vector::length((@node).value.body)
+    let len = vector::length((@node).value.identifier.path)
     for var i in 0..len {
-        buffer::append_str(*buf, @(vector::get((@node).value.body, i) !*string))
+        buffer::append_str(*buf, @(vector::get((@node).value.identifier.path, i) !*string))
         if i < len - 1 {
             buffer::append_str(*buf, "::")
         }
     }
+    if types and node.value.identifier.types {
+        let len = vector::length(node.value.identifier.types)
+        buffer::append_str(*buf, "::")
+        if len > 0 {
+            buffer::append_char(*buf, '(')
+            for var i in 0..len {
+                let np = vector::get(node.value.identifier.types, i) !*typechecking::NamedParameter
+                buffer::append_str(*buf, debug::type_to_str(np.tpe))
+                if i < len - 1 {
+                    buffer::append_str(*buf, ", ")
+                }
+            }
+            buffer::append_char(*buf, ')')
+        }
+    }
 
     return buffer::to_string(*buf)
+}
+
+export def identifier_to_str(node: *Node) -> string {
+    return identifier_to_str(node, true)
 }
 
 def make_node(kind: NodeKind, line: int, column: int, state: *ParseState) -> *Node {
@@ -502,25 +530,57 @@ def expect_identifier(parse_state: *ParseState) -> *Node {
     let line = token.line
     let column = token.column
     
-    var vec = vector::make()
-    while token.tpe == lexer::TokenType::IDENTIFIER {
-        vector::push(vec, util::copy_string(token.value.str))
+    let path = vector::make()
+    loop {
+        vector::push(path, util::copy_string(token.value.str))
         token = peek(parse_state)
         if token.tpe == lexer::TokenType::DOUBLE_COLON {
-            pop(parse_state)
             token = pop(parse_state)
-            continue
+            var ident = peek(parse_state)
+            if ident.tpe == lexer::TokenType::IDENTIFIER {
+                token = pop(parse_state)
+                continue
+            } else {
+                unget_token(parse_state, token)
+            }
         }
         break
     }
 
-    if vector::length(vec) == 0 {
+    if vector::length(path) == 0 {
         errors::errort(token, parse_state, "Expected identifier")
         return null
     }
 
+    var args: *vector::Vector = null
+    token = peek(parse_state)
+    if token.tpe == lexer::TokenType::DOUBLE_COLON {
+        pop(parse_state)
+        args = vector::make()
+        // We have a function reference
+        token = peek(parse_state)
+        if token.tpe == lexer::TokenType::O_PAREN {
+            pop(parse_state)
+            token = peek(parse_state)
+            while token.tpe != lexer::TokenType::C_PAREN and 
+                token.tpe != lexer::TokenType::EOF {
+                let expr = expect_type(parse_state)
+                vector::push(args, expr)
+                token = peek(parse_state)
+                if token.tpe == lexer::TokenType::COMMA {
+                    pop(parse_state)
+                    token = pop(parse_state)
+                    continue
+                }
+                break
+            }
+            expect(parse_state, lexer::TokenType::C_PAREN, "Expected ')'")
+        }
+    }
+
     var node = make_node(NodeKind::IDENTIFIER, line, column, parse_state)
-    (@node).value.body = vec
+    node.value.identifier.path = path
+    node.value.identifier.args = args
 
     return node
 }
