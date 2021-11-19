@@ -8,6 +8,7 @@ import toolchain
 import debug
 import builtins
 import compiler
+import errors
 
 export type Value = struct {
     share: parser::ShareMarker
@@ -19,6 +20,7 @@ export type Value = struct {
     assembly_name: string
     tpe: *typechecking::Type
     value: *compiler::Value
+    // TODO is this actually used anywhere?
     scope: *Scope
     // In case multiple values share one name (overloaded functions)
     next: *Value
@@ -45,6 +47,9 @@ export type Scope = struct {
     // specifying the full path
     // Vector of toolchain::Module
     imports: *vector::Vector
+    // Current underscore
+    underscore: *Value
+    underscore_count: int
 }
 
 export type Phase = enum {
@@ -75,7 +80,8 @@ export def enter_scope(scope: *Scope) -> *Scope {
     var s = allocate(Scope)
     @s = {
         parent = scope,
-        fields = map::make()
+        fields = map::make(),
+        underscore_count = scope.underscore_count if scope else 0
     } !Scope
     let function_parent = get_function_parent(s)
     if function_parent {
@@ -101,9 +107,24 @@ export def exit_scope(scope: *Scope) -> *Scope {
     return parent
 }
 
-def find_function(node: *parser::Node, v: *Value, parameter_t: *vector::Vector, score: *int) -> *Value {
+def find_function(node: *parser::Node, v: *Value, parameter_t: *vector::Vector, score: *int, dry_run: bool) -> *Value {
     if not v { return null }
     if not typechecking::is_function((@v).tpe) {
+        return null
+    }
+
+    if node.value.identifier.types {
+        // We disregard the parameters and only look at the identifier
+        // The calling function must check the overload score manually
+        loop {
+            let s = typechecking::overload_score(v.tpe, node.value.identifier.types, true)
+            if s == 0 {
+                @score = 0
+                return v
+            }
+            v = v.next
+            if not v { break }
+        }
         return null
     }
     
@@ -124,18 +145,48 @@ def find_function(node: *parser::Node, v: *Value, parameter_t: *vector::Vector, 
         if not v { break }
     }
     if d {
-        typechecking::errorn(node, "Ambiguous reference\n")
+        if not dry_run { errors::errorn(node, "Ambiguous reference") }
         return null
     }
     return found
 }
 
-export def get_function(scope: *Scope, id: *parser::Node, parameter_t: *vector::Vector, check_export: bool) -> *Value {
+export def get_underscore(scope: *Scope) -> *Value {
+    if scope.underscore { return scope.underscore }
+    if scope.parent { return get_underscore(scope.parent) }
+    return null
+}
+
+export def create_underscore(scope: *Scope, tpe: *typechecking::Type) -> *Value {
+    let count = scope.underscore_count
+    scope.underscore_count += 1
+    
+    let buf = buffer::make_buffer()
+    buffer::append_str(*buf, "_.")
+    buffer::append_str(*buf, util::int_to_str(count))
+
+    let value = allocate(Value)
+    @value = {
+        share = parser::ShareMarker::NONE,
+        modifier = parser::VarDecl::VAR,
+        tpe = tpe,
+        global = is_global(scope),
+        phase = Phase::COMPILED,
+        name = "_",
+        assembly_name = buffer::to_string(*buf)
+    }
+
+    scope.underscore = value
+
+    return value
+}
+
+export def get_function(scope: *Scope, id: *parser::Node, parameter_t: *vector::Vector, check_export: bool, dry_run: bool) -> *Value {
     assert((@id).kind == parser::NodeKind::IDENTIFIER)
-    if vector::length((@id).value.body) == 1 {
-        let name = @(vector::get((@id).value.body, 0) !*string)
+    if vector::length((@id).value.identifier.path) == 1 {
+        let name = @(vector::get((@id).value.identifier.path, 0) !*string)
         var score = util::MAX_INT32 !int
-        let first_value = find_function(id, map::get((@scope).fields, name) !*Value, parameter_t, *score)
+        let first_value = find_function(id, map::get((@scope).fields, name) !*Value, parameter_t, *score, dry_run)
         let first_score = score
         var value = first_value
         var d = false
@@ -144,7 +195,7 @@ export def get_function(scope: *Scope, id: *parser::Node, parameter_t: *vector::
                 let module = vector::get((@scope).imports, i) !*toolchain::Module
                 let scope2 = (@module).scope
                 var new_score = util::MAX_INT32 !int
-                let new_value = find_function(id, map::get((@scope2).fields, name) !*Value, parameter_t, *new_score)
+                let new_value = find_function(id, map::get((@scope2).fields, name) !*Value, parameter_t, *new_score, dry_run)
                 if new_value and (@new_value).share !int & parser::ShareMarker::EXPORT !int {
                     if score == new_score {
                         d = true 
@@ -160,7 +211,7 @@ export def get_function(scope: *Scope, id: *parser::Node, parameter_t: *vector::
                 // if there are multiple ones with the same score
                 value = first_value
             } else if d {
-                typechecking::errorn(id, "Ambiguous reference\n")
+                if not dry_run { errors::errorn(id, "Ambiguous reference") }
                 return null
             }
         }
@@ -175,18 +226,18 @@ export def get_function(scope: *Scope, id: *parser::Node, parameter_t: *vector::
         }
         return null
     } else {
-        let head = vector::head_vec((@id).value.body)
-        let tail = vector::tail((@id).value.body)
+        let head = vector::head_vec((@id).value.identifier.path)
+        let tail = vector::tail((@id).value.identifier.path)
 
         let id_head = parser::copy_node(id)
-        (@id_head).value.body = head
+        (@id_head).value.identifier.path = head
         let id_tail = parser::copy_node(id)
-        (@id_tail).value.body = tail
+        (@id_tail).value.identifier.path = tail
 
         let s = get(scope, id_head)
         if s {
             if not (@s).scope {
-                typechecking::errorn(id, "Use of :: on non namespace\n")
+                if not dry_run { errors::errorn(id, "Use of :: on non namespace") }
                 return null
             }
             return get_function((@s).scope, id_tail, parameter_t, s.imported)
@@ -195,23 +246,38 @@ export def get_function(scope: *Scope, id: *parser::Node, parameter_t: *vector::
     }
 }
 
-export def get_function(scope: *Scope, id: *parser::Node, parameter_t: *vector::Vector) -> *Value {
-    return get_function(scope, id, parameter_t, false)
+export def get_function(scope: *Scope, id: *parser::Node, parameter_t: *vector::Vector, dry_run: bool) -> *Value {
+    return get_function(scope, id, parameter_t, false, dry_run)
 }
 
-// TODO We need to error if you reference an overloaded function
-// I kinda want this syntax here to be able to reference an overload:
-// some_function::(int, int)
+export def get_function(scope: *Scope, id: *parser::Node, parameter_t: *vector::Vector) -> *Value {
+    return get_function(scope, id, parameter_t, false, false)
+}
+
 export def get(scope: *Scope, id: *parser::Node, force_compile: bool, check_export: bool) -> *Value {
     if not scope { return null }
     assert((@id).kind == parser::NodeKind::IDENTIFIER)
-    if vector::length((@id).value.body) == 1 {
-        let name = @(vector::get((@id).value.body, 0) !*string)
-        var value = map::get((@scope).fields, name) !*Value
-        if value and value.phase == Phase::DEFINED and force_compile {
-            typechecking::walk(value.node.parent, value.node, value.state)
+    if vector::length((@id).value.identifier.path) == 1 {
+        let name = @(vector::get((@id).value.identifier.path, 0) !*string)
+        if name == "_" { 
+            return get_underscore(scope) 
         }
-        if value { return value }
+        var value = map::get((@scope).fields, name) !*Value
+        if value { 
+            if id.value.identifier.types {
+                var score = 0
+                value = find_function(id, value, id.value.identifier.types, *score, true)
+            } else if is_function(value.tpe) and id.parent and id.parent.kind == parser::NodeKind::PTR and value.next {
+                errors::errorn(id, "Ambiguous reference")
+                return null
+            }
+
+            if value and value.phase == Phase::DEFINED and force_compile {
+                typechecking::walk(value.node.parent, value.node, value.state)
+            }
+
+            return value 
+        }
         if (@scope).imports {
             for var i in 0..vector::length((@scope).imports) {
                 let module = vector::get((@scope).imports, i) !*toolchain::Module
@@ -219,9 +285,14 @@ export def get(scope: *Scope, id: *parser::Node, force_compile: bool, check_expo
                 var value2 = map::get((@scope2).fields, name) !*Value
                 
                 if value2 and (@value2).share !int & parser::ShareMarker::EXPORT !int {
+                    if id.value.identifier.types {
+                        var score = 0
+                        value2 = find_function(id, value2, id.value.identifier.types, *score, true)
+                    }
+
                     if value {
                         // TODO save location of values to give better error messages
-                        typechecking::errorn(id, "Ambiguous reference\n")
+                        errors::errorn(id, "Ambiguous reference")
                         return null
                     }
                     if value2.phase == Phase::DEFINED and force_compile {
@@ -239,18 +310,18 @@ export def get(scope: *Scope, id: *parser::Node, force_compile: bool, check_expo
         }
         return null
     } else {
-        let head = vector::head_vec((@id).value.body)
-        let tail = vector::tail((@id).value.body)
+        let head = vector::head_vec((@id).value.identifier.path)
+        let tail = vector::tail((@id).value.identifier.path)
 
         let id_head = parser::copy_node(id)
-        (@id_head).value.body = head
+        (@id_head).value.identifier.path = head
         let id_tail = parser::copy_node(id)
-        (@id_tail).value.body = tail
+        (@id_tail).value.identifier.path = tail
 
         let s = get(scope, id_head)
         if s {
             if not (@s).scope {
-                typechecking::errorn(id, "Use of :: on non namespace\n")
+                errors::errorn(id, "Use of :: on non namespace")
                 return null
             }
             return get((@s).scope, id_tail, force_compile, s.imported)
@@ -266,8 +337,7 @@ export def get(scope: *Scope, id: *parser::Node) -> *Value {
 export def get_const_value(scope: *Scope, id: *parser::Node) -> *Value {
     let value = get(scope, id)
     if not value {
-        typechecking::errorn(id, "Unknown identifier \"")
-        error(parser::identifier_to_str(id), "\"\n")
+        errors::errorn(id, "Unknown identifier `", parser::identifier_to_str(id), "`")
         return null
     }
     assert((@value).modifier == parser::VarDecl::CONST or (@value).modifier == parser::VarDecl::TYPE)
@@ -289,20 +359,19 @@ export def enter_namespace(scope: *Scope, node: *parser::Node) -> *Scope
 def create_path(scope: *Scope, node: *parser::Node) -> *Scope {
     assert((@node).kind == parser::NodeKind::IDENTIFIER)
 
-    let length = vector::length((@node).value.body)
+    let length = vector::length((@node).value.identifier.path)
     for var i in 0..length - 1 {
-        let ident = vector::get((@node).value.body, i) !*string
+        let ident = vector::get((@node).value.identifier.path, i) !*string
         let scope_v = map::get((@scope).fields, @ident) !*Value
         if not scope_v {
             let n = parser::copy_node(node)
             let vec = vector::make()
             vector::push(vec, ident)
-            (@n).value.body = vec
+            (@n).value.identifier.path = vec
             scope = enter_namespace(scope, n)
         } else {
             if not (@scope_v).scope {
-                typechecking::errorn(node, "Illegal declaration of ")
-                error(parser::identifier_to_str(node), "\n")
+                errors::errorn(node, "Illegal declaration of `", parser::identifier_to_str(node), "`")
                 return null
             } else {
                 scope = (@scope_v).scope
@@ -313,10 +382,10 @@ def create_path(scope: *Scope, node: *parser::Node) -> *Scope {
 }
 
 // Returns the last element in a path, eg Element for path::Element
-def last_path_element(node: *parser::Node) -> string {
+export def last_path_element(node: *parser::Node) -> string {
     assert((@node).kind == parser::NodeKind::IDENTIFIER)
-    let length = vector::length((@node).value.body)
-    return @(vector::get((@node).value.body, length - 1) !*string)
+    let length = vector::length((@node).value.identifier.path)
+    return @(vector::get((@node).value.identifier.path, length - 1) !*string)
 }
 
 // TODO These following functions grew organically, they are in need of a rewrite
@@ -349,8 +418,7 @@ export def create_function(
     if map::contains((@scope).fields, name) {
         var val = map::get((@scope).fields, name) !*Value
         if not typechecking::is_function((@val).tpe) {
-            typechecking::errorn(name_node, "Redeclaration of ")
-            error("\"", name, "\"\n")
+            errors::errorn(name_node, "Redeclaration of `", name, "`")
         }
         var next = val
         var prev: *Value = null
@@ -358,8 +426,7 @@ export def create_function(
             if typechecking::overload_score((@next).tpe, (@tpe).parameter_t, true) == 0 {
                 if phase == Phase::DECLARED { return }
                 if phase == Phase::DEFINED and next.phase != Phase::DECLARED {
-                    typechecking::errorn(name_node, "Function ")
-                    error("\"", name, "\" was already declared previously (same arguments)\n")
+                    errors::errorn(name_node, "Function `", name, "` was already declared previously (same arguments)")
                 } else {
                     // Make sure we keep the chain intact
                     // TODO This is quite dodgy but its apparently needed for some reason
@@ -407,10 +474,10 @@ def append_scope_count(scope: *Scope, name: string) -> string {
 export def create_variable(
     scope: *Scope, name_node: *parser::Node, share: parser::ShareMarker, 
     modifier: parser::VarDecl, tpe: *typechecking::Type, extern: bool, value: *compiler::Value, 
-    phase: Phase, node: *parser::Node, state: *typechecking::State) {
+    phase: Phase, node: *parser::Node, state: *typechecking::State) -> *Value {
     
     scope = create_path(scope, name_node)
-    if not scope { return }
+    if not scope { return null }
     let name = last_path_element(name_node)
 
     let global = is_global(scope)
@@ -443,8 +510,7 @@ export def create_variable(
             phase == Phase::COMPILED and val.phase != Phase::DEFINED or 
             typechecking::is_function(val.tpe) or typechecking::is_type(val.tpe) {
 
-            typechecking::errorn(name_node, "Redeclaration of ")
-            error("\"", name, "\"\n")
+            errors::errorn(name_node, "Redeclaration of `", name, "`")
         } else {
             if v.tpe {
                 let tpe2 = val.tpe
@@ -455,18 +521,20 @@ export def create_variable(
     } else {
         map::put((@scope).fields, name, v)
     }
+
+    return v
 }
 
 export def create_variable(
     scope: *Scope, name_node: *parser::Node, share: parser::ShareMarker, 
-    modifier: parser::VarDecl, tpe: *typechecking::Type, extern: bool, value: *compiler::Value) {
-    create_variable(scope, name_node, share, modifier, tpe, extern, value, Phase::COMPILED, null, null)
+    modifier: parser::VarDecl, tpe: *typechecking::Type, extern: bool, value: *compiler::Value) -> *Value {
+    return create_variable(scope, name_node, share, modifier, tpe, extern, value, Phase::COMPILED, null, null)
 }
 
 export def create_variable(
     scope: *Scope, name_node: *parser::Node, share: parser::ShareMarker, 
-    modifier: parser::VarDecl, tpe: *typechecking::Type, value: *compiler::Value) {
-    create_variable(scope, name_node, share, modifier, tpe, false, value, Phase::COMPILED, null, null)
+    modifier: parser::VarDecl, tpe: *typechecking::Type, value: *compiler::Value) -> *Value {
+    return create_variable(scope, name_node, share, modifier, tpe, false, value, Phase::COMPILED, null, null)
 }
 
 export def create_type(
@@ -503,8 +571,7 @@ export def create_type(
             phase == Phase::COMPILED and value.phase != Phase::DEFINED and not typechecking::is_stub(tpe2.value_tpe) or 
             value.tpe.kind != typechecking::TypeKind::TYPE {
             
-            typechecking::errorn(node, "Redeclaration of ")
-            error("\"", name, "\"\n")
+            errors::errorn(node, "Redeclaration of `", name, "`")
             return null
         } 
         if phase != Phase::DECLARED {
@@ -546,8 +613,7 @@ export def enter_namespace(scope: *Scope, scope2: *Scope, node: *parser::Node) -
 
     let value = map::get(scope.fields, name) !*Value
     if value and not value.scope {
-        typechecking::errorn(node, "Redeclaration of ")
-        error("\"", name, "\"\n")
+        errors::errorn(node, "Redeclaration of `", name, "`")
     } else {
         map::put((@scope).fields, name, v)
     }

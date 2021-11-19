@@ -13,12 +13,12 @@ if [[ -z $1 ]]; then
 else
     case $1 in 
         "release") release ;;
-        "test") testsuite ;;
+        "test") testsuite "${@:2}" ;;
         "clean")
             rm -rf build
             rm -f princess*.tar.gz
             ;;
         "download") download ;;
-        *) echo "Usage: $0 [release | test | clean | download]" ;;
+        *) build "${@:1}" ;;
     esac
 fi

@@ -1,10 +1,13 @@
 import lexer
 import vector
+import map
 import util
 import buffer
 import toolchain
 import typechecking
 import scope
+import errors
+import debug
 
 export type NodeKind = enum {
     PROGRAM
@@ -14,6 +17,7 @@ export type NodeKind = enum {
     FLOAT
     BOOLEAN
     IDENTIFIER
+    ERROR
     DEFINED
     NULL
     RANGE
@@ -24,6 +28,7 @@ export type NodeKind = enum {
     CAST
     SIZE_OF
     ALIGN_OF
+    DEFER
     ADD
     SUB
     MUL
@@ -124,6 +129,9 @@ export type NodeDef = struct {
     returns: *vector::Vector
     body: *vector::Vector
     is_used: bool
+    // Map of typechecking::Type
+    locals: *map::Map
+    has_defer: bool
 }
 
 export type NodeParam = struct {
@@ -259,6 +267,13 @@ export type NodeIfExpr = struct {
     if_false: *Node
 }
 
+export type NodeIdentifier = struct {
+    path: *vector::Vector
+    args: *vector::Vector
+    // Vector of typechecking::NamedParameter
+    types: *vector::Vector
+}
+
 export type NodeValue = struct #union {
     bin_op: NodeBinaryOp
     var_decl: NodeVarDecl
@@ -285,6 +300,7 @@ export type NodeValue = struct #union {
     import_module: NodeImportModule
     def_: NodeDef
     param: NodeParam
+    identifier: NodeIdentifier
 
     body: *vector::Vector
     expr: *Node
@@ -298,6 +314,8 @@ export type SourceLoc = struct {
     module: string
     line: int
     column: int
+    end_line: int
+    end_column: int
     lines: [string]
 }
 
@@ -321,9 +339,12 @@ export type Node = struct {
     // actual data in value
     // TODO remove body from the NodeValue union
     body: *vector::Vector
+    // This is used by assignment to track let
+    kw: VarDecl
+    module: *toolchain::Module
 }
 
-type ParseState = struct {
+export type ParseState = struct {
     filename: string
     module: string
     has_error: bool
@@ -331,23 +352,24 @@ type ParseState = struct {
     tokens: **lexer::TokenList
 }
 
-def errort(token: lexer::Token, state: *ParseState, msg: string)
-
 export def make_identifier(s: [string]) -> *Node {
-    let node = allocate(Node)
     let vec = vector::make()
     for var i in 0..s.size {
         vector::push(vec, util::copy_string(s[i]))
     }
-    (@node).kind = NodeKind::IDENTIFIER
-    (@node).loc.filename = "builtins"
-    (@node).loc.module = "builtins"
-    (@node).loc.line = -1
-    (@node).loc.column = -1
-    (@node).loc.module = ""
-    (@node).value.body = vec
-    (@node).tpe = null
-    (@node).scope = null
+
+    let node = allocate(Node)
+    @node = {
+        kind = NodeKind::IDENTIFIER,
+        loc = {
+            filename = "builtins",
+            module = "builtins",
+            line = -1,
+            column = -1,
+            module = ""
+        } !SourceLoc
+    } !Node
+    node.value.identifier.path = vec
     return node
 }
 
@@ -358,34 +380,54 @@ export def copy_node(node: *Node) -> *Node {
     return copy
 }
 
-export def identifier_to_str(node: *Node) -> string {
+export def identifier_to_str(node: *Node, types: bool) -> string {
     assert((@node).kind == NodeKind::IDENTIFIER)
     let buf = buffer::make_buffer()
-    let len = vector::length((@node).value.body)
+    let len = vector::length((@node).value.identifier.path)
     for var i in 0..len {
-        buffer::append_str(*buf, @(vector::get((@node).value.body, i) !*string))
+        buffer::append_str(*buf, @(vector::get((@node).value.identifier.path, i) !*string))
         if i < len - 1 {
             buffer::append_str(*buf, "::")
+        }
+    }
+    if types and node.value.identifier.types {
+        let len = vector::length(node.value.identifier.types)
+        buffer::append_str(*buf, "::")
+        if len > 0 {
+            buffer::append_char(*buf, '(')
+            for var i in 0..len {
+                let np = vector::get(node.value.identifier.types, i) !*typechecking::NamedParameter
+                buffer::append_str(*buf, debug::type_to_str(np.tpe))
+                if i < len - 1 {
+                    buffer::append_str(*buf, ", ")
+                }
+            }
+            buffer::append_char(*buf, ')')
         }
     }
 
     return buffer::to_string(*buf)
 }
 
+export def identifier_to_str(node: *Node) -> string {
+    return identifier_to_str(node, true)
+}
+
 def make_node(kind: NodeKind, line: int, column: int, state: *ParseState) -> *Node {
+    let current_token = peek(state)
     var node = allocate(Node)
-    (@node).tpe = null
-    (@node).function = null
-    (@node).scope = null
-    (@node).kind = kind
-    (@node).parent = null
-    (@node).loc = {
-        (@state).filename,
-        (@state).module,
-        line,
-        column,
-        (@state).lines
-    } !SourceLoc
+    @node = {
+        kind = kind,
+        loc = {
+            (@state).filename,
+            (@state).module,
+            line,
+            column,
+            current_token.line,
+            current_token.column,
+            (@state).lines
+        } !SourceLoc
+    }
     return node
 }
 
@@ -415,7 +457,7 @@ def skip_whitespace(state: *ParseState) {
 
         if tt == lexer::TokenType::ERROR {
             let token = (@@list).value
-            errort(token, state, token.value.str)
+            errors::errort(token, state, token.value.str)
         }
 
         @list = (@@list).next
@@ -458,7 +500,7 @@ def unget_token(state: *ParseState, token: lexer::Token) {
 def expect(state: *ParseState, tpe: lexer::TokenType, msg: string) -> lexer::Token {
     let token = pop(state)
     if token.tpe != tpe {
-        errort(token, state, msg)
+        errors::errort(token, state, msg)
     }
     return token
 }
@@ -485,26 +527,60 @@ def next_token(state: *ParseState, tpe: lexer::TokenType) -> bool {
 
 def expect_identifier(parse_state: *ParseState) -> *Node {
     var token = pop(parse_state)
+    let line = token.line
+    let column = token.column
     
-    var vec = vector::make()
-    while token.tpe == lexer::TokenType::IDENTIFIER {
-        vector::push(vec, util::copy_string(token.value.str))
+    let path = vector::make()
+    loop {
+        vector::push(path, util::copy_string(token.value.str))
         token = peek(parse_state)
         if token.tpe == lexer::TokenType::DOUBLE_COLON {
-            pop(parse_state)
             token = pop(parse_state)
-            continue
+            var ident = peek(parse_state)
+            if ident.tpe == lexer::TokenType::IDENTIFIER {
+                token = pop(parse_state)
+                continue
+            } else {
+                unget_token(parse_state, token)
+            }
         }
         break
     }
 
-    if vector::length(vec) == 0 {
-        errort(token, parse_state, "Expected identifier\n")
+    if vector::length(path) == 0 {
+        errors::errort(token, parse_state, "Expected identifier")
         return null
     }
 
-    var node = make_node(NodeKind::IDENTIFIER, token.line, token.column, parse_state)
-    (@node).value.body = vec
+    var args: *vector::Vector = null
+    token = peek(parse_state)
+    if token.tpe == lexer::TokenType::DOUBLE_COLON {
+        pop(parse_state)
+        args = vector::make()
+        // We have a function reference
+        token = peek(parse_state)
+        if token.tpe == lexer::TokenType::O_PAREN {
+            pop(parse_state)
+            token = peek(parse_state)
+            while token.tpe != lexer::TokenType::C_PAREN and 
+                token.tpe != lexer::TokenType::EOF {
+                let expr = expect_type(parse_state)
+                vector::push(args, expr)
+                token = peek(parse_state)
+                if token.tpe == lexer::TokenType::COMMA {
+                    pop(parse_state)
+                    token = peek(parse_state)
+                    continue
+                }
+                break
+            }
+            expect(parse_state, lexer::TokenType::C_PAREN, "Expected ')'")
+        }
+    }
+
+    var node = make_node(NodeKind::IDENTIFIER, line, column, parse_state)
+    node.value.identifier.path = path
+    node.value.identifier.args = args
 
     return node
 }
@@ -577,7 +653,7 @@ def expect_array(parse_state: *ParseState) -> *Node {
     }
     @(@parse_state).tokens = tokens
 
-    tok = expect(parse_state, lexer::TokenType::O_SQUARE, "Expected '['\n")
+    tok = expect(parse_state, lexer::TokenType::O_SQUARE, "Expected '['")
 
     // [let T], [var T] and [T]
 
@@ -592,7 +668,7 @@ def expect_array(parse_state: *ParseState) -> *Node {
 
     let tpe = expect_type(parse_state)
 
-    tok = expect(parse_state, lexer::TokenType::C_SQUARE, "Expected ']'\n")
+    tok = expect(parse_state, lexer::TokenType::C_SQUARE, "Expected ']'")
 
     node = make_node(NodeKind::ARRAY_T, line, column, parse_state)
     (@node).value.t_parr = {
@@ -609,10 +685,10 @@ def expect_ptr_ref(parse_state: *ParseState, ref: bool) -> *Node {
     var tok: lexer::Token
     if ref {
         kind = NodeKind::REF_T
-        tok = expect(parse_state, lexer::TokenType::OP_BAND, "Expected '&'\n")
+        tok = expect(parse_state, lexer::TokenType::OP_BAND, "Expected '&'")
     } else {
         kind = NodeKind::PTR_T
-        tok = expect(parse_state, lexer::TokenType::OP_MUL, "Expected '*'\n")
+        tok = expect(parse_state, lexer::TokenType::OP_MUL, "Expected '*'")
     }
     let line = tok.line
     let column = tok.column
@@ -650,7 +726,7 @@ def parse_id_decl_struct(parse_state: *ParseState) -> *Node {
     } else {
         var ident = expect_identifier(parse_state)
         skip_newline(parse_state)
-        expect(parse_state, lexer::TokenType::COLON, "Expected ':'\n")
+        expect(parse_state, lexer::TokenType::COLON, "Expected ':'")
         skip_newline(parse_state)
         var tpe = expect_type(parse_state)
 
@@ -672,7 +748,7 @@ def expect_struct(parse_state: *ParseState) -> *Node {
 
     var kind = NodeKind::STRUCT_T
 
-    expect(parse_state, lexer::TokenType::K_STRUCT, "Expected struct\n")
+    expect(parse_state, lexer::TokenType::K_STRUCT, "Expected struct")
     skip_newline(parse_state)
     token = peek(parse_state)
     if token.tpe == lexer::TokenType::PRAGMA {
@@ -680,11 +756,11 @@ def expect_struct(parse_state: *ParseState) -> *Node {
         if token.value.str == "#union" {
             kind = NodeKind::UNION_T
         } else {
-            errort(token, parse_state, "Unexpected pragma, only #union allowed\n")
+            errors::errort(token, parse_state, "Unexpected pragma, only #union allowed")
             return null
         }
     }
-    expect(parse_state, lexer::TokenType::O_BRACE, "Expected '{'\n")
+    expect(parse_state, lexer::TokenType::O_BRACE, "Expected '{'")
     skip_newline(parse_state)
 
     var body = vector::make()
@@ -697,7 +773,7 @@ def expect_struct(parse_state: *ParseState) -> *Node {
         token = peek(parse_state)
     }
 
-    expect(parse_state, lexer::TokenType::C_BRACE, "Expected '}'\n")
+    expect(parse_state, lexer::TokenType::C_BRACE, "Expected '}'")
 
     var node = make_node(kind, line, column, parse_state)
     (@node).value.body = body
@@ -733,7 +809,7 @@ def expect_enum(parse_state: *ParseState) -> *Node {
     let line = token.line
     let column = token.column
 
-    expect(parse_state, lexer::TokenType::K_ENUM, "Expected enum\n")
+    expect(parse_state, lexer::TokenType::K_ENUM, "Expected enum")
     skip_newline(parse_state)
 
     token = peek(parse_state)
@@ -757,7 +833,7 @@ def expect_enum(parse_state: *ParseState) -> *Node {
         token = peek(parse_state)
     }
 
-    expect(parse_state, lexer::TokenType::C_BRACE, "Expected '}'\n")
+    expect(parse_state, lexer::TokenType::C_BRACE, "Expected '}'")
 
     var node = make_node(NodeKind::ENUM_T, line, column, parse_state)
     (@node).value.t_enum = {
@@ -772,18 +848,18 @@ def parse_type2(parse_state: *ParseState) -> *Node {
 
     if tok.tpe == lexer::TokenType::O_PAREN {
         var node = expect_type(parse_state)
-        expect(parse_state, lexer::TokenType::C_PAREN, "Expected ')'\n")
+        expect(parse_state, lexer::TokenType::C_PAREN, "Expected ')'")
         return node
     } else if tok.tpe == lexer::TokenType::K_TYPE {
         var node = expect_type(parse_state)
         return node
     } else if tok.tpe == lexer::TokenType::K_WORD {
-        expect(parse_state, lexer::TokenType::O_PAREN, "Expected '('\n")
-        var n = expect(parse_state, lexer::TokenType::INTEGER, "Expected integer\n")
+        expect(parse_state, lexer::TokenType::O_PAREN, "Expected '('")
+        var n = expect(parse_state, lexer::TokenType::INTEGER, "Expected integer")
         if n.tpe != lexer::TokenType::INTEGER {
             return null
         }
-        expect(parse_state, lexer::TokenType::C_PAREN, "Expected ')'\n")
+        expect(parse_state, lexer::TokenType::C_PAREN, "Expected ')'")
         var node = make_node(NodeKind::WORD_T, tok.line, tok.column, parse_state)
         (@node).value.i = n.value.i
 
@@ -839,7 +915,7 @@ def parse_type_list(parse_state: *ParseState, sw: bool) -> *vector::Vector {
             }
             break
         }
-        expect(parse_state, lexer::TokenType::C_PAREN, "Expected ')'\n")
+        expect(parse_state, lexer::TokenType::C_PAREN, "Expected ')'")
     } else {
         var node: *Node = null
         if sw {
@@ -869,7 +945,7 @@ def parse_type(parse_state: *ParseState) -> *Node {
         } !NodeFunctionT
         return node
     } else if vector::length(args) > 1 {
-        errort(token, parse_state, "Expected single type, got multiple\n")
+        errors::errort(token, parse_state, "Expected single type, got multiple")
         return null
     } else if vector::length(args) == 1 {
         return vector::get(args, 0) !*Node
@@ -882,7 +958,7 @@ def expect_type(parse_state: *ParseState) -> *Node {
     let token = peek(parse_state)
     let node = parse_type(parse_state)
     if not node {
-       errort(token, parse_state, "Expected type\n") 
+       errors::errort(token, parse_state, "Expected type") 
     }
     return node
 }
@@ -892,7 +968,7 @@ def expect_array_lit(parse_state: *ParseState) -> *Node {
     let line = token.line
     let column = token.column
     
-    expect(parse_state, lexer::TokenType::O_SQUARE, "Expecting '['\n")
+    expect(parse_state, lexer::TokenType::O_SQUARE, "Expecting '['")
     var body = vector::make()
     skip_newline(parse_state)
     token = peek(parse_state)
@@ -912,7 +988,7 @@ def expect_array_lit(parse_state: *ParseState) -> *Node {
         }
     }
     skip_newline(parse_state)
-    expect(parse_state, lexer::TokenType::C_SQUARE, "Expecting ']'\n")
+    expect(parse_state, lexer::TokenType::C_SQUARE, "Expecting ']'")
 
     var node = make_node(NodeKind::ARRAY_LIT, line, column, parse_state)
     (@node).value.body = body
@@ -926,7 +1002,7 @@ def expect_struct_lit(parse_state: *ParseState) -> *Node {
     let line = token.line
     let column = token.column
 
-    expect(parse_state, lexer::TokenType::O_BRACE, "Expecting '{'\n")
+    expect(parse_state, lexer::TokenType::O_BRACE, "Expecting '{'")
     skip_newline(parse_state)
     token = peek(parse_state)
 
@@ -953,7 +1029,7 @@ def expect_struct_lit(parse_state: *ParseState) -> *Node {
         token = peek(parse_state)
         if token.tpe != lexer::TokenType::C_BRACE {
             if token.tpe != lexer::TokenType::COMMA {
-                errort(token, parse_state, "Expected ','\n")
+                errors::errort(token, parse_state, "Expected ','")
                 return null
             } else {
                 pop(parse_state)
@@ -974,7 +1050,7 @@ def expect_struct_lit(parse_state: *ParseState) -> *Node {
         let ident = expect_identifier(parse_state)
         skip_newline(parse_state)
 
-        expect(parse_state, lexer::TokenType::OP_ASSIGN, "expected '='\n")
+        expect(parse_state, lexer::TokenType::OP_ASSIGN, "expected '='")
         skip_newline(parse_state)
         let expr = expect_expression_no_assign(parse_state)
 
@@ -989,7 +1065,7 @@ def expect_struct_lit(parse_state: *ParseState) -> *Node {
         token = peek(parse_state)
         if token.tpe != lexer::TokenType::C_BRACE {
             if token.tpe != lexer::TokenType::COMMA {
-                errort(token, parse_state, "Expected ','\n")
+                errors::errort(token, parse_state, "Expected ','")
                 return null
             } else {
                 pop(parse_state)
@@ -998,7 +1074,7 @@ def expect_struct_lit(parse_state: *ParseState) -> *Node {
         }
     }
 
-    expect(parse_state, lexer::TokenType::C_BRACE, "Expecting '}'\n")
+    expect(parse_state, lexer::TokenType::C_BRACE, "Expecting '}'")
 
     var call = make_node(NodeKind::STRUCT_LIT, line, column, parse_state)
     (@call).value.struct_lit = {
@@ -1011,12 +1087,12 @@ def expect_struct_lit(parse_state: *ParseState) -> *Node {
 
 def parse_term(parse_state: *ParseState) -> *Node {
     let token = pop(parse_state)
-    var node = allocate(Node)
+    var node = zero_allocate(Node)
     
     if token.tpe == lexer::TokenType::O_PAREN {
         free(node)
         node = parse_expression(parse_state)
-        expect(parse_state, lexer::TokenType::C_PAREN, "Expecting ')'\n")
+        expect(parse_state, lexer::TokenType::C_PAREN, "Expecting ')'")
         return node
     } else if token.tpe == lexer::TokenType::K_TYPE {
         free(node)
@@ -1065,9 +1141,11 @@ def parse_term(parse_state: *ParseState) -> *Node {
         return expect_struct_lit(parse_state)
     } else {
         free(node)
-        // errort(token, parse_state, "Expected literal or identifier\n")
+        // errors::errort(token, parse_state, "Expected literal or identifier")
         return null
     }
+
+    let current_token = peek(parse_state)
 
     (@node).tpe = null
     (@node).scope = null
@@ -1076,6 +1154,8 @@ def parse_term(parse_state: *ParseState) -> *Node {
         (@parse_state).module,
         token.line,
         token.column,
+        current_token.end_line,
+        current_token.end_column,
         (@parse_state).lines
     } !SourceLoc
     return node
@@ -1103,7 +1183,7 @@ def expect_func_args(parse_state: *ParseState, node: *Node) -> *Node {
         token = peek(parse_state)
         if token.tpe != lexer::TokenType::C_PAREN {
             if token.tpe != lexer::TokenType::COMMA {
-                errort(token, parse_state, "Expected ','\n")
+                errors::errort(token, parse_state, "Expected ','")
                 return null
             } else {
                 pop(parse_state)
@@ -1122,7 +1202,7 @@ def expect_func_args(parse_state: *ParseState, node: *Node) -> *Node {
 
         let ident = expect_identifier(parse_state)
 
-        expect(parse_state, lexer::TokenType::OP_ASSIGN, "expected '='\n")
+        expect(parse_state, lexer::TokenType::OP_ASSIGN, "expected '='")
         let expr = expect_expression_no_assign(parse_state)
 
         let named_arg = make_node(NodeKind::NAMED_ARG, line, column, parse_state)
@@ -1135,7 +1215,7 @@ def expect_func_args(parse_state: *ParseState, node: *Node) -> *Node {
         token = peek(parse_state)
         if token.tpe != lexer::TokenType::C_PAREN {
             if token.tpe != lexer::TokenType::COMMA {
-                errort(token, parse_state, "Expected ','\n")
+                errors::errort(token, parse_state, "Expected ','")
                 return null
             } else {
                 pop(parse_state)
@@ -1160,12 +1240,12 @@ def parse_post_expression(parse_state: *ParseState) -> *Node {
     loop {
         if next_token(parse_state, lexer::TokenType::O_PAREN) {
             node = expect_func_args(parse_state, node)
-            expect(parse_state, lexer::TokenType::C_PAREN, "Expected ')'\n")
+            expect(parse_state, lexer::TokenType::C_PAREN, "Expected ')'")
         } else if next_token(parse_state, lexer::TokenType::O_SQUARE) {
             skip_newline(parse_state)
             node = make_bin_op(parse_state, token, NodeKind::ARRAY_SUBSCRIPT, node, parse_expression(parse_state))
             skip_newline(parse_state)
-            expect(parse_state, lexer::TokenType::C_SQUARE, "Expected ']'\n")
+            expect(parse_state, lexer::TokenType::C_SQUARE, "Expected ']'")
         } else if next_token(parse_state, lexer::TokenType::DOT) {
             node = make_bin_op(parse_state, token, NodeKind::MEMBER_ACCESS, node, expect_identifier(parse_state))
         } else {
@@ -1483,7 +1563,7 @@ def expect_expression(parse_state: *ParseState) -> *Node {
     let node = parse_expression(parse_state)
     if not node {
         let token = peek(parse_state)
-        errort(token, parse_state, "Expected expression\n")
+        errors::errort(token, parse_state, "Expected expression")
     }
     return node
 }
@@ -1501,7 +1581,7 @@ def expect_expression_no_assign(parse_state: *ParseState) -> *Node {
     let node = parse_expression_no_assign(parse_state)
     if not node {
         let token = peek(parse_state)
-        errort(token, parse_state, "Expected expression\n")
+        errors::errort(token, parse_state, "Expected expression")
     }
     return node
 }
@@ -1512,7 +1592,7 @@ def parse_def(parse_state: *ParseState, share: ShareMarker) -> *Node {
     let line = token.line
     let column = token.column
 
-    expect(parse_state, lexer::TokenType::K_DEF, "Expected def\n")
+    expect(parse_state, lexer::TokenType::K_DEF, "Expected def")
     skip_newline(parse_state)
 
     token = peek(parse_state)
@@ -1522,7 +1602,7 @@ def parse_def(parse_state: *ParseState, share: ShareMarker) -> *Node {
         if token.value.str == "#extern" {
             extern = true
         } else {
-            errort(token, parse_state, "Invalid pragma\n")
+            errors::errort(token, parse_state, "Invalid pragma")
         }
         skip_newline(parse_state)
         token = peek(parse_state)
@@ -1553,7 +1633,7 @@ def parse_def(parse_state: *ParseState, share: ShareMarker) -> *Node {
 
                 if token.tpe == lexer::TokenType::OP_VARARGS {
                     if varargs {
-                        errort(token, parse_state, "Only the last parameter is allowed to be varargs\n")
+                        errors::errort(token, parse_state, "Only the last parameter is allowed to be varargs")
                     }
                     varargs = true
                     pop(parse_state)
@@ -1580,7 +1660,7 @@ def parse_def(parse_state: *ParseState, share: ShareMarker) -> *Node {
                         token = peek(parse_state)
                         if token.tpe == lexer::TokenType::OP_VARARGS {
                             if varargs {
-                                errort(token, parse_state, "Only the last parameter is allowed to be varargs\n")
+                                errors::errort(token, parse_state, "Only the last parameter is allowed to be varargs")
                             }
                             varargs = true
                             pop(parse_state)
@@ -1600,7 +1680,7 @@ def parse_def(parse_state: *ParseState, share: ShareMarker) -> *Node {
                         }
                     } else {
                         if default {
-                            errort(token, parse_state, "Argument needs to have a default value\n")
+                            errors::errort(token, parse_state, "Argument needs to have a default value")
                         }
                     }
                 }
@@ -1621,7 +1701,7 @@ def parse_def(parse_state: *ParseState, share: ShareMarker) -> *Node {
                     pop(parse_state)
                     continue
                 } else {
-                    expect(parse_state, lexer::TokenType::C_PAREN, "Expected ')'\n")
+                    expect(parse_state, lexer::TokenType::C_PAREN, "Expected ')'")
                     break
                 }
             }
@@ -1659,7 +1739,7 @@ def parse_def(parse_state: *ParseState, share: ShareMarker) -> *Node {
         pop(parse_state)
         body = vector::make()
         parse_block(parse_state, body)
-        expect(parse_state, lexer::TokenType::C_BRACE, "Expected '}'\n")
+        expect(parse_state, lexer::TokenType::C_BRACE, "Expected '}'")
     }
     
     var node = make_node(NodeKind::DEF, line, column, parse_state)
@@ -1695,7 +1775,7 @@ def parse_vardecl(parse_state: *ParseState, share: ShareMarker, vardecl: VarDecl
         if tok.value.str == "#extern" {
             extern = true
         } else {
-            errort(tok, parse_state, "Invalid pragma\n")
+            errors::errort(tok, parse_state, "Invalid pragma")
         }
         skip_newline(parse_state)
         tok = peek(parse_state)
@@ -1707,7 +1787,7 @@ def parse_vardecl(parse_state: *ParseState, share: ShareMarker, vardecl: VarDecl
         if tok.tpe == lexer::TokenType::O_PAREN {
             // Assignment
             let expr = expect_expression_no_assign(parse_state)
-            expect(parse_state, lexer::TokenType::C_PAREN, "Expected ')'\n")
+            expect(parse_state, lexer::TokenType::C_PAREN, "Expected ')'")
             var node = make_node(NodeKind::ID_ASSIGN, tok.line, tok.column, parse_state)
             (@node).value.expr = expr
             vector::push(vec_left, node)
@@ -1740,7 +1820,7 @@ def parse_vardecl(parse_state: *ParseState, share: ShareMarker, vardecl: VarDecl
             unget_token(parse_state, tok)
             break
         } else {
-            errort(tok, parse_state, "Expected identifier, (expression) or '='\n")
+            errors::errort(tok, parse_state, "Expected identifier, (expression) or '='")
             return null
         }
     }
@@ -1764,11 +1844,11 @@ def parse_vardecl(parse_state: *ParseState, share: ShareMarker, vardecl: VarDecl
             }
         }
         //if vector::length(vec_left) != vector::length(vec_right) {
-        //    errort(tok, parse_state, "Unbalanced assignment\n")
+        //    errors::errort(tok, parse_state, "Unbalanced assignment")
         //}
     } else if vardecl == VarDecl::LET or
         vardecl == VarDecl::CONST {
-        errort(tok, parse_state, "Expected '='\n")
+        errors::errort(tok, parse_state, "Expected '='")
         return null
     }
 
@@ -1843,12 +1923,12 @@ def expect_loop_stmt(parse_state: *ParseState) -> *Node {
     let line = token.line
     let column = token.column
 
-    expect(parse_state, lexer::TokenType::K_LOOP, "Expected loop\n")
+    expect(parse_state, lexer::TokenType::K_LOOP, "Expected loop")
     skip_newline(parse_state)
-    expect(parse_state, lexer::TokenType::O_BRACE, "Expected '{'\n")
+    expect(parse_state, lexer::TokenType::O_BRACE, "Expected '{'")
     var body = vector::make()
     parse_block(parse_state, body)
-    expect(parse_state, lexer::TokenType::C_BRACE, "Expected '}'\n")
+    expect(parse_state, lexer::TokenType::C_BRACE, "Expected '}'")
 
     var node = make_node(NodeKind::LOOP, line, column, parse_state)
     (@node).value.body = body
@@ -1862,14 +1942,14 @@ def expect_while_stmt(parse_state: *ParseState) -> *Node {
     let line = token.line
     let column = token.column
 
-    expect(parse_state, lexer::TokenType::K_WHILE, "Expected while\n")
+    expect(parse_state, lexer::TokenType::K_WHILE, "Expected while")
     skip_newline(parse_state)
     let expr = expect_expression(parse_state)
     skip_newline(parse_state)
-    expect(parse_state, lexer::TokenType::O_BRACE, "Expected '{'\n")
+    expect(parse_state, lexer::TokenType::O_BRACE, "Expected '{'")
     var body = vector::make()
     parse_block(parse_state, body)
-    expect(parse_state, lexer::TokenType::C_BRACE, "Expected '}'\n")
+    expect(parse_state, lexer::TokenType::C_BRACE, "Expected '}'")
 
     var node = make_node(NodeKind::WHILE, line, column, parse_state)
     (@node).value.while_loop = {
@@ -1886,7 +1966,7 @@ def expect_for_stmt(parse_state: *ParseState) -> *Node {
     let line = token.line
     let column = token.column
 
-    expect(parse_state, lexer::TokenType::K_FOR, "Expected for\n")
+    expect(parse_state, lexer::TokenType::K_FOR, "Expected for")
     skip_newline(parse_state)
 
     var iddecl: *Node = null
@@ -1912,13 +1992,13 @@ def expect_for_stmt(parse_state: *ParseState) -> *Node {
     }
 
     skip_newline(parse_state)
-    expect(parse_state, lexer::TokenType::K_IN, "Expected in\n")
+    expect(parse_state, lexer::TokenType::K_IN, "Expected in")
     skip_newline(parse_state)
     var expr = expect_expression(parse_state)
-    expect(parse_state, lexer::TokenType::O_BRACE, "Expected '{'\n")
+    expect(parse_state, lexer::TokenType::O_BRACE, "Expected '{'")
     var body = vector::make()
     parse_block(parse_state, body)
-    expect(parse_state, lexer::TokenType::C_BRACE, "Expected '}'\n")
+    expect(parse_state, lexer::TokenType::C_BRACE, "Expected '}'")
 
     var node = make_node(NodeKind::FOR, line, column, parse_state)
     (@node).value.for_loop = {
@@ -1936,10 +2016,10 @@ def expect_if_expr(parse_state: *ParseState, if_true: *Node) -> *Node {
     let line = token.line
     let column = token.column
 
-    expect(parse_state, lexer::TokenType::K_IF, "Expected if\n")
+    expect(parse_state, lexer::TokenType::K_IF, "Expected if")
     let cond = expect_expression_no_assign(parse_state)
     skip_newline(parse_state)
-    expect(parse_state, lexer::TokenType::K_ELSE, "Expected else\n")
+    expect(parse_state, lexer::TokenType::K_ELSE, "Expected else")
     skip_newline(parse_state)
     let if_false = expect_expression_no_assign(parse_state)
 
@@ -1960,21 +2040,21 @@ def expect_if_stmt(parse_state: *ParseState, static_if: bool) -> *Node {
 
     if static_if {
         if not (token.tpe == lexer::TokenType::PRAGMA and token.value.str == "#if") {
-            errort(token, parse_state, "Expected #if\n")
+            errors::errort(token, parse_state, "Expected #if")
             return null
         }
         pop(parse_state)
     } else {
-        expect(parse_state, lexer::TokenType::K_IF, "Expected if\n")
+        expect(parse_state, lexer::TokenType::K_IF, "Expected if")
     }
     
     skip_newline(parse_state)
     let cond = expect_expression(parse_state)
     skip_newline(parse_state)
-    expect(parse_state, lexer::TokenType::O_BRACE, "Expected '{'\n")
+    expect(parse_state, lexer::TokenType::O_BRACE, "Expected '{'")
     var body = vector::make()
     parse_block(parse_state, body)
-    expect(parse_state, lexer::TokenType::C_BRACE, "Expected '}'\n")
+    expect(parse_state, lexer::TokenType::C_BRACE, "Expected '}'")
     
     var tokens = @(@parse_state).tokens
     skip_newline(parse_state)
@@ -1996,10 +2076,10 @@ def expect_if_stmt(parse_state: *ParseState, static_if: bool) -> *Node {
                 var cond = expect_expression(parse_state)
                 
                 skip_newline(parse_state)
-                expect(parse_state, lexer::TokenType::O_BRACE, "Expected '{'\n")
+                expect(parse_state, lexer::TokenType::O_BRACE, "Expected '{'")
                 var body = vector::make()
                 parse_block(parse_state, body)
-                expect(parse_state, lexer::TokenType::C_BRACE, "Expected '}'\n")
+                expect(parse_state, lexer::TokenType::C_BRACE, "Expected '}'")
 
                 tokens = @(@parse_state).tokens
                 skip_newline(parse_state)
@@ -2021,10 +2101,10 @@ def expect_if_stmt(parse_state: *ParseState, static_if: bool) -> *Node {
             } else {
                 skip_newline(parse_state)
 
-                expect(parse_state, lexer::TokenType::O_BRACE, "Expected '{'\n")
+                expect(parse_state, lexer::TokenType::O_BRACE, "Expected '{'")
                 var body = vector::make()
                 parse_block(parse_state, body)
-                expect(parse_state, lexer::TokenType::C_BRACE, "Expected '}'\n")
+                expect(parse_state, lexer::TokenType::C_BRACE, "Expected '}'")
 
                 else_node = make_node(NodeKind::ELSE, token.line, token.column, parse_state)
                 (@else_node).value.body = body
@@ -2059,11 +2139,11 @@ def expect_switch_stmt(parse_state: *ParseState) -> *Node {
     let line = token.line
     let column = token.column   
 
-    expect(parse_state, lexer::TokenType::K_SWITCH, "Expected switch\n")
+    expect(parse_state, lexer::TokenType::K_SWITCH, "Expected switch")
     skip_newline(parse_state)
     let expr = expect_expression(parse_state)
     skip_newline(parse_state)
-    expect(parse_state, lexer::TokenType::O_BRACE, "Expected '{'\n")
+    expect(parse_state, lexer::TokenType::O_BRACE, "Expected '{'")
     var body = vector::make()
     loop {
         skip_newline(parse_state)
@@ -2109,11 +2189,11 @@ def expect_switch_stmt(parse_state: *ParseState) -> *Node {
 
             vector::push(body, node)
         } else {
-            errort(token, parse_state, "Expected case\n")
+            errors::errort(token, parse_state, "Expected case")
         }
     }
     if token.tpe != lexer::TokenType::C_BRACE {
-        errort(token, parse_state, "Expected '}'\n")
+        errors::errort(token, parse_state, "Expected '}'")
     }
 
     var node = make_node(NodeKind::SWITCH, line, column, parse_state)
@@ -2132,7 +2212,7 @@ def expect_import_stmt(parse_state: *ParseState) -> *Node {
     let column = token.column
 
     var body = vector::make()
-    expect(parse_state, lexer::TokenType::K_IMPORT, "Expected import\n")
+    expect(parse_state, lexer::TokenType::K_IMPORT, "Expected import")
     skip_newline(parse_state)
 
     loop {
@@ -2176,7 +2256,7 @@ def expect_return_stmt(parse_state: *ParseState) -> *Node {
     let line = token.line
     let column = token.column
 
-    expect(parse_state, lexer::TokenType::K_RETURN, "Expected return\n")
+    expect(parse_state, lexer::TokenType::K_RETURN, "Expected return")
 
     var body = vector::make()
     token = peek(parse_state)
@@ -2207,7 +2287,7 @@ def parse_t_term(parse_state: *ParseState) {
         pop(parse_state)
     } else if token.tpe != lexer::TokenType::EOF and token.tpe != lexer::TokenType::C_BRACE {
         pop(parse_state)
-        errort(token, parse_state, "Missing statement separator\n")
+        errors::errort(token, parse_state, "Missing statement separator")
     }
 }
 
@@ -2225,6 +2305,31 @@ def parse_statement2(parse_state: *ParseState, share: ShareMarker) -> *Node {
     } else if lh.tpe == lexer::TokenType::K_DEF {
         node = parse_def(parse_state, share)
     }
+    return node
+}
+
+def expect_defer_stmt(parse_state: *ParseState) -> *Node {
+    var token = peek(parse_state)
+    let line = token.line
+    let column = token.column
+
+    expect(parse_state, lexer::TokenType::K_DEFER, "Expected defer")
+    skip_newline(parse_state)
+    token = peek(parse_state)
+    let body = vector::make()
+    if token.tpe == lexer::TokenType::O_BRACE {
+        // Multiline defer
+        pop(parse_state)
+        parse_block(parse_state, body)
+        expect(parse_state, lexer::TokenType::C_BRACE, "Expected '}'")
+    } else {
+        // Single line defer
+        let expr = expect_expression(parse_state)
+        vector::push(body, expr)
+    }
+    let node = make_node(NodeKind::DEFER, line, column, parse_state)
+    node.value.body = body
+    node.body = body
     return node
 }
 
@@ -2249,7 +2354,7 @@ def parse_statement(parse_state: *ParseState) -> *Node {
         }
         node = parse_statement2(parse_state, share)
         if not node {
-            errort(peek(parse_state), parse_state, "Expected def, type, var, let, const\n")
+            errors::errort(peek(parse_state), parse_state, "Expected def, type, var, let, const")
             return null
         }
     } else if lh.tpe == lexer::TokenType::K_IF {
@@ -2266,12 +2371,17 @@ def parse_statement(parse_state: *ParseState) -> *Node {
         node = expect_while_stmt(parse_state)
     } else if lh.tpe == lexer::TokenType::K_RETURN {
         node = expect_return_stmt(parse_state)
+    } else if lh.tpe == lexer::TokenType::K_DEFER {
+        node = expect_defer_stmt(parse_state)
     } else if lh.tpe == lexer::TokenType::K_BREAK {
         pop(parse_state)
         node = make_node(NodeKind::BREAK, lh.line, lh.column, parse_state)
     } else if lh.tpe == lexer::TokenType::K_CONTINUE {
         pop(parse_state)
         node = make_node(NodeKind::CONTINUE, lh.line, lh.column, parse_state)
+    } else if lh.tpe == lexer::TokenType::PRAGMA and lh.value.str == "#error" {
+        pop(parse_state)
+        node = make_un_op(parse_state, lh, NodeKind::ERROR, expect_expression(parse_state))
     } else {
         node = parse_statement2(parse_state, ShareMarker::NONE)
         if not node {
@@ -2325,7 +2435,7 @@ export def parse(list: *lexer::TokenList, lines: [string], filename: string, mod
     parse_block(*parse_state, vec)
     var token = peek(*parse_state)
     if token.tpe != lexer::TokenType::EOF {
-        errort(token, *parse_state, "Unexpected closing '}'\n")
+        errors::errort(token, *parse_state, "Unexpected closing '}'")
     }
 
     let program_node = make_node(NodeKind::PROGRAM, 0, 0, *parse_state)
@@ -2335,24 +2445,4 @@ export def parse(list: *lexer::TokenList, lines: [string], filename: string, mod
     let end = util::millis()
     time_spent += end - start
     return program_node
-}
-
-// TODO: Make this function variadic
-def errort(token: lexer::Token, state: *ParseState, msg: string) {
-    if not (@state).has_error {
-        let filename = (@state).filename
-        let line = token.line
-        let column = token.column
-        error("\n")
-        error(filename, "@", line + 1, ":", column + 1, "\n")
-        error((@state).lines[line], "\n")
-        for var i in 0..column {
-            error(" ")
-        }
-        error("^\n")
-        error(msg)
-        (@state).has_error = true
-
-        toolchain::error_count += 1
-    }
 }

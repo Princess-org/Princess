@@ -9,6 +9,8 @@ import toolchain
 import builtins
 import typechecking
 import preprocess
+import errors
+import eval
 
 export type Label = struct {
     name: string
@@ -33,8 +35,8 @@ export type DebugParam = struct {
 export type ValueKind = enum {
     NULL; ZEROINITIALIZER; UNDEF; LOCAL; GLOBAL
     BOOL; INT; FLOAT; STRING; POINTER
-    ARRAY; STRUCT; UNION; TYPE
-    METADATA; DEBUG_INFO
+    ARRAY; STRUCT; UNION; TYPE; ADDRESS
+    METADATA; DEBUG_INFO; FUNCTION
 }
 
 export type Value = struct {
@@ -54,6 +56,7 @@ export type Value = struct {
     // Address of a value
     addr: *Value
     tpe: *typechecking::Type
+    function: *eval::FunctionPtr
 }
 
 export def copy(value: Value) -> Value {
@@ -228,6 +231,7 @@ export type Block = struct {
 }
 
 export type Function = struct {
+    module: *toolchain::Module
     imported: bool
     // True if we have C style varargs
     varargs: bool
@@ -242,6 +246,14 @@ export type Function = struct {
     block: *Block
     debug: *Value
     allocas: *vector::Vector
+
+    // Map of typechecking::Type
+    locals: *map::Map
+    has_defer: bool
+    defers: *typechecking::Type
+    env: *typechecking::Type
+
+    is_compiled: bool
 }
 
 export type Result = struct {
@@ -499,7 +511,7 @@ export def make_int_value(v: int) -> Value {
 
 export def make_address_value(tpe: *typechecking::Type, addr: *Value, state: *State) -> Value {
     return {
-        kind = ValueKind::NULL,
+        kind = ValueKind::ADDRESS,
         tpe = tpe,
         addr = addr
     } !Value
@@ -534,6 +546,8 @@ export def make_named_local(tpe: *typechecking::Type, addr: *Value, state: *Stat
 
 export def make_global_name(name: string, state: *State) -> string {
     let buf = buffer::make_buffer()
+    buffer::append_str(*buf, state.module.module)
+    buffer::append_str(*buf, "::")
     buffer::append_str(*buf, name)
     buffer::append_char(*buf, '.')
     buffer::append_str(*buf, util::int_to_str((@state).global_counter))
@@ -811,12 +825,12 @@ def walk_String(node: *parser::Node, state: *State) -> Value {
 
     let global = make_global_value(strtpe, "str", str_value, state)
 
-    let alloca_ret = make_local_value(tpe, null, state)
+    let alloca_ret = make_named_local(tpe, null, state)
     let alloca = make_insn_dbg(InsnKind::ALLOCA, loc)
     alloca.value.alloca = {
         ret = alloca_ret
     } !InsnAlloca
-    push_insn(alloca, state)
+    push_alloca(alloca, state)
     alloca_ret.tpe = typechecking::pointer(tpe)
     
     let index = allocate(Value, 2)
@@ -1080,7 +1094,9 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
             return value
         }
     } else if typechecking::is_integer(tpe) {
-        if typechecking::is_integer(value.tpe) {
+        if value.tpe.kind == typechecking::TypeKind::BOOL {
+            kind = InsnKind::ZEXT
+        } else if typechecking::is_integer(value.tpe) {
             if (@value.tpe).size == (@tpe).size {
                 // Types only differ in sign, llvm doesn't treat them any different
                 return value
@@ -1163,7 +1179,7 @@ def walk_StructLitUnion(node: *parser::Node, state: *State) -> Value {
     let largs = vector::length(args)
     let lkwargs = vector::length(kwargs)
     if largs > 1 or lkwargs > 1 or largs == 1 and lkwargs == 1 {
-        typechecking::errorn(node, "Union initalizer can only have one argument")
+        errors::errorn(node, "Union initalizer can only have one argument")
         return NO_VALUE
     } else if largs == 0 and lkwargs == 0 {
         let arraytpe = typechecking::make_static_array(builtins::char_, (@tpe).size)
@@ -1700,6 +1716,7 @@ def walk_BNot(node: *parser::Node, state: *State) -> Value {
 
 // TODO Refactor this
 def walk_Call(node: *parser::Node, state: *State) -> Value {
+    let left = node.value.func_call.left
     var tpe = (@node).function
     var is_fp = false
     if typechecking::is_function_pointer(tpe) {
@@ -1784,15 +1801,29 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
             let arg = vector::get(parameter_t, i) !*typechecking::NamedParameter
             assert(arg.value != null)
 
-            let ret = make_local_value(arg.tpe, null, state)
-            let load = make_insn(InsnKind::LOAD)
-            load.value.load = {
-                value = ret,
-                loc = @arg.value
-            } !InsnLoad
-            push_insn(load, state)
+            if arg.value.kind == ValueKind::GLOBAL {
+                if not map::contains(state.module.result.globals, arg.value.name) {
+                    let global = allocate(Global)
+                    @global = @(map::get(left.svalue.node.module.result.globals, arg.value.name) !*Global)
+                    global.value = null
+                    global.external = true
 
-            args[i] = ret
+                    map::put(state.module.result.globals, arg.value.name, global)
+                    map::put(state.module.imported, arg.value.name, map::sentinel)
+                }
+
+                let ret = make_local_value(arg.tpe, null, state)
+                let load = make_insn(InsnKind::LOAD)
+                load.value.load = {
+                    value = ret,
+                    loc = @arg.value
+                } !InsnLoad
+                push_insn(load, state)
+
+                args[i] = ret
+            } else {
+                args[i] = @arg.value
+            }
         }
     }
    
@@ -1817,9 +1848,13 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
             ret = vector::peek((@tpe).return_t) !*typechecking::Type
         }
         name_v = walk_and_load_expression((@node).value.func_call.left, state)
+        proto = allocate(NamedParameter, vector::length(tpe.parameter_t))
+        for var i in 0..vector::length(tpe.parameter_t) {
+            proto[i] = @(vector::get(tpe.parameter_t, i) !*NamedParameter)
+        }
     } else {    
         var name = (@tpe).type_name
-        let function = map::get((@(@state).result).functions, name) !*Function
+        let function = map::get(state.result.functions, name) !*Function
         if not function { return NO_VALUE }
         ret = (@function).ret
         
@@ -1942,8 +1977,16 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
 
                 let addr = walk_expression(l, state).addr
                 if not addr {
-                    typechecking::errorn(l, "Can't assign, expression has no address\n")
+                    errors::errorn(l, "Can't assign, expression has no address")
                     return NO_VALUE
+                }
+
+                if l.svalue and l.svalue.name == "_" {
+                    let alloca = make_insn_dbg(InsnKind::ALLOCA, loc)
+                    alloca.value.alloca = {
+                        ret = { kind = ValueKind::LOCAL, name = l.svalue.assembly_name, tpe = l.svalue.tpe } !Value
+                    } !InsnAlloca
+                    push_alloca(alloca, state)
                 }
 
                 let gep_ret = make_local_value(typechecking::pointer(t), null, state)
@@ -1992,8 +2035,16 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
             let l = vector::get(left, j) !*parser::Node
             let addr = walk_expression(l, state).addr
             if not addr { 
-                typechecking::errorn(l, "Can't assign, expression has no address\n")
+                errors::errorn(l, "Can't assign, expression has no address")
                 return NO_VALUE 
+            }
+
+            if l.svalue and l.svalue.name == "_" {
+                let alloca = make_insn_dbg(InsnKind::ALLOCA, loc)
+                alloca.value.alloca = {
+                    ret = { kind = ValueKind::LOCAL, name = l.svalue.assembly_name, tpe = l.svalue.tpe } !Value
+                } !InsnAlloca
+                push_alloca(alloca, state)
             }
 
             value = convert_to(n, value, (@l).tpe, state)
@@ -2035,11 +2086,14 @@ def walk_AssignEq(node: *parser::Node, state: *State) -> Value {
     }
 
     let arithmetic = allocate(parser::Node)
-    (@arithmetic).kind = kind
-    (@arithmetic).loc = (@node).loc
-    (@arithmetic).scope = (@node).scope
-    (@arithmetic).tpe = (@node).tpe
-    (@arithmetic).value.bin_op = {
+    @arithmetic = {
+        kind = kind,
+        loc = (@node).loc,
+        scope = (@node).scope,
+        tpe = (@node).tpe
+    } !parser::Node
+    
+    arithmetic.value.bin_op = {
         left = left,
         right = right
     } !parser::NodeBinaryOp
@@ -2050,10 +2104,13 @@ def walk_AssignEq(node: *parser::Node, state: *State) -> Value {
     vector::push(right_vec, arithmetic)
 
     let assign_eq_node = allocate(parser::Node)
-    (@assign_eq_node).kind = parser::NodeKind::ASSIGN
-    (@assign_eq_node).loc = (@node).loc
-    (@assign_eq_node).scope = (@node).scope
-    (@assign_eq_node).value.assign = {
+    @assign_eq_node = {
+        kind = parser::NodeKind::ASSIGN,
+        loc = (@node).loc,
+        scope = (@node).scope
+    }
+    
+    assign_eq_node.value.assign = {
         left = left_vec,
         right = right_vec
     } !parser::NodeAssign
@@ -2187,7 +2244,7 @@ def walk_MemberAccess(node: *parser::Node, state: *State) -> Value {
 
     var value = walk_expression(left, state)
     if not value.addr {
-        typechecking::errorn(node, "Can't use member access, expression has no address\n")
+        errors::errorn(node, "Can't use member access, expression has no address")
         return NO_VALUE
     }
 
@@ -2355,7 +2412,7 @@ def walk_ArraySubscript(node: *parser::Node, state: *State) -> Value {
 def walk_SizeOf(node: *parser::Node, state: *State) -> Value {
     var tpe = (@(@node).value.expr).tpe
     if not tpe {
-        typechecking::errorn(node, "Invalid expression\n")
+        errors::errorn(node, "Invalid expression")
         return NO_VALUE
     }
     let value = make_int_value((@tpe).size !int)
@@ -2367,7 +2424,7 @@ def walk_SizeOf(node: *parser::Node, state: *State) -> Value {
 def walk_AlignOf(node: *parser::Node, state: *State) -> Value {
     var tpe = (@(@node).value.expr).tpe
     if not tpe {
-        typechecking::errorn(node, "Invalid expression\n")
+        errors::errorn(node, "Invalid expression")
         return NO_VALUE
     }
     let value = make_int_value((@tpe).align !int)
@@ -2404,6 +2461,10 @@ def compare(node: *parser::Node, left: Value, right: Value, state: *State) -> Va
     }
     if typechecking::is_arithmetic(left.tpe) and typechecking::is_arithmetic(right.tpe) {
         tpe = typechecking::common_type(left.tpe, right.tpe)
+        if not tpe {
+            errors::errorn(node, "Can't compare ", debug::type_to_str(left.tpe), " and ", debug::type_to_str(right.tpe))
+            return NO_VALUE
+        }
 
         left = convert_to(node, left, tpe, state)
         right = convert_to(node, right, tpe, state)
@@ -2826,7 +2887,7 @@ def walk_Switch(node: *parser::Node, state: *State) {
 
         if len == 0 {
             if otherwise {
-                typechecking::errorn(cse, "More than one default case\n")
+                errors::errorn(cse, "More than one default case")
                 return
             } else {
                 otherwise = cse
@@ -2871,7 +2932,7 @@ def walk_Switch(node: *parser::Node, state: *State) {
                                 vector::push(switch_values, svalue)
                             } 
                         } else {
-                            typechecking::errorn(expr, "Invalid range\n")
+                            errors::errorn(expr, "Invalid range")
                             return
                         }
                     } else {
@@ -2919,7 +2980,7 @@ def walk_Switch(node: *parser::Node, state: *State) {
                 var max = right.svalue.value.i
 
                 if max < min {
-                    typechecking::errorn(expr, "Invalid range\n")
+                    errors::errorn(expr, "Invalid range")
                     return
                 }
                 
@@ -3023,6 +3084,9 @@ def walk_Return(node: *parser::Node, state: *State) {
     let loc = make_location(node, state)
     let current_function = (@state).current_function
     if not current_function { return }
+    if current_function.has_defer {
+        defer_unroll(state)
+    }
 
     var value = NO_VALUE
     if (@current_function).multiple_returns {
@@ -3057,21 +3121,21 @@ def walk_Return(node: *parser::Node, state: *State) {
 def walk_Break(node: *parser::Node, state: *State) {
     let break_insn = get_break_insn(state)
     if not break_insn {
-        typechecking::errorn(node, "break used outside of a loop\n")
+        errors::errorn(node, "break used outside of a loop")
         return
     }
     push_insn(break_insn, state)
-    state.current_block.counter += 1
+    push_label(make_label(state), state)
 }
 
 def walk_Continue(node: *parser::Node, state: *State) {
     let continue_insn = get_continue_insn(state)
     if not continue_insn {
-        typechecking::errorn(node, "continue used outside of a loop\n")
+        errors::errorn(node, "continue used outside of a loop")
         return
     }
     push_insn(continue_insn, state)
-    state.current_block.counter += 1
+    push_label(make_label(state), state)
 }
 
 def walk_Loop(node: *parser::Node, state: *State) {
@@ -3299,24 +3363,26 @@ export def walk_VarDecl(node: *parser::Node, state: *State, set_constant: bool) 
             let tpe = (@v).tpe
             import_structures(tpe, state)
 
-            let value = scope::get(node.scope, v)
+            let value = v.svalue
             if not value { continue }
-            let name = (@value).assembly_name
+            if value.name != "_" {
+                let name = (@value).assembly_name
 
-            let ret = {
-                kind = ValueKind::LOCAL,
-                name = name,
-                tpe = tpe
-            } !Value
+                let ret = {
+                    kind = ValueKind::LOCAL,
+                    name = name,
+                    tpe = tpe
+                } !Value
 
-            let insn = make_insn_dbg(InsnKind::ALLOCA, loc)
-            (@insn).value.alloca = {
-                ret = ret
-            } !InsnAlloca
-            push_alloca(insn, state)
+                let insn = make_insn_dbg(InsnKind::ALLOCA, loc)
+                (@insn).value.alloca = {
+                    ret = ret
+                } !InsnAlloca
+                push_alloca(insn, state)
 
-            ret.tpe = typechecking::pointer(tpe)
-            push_declare(v, ret, (@value).name, state)
+                ret.tpe = typechecking::pointer(tpe)
+                push_declare(v, ret, (@value).name, state)
+            }
 
             vector::push(assign_left, v)
         } else {
@@ -3326,9 +3392,12 @@ export def walk_VarDecl(node: *parser::Node, state: *State, set_constant: bool) 
 
     if vector::length(right) > 0 {
         let assign = allocate(parser::Node)
-        (@assign).kind = parser::NodeKind::ASSIGN
-        (@assign).loc = (@node).loc
-        (@assign).scope = (@node).scope
+        @assign = {
+            kind = parser::NodeKind::ASSIGN,
+            loc = (@node).loc,
+            scope = (@node).scope
+        } !parser::Node
+        
         (@assign).value.assign = {
             left = assign_left,
             right = right
@@ -3339,6 +3408,175 @@ export def walk_VarDecl(node: *parser::Node, state: *State, set_constant: bool) 
 
 def walk_VarDecl(node: *parser::Node, state: *State) {
     walk_VarDecl(node, state, false)
+}
+
+def walk_Defer(node: *parser::Node, state: *State) {
+    let current_function = state.current_function
+    let current_block = state.current_block
+
+    let buf = buffer::make_buffer()
+    buffer::append_str(*buf, current_function.name)
+    buffer::append_str(*buf, ".defer.")
+    buffer::append_str(*buf, util::int_to_str(state.global_counter))
+    state.global_counter += 1
+    let defer_name = buffer::to_string(*buf)
+
+    let parameter_t = vector::make()
+    let np = allocate(typechecking::NamedParameter)
+    @np = {
+        name = "__env",
+        tpe = typechecking::pointer(current_function.env)
+    }
+    vector::push(parameter_t, np)
+
+    let tpe = typechecking::make_function_type_n(parser::make_identifier(["defer"]), parameter_t, vector::make(), false, false)
+
+    let keys_locals = map::keys(current_function.locals)
+    
+    var env = { kind = ValueKind::UNDEF, tpe = current_function.env } !Value
+    for var i in 0..keys_locals.size {
+        let key = keys_locals[i]
+        let tpe = map::get(current_function.locals, key) !*typechecking::Type
+
+        let load = make_insn(InsnKind::LOAD)
+        let value = make_local_value(tpe, null, state)
+        load.value.load = {
+            loc = { kind = ValueKind::LOCAL, tpe = typechecking::pointer(tpe), name = key } !Value,
+            value = value
+        } !InsnLoad
+        push_insn(load, state)
+
+        let index = allocate(int, 1)
+        index[0] = i
+        let ret = make_local_value(current_function.env, null, state)
+        let insert = make_insn(InsnKind::INSERTVALUE)
+        insert.value.insert_value = {
+            ret = ret,
+            value = env,
+            element = value,
+            index = index
+        } !InsnInsertValue
+        push_insn(insert, state)
+        env = ret
+    }
+
+    let alloca_ret = make_local_value(current_function.defers, null, state)
+    let alloca = make_insn(InsnKind::ALLOCA)
+    alloca.value.alloca = {
+        ret = alloca_ret
+    } !InsnAlloca
+    push_insn(alloca, state)
+    alloca_ret.tpe = typechecking::pointer(alloca_ret.tpe)
+
+    let load_ret = make_local_value(typechecking::pointer(current_function.defers), null, state)
+    let load = make_insn(InsnKind::LOAD)
+    load.value.load = {
+        loc = { kind = ValueKind::LOCAL, tpe = typechecking::pointer(typechecking::pointer(current_function.defers)), name = "__defers" } !Value,
+        value = load_ret
+    } !InsnLoad
+    push_insn(load, state)
+
+    let index1 = allocate(int, 1)
+    index1[0] = 0
+    let insert1_ret = make_local_value(current_function.defers, null, state)
+    let insert1 = make_insn(InsnKind::INSERTVALUE)
+    insert1.value.insert_value = {
+        ret = insert1_ret,
+        value = { kind = ValueKind::UNDEF, tpe = current_function.defers } !Value,
+        element = env,
+        index = index1
+    } !InsnInsertValue
+    push_insn(insert1, state)
+
+    let index2 = allocate(int, 1)
+    index2[0] = 1
+    let insert2_ret = make_local_value(current_function.defers, null, state)
+    let insert2 = make_insn(InsnKind::INSERTVALUE)
+    insert2.value.insert_value = {
+        ret = insert2_ret,
+        value = insert1_ret,
+        element = { kind = ValueKind::GLOBAL, tpe = typechecking::pointer(tpe), name = defer_name } !Value,
+        index = index2
+    } !InsnInsertValue
+    push_insn(insert2, state)
+    
+    let index3 = allocate(int, 1)
+    index3[0] = 2
+    let insert3_ret = make_local_value(current_function.defers, null, state)
+    let insert3 = make_insn(InsnKind::INSERTVALUE)
+    insert3.value.insert_value = {
+        ret = insert3_ret,
+        value = insert2_ret,
+        element = load_ret,
+        index = index3
+    } !InsnInsertValue
+    push_insn(insert3, state)
+
+    let store1 = make_insn(InsnKind::STORE)
+    store1.value.store = {
+        value = insert3_ret,
+        loc = alloca_ret
+    } !InsnStore
+    push_insn(store1, state)
+
+    let store2 = make_insn(InsnKind::STORE)
+    store2.value.store = {
+        value = alloca_ret,
+        loc = { kind = ValueKind::LOCAL, tpe = typechecking::pointer(typechecking::pointer(current_function.defers)), name = "__defers" } !Value
+    }
+    push_insn(store2, state)
+
+    let block = make_block()
+    let function = allocate(Function)
+    @function = {
+        name = defer_name,
+        unmangled = "defer",
+        args = parameter_t,
+        allocas = vector::make(),
+        block = block,
+        module = state.module
+    }
+
+    let scope = vector::pop(state.discope)
+    create_debug_info(node, function, tpe, state)
+
+    state.current_block = function.block
+    state.current_function = function
+
+    for var i in 0..keys_locals.size {
+        let key = keys_locals[i]
+        let tpe = map::get(current_function.locals, key) !*typechecking::Type
+
+        let index = allocate(Value, 2)
+        index[0] = make_int_value(0)
+        index[1] = make_int_value(i)
+
+        let gep = make_insn(InsnKind::GETELEMENTPTR)
+        gep.value.gep = {
+            ret = { kind = ValueKind::LOCAL, tpe = tpe, name = key } !Value,
+            tpe = current_function.env,
+            value = { kind = ValueKind::LOCAL, tpe = typechecking::pointer(current_function.env), name = "__env.value" } !Value,
+            index = index
+        }
+        push_insn(gep, state)
+    }
+    
+    for var i in 0..vector::length(node.value.body) {
+        walk(vector::get(node.value.body, i) !*parser::Node, state)
+    }
+
+    let ret = make_insn(InsnKind::RET)
+    ret.value.ret.value = NO_VALUE
+    push_insn(ret, state)
+
+    state.current_block = current_block
+    state.current_function = current_function
+    pop_scope(state)
+    if scope and toolchain::debug_sym { vector::push(state.discope, scope) }
+
+    vector::insert(function.block.insn, 0, function.allocas)
+    map::put(state.module.imported, function.name, map::sentinel)
+    map::put(state.result.functions, function.name, function)
 }
 
 export def walk(node: *parser::Node, state: *State) {
@@ -3365,6 +3603,10 @@ export def walk(node: *parser::Node, state: *State) {
             walk_While(node, state)
         case parser::NodeKind::FOR:
             walk_For(node, state)
+        case parser::NodeKind::DEFER:
+            walk_Defer(node, state)
+        case parser::NodeKind::TYPE_DECL:
+            walk_TypeDecl(node, state)
         case: walk_expression(node, state)
     }
 }
@@ -3697,14 +3939,266 @@ def di_type(tpe: *typechecking::Type, state: *State) -> *Value {
     return ditpep
 }
 
-export def predeclare_function(tpe: *typechecking::Type, state: *State) {
-    let function = allocate(Function)
+def generate_defer_types(state: *State) {
+    let function = state.current_function
+    if not function.has_defer { return }
+
+    var buf = buffer::make_buffer()
+    buffer::append_str(*buf, function.name)
+    buffer::append_str(*buf, ".env")
+    let env_name = buffer::to_string(*buf)
+
+    let env = typechecking::make_type_raw(typechecking::TypeKind::STRUCT)
+    env.type_name = env_name
+    env.fields = allocate(typechecking::StructMember, map::size(function.locals))
+
+    var offset = 0 !size_t
+    var align = 1 !size_t
+
+    let keys = map::keys(function.locals)
+    for var i in 0..keys.size {
+        let tpe = map::get(function.locals, keys[i]) !*typechecking::Type
+
+        offset = (ceil(offset / tpe.align !double) * tpe.align) !int
+        align = util::lcm(align !int, tpe.align !int)
+
+        env.fields[i] = {
+            tpe = tpe,
+            offset = offset
+        } !typechecking::StructMember
+
+        offset += tpe.size
+    }
+    offset = (ceil(offset / align !double) * align) !int
+
+    env.align = align
+    env.size = offset
+
+    map::put(state.result.structures, env_name, env)
+    function.env = env
+
+    offset = 0
+    align = 1
+
+    buf = buffer::make_buffer()
+    buffer::append_str(*buf, function.name)
+    buffer::append_str(*buf, ".defers")
+    let defers_name = buffer::to_string(*buf)
+
+    offset = (ceil(offset / env.align !double) * env.align) !int
+    align = util::lcm(align !int, env.align !int)
+
+    let defers = typechecking::make_type_raw(typechecking::TypeKind::STRUCT)
+    defers.type_name = defers_name
+    defers.fields = allocate(typechecking::StructMember, 3)
+    defers.fields[0] = {
+        tpe = env,
+        offset = offset
+    } !typechecking::StructMember
+
+    offset += env.size
+
+    let defer_function = typechecking::make_type_raw(typechecking::TypeKind::FUNCTION)
+    defer_function.parameter_t = vector::make()
+    let p = allocate(typechecking::NamedParameter)
+    @p = {
+        tpe = typechecking::pointer(env)
+    } !typechecking::NamedParameter
+    vector::push(defer_function.parameter_t, p)
+    defer_function.return_t = vector::make()
+    defer_function.align = align_of type ->
+    defer_function.size = size_of type ->
+    
+    let defer_functionp = typechecking::pointer(defer_function)
+
+    offset = (ceil(offset / defer_functionp.align !double) * defer_functionp.align) !int
+    align = util::lcm(align !int, defer_functionp.align !int)
+    
+    defers.fields[1] = {
+        tpe = defer_functionp,
+        offset = offset
+    } !typechecking::StructMember
+
+    offset += defer_functionp.size
+
+    let defersp = typechecking::pointer(defers)
+
+    offset = (ceil(offset / defer_functionp.align !double) * defer_functionp.align) !int
+    align = util::lcm(align !int, defer_functionp.align !int)
+
+    defers.fields[2] = {
+        tpe = defersp,
+        offset = offset
+    } !typechecking::StructMember
+
+    offset += defer_functionp.size
+
+    offset = (ceil(offset / align !double) * align) !int
+    defers.size = offset
+    defers.align = align
+
+    map::put(state.result.structures, defers_name, defers)
+    function.defers = defers
+
+    // Generate defer stack
+    let alloca = make_insn(InsnKind::ALLOCA)
+    alloca.value.alloca = {
+        ret = { kind = ValueKind::LOCAL, tpe = typechecking::pointer(defers), name = "__defers" } !Value
+    } !InsnAlloca
+    push_insn(alloca, state)
+
+    let store = make_insn(InsnKind::STORE)
+    store.value.store = {
+        value = { kind = ValueKind::NULL, tpe = typechecking::pointer(defers) } !Value,
+        loc = { kind = ValueKind::LOCAL, tpe = typechecking::pointer(typechecking::pointer(defers)), name = "__defers" } !Value
+    } !InsnStore
+    push_insn(store, state)
+}
+
+def defer_unroll(state: *State) {
+    let parameter_t = vector::make()
+    let np = allocate(typechecking::NamedParameter)
+    @np = {
+        name = "__env",
+        tpe = typechecking::pointer(state.current_function.env)
+    }
+    vector::push(parameter_t, np)
+    let tpe = typechecking::make_function_type_n(parser::make_identifier(["defer"]), parameter_t, vector::make(), false, false)
+
+    let br_to_start = make_insn(InsnKind::BR_UNC)
+    push_insn(br_to_start, state)
+
+    let start_label = make_label(state)
+    push_label(start_label, state)    
+    br_to_start.value.br_unc.label_ = start_label
+
+    let current_defer_ret = make_local_value(typechecking::pointer(state.current_function.defers), null, state)
+    let current_defer = make_insn(InsnKind::LOAD)
+    current_defer.value.load = {
+        value = current_defer_ret,
+        loc = { kind = ValueKind::LOCAL, tpe = typechecking::pointer(typechecking::pointer(state.current_function.defers)), name = "__defers" } !Value 
+    } !InsnLoad
+    push_insn(current_defer, state)
+
+    let ptr_to_int_ret = make_local_value(builtins::int64_, null, state)
+    let ptr_to_int = make_insn(InsnKind::PTRTOINT)
+    ptr_to_int.value.convert = {
+        ret = ptr_to_int_ret,
+        value = current_defer_ret
+    } !InsnConvert
+    push_insn(ptr_to_int, state)
+
+    let icmp_ret = make_local_value(builtins::bool_, null, state)
+    let icmp = make_insn(InsnKind::ICMP)
+    icmp.value.icmp = {
+        op = CompareInt::ne,
+        ret = icmp_ret,
+        left = ptr_to_int_ret,
+        right = { kind = ValueKind::INT, tpe = builtins::int64_, i = 0 } !Value
+    } !InsnIcmp
+    push_insn(icmp, state)
+
+    let br = make_insn(InsnKind::BR)
+    br.value.br.cond = icmp_ret
+    push_insn(br, state)
+
+    let label_body = make_label(state)
+    push_label(label_body, state)
+    br.value.br.if_true = label_body
+
+    let index1 = allocate(Value, 2)
+    index1[0] = make_int_value(0)
+    index1[1] = make_int_value(0)
+    let gep_env_ret = make_local_value(typechecking::pointer(state.current_function.env), null, state)
+    let gep_env = make_insn(InsnKind::GETELEMENTPTR)
+    gep_env.value.gep = {
+        ret = gep_env_ret,
+        tpe = state.current_function.defers,
+        value = current_defer_ret,
+        index = index1
+    } !InsnGetElementPtr
+    push_insn(gep_env, state)
+
+    let index2 = allocate(Value, 2)
+    index2[0] = make_int_value(0)
+    index2[1] = make_int_value(1)
+    let gep_fun_ret = make_local_value(typechecking::pointer(typechecking::pointer(tpe)), null, state)
+    let gep_fun = make_insn(InsnKind::GETELEMENTPTR)
+    gep_fun.value.gep = {
+        ret = gep_fun_ret,
+        tpe = state.current_function.defers,
+        value = current_defer_ret,
+        index = index2
+    } !InsnGetElementPtr
+    push_insn(gep_fun, state)
+
+    let index3 = allocate(Value, 2)
+    index3[0] = make_int_value(0)
+    index3[1] = make_int_value(2)
+    let gep_defer_ret = make_local_value(typechecking::pointer(typechecking::pointer(state.current_function.defers)), null, state)
+    let gep_defer = make_insn(InsnKind::GETELEMENTPTR)
+    gep_defer.value.gep = {
+        ret = gep_defer_ret,
+        tpe = state.current_function.defers,
+        value = current_defer_ret,
+        index = index3
+    } !InsnGetElementPtr
+    push_insn(gep_defer, state)
+
+    let load_fun_ret = make_local_value(typechecking::pointer(tpe), null, state)
+    let load_fun = make_insn(InsnKind::LOAD)
+    load_fun.value.load = {
+        value = load_fun_ret,
+        loc = gep_fun_ret
+    } !InsnLoad
+    push_insn(load_fun, state)
+
+    let load_defer_ret = make_local_value(typechecking::pointer(state.current_function.defers), null, state)
+    let load_defer = make_insn(InsnKind::LOAD)
+    load_defer.value.load = {
+        value = load_defer_ret,
+        loc = gep_defer_ret
+    } !InsnLoad
+    push_insn(load_defer, state)
+
+    let args = allocate(Value, 1)
+    args[0] = gep_env_ret
+    let call = make_insn(InsnKind::CALL)
+    call.value.call = {
+        name = load_fun_ret,
+        ret = NO_VALUE,
+        args = args
+    }
+    push_insn(call, state)
+
+    let store_env = make_insn(InsnKind::STORE)
+    store_env.value.store = {
+        value = load_defer_ret,
+        loc = { kind = ValueKind::LOCAL, tpe = typechecking::pointer(typechecking::pointer(state.current_function.defers)), name = "__defers"} !Value
+    } !InsnStore
+    push_insn(store_env, state)
+
+    push_insn(br_to_start, state)
+
+    let label_end = make_label(state)
+    push_label(label_end, state)
+    br.value.br.if_false = label_end
+}
+
+export def predeclare_function(tpe: *typechecking::Type, module: *toolchain::Module) -> *Function {
+    var function = map::get(module.result.functions, tpe.type_name) !*Function
+    if function {
+        return function 
+    }
+
+    function = allocate(Function)
     @function = {
         name = (@tpe).type_name,
         unmangled = (@tpe).name,
         forward_declare = true,
         allocas = vector::make(),
-        imported = (@tpe).imported
+        imported = (@tpe).imported,
+        module = module
     } !Function
 
     if vector::length(tpe.parameter_t) > 0 {
@@ -3728,61 +4222,68 @@ export def predeclare_function(tpe: *typechecking::Type, state: *State) {
         vector::push((@function).args, np)
     }
 
-    map::put((@(@state).result).functions, (@function).name, function)
+    map::put(module.result.functions, (@function).name, function)
+
+    return function
 }
 
-// Block may be null
-export def create_function(node: *parser::Node, tpe: *typechecking::Type, body: *vector::Vector, scpe: *scope::Scope, block: *Block, state: *State) {
-    let function = map::get(state.result.functions, tpe.type_name) !*Function
-    if not function { return }
-    function.forward_declare = false
-    
-    if body {
-        import_structures(tpe, state)
-        map::put((@(@state).module).imported, (@tpe).type_name, map::sentinel)
-    }
+def create_debug_info(node: *parser::Node, function: *Function, tpe: *typechecking::Type, state: *State) {
+    if not toolchain::debug_sym { return }
 
     var line = -1
     if node { line = (@node).loc.line }
 
-    if toolchain::debug_sym and body {
-        let debug_values = allocate(DebugParam, 7)
-        debug_values[0] = {
-            name = "name", value = { kind = DebugValueKind::STRING, s = (@function).name } !DebugValue
-        } !DebugParam
-        debug_values[1] = {
-            name = "scope", value = meta_to_debug_value(vector::peek((@state).discope) !*Value)
-        } !DebugParam
-        debug_values[2] = {
-            name = "file", value = meta_to_debug_value((@state).difile)
-        } !DebugParam
-        debug_values[3] = {
-            name = "line", value = { kind = DebugValueKind::INT, i = line + 1 } !DebugValue
-        } !DebugParam
-        debug_values[4] = {
-            name = "type", value = meta_to_debug_value(di_subroutine_type(tpe, state))
-        } !DebugParam
-        debug_values[5] = {
-            name = "scopeLine", value = { kind = DebugValueKind::INT, i = line + 1 } !DebugValue
-        } !DebugParam
-        debug_values[6] = {
-            name = "unit", value = meta_to_debug_value((@state).diunit)
-        } !DebugParam
+    let debug_values = allocate(DebugParam, 7)
+    debug_values[0] = {
+        name = "name", value = { kind = DebugValueKind::STRING, s = (@function).name } !DebugValue
+    } !DebugParam
+    debug_values[1] = {
+        name = "scope", value = meta_to_debug_value(vector::peek((@state).discope) !*Value)
+    } !DebugParam
+    debug_values[2] = {
+        name = "file", value = meta_to_debug_value((@state).difile)
+    } !DebugParam
+    debug_values[3] = {
+        name = "line", value = { kind = DebugValueKind::INT, i = line + 1 } !DebugValue
+    } !DebugParam
+    debug_values[4] = {
+        name = "type", value = meta_to_debug_value(di_subroutine_type(tpe, state))
+    } !DebugParam
+    debug_values[5] = {
+        name = "scopeLine", value = { kind = DebugValueKind::INT, i = line + 1 } !DebugValue
+    } !DebugParam
+    debug_values[6] = {
+        name = "unit", value = meta_to_debug_value((@state).diunit)
+    } !DebugParam
 
-        let disub = allocate(Value)
-        @disub = {
-            kind = ValueKind::DEBUG_INFO,
-            name = "DISubprogram",
-            distinct = true,
-            debug_values = debug_values
-        } !Value
-        let disubp = push_meta(disub, state)
-        (@function).debug = disubp
+    let disub = allocate(Value)
+    @disub = {
+        kind = ValueKind::DEBUG_INFO,
+        name = "DISubprogram",
+        distinct = true,
+        debug_values = debug_values
+    } !Value
+    let disubp = push_meta(disub, state)
+    (@function).debug = disubp
 
-        vector::push((@state).discope, disubp)
-    }
+    vector::push((@state).discope, disubp)
+}
+ 
+// Block may be null
+export def create_function(node: *parser::Node, tpe: *typechecking::Type, body: *vector::Vector, scpe: *scope::Scope, block: *Block, state: *State) {
+    let function = map::get(state.result.functions, tpe.type_name) !*Function
+    if not function { return }
+
+    function.forward_declare = false
+    function.locals = node.value.def_.locals
+    function.has_defer = node.value.def_.has_defer
+    function.allocas = vector::make()
 
     if body {
+        import_structures(tpe, state)
+        map::put(state.module.imported, tpe.type_name, map::sentinel)
+        create_debug_info(node, function, tpe, state)
+
         (@state).current_function = function
         if not block {
             block = make_block()
@@ -3804,13 +4305,12 @@ export def create_function(node: *parser::Node, tpe: *typechecking::Type, body: 
                 let v = vars[i]
                 print(v, "\n")
             }*/
-            let oldname = (@np).name
-            let name = (@scope::get(scpe, parser::make_identifier([(@np).name]))).assembly_name
+            let old_name = (@np).name
+            let name = (@scope::get(scpe, parser::make_identifier([old_name]))).assembly_name
             let buf = buffer::make_buffer()
-            buffer::append_str(*buf, name)
+            buffer::append_str(*buf, old_name)
             buffer::append_str(*buf, ".value")
-            // Rename to name.value
-            (@np).name = buffer::to_string(*buf)
+            let new_name = buffer::to_string(*buf)
             // Insert alloca and store instructions
 
             let ret = {
@@ -3827,14 +4327,14 @@ export def create_function(node: *parser::Node, tpe: *typechecking::Type, body: 
 
             if (@np).node {
                 ret.tpe = typechecking::pointer(value)
-                push_declare_arg((@np).node, ret, oldname, i + 1, state)
+                push_declare_arg((@np).node, ret, old_name, i + 1, state)
             }
             
             let store = make_insn(InsnKind::STORE)
             (@store).value.store = {
                 value = {
                     kind = ValueKind::LOCAL,
-                    name = (@np).name,
+                    name = new_name,
                     tpe = value
                 } !Value,
                 loc = {
@@ -3847,6 +4347,8 @@ export def create_function(node: *parser::Node, tpe: *typechecking::Type, body: 
             push_insn(store, state)
         }
 
+        generate_defer_types(state)
+
         for var i in 0..vector::length(body) {
             let node = vector::get(body, i) !*parser::Node
             walk(node, state)
@@ -3858,6 +4360,10 @@ export def create_function(node: *parser::Node, tpe: *typechecking::Type, body: 
         // Check for missing return statement
         let last_insn = vector::peek((@(@state).current_block).insn) !*Insn
         if not last_insn or (@last_insn).kind != InsnKind::RET {
+            if function.has_defer {
+                defer_unroll(state)
+            }
+
             var value = NO_VALUE
             if (@function).ret {
                 value = {
@@ -3871,11 +4377,10 @@ export def create_function(node: *parser::Node, tpe: *typechecking::Type, body: 
             push_insn(ret, state)
         }
 
-        if toolchain::debug_sym {
-            vector::pop((@state).discope)
-        }
+        pop_scope(state)
 
         state.current_block = previous_block
+        function.is_compiled = true
     }
 }
 
@@ -3903,6 +4408,7 @@ def make_string(str: string, state: *State) -> Value {
     return ret
 }
 
+// TODO This is not going to work for nested type decls (we don't reset the state)
 def walk_TypeDecl(node: *parser::Node, state: *State) {
     let left = (@node).value.type_decl.left
     for var i in 0..vector::length(left) {
@@ -3928,7 +4434,8 @@ def walk_TypeDecl(node: *parser::Node, state: *State) {
                 name = type_name,
                 unmangled = "to_string",
                 args = parameter_t,
-                ret = builtins::string_
+                ret = builtins::string_,
+                module = state.module
             } !Function
 
             let block = make_block()
@@ -3941,7 +4448,7 @@ def walk_TypeDecl(node: *parser::Node, state: *State) {
             (@swtch).value.switch_ = {
                 value = { 
                     kind = ValueKind::LOCAL, 
-                    name = "enum",
+                    name = "enum.value",
                     tpe = (@tpe).tpe
                 } !Value,
                 switch_values = switch_values
@@ -4034,13 +4541,16 @@ export def walk_top_VarDecl(node: *parser::Node, state: *State, set_constant: bo
     }
     if vector::length((@node).value.var_decl.right) > 0 {
         let node_assign = allocate(parser::Node)
-        (@node_assign).kind = parser::NodeKind::ASSIGN
-        (@node_assign).loc = (@node).loc
-        (@node_assign).scope = (@node).scope
-        (@node_assign).value.assign = {
+        @node_assign = {
+            kind = parser::NodeKind::ASSIGN,
+            loc = (@node).loc,
+            scope = (@node).scope
+        } !parser::Node
+
+        node_assign.value.assign = {
             left = left,
             right = (@node).value.var_decl.right
-        } !NodeAssign
+        } !parser::NodeAssign
         return node_assign
     }
     return null
@@ -4059,6 +4569,9 @@ def walk_top_VarDecl(node: *parser::Node, body: *vector::Vector, state: *State) 
 def insert_module_main(module: *toolchain::Module, name: *parser::Node, scpe: *scope::Scope, body: *vector::Vector, state: *State) {
     if not module { return }
 
+    // Build dependency graph
+    vector::push(state.module.dependants, module)
+
     let args = vector::make()
     let arg = parser::make_identifier(["args"])
     (@arg).scope = scpe
@@ -4066,10 +4579,10 @@ def insert_module_main(module: *toolchain::Module, name: *parser::Node, scpe: *s
     (@arg).svalue = scope::get((@arg).scope, arg)
     vector::push(args, arg)
 
-    let name_size = vector::length((@name).value.body)
+    let name_size = vector::length(name.value.identifier.path)
     let array = allocate(string, name_size + 1)
     for var j in 0..name_size {
-        array[j] = @(vector::get((@name).value.body, j) !*string)
+        array[j] = @(vector::get(name.value.identifier.path, j) !*string)
     }
     array[array.size - 1] = "main"
     let ident = parser::make_identifier(array)
@@ -4079,17 +4592,20 @@ def insert_module_main(module: *toolchain::Module, name: *parser::Node, scpe: *s
     if not main_value { return }
 
     let call = allocate(parser::Node)
-    (@call).kind = parser::NodeKind::FUNC_CALL
-    (@call).scope = scpe
-    (@call).tpe = null
-    (@call).function = (@main_value).tpe
-    (@call).value.func_call = {
+    @call = {
+        kind = parser::NodeKind::FUNC_CALL,
+    	scope = scpe,
+        function = (@main_value).tpe
+    } !parser::Node
+    
+    call.value.func_call = {
         left = ident,
         args = args,
         kwargs = vector::make()
     } !parser::NodeFuncCall
 
-    predeclare_function(main_value.tpe, state)
+    let fun = map::get(module.result.functions, main_value.tpe.type_name) !*Function
+    map::put(state.module.result.functions, main_value.tpe.type_name, fun)
 
     vector::push(body, call)
 }
@@ -4115,9 +4631,8 @@ export def make_result -> *Result {
     } !Result
 }
 
-export def make_state(module: *toolchain::Module) -> *State {
-    let state = allocate(State)
-    @state = {
+export def make_state(module: *toolchain::Module) -> State {
+    let state = {
         module = module,
         loops = vector::make(),
         result = module.result,
@@ -4130,18 +4645,20 @@ export def make_state(module: *toolchain::Module) -> *State {
     return state
 }
 
-export def predeclare_functions(sc: *scope::Scope, state: *State) {
+export def predeclare_functions(module: *toolchain::Module) {
+    let sc = module.scope
     if sc.imports {
         for var i in 0..vector::length(sc.imports) {
-            let module = vector::get(sc.imports, i) !*toolchain::Module
-            let m_scope = (@module).scope
+            let imported_module = vector::get(sc.imports, i) !*toolchain::Module
+            let m_scope = imported_module.scope
             let keys = map::keys((@m_scope).fields)
             for var i in 0..keys.size {
                 var value = map::get((@m_scope).fields, keys[i]) !*scope::Value
                 while value {
                     if (@value).share !int & parser::ShareMarker::EXPORT !int {
                         if typechecking::is_function((@value).tpe) {
-                            predeclare_function((@value).tpe, state)
+                            let fun = predeclare_function(value.tpe, imported_module)
+                            map::put(module.result.functions, value.tpe.type_name, fun)
                         } else if not typechecking::is_type((@value).tpe) {
                             let name = (@value).assembly_name
                             let global = allocate(Global)
@@ -4151,7 +4668,7 @@ export def predeclare_functions(sc: *scope::Scope, state: *State) {
                                 external = true,
                                 line = -1
                             } !Global
-                            map::put((@(@state).result).globals, name, global)
+                            map::put(module.result.globals, name, global)
                         }
                     }
                     value = (@value).next
@@ -4164,8 +4681,13 @@ export def predeclare_functions(sc: *scope::Scope, state: *State) {
 export var time_spent: int64 = 0
 
 export def compile(module: *toolchain::Module) {
+    let state = make_state(module)
+    compile(*state)
+}
+
+export def compile(state: *State) {
     let start = util::millis()
-    let node = (@module).node
+    let node = state.module.node
     assert((@node).kind == parser::NodeKind::PROGRAM)
 
     let keys = map::keys(node.scope.fields)
@@ -4177,9 +4699,8 @@ export def compile(module: *toolchain::Module) {
     }
 
     let body = vector::make()
-    let state = make_state(module)
 
-    if module.module != "cstd" and module.module != "std" {
+    if state.module.module != "cstd" and state.module.module != "std" {
         // compile standard library
         let cstd_ident = parser::make_identifier(["cstd"])
         let std_indent = parser::make_identifier(["std"])
@@ -4192,12 +4713,12 @@ export def compile(module: *toolchain::Module) {
     var globals: *Value = null
     // Create compilation unit and file
     if toolchain::debug_sym {
-        var dirname = util::dirname((@module).filename)
+        var dirname = util::dirname(state.module.filename)
         if length(dirname) == 0 { dirname = "." }
         let abspath = allocate(char, PATH_MAX)
         absolute_path(dirname, abspath.value)
         abspath.size = strlen(abspath) + 1
-        let file = util::basename((@module).filename)
+        let file = util::basename(state.module.filename)
 
         let dvalues1 = allocate(DebugParam, 2)
         dvalues1[0] = {
@@ -4214,8 +4735,8 @@ export def compile(module: *toolchain::Module) {
             name = "DIFile",
             debug_values = dvalues1
         } !Value
-        (@state).difile = push_meta(difile, state)
-        vector::push((@state).discope, (@state).difile)
+        state.difile = push_meta(difile, state)
+        vector::push(state.discope, state.difile)
 
         globals = allocate(Value)
         let dvalues2 = allocate(DebugParam, 6)
@@ -4223,7 +4744,7 @@ export def compile(module: *toolchain::Module) {
             name = "language", value = { kind = DebugValueKind::CONST, name = "DW_LANG_C99" } !DebugValue
         } !DebugParam
         dvalues2[1] = {
-            name = "file", value = meta_to_debug_value((@state).difile)
+            name = "file", value = meta_to_debug_value(state.difile)
         } !DebugParam
         dvalues2[2] = {
             name = "producer", value = { kind = DebugValueKind::STRING, s = toolchain::version } !DebugValue
@@ -4246,17 +4767,17 @@ export def compile(module: *toolchain::Module) {
             name = "DICompileUnit",
             debug_values = dvalues2
         } !Value
-        (@state).diunit = push_meta(diunit, state)
+        state.diunit = push_meta(diunit, state)
 
         let values = allocate(Value, 1)
-        values[0] = @(@state).diunit
+        values[0] = @state.diunit
         let dbgcu = allocate(Value)
         @dbgcu = {
             kind = ValueKind::STRUCT,
             metadata = true,
             values = values
         } !Value
-        map::put((@(@state).result).metadata, "llvm.dbg.cu", dbgcu)
+        map::put(state.result.metadata, "llvm.dbg.cu", dbgcu)
 
         let values2 = allocate(Value, 3)
         values2[0] = { ValueKind::INT, i = 7, tpe = builtins::int_ } !Value
@@ -4304,7 +4825,7 @@ export def compile(module: *toolchain::Module) {
             metadata = true,
             values = values5
         } !Value
-        map::put((@(@state).result).metadata, "llvm.module.flags", flags)
+        map::put(state.result.metadata, "llvm.module.flags", flags)
 
         let values6 = allocate(Value, 1)
         values6[0] = { ValueKind::STRING, metadata = true, s = toolchain::version } !Value
@@ -4324,38 +4845,38 @@ export def compile(module: *toolchain::Module) {
             metadata = true,
             values = values7
         } !Value
-        map::put((@(@state).result).metadata, "llvm.ident", ident)
+        map::put(state.result.metadata, "llvm.ident", ident)
     }
     
     // Forward declare functions from other files
     // TODO This doesn't work for functions that return multiple parameters
-    predeclare_functions(node.scope, state)
+    predeclare_functions(state.module)
 
     let ident = parser::make_identifier(["main"])
-    (@ident).loc.module = (@module).module
-    (@ident).loc.filename = (@module).filename
+    (@ident).loc.module = state.module.module
+    (@ident).loc.filename = state.module.filename
     (@ident).loc.line = 0
     (@ident).loc.column = 0
 
     let string_array_tpe = typechecking::array(builtins::string_)
 
     let named = allocate(typechecking::NamedParameter)
-    (@named).name = "args"
-    (@named).tpe = string_array_tpe
-    (@named).varargs = false
-    (@named).node = null
+    @named = {
+        name = "args",
+        tpe = string_array_tpe
+    } !typechecking::NamedParameter
     let args = vector::make()
     vector::push(args, named)
 
     let main_tpe = typechecking::make_function_type_n(ident, args, vector::make(), false, false)
     scope::create_function((@node).scope, ident, parser::ShareMarker::EXPORT, main_tpe)
     
-    predeclare_function(main_tpe, state)
+    predeclare_function(main_tpe, state.module)
 
     for var i in 0..vector::length(node.value.body) {
         let n = vector::get(node.value.body, i) !*parser::Node
         if n.kind == parser::NodeKind::DEF and n.value.def_.is_used {
-            predeclare_function(n.tpe, state)
+            predeclare_function(n.tpe, state.module)
         }
     }
 
@@ -4377,23 +4898,23 @@ export def compile(module: *toolchain::Module) {
         }
     }
 
-    create_function(ident, main_tpe, body, node.scope, module.code, state)
+    create_function(ident, main_tpe, body, node.scope, state.module.code, state)
 
     if toolchain::debug_sym {
-        let keys = map::keys((@(@state).result).globals)
+        let keys = map::keys(state.result.globals)
         let values = allocate(Value, keys.size)
         for var i in 0..keys.size {
-            let global = map::get((@(@state).result).globals, keys[i]) !*Global
+            let global = map::get(state.result.globals, keys[i]) !*Global
 
             let debug_values = allocate(DebugParam, 6)
             debug_values[0] = {
                 name = "name", value = { kind = DebugValueKind::STRING, s = (@global).name } !DebugValue
             } !DebugParam
             debug_values[1] = {
-                name = "scope", value = meta_to_debug_value((@state).diunit)
+                name = "scope", value = meta_to_debug_value(state.diunit)
             } !DebugParam
             debug_values[2] = {
-                name = "file", value = meta_to_debug_value((@state).difile)
+                name = "file", value = meta_to_debug_value(state.difile)
             } !DebugParam
             debug_values[3] = {
                 name = "line", value = { kind = DebugValueKind::INT, i = (@global).line + 1 } !DebugValue
@@ -4441,4 +4962,5 @@ export def compile(module: *toolchain::Module) {
     }
     let end = util::millis()
     time_spent += end - start
+
 }

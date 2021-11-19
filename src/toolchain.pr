@@ -5,21 +5,22 @@ import util
 import buffer
 import map
 import lexer
+import compiler
 import parser
 import typechecking
 import scope
 import codegen
 import debug
 import builtins
-import compiler
 import preprocess
-import builtins
+import errors
 
 // Contains the scopes for already compiled modules 
 // map of Module
 export let modules = map::make()
 export var include_path = vector::make()
 export var time_report = false
+export var dependency_graph = false
 
 let stdlib = zero_allocate(char, PATH_MAX)
 concat(stdlib, util::exe_folder(), "/../include")
@@ -27,11 +28,9 @@ stdlib.size = strlen(stdlib) + 1
 
 vector::push(include_path, util::copy_string(stdlib))
 vector::push(include_path, util::copy_string("."))
-
 let tmpfolder = "/tmp/princess.XXXXXX"
 export var outfolder = make_string(cstd::mkdtemp(tmpfolder.value))
 
-export var error_count = 0
 export var outfile = "a.out"
 
 def create_version_string -> string {
@@ -40,15 +39,14 @@ def create_version_string -> string {
     let version_file = zero_allocate(char, PATH_MAX)
     concat(version_file, util::exe_folder(), "/../version")
     version_file.size = strlen(version_file) + 1
-    let fp = open("version", "r")
+    let fp = open(version_file, "r")
     let version_str = util::replace_all(util::read_all(fp), "VERSION=", "")
     buffer::append_str(*buf, version_str)
     close(fp)
     return buffer::to_string(*buf)
 }
 
-// TODO Make this a constant
-export let version = create_version_string()
+export const version = create_version_string()
 
 // Debug stuff 
 export var print_ast = false
@@ -58,7 +56,7 @@ export var debug_sym = false
 export def add_define(define: string) {
     let tokens = lexer::lex(define)
     let program = parser::parse(tokens, [define], "<internal>", "<internal>")
-    if error_count != 0 {
+    if errors::error_count != 0 {
         error("Error parsing define `", define, "`\n")
         exit(1)
     }
@@ -133,14 +131,16 @@ export type Module = struct {
     imported: *map::Map
     difile: *compiler::Value
     stage: Stage
+    // Vector of Module
+    dependants: *vector::Vector
 }
 
 export def get_forward_declared_scope(ident: *parser::Node) -> *scope::Scope {
 
     let buf = buffer::make_buffer()
-    let len = vector::length((@ident).value.body) - 1
+    let len = vector::length((@ident).value.identifier.path) - 1
     for var i in 0..len {
-        buffer::append_str(*buf, @(vector::get((@ident).value.body, i) !*string))
+        buffer::append_str(*buf, @(vector::get((@ident).value.identifier.path, i) !*string))
         if i < len - 1 {
             buffer::append_str(*buf, "::")
         }
@@ -165,7 +165,7 @@ export def get_forward_declared_scope(ident: *parser::Node) -> *scope::Scope {
 
 export def find_module_file(module: *parser::Node) -> string {
     assert((@module).kind == parser::NodeKind::IDENTIFIER)
-    let ident = (@module).value.body
+    let ident = (@module).value.identifier.path
     let path = zero_allocate(char, PATH_MAX)
 
     let len = vector::length(ident)
@@ -247,7 +247,8 @@ export def preprocess_file(filename: string, modulename: string, forward_declare
             scope = sc,
             result = compiler::make_result(),
             code = compiler::make_block(),  
-            imported = map::make()
+            imported = map::make(),
+            dependants = vector::make()
         } !Module
 
         map::put(modules, modulename, module)
@@ -279,11 +280,16 @@ export def compile_main_file(filename: string) {
     let start_frontend = util::millis()
 
     var module = preprocess_file(filename, "main", null)
-    if module {
-        typechecking::typecheck(module)
-        module.stage = Stage::TYPECHECKING
-        compiler::compile(module)
-        module.stage = Stage::COMPILING
+    if not module { exit(1) }
+
+    typechecking::typecheck(module)
+    module.stage = Stage::TYPECHECKING
+    compiler::compile(module)
+    module.stage = Stage::COMPILING
+
+    if dependency_graph {
+        print_dependency_graph(module)
+        exit(0)
     }
 
     if time_report {
@@ -298,7 +304,7 @@ export def compile_main_file(filename: string) {
 
     let end_frontend = util::millis()
 
-    if module and error_count == 0 {
+    if errors::error_count == 0 {
         let exe_folder = util::exe_folder()
         let compile_header = buffer::make_buffer()
         buffer::append_str(*compile_header, "clang-12 -S -emit-llvm -o ")
@@ -360,4 +366,29 @@ export def compile_main_file(filename: string) {
             print("Total time: ", (end_compiling - start_frontend) / 1000.0, "s \n")
         }
     }
+}
+
+
+def print_dependency_graph(module: *Module, indent: string, last: bool) {
+    let branch = "└── " if last else "├── "
+    print(indent, branch, module.module, "\n")
+
+    let buf = buffer::make_buffer()
+    buffer::append_str(*buf, indent)
+    if last {
+        buffer::append_str(*buf, "    ")
+    } else {
+        buffer::append_str(*buf, "│   ")
+    }
+    indent = buffer::to_string(*buf)
+    
+    let len = vector::length(module.dependants)
+    for var i in 0..len {
+        let dependant = vector::get(module.dependants, i) !*Module
+        print_dependency_graph(dependant, indent, i == len - 1)
+    }
+}
+
+def print_dependency_graph(module: *Module) {
+    print_dependency_graph(module, "", true)
 }

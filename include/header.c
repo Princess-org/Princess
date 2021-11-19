@@ -18,6 +18,7 @@
 #include <errno.h>
 #include <float.h>
 #include <limits.h>
+
 #include <ffi.h>
 
 #include "../princess.h"

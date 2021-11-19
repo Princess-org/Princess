@@ -3,24 +3,27 @@
 
 import vector
 import map
+import builtins
 import toolchain
 import scope
 import parser
 import typechecking
 import compiler
-import builtins
 import util
+import debug
+import errors
 
-export let const_module = zero_allocate(toolchain::Module)
+export let const_module = allocate(toolchain::Module)
 @const_module = {
     module = "const",
+    scope = scope::enter_function_scope(builtins::builtins),
     result = compiler::make_result(),
-    imported = map::make()
+    dependants = vector::make(),
+    code = compiler::make_block()
 } !toolchain::Module
 
 // This is for compiling expressions
 export let compiler_state = compiler::make_state(const_module)
-const_module.result = compiler_state.result
 
 import eval
 
@@ -50,7 +53,7 @@ def set_current_function {
         forward_declare = true,
         allocas = vector::make(),
         block = block
-    } !Function
+    } !compiler::Function
     compiler_state.current_function = function
     compiler_state.current_block = block
 }
@@ -59,10 +62,9 @@ export def expr(node: *parser::Node, state: *typechecking::State) -> compiler::V
     if not node { return compiler::NO_VALUE }
     set_current_function()
     typechecking::walk(node.parent, node, state)
-    var result = compiler::walk_expression(node, compiler_state)
-    let estate = eval::eval(compiler_state)
-    if not estate { return compiler::NO_VALUE }
-    result = eval::get_value(result, estate)
+    var result = compiler::walk_expression(node, *compiler_state)
+    let estate = eval::eval(*compiler_state)
+    result = eval::get_value(result, *estate)
     return result
 }
 
@@ -70,11 +72,10 @@ export def boolean_expr(node: *parser::Node, state: *typechecking::State) -> com
     if not node { return compiler::NO_VALUE }
     set_current_function()
     typechecking::walk(node.parent, node, state)
-    var result = compiler::walk_expression(node, compiler_state)
-    result = compiler::convert_to(node, result, builtins::bool_, compiler_state)
-    let estate = eval::eval(compiler_state)
-    if not estate { return compiler::NO_VALUE }
-    result = eval::get_value(result, estate)
+    var result = compiler::walk_expression(node, *compiler_state)
+    result = compiler::convert_to(node, result, builtins::bool_, *compiler_state)
+    let estate = eval::eval(*compiler_state)
+    result = eval::get_value(result, *estate)
     return result
 }
 
@@ -134,12 +135,12 @@ def walk_Import(node: *parser::Node, state: *typechecking::State) {
         }
         let module = toolchain::preprocess_module(name)
         if not module {
-            typechecking::errorn(name, "Module ")
-            error(parser::identifier_to_str(name), " could not be found\n")
+            errors::errorn(name, "Module `", parser::identifier_to_str(name), "` could not be found")
             return
         }
         scope::insert_module(state.scope, alias, module)
     }
+    compiler::predeclare_functions(state.module)
 }
 
 def walk_Def(node: *parser::Node, state: *typechecking::State) {
@@ -166,17 +167,24 @@ def walk_Def(node: *parser::Node, state: *typechecking::State) {
         if param.value.param.value {
             set_current_function()
             typechecking::walk(node, param.value.param.value, state)
-            var result = compiler::walk_expression(param.value.param.value, compiler_state)
-            let gvalue = compiler::make_global_value(result.tpe, "default_param", null, compiler_state)
-            let estate = eval::eval(compiler_state)
-            result = eval::get_value(result, estate)
-            eval::set_value(gvalue, result, estate)
-            let global = eval::serialize_value(gvalue.name, state.module, compiler_state)
-            map::put(state.module.result.globals, gvalue.name, global)
+            var result = compiler::walk_expression(param.value.param.value, *compiler_state)
+            let gvalue = compiler::make_global_value(result.tpe, "default_param", null, *compiler_state)
+            let estate = eval::eval(*compiler_state)
+            result = eval::get_value(result, *estate)
 
-            let gvaluep = allocate(compiler::Value)
-            @gvaluep = gvalue
-            value = gvaluep
+            if result.kind != compiler::ValueKind::NULL {
+                eval::set_value(gvalue, result, *estate)
+
+                let global = eval::serialize_value(gvalue.name, state.module, *compiler_state)
+                let gvaluep = allocate(compiler::Value)
+                if global.value {
+                    @gvaluep = @global.value
+                } else {
+                    global.private = false
+                    @gvaluep = { kind = compiler::ValueKind::GLOBAL, tpe = typechecking::pointer(global.tpe), name = global.name } !compiler::Value
+                }
+                value = gvaluep
+            }
         }
         let tpe = typechecking::type_lookup(param.value.param.tpe, state, true)
         named.name = last_ident_to_str(name)
@@ -200,12 +208,24 @@ def walk_Def(node: *parser::Node, state: *typechecking::State) {
     }
 
     if body {
+        let function = allocate(typechecking::Function)
+        @function = {
+            tpe = tpe,
+            locals = map::make(),
+            has_defer = false
+        }
+        typechecking::push_function(state, function)
+
         state.scope = scope::enter_function_scope(state.scope)
         node.inner_scope = state.scope
         for var i in 0..vector::length(body) {
             walk(node, vector::get(body, i) !*parser::Node, state)
         }
         state.scope = scope::exit_scope(state.scope)
+
+        node.value.def_.locals = function.locals
+        node.value.def_.has_defer = function.has_defer
+        typechecking::pop_function(state)
     }
 
     node.tpe = tpe
@@ -227,7 +247,7 @@ def walk_TypeDecl(node: *parser::Node, state: *typechecking::State) {
 
         if vector::length(name.value.body) > 1 {
             if value {
-                typechecking::errorn(name, "Can't create type in sub scope\n")
+                errors::errorn(name, "Can't create type in sub scope")
                 continue
             }
             let scpe = toolchain::get_forward_declared_scope(name)
@@ -314,18 +334,18 @@ def walk_top_VarDecl(node: *parser::Node, state: *typechecking::State) {
 
         set_current_function()
         typechecking::walk_VarDecl(node, state, true)
-        let assign = compiler::walk_top_VarDecl(node, compiler_state, true)
-        compiler::walk_expression(assign, compiler_state)
-        eval::eval(compiler_state)
+        let assign = compiler::walk_top_VarDecl(node, *compiler_state, true)
+        compiler::walk_expression(assign, *compiler_state)
+        eval::eval(*compiler_state)
 
         for var i in 0..vector::length(left) {
             let n = vector::get(left, i) !*parser::Node
             if n.kind != parser::NodeKind::ID_DECL {
-                typechecking::errorn(n, "Can't assign in const statement\n")
+                errors::errorn(n, "Can't assign in const statement")
                 return
             }
             let ident = n.value.id_decl.value
-            let global = eval::serialize_value(ident.svalue.assembly_name, state.module, compiler_state)
+            let global = eval::serialize_value(ident.svalue.assembly_name, state.module, *compiler_state)
             if global {
                 ident.svalue.value = global.value
             }
@@ -337,6 +357,11 @@ def walk_top_VarDecl(node: *parser::Node, state: *typechecking::State) {
     for var i in 0..vector::length(left) {
         let n = vector::get(left, i) !*parser::Node
         if n.kind == parser::NodeKind::ID_DECL {
+            if scope::last_path_element(n.value.id_decl.value) == "_" {
+                errors::errorn(n.value.id_decl.value, "Can't use underscore at top level")
+                continue
+            }
+
             scope::create_variable(
                 state.scope, n.value.id_decl.value, 
                 share, kw, typechecking::make_type_raw(typechecking::TypeKind::STUB), 
@@ -366,15 +391,14 @@ def walk_VarDecl(node: *parser::Node, state: *typechecking::State) {
 
         set_current_function()
         typechecking::walk_VarDecl(node, state, true)
-        compiler::walk_VarDecl(node, compiler_state, true)
-        let estate = eval::eval(compiler_state)
-        if not estate { return }
-        let locals = eval::get_stack_frame(estate).locals
+        compiler::walk_VarDecl(node, *compiler_state, true)
+        let estate = eval::eval(*compiler_state)
+        let locals = eval::get_stack_frame(*estate).locals
 
         for var i in 0..vector::length(left) {
             let n = vector::get(left, i) !*parser::Node
             if n.kind != parser::NodeKind::ID_DECL {
-                typechecking::errorn(n, "Can't assign in const statement\n")
+                errors::errorn(n, "Can't assign in const statement")
                 return
             }
             let name = n.value.id_decl.value
@@ -427,24 +451,42 @@ def walk_Return(node: *parser::Node, state: *typechecking::State) {
     }
 }
 
+def compile_function(node: *parser::Node, state: *typechecking::State) {
+    if not node { return }
+
+    let function = compiler::predeclare_function(node.tpe, node.module)
+    map::put(state.module.result.functions, function.name, function)
+    map::put(compiler_state.result.functions, function.name, function)
+    
+    if not function.is_compiled {        
+        let is_compiling_function = state.is_compiling_function
+        let module = state.module
+        state.is_compiling_function = true
+        state.module = node.module
+        for var i in 0..vector::length(node.value.def_.body) {
+            walk(node, vector::get(node.value.def_.body, i) !*parser::Node, state)
+        }
+        state.is_compiling_function = is_compiling_function
+        state.module = module
+
+        compiler::create_function(node, node.tpe, node.value.def_.body, node.inner_scope, null, *compiler_state)
+    }
+}
+
 def walk_Call(node: *parser::Node, state: *typechecking::State) {
     let left = node.value.func_call.left
     walk(node, left, state)
+
     if state.is_static {
-        typechecking::walk(node, left, state)
+        let suppress_errors = errors::suppress_errors
+        errors::suppress_errors = true
+        typechecking::walk(node.parent, node, state)
+        errors::suppress_errors = suppress_errors
+
         if not left.svalue { return }
         let func = left.svalue.node
-        if func and not map::contains(compiler_state.result.functions, func.tpe.type_name) {        
-            let is_compiling_function = state.is_compiling_function
-            state.is_compiling_function = true
-            for var i in 0..vector::length(func.value.def_.body) {
-                walk(func, vector::get(func.value.def_.body, i) !*parser::Node, state)
-            }
-            state.is_compiling_function = is_compiling_function
 
-            compiler::predeclare_function(func.tpe, compiler_state)
-            compiler::create_function(func, func.tpe, func.value.def_.body, func.inner_scope, null, compiler_state)
-        }
+        compile_function(func, state)
     }
     for var i in 0..vector::length(node.value.func_call.args) {
         walk(node, vector::get(node.value.func_call.args, i) !*parser::Node, state)
@@ -452,6 +494,20 @@ def walk_Call(node: *parser::Node, state: *typechecking::State) {
     for var i in 0..vector::length(node.value.func_call.kwargs) {
         let named_arg = vector::get(node.value.func_call.kwargs, i) !*parser::Node
         walk(node, named_arg.value.named_arg.value, state)
+    }
+}
+
+def walk_Ptr(node: *parser::Node, state: *typechecking::State) {
+    walk(node, node.value.expr, state)
+    if state.is_static {
+        let suppress_errors = errors::suppress_errors
+        errors::suppress_errors = true
+        typechecking::walk(node.parent, node, state)
+        errors::suppress_errors = suppress_errors
+
+        if not node.value.expr.svalue { return }
+        let func = node.value.expr.svalue.node
+        compile_function(func, state)
     }
 }
 
@@ -474,6 +530,16 @@ def walk_Case(node: *parser::Node, state: *typechecking::State) {
         walk(node, vector::get(body, i) !*parser::Node, state)
     }
     state.scope = scope::exit_scope(state.scope)
+}
+
+def walk_Defer(node: *parser::Node, state: *typechecking::State) {
+    state.scope = scope::enter_scope(state.scope)
+    node.inner_scope = state.scope
+    let body = vector::copy(node.value.body)
+    for var i in 0..vector::length(body) {
+        walk(node, vector::get(body, i) !*parser::Node, state)
+    }
+    state.scope = scope::exit_scope(state.scope)   
 }
 
 def walk_If(node: *parser::Node, state: *typechecking::State) {
@@ -555,17 +621,52 @@ def walk_StructLit(node: *parser::Node, state: *typechecking::State) {
 
 def walk_Defined(node: *parser::Node, state: *typechecking::State) {
     let expr = node.value.expr
-    assert(expr.kind == parser::NodeKind::IDENTIFIER)
-    
-    let ident = scope::get(state.scope, expr)
+
     let boolean_node = {
         kind = parser::NodeKind::BOOLEAN,
         parent = node.parent,
         loc = node.loc
     } !parser::Node
-    boolean_node.value.i = (not not ident) !int64
+
+    if expr {
+        let ident = scope::get(state.scope, expr)
+        boolean_node.value.i = (not not ident) !int64
+    }
 
     @node = boolean_node
+}
+
+def walk_Error(node: *parser::Node, state: *typechecking::State) {
+    let expr = node.value.expr
+    let is_static = state.is_static
+    state.is_static = true
+    walk(node, expr, state)
+    state.is_static = is_static
+
+    set_current_function()
+    typechecking::walk(node, expr, state)
+    var result = compiler::walk_expression(expr, *compiler_state)
+    let estate = eval::eval(*compiler_state)
+    result = eval::get_value(result, *estate)
+    if not typechecking::equals(result.tpe, builtins::string_) {
+        errors::errorn(node, "Error pragma expects string, got ", debug::type_to_str(result.tpe))
+    } else {
+        var ptr: *char = null
+        if result.kind == compiler::ValueKind::ADDRESS {
+            let mem = eval::get_address(@result.addr, *estate)
+            let val = eval::get(eval::get(mem, typechecking::pointer(result.tpe)).i !*, result.tpe)
+            ptr = val.values[1].i !*char
+        } else {
+            ptr = result.values[1].i !*char
+        } 
+        errors::errorn(node, make_string(ptr))
+    }
+
+    @node = {
+        kind = parser::NodeKind::NULL,
+        parent = node.parent,
+        loc = node.loc
+    } !parser::Node
 }
 
 def walk_top(parent: *parser::Node, node: *parser::Node, state: *typechecking::State) {
@@ -586,7 +687,9 @@ def walk(parent: *parser::Node, node: *parser::Node, state: *typechecking::State
     if not node { return }
 
     node.parent = parent
-
+    if not node.module {
+        node.module = state.module
+    }
     if not node.scope {
         node.scope = state.scope
     }
@@ -628,45 +731,60 @@ def do_walk(node: *parser::Node, state: *typechecking::State) {
             walk_StructLit(node, state)
         case parser::NodeKind::RANGE, parser::NodeKind::RANGE_INC, parser::NodeKind::MEMBER_ACCESS, parser::NodeKind::CAST, parser::NodeKind::ADD..=parser::NodeKind::OR, parser::NodeKind::BAND..=parser::NodeKind::SHR_EQ:
             walk_BinaryOp(node, state)
-        case parser::NodeKind::SIZE_OF, parser::NodeKind::ALIGN_OF, parser::NodeKind::PTR..=parser::NodeKind::NOT:
+        case parser::NodeKind::PTR:
+            walk_Ptr(node, state)
+        case parser::NodeKind::SIZE_OF, parser::NodeKind::ALIGN_OF, parser::NodeKind::DEREF..=parser::NodeKind::NOT:
             walk_UnaryOp(node, state)
         case parser::NodeKind::IDENTIFIER:
             // walk_Identifier(node, state)
         case parser::NodeKind::DEFINED:
             walk_Defined(node, state)
+        case parser::NodeKind::ERROR:
+            walk_Error(node, state)
+        case parser::NodeKind::DEFER:
+            walk_Defer(node, state)
     }
+}
+
+export def preprocess(module: *toolchain::Module) {
+    let state = typechecking::make_state(module)
+    preprocess(*state)
+}
+
+def insert_std_module(module: *toolchain::Module) {
+     if module.module != "cstd" and module.module != "std" {
+        // import standard library
+        let cstd_ident = parser::make_identifier(["cstd"])
+        let cstd = toolchain::preprocess_module(cstd_ident)
+        scope::insert_module(module.scope, cstd_ident, cstd)
+        
+        let std_ident = parser::make_identifier(["std"])
+        let std = toolchain::preprocess_module(std_ident)
+        scope::insert_module(module.scope, std_ident, std)
+    }
+
+    compiler::predeclare_functions(module)
 }
 
 export var time_spent: int64 = 0
 
-export def preprocess(module: *toolchain::Module) {
+export def preprocess(state: *typechecking::State) {
+    if not const_module.imported {
+        const_module.imported = map::make()
+        insert_std_module(const_module)
+    }
+
     let start = util::millis()
-    let node = module.node
+    let node = state.module.node
     assert(node.kind == parser::NodeKind::PROGRAM)
 
-    let state = {
-        module = module,
-        scope = module.scope,
-        function_stack = vector::make()
-    } !typechecking::State
-
-    if state.module.module != "cstd" and state.module.module != "std" {
-        // import standard library
-        let cstd_ident = parser::make_identifier(["cstd"])
-        let cstd = toolchain::preprocess_module(cstd_ident)
-        scope::insert_module(state.scope, cstd_ident, cstd)
-        
-        let std_ident = parser::make_identifier(["std"])
-        let std = toolchain::preprocess_module(std_ident)
-        scope::insert_module(state.scope, std_ident, std)
-    }
+    insert_std_module(state.module)
 
     let body = vector::copy(node.value.body)
     for var i in 0..vector::length(body) {
-        walk(node, vector::get(body, i) !*parser::Node, *state)
+        walk(node, vector::get(body, i) !*parser::Node, state)
     }
 
-    compiler::predeclare_functions(module.scope, compiler_state)
     let end = util::millis()
     time_spent += end - start
 }
