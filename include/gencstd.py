@@ -1,7 +1,6 @@
-from abc import ABC, abstractclassmethod, abstractmethod
-from os import get_inheritable, sep
-import subprocess, json, ctypes, math
-import tatsu, pickle, sys
+from abc import ABC, abstractmethod
+import subprocess, json, sys
+import tatsu
 from tatsu.walkers import NodeWalker
 from pathlib import Path
 
@@ -10,7 +9,7 @@ GRAMMAR = """\
 
     sign = 'signed' | 'unsigned';
     modifier = 'long' 'long' @:`'llong'` | 'long' | 'short';
-    specifier = 'int' | 'char' | 'float' | 'double' | '__int128';
+    specifier = 'int' | 'char' | 'float' | 'double' | '__int128' | '_Bool';
     winptr = '__ptr32' | '__sptr' | '__uptr';
 
     identifier::Identifier      = /(?!\d)\w+/;
@@ -32,10 +31,19 @@ PARSER = tatsu.compile(GRAMMAR, asmodel = True)
 def parse(s):
     return PARSER.parse(s, start = "type_1")
 
-GLOBALS = {}
-TYPEDEFS = {}
-TAGGED = {}
-STRUCT_IDS = {}
+class File:
+    def __init__(self, fp) -> None:
+        self.GLOBALS = {}
+        self.TYPEDEFS = {}
+        self.TAGGED = {}
+        self.STRUCT_IDS = {}
+
+        self.TAGGED["__va_list_tag"] = VaList()
+        self.TYPEDEFS["bool"] = PRIMITIVES["_Bool"]
+
+        self.has_printed = set()
+        self.fp = fp
+        self.last_record = None
 
 def escape_name(name: str) -> str:
     if name == "type":
@@ -48,48 +56,52 @@ class Type:
     def __init__(self) -> None:
         self.qualname = None
 
-    def to_definition(self) -> str:
-        return str(self)
+    @abstractmethod
+    def to_string(self, file: File) -> str:
+        pass
+
+    def to_definition(self, file: File) -> str:
+        return self.to_string(file)
     
-    def print_references(self, fp, has_printed: set):
+    def print_references(self, file: File):
         pass
 
 class Void(Type):
-    def __str__(self) -> str:
+    def to_string(self, file: File) -> str:
         return "void"
 void = Void()
 
 class Varargs(Type):
-    def __str__(self) -> str:
+    def to_string(self, file: File) -> str:
         return "..."
 varargs = Varargs()
 
 class VaList(Type):
-    def __str__(self) -> str:
+    def to_string(self, file: File) -> str:
         return "__va_list_tag"
 
 class IncompleteType(Type):
     def __init__(self, name: str):
         self.name = name
 
-    def __str__(self) -> str:
-        return str(TAGGED[self.name])
+    def to_string(self, file: File) -> str:
+        return file.TAGGED[self.name].to_string(file)
     
-    def to_definition(self) -> str:
-        return TAGGED[self.name].to_definition()
+    def to_definition(self, file: File) -> str:
+        return file.TAGGED[self.name].to_definition(file)
 
 class Float(Type):
     def __init__(self, name):
         self.name = name
 
-    def __str__(self) -> str:
+    def to_string(self, file: File) -> str:
         return self.name
         
 class Integer(Type):
     def __init__(self, name):
         self.name = name
 
-    def __str__(self) -> str:
+    def to_string(self, file: File) -> str:
         return self.name
 
 class Function(Type):
@@ -97,18 +109,18 @@ class Function(Type):
         self.args = args
         self.ret = ret
 
-    def __str__(self) -> str:
-        args = ', '.join(map(str, filter(lambda x: x != void, self.args)))
-        return f"({args}) -> ({self.ret if self.ret != void else ''})"
+    def to_string(self, file: File) -> str:
+        args = ', '.join(map(lambda x: x.to_string(file), filter(lambda x: x != void, self.args)))
+        return f"({args}) -> ({self.ret.to_string(file) if self.ret != void else ''})"
 
 class Pointer(Type):
     def __init__(self, tpe: Type):
         self.type = tpe
 
-    def __str__(self) -> str:
+    def to_string(self, file: File) -> str:
         if self.type == void:
             return "*"
-        else: return f"*{self.type}"
+        else: return f"*{self.type.to_string(file)}"
 
 
 class Array(Type):
@@ -116,11 +128,11 @@ class Array(Type):
         self.type = tpe
         self.length = length
 
-    def __str__(self) -> str:
+    def to_string(self, file: File) -> str:
         if self.length:
-            return f"[{self.length}; {self.type}]"
+            return f"[{self.length}; {self.type.to_string(file)}]"
         else:
-            return f"*{self.type}"
+            return f"*{self.type.to_string(file)}"
 
 class Record(Type):
     def __init__(self) -> None:
@@ -128,33 +140,33 @@ class Record(Type):
         self.fields = []
         self.name = None
 
-    def __str__(self) -> str:
+    def to_string(self, file: File) -> str:
         if self.qualname:
-            self = TAGGED[self.qualname]
+            self = file.TAGGED[self.qualname]
 
         name = self.typename or self.name
-        if not name: return self.to_definition()
+        if not name: return self.to_definition(file)
         else: return name
 
-    def print_references(self, fp, has_printed):
+    def print_references(self, file: File):
         if self.typename:
-            self = TYPEDEFS[self.typename]
+            self = file.TYPEDEFS[self.typename]
         elif self.qualname:
-            self = TAGGED[self.qualname]
+            self = file.TAGGED[self.qualname]
         
-        if not self in has_printed:
-            has_printed.add(self)
+        if not self in file.has_printed:
+            file.has_printed.add(self)
         else: return
 
         for _, t in self.fields:
-            t.print_references(fp, has_printed)
+            t.print_references(file)
 
         name = self.typename or self.name
         if name:
-            print(f"export type {name}", file = fp, end = "")
+            print(f"export type {name}", file = file.fp, end = "")
             if self.fields:
-                print(f" = {self.to_definition()}", file = fp)
-            else: print("", file = fp)
+                print(f" = {self.to_definition(file)}", file = file.fp)
+            else: print("", file = file.fp)
 
 class Struct(Record):
     def __init__(self, name: str, fields):
@@ -163,13 +175,13 @@ class Struct(Record):
         self.qualname = name
         self.typename = None
 
-    def to_definition(self) -> str:
+    def to_definition(self, file: File) -> str:
         if self.fields:
             res = "struct { "
             for (name, tpe) in self.fields:
                 if name:
                     res += escape_name(name) + ": "
-                res += str(tpe) + "; "
+                res += tpe.to_string(file) + "; "
             res += "}"
             return res
 
@@ -180,13 +192,13 @@ class Union(Record):
         self.qualname = name
         self.typename = None
     
-    def to_definition(self) -> str:
+    def to_definition(self, file: File) -> str:
         if self.fields:
             res = "struct #union { "
             for (name, tpe) in self.fields:
                 if name:
                     res += escape_name(name) + ": "
-                res += str(tpe) + "; "
+                res += tpe.to_string(file) + "; "
             res += "}"
             return res
 
@@ -197,15 +209,15 @@ class Enum(Type):
         self.qualname = name
         self.fields = fields
     
-    def __str__(self) -> str:
+    def to_string(self, file: File) -> str:
         if self.qualname:
-            self = TAGGED[self.qualname]
+            self = file.TAGGED[self.qualname]
 
         name = self.typename or self.name
-        if not name: return self.to_definition()
+        if not name: return self.to_definition(file)
         else: return name
 
-    def to_definition(self) -> str:
+    def to_definition(self, file: File) -> str:
         res =  "enum { "
         for (name, value) in self.fields:
             res += name
@@ -216,22 +228,22 @@ class Enum(Type):
         res += "}"
         return res
 
-    def print_references(self, fp, has_printed):
+    def print_references(self, file: File):
         if self.typename:
-            self = TYPEDEFS[self.typename]
+            self = file.TYPEDEFS[self.typename]
         elif self.qualname:
-            self = TAGGED[self.qualname]
+            self = file.TAGGED[self.qualname]
         
-        if not self in has_printed:
-            has_printed.add(self)
+        if not self in file.has_printed:
+            file.has_printed.add(self)
         else: return
 
         name = self.typename or self.name
         if name:
-            print(f"export type {name}", file = fp, end = "")
+            print(f"export type {name}", file = file.fp, end = "")
             if self.fields:
-                print(f" = {self.to_definition()}", file = fp)
-            else: print("", file = fp)
+                print(f" = {self.to_definition(file)}", file = file.fp)
+            else: print("", file = file.fp)
         
 
 #Global entities
@@ -247,16 +259,16 @@ class ConstDecl(Declaration):
         self.type = type
         self.value = value
 
-    def to_declaration(self, n: int) -> str:
-        return f"export const {self.name}: {self.type} = {self.value}"
+    def to_declaration(self, n: int, file: File) -> str:
+        return f"export const {self.name}: {self.type.to_string(file)} = {self.value}"
 
 class VarDecl(Declaration):
     def __init__(self, name: str, type: Type):
         self.name = name
         self.type = type
 
-    def to_declaration(self, n: int) -> str:
-        ret = f"export import var #extern {self.name}: {self.type}"
+    def to_declaration(self, n: int, file: File) -> str:
+        ret = f"export import var #extern {self.name}: {self.type.to_string(file)}"
         ret += f"\n__VAR_NAMES[{n}] = \"{self.name}\""
         ret += f"\n__VARS[{n}] = *{self.name} !*"
         return ret
@@ -268,15 +280,15 @@ class FunctionDecl(Declaration):
         self.args = args
         self.variadic = variadic
 
-    def to_declaration(self, n: int) -> str:
+    def to_declaration(self, n: int, file: File) -> str:
         args = []
         for (name, tpe) in self.args:
-            args.append(name + ": " + str(tpe))
+            args.append(name + ": " + tpe.to_string(file))
         if self.variadic:
             args.append("...")
 
         ret = f"export import def #extern {self.name}({', '.join(args)})"
-        if self.ret != void: ret += " -> " + str(self.ret)
+        if self.ret != void: ret += " -> " + self.ret.to_string(file)
         ret += f"\n__DEF_NAMES[{n}] = \"{self.name}\""
         ret += f"\n__DEFS[{n}] = *{self.name} !() -> ()"
 
@@ -319,6 +331,10 @@ PRIMITIVES = {
 }
 
 class Walker(NodeWalker):
+    def __init__(self, file: File) -> None:
+        super().__init__()
+        self.file = file
+
     def walk_Primitive(self, node):
         return PRIMITIVES[node.ast]
     
@@ -335,19 +351,17 @@ class Walker(NodeWalker):
         return Array(self.walk(node.type), int(node.size) if node.size else None)
 
     def walk_Identifier(self, node):
-        return TYPEDEFS[node.ast]
+        return self.file.TYPEDEFS[node.ast]
 
     def walk_Tagged(self, node):
         name = node.ast[1].ast
-        if name in TAGGED:
-            return TAGGED[name]
+        if name in self.file.TAGGED:
+            return self.file.TAGGED[name]
         else:
             return IncompleteType(name)
     
     def walk_Function(self, node):
         return Function(list(map(self.walk, node.args)), self.walk(node.ret))
-
-WALKER = Walker()
 
 def get_type(node) -> str:
     tpe = node["type"]
@@ -388,13 +402,13 @@ def walk_Expression(node):
             walk_Expression(node["inner"][2]))
     return ""
 
-def walk_VarDecl(node):
+def walk_VarDecl(node, file: File):
     name = node["name"]
     tpe = parse(get_type(node))
-    tpe = WALKER.walk(tpe)
-    GLOBALS[name] = VarDecl(name, tpe)
+    tpe = Walker(file).walk(tpe)
+    file.GLOBALS[name] = VarDecl(name, tpe)
 
-def walk_EnumDecl(node):
+def walk_EnumDecl(node, file: File):
     name = node["name"] if "name" in node else ""
     fields = []
     for decl in node["inner"]:
@@ -409,40 +423,40 @@ def walk_EnumDecl(node):
     if not name:
         prev = "0"
         for f in fields:
-            GLOBALS[f[0]] = ConstDecl(f[0], PRIMITIVES["int"], f[1] if f[1] else prev)
+            file.GLOBALS[f[0]] = ConstDecl(f[0], PRIMITIVES["int"], f[1] if f[1] else prev)
             prev = f[0] + " + 1"
 
     record = Enum(name, fields)
     if name:
-        TAGGED[name] = record
-    STRUCT_IDS[node["id"]] = record
+        file.TAGGED[name] = record
+    file.STRUCT_IDS[node["id"]] = record
 
 def is_anonymous(qual_type):
     return ("anonymous struct at" in qual_type or 
         "anonymous union" in qual_type or 
         "anonymous at" in qual_type)
 
-last_record = None
-def walk_TypedefDecl(node):
-    global last_record
+def walk_TypedefDecl(node, file: File):
 
     name = node["name"]
     inner = node["inner"][0]
     if "ownedTagDecl" in inner:
         id = inner["ownedTagDecl"]["id"]
-        struct = STRUCT_IDS[id]
+        struct = file.STRUCT_IDS[id]
         struct.typename = name
-        TYPEDEFS[name] = struct
+        file.TYPEDEFS[name] = struct
+        if not struct.name:
+            incomplete_type = Walker(file).walk(parse(get_type(inner)))
+            file.TAGGED[incomplete_type.name] = struct
     else:
         tpe = get_type(inner)
         if is_anonymous(tpe):
-            record = last_record
+            record = file.last_record
         else:
-            record = WALKER.walk(parse(tpe))
-        TYPEDEFS[name] = record
+            record = Walker(file).walk(parse(tpe))
+        file.TYPEDEFS[name] = record
 
-def walk_RecordDecl(node):
-    global last_record
+def walk_RecordDecl(node, file: File):
     name = node["name"] if "name" in node else ""
 
     fields = []
@@ -451,29 +465,29 @@ def walk_RecordDecl(node):
             if field["kind"] == "FieldDecl":
                 qual_type = get_type(field)
                 if is_anonymous(qual_type):
-                    tpe = last_record
+                    tpe = file.last_record
                 else:
-                    tpe = WALKER.walk(parse(qual_type))
+                    tpe = Walker(file).walk(parse(qual_type))
                 
                 fields.append((field.get("name", ""), tpe))
             elif field["kind"] == "RecordDecl":
-                last_record = walk_RecordDecl(field)
+                file.last_record = walk_RecordDecl(field, file)
     
     if node["tagUsed"] == "struct":
         record = Struct(name, fields)
     else: record = Union(name, fields)
 
-    last_record = record
+    file.last_record = record
 
     if name:
-        TAGGED[name] = record
-    STRUCT_IDS[node["id"]] = record
+        file.TAGGED[name] = record
+    file.STRUCT_IDS[node["id"]] = record
 
     return record
 
-def walk_FunctionDecl(node):
+def walk_FunctionDecl(node, file: File):
     name = node["name"]
-    ret = WALKER.walk(parse(get_type(node)))
+    ret = Walker(file).walk(parse(get_type(node)))
     if not "storageClass" in node or node["storageClass"] != "static":
         variadic = node.get("variadic", False)
         args = []
@@ -482,80 +496,97 @@ def walk_FunctionDecl(node):
                 if param["kind"] != "ParmVarDecl":
                     continue
                 argname = param.get("name", "_" + str(i))
-                tpe = WALKER.walk(parse(get_type(param)))
+                tpe = Walker(file).walk(parse(get_type(param)))
                 args.append((argname, tpe))
 
 
-        GLOBALS[name] = FunctionDecl(name, ret, args, variadic)
+        file.GLOBALS[name] = FunctionDecl(name, ret, args, variadic)
 
-def walk(node):
+def walk(node, file: File):
     if node["kind"] == "VarDecl": 
-        walk_VarDecl(node)
+        walk_VarDecl(node, file)
     elif node["kind"] == "TypedefDecl":
-        walk_TypedefDecl(node)
+        walk_TypedefDecl(node, file)
     elif node["kind"] == "FunctionDecl":
-        walk_FunctionDecl(node)
+        walk_FunctionDecl(node, file)
     elif node["kind"] == "RecordDecl":
-        walk_RecordDecl(node)
+        walk_RecordDecl(node, file)
     elif node["kind"] == "EnumDecl":
-        walk_EnumDecl(node)
+        walk_EnumDecl(node, file)
 
-TAGGED["__va_list_tag"] = VaList()
-TYPEDEFS["bool"] = PRIMITIVES["_Bool"]
+ALL_DEFINITIONS = {}
 
-def main():
-    global GLOBALS, TAGGED, TYPEDEFS
-
+def process_module(name: str):
     folder = Path(__file__).parent
 
-    with open(folder / "header.json", "w") as fp:
+    with open(folder / f"{name}.json", "w") as fp:
         p = subprocess.Popen(
-            ["clang-12", "-Xclang", "-ast-dump=json", "-fsyntax-only", folder / "header.c"], 
+            ["clang" if sys.platform == "win32" else "clang-12", "-Xclang", "-ast-dump=json", "-fsyntax-only", folder / f"{name}.h"], 
             stdout = fp)
         p.wait()
 
-    with open(folder / "header.json", "r") as fp:
+    with open(folder / f"{name}.json", "r") as fp:
         data = json.load(fp)
+        data = data["inner"]
     
-    with open(folder / "excluded.txt", "r") as fp:
-        excluded = set(l.rstrip("\n") for l in fp.readlines())
+    excluded = set()
+    with open(folder / f"{name}.h", "r") as fp:
+        for line in fp:
+            if line.startswith("%EXCLUDE"):
+                line = line.replace("%EXCLUDE", "")
+                line = line.strip()
+                excluded = set(line.split(" "))
 
-    data = data["inner"]
-    for top_level in data:
-        walk(top_level)
+    with open(folder / f"{name}.pr", "w") as fp:
+        file = File(fp)
 
-    with open(folder / "cstd.pr", "w") as fp:
+        for top_level in data:
+            walk(top_level, file)
         
-        has_printed = set()
+        file.GLOBALS = {k:v for k,v in file.GLOBALS.items() if k not in ALL_DEFINITIONS}
+        ALL_DEFINITIONS.update(file.GLOBALS)
+        file.GLOBALS = {k:v for k,v in file.GLOBALS.items() if k not in excluded}
+
+        DEFS = {k:v for k,v in file.GLOBALS.items() if isinstance(v, FunctionDecl)}
+        VARS = {k:v for k,v in file.GLOBALS.items() if isinstance(v, VarDecl)}
+        CONSTS = {k:v for k,v in file.GLOBALS.items() if isinstance(v, ConstDecl)}
         
-        GLOBALS = {k:v for k,v in GLOBALS.items() if k not in excluded}
-        DEFS = {k:v for k,v in GLOBALS.items() if isinstance(v, FunctionDecl)}
-        VARS = {k:v for k,v in GLOBALS.items() if isinstance(v, VarDecl)}
-        CONSTS = {k:v for k,v in GLOBALS.items() if isinstance(v, ConstDecl)}
-        
+        print("import preload", file = fp)
         print(f"export var __DEFS: [{len(DEFS)}; () -> ()]", file = fp)
         print(f"export var __DEF_NAMES: [{len(DEFS)}; string]", file = fp)
         print(f"export var __VARS: [{len(VARS)}; *]", file = fp)
         print(f"export var __VAR_NAMES: [{len(VARS)}; string]", file = fp)
 
-        for type in TYPEDEFS.values():
-            type.print_references(fp, has_printed)
-        for type in TAGGED.values():
-            type.print_references(fp, has_printed)
+        for type in file.TYPEDEFS.values():
+            type.print_references(file)
+        for type in file.TAGGED.values():
+            type.print_references(file)
 
         for g in CONSTS.values():
-            print(g.to_declaration(0), file = fp)
+            print(g.to_declaration(0, file), file = fp)
 
         num_decls = 0
         for g in DEFS.values():
-            print(g.to_declaration(num_decls), file = fp)
+            print(g.to_declaration(num_decls, file), file = fp)
             num_decls += 1
 
         num_decls = 0
         for g in VARS.values():
-            print(g.to_declaration(num_decls), file = fp)
+            print(g.to_declaration(num_decls, file), file = fp)
             num_decls += 1
 
+        print("preload::load_ffi(__DEF_NAMES, __DEFS, __VAR_NAMES, __VARS)", file = fp)
+
+    return file
+
+def main():
+    if sys.platform != "win32":
+        process_module("linux")
+    else:
+        process_module("windows")
+
+    process_module("cstd")
+    process_module("ffi")
 
 if __name__ == "__main__":
     main()
