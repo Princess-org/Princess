@@ -543,15 +543,13 @@ def process_module(name: str):
         for top_level in data:
             walk(top_level, file)
         
-        file.GLOBALS = {k:v for k,v in file.GLOBALS.items() if k not in ALL_DEFINITIONS}
+        file.GLOBALS = {k:v for k,v in file.GLOBALS.items() if k not in excluded and k not in ALL_DEFINITIONS}
         ALL_DEFINITIONS.update(file.GLOBALS)
-        file.GLOBALS = {k:v for k,v in file.GLOBALS.items() if k not in excluded}
 
         DEFS = {k:v for k,v in file.GLOBALS.items() if isinstance(v, FunctionDecl)}
         VARS = {k:v for k,v in file.GLOBALS.items() if isinstance(v, VarDecl)}
         CONSTS = {k:v for k,v in file.GLOBALS.items() if isinstance(v, ConstDecl)}
         
-        print("import preload", file = fp)
         print(f"export var __DEFS: [{len(DEFS)}; () -> ()]", file = fp)
         print(f"export var __DEF_NAMES: [{len(DEFS)}; string]", file = fp)
         print(f"export var __VARS: [{len(VARS)}; *]", file = fp)
@@ -574,8 +572,6 @@ def process_module(name: str):
         for g in VARS.values():
             print(g.to_declaration(num_decls, file), file = fp)
             num_decls += 1
-
-        print("preload::load_ffi(__DEF_NAMES, __DEFS, __VAR_NAMES, __VARS)", file = fp)
 
     return file
 
