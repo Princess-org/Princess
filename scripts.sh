@@ -14,10 +14,14 @@ function release {
     bin/princess2 -d -Isrc --buildfolder=build --outfile=bin/princess3 src/main.pr 
     mkdir -p $FOLDER
     mkdir -p $FOLDER/bin
+    mkdir -p $FOLDER/include
     cp princess.h $FOLDER
     cp ./bin/princess2 $FOLDER/bin/princess
     cp version $FOLDER
-    cp -r ./include $FOLDER/include
+    cp ./include/*.h $FOLDER/include
+    cp ./include/preload.pr $FOLDER/include
+    cp ./include/gencstd.py $FOLDER/include
+    cp -r ./std $FOLDER/std
     tar -zcvf "${FOLDER}.tar.gz" $FOLDER
     rm -r $FOLDER
 }
