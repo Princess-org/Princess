@@ -152,7 +152,9 @@ export def is_preload(module: *Module) -> bool {
     absolute_path(include.value, ifilename.value)
     ifilename.size = strlen(ifilename) + 1
 
-    return starts_with(mfilename, ifilename)
+    let s = starts_with(mfilename, ifilename)
+    // TODO Defer is currently called before returning, this creates used after free bugs
+    return s
 }
 
 export def get_forward_declared_scope(ident: *parser::Node) -> *scope::Scope {
@@ -175,7 +177,8 @@ export def get_forward_declared_scope(ident: *parser::Node) -> *scope::Scope {
     module = allocate(Module)
     @module = {
         forward_declared = true,
-        scope = scope::enter_function_scope(builtins::builtins)
+        scope = scope::enter_function_scope(builtins::builtins),
+        code = compiler::make_block()
     }
 
     map::put(modules, modulename, module)
@@ -295,8 +298,69 @@ export def preprocess_module(name: *parser::Node) -> *Module {
     return module
 }
 
+def generate_runtime_source -> string {
+    let runtime = zero_allocate(char, PATH_MAX)
+    concat(runtime, util::exe_folder(), "/../src/runtime.pr")
+    runtime.size = strlen(runtime) + 1
+    let fp = open(runtime, "r")
+    let source = util::read_all(fp)
+    close(runtime)
+    return source
+}
+
+const runtime_source = generate_runtime_source()
+export var runtime: *Module = null
+export var types: *Module = null
+
+def create_runtime_module {
+    let lines = util::split_lines(runtime_source)
+    let tokens = lexer::lex(runtime_source)
+    let node = parser::parse(tokens, lines, "runtime.pr", "runtime")
+
+    let runtime_module = allocate(Module)
+    @runtime_module = {     // TODO Make this a function
+        forward_declared = false,
+        filename = "runtime.pr",
+        module = "runtime",
+        node = node,
+        scope = scope::enter_function_scope(builtins::builtins),
+        result = compiler::make_result(),
+        code = compiler::make_block(),  
+        imported = map::make(),
+        dependants = vector::make()
+    }
+
+    map::put(modules, "runtime", runtime_module)
+    runtime = runtime_module
+
+    preprocess::preprocess(runtime_module)
+    typechecking::typecheck(runtime_module)
+    runtime_module.stage = Stage::TYPECHECKING
+    compiler::compile(runtime_module)
+    runtime_module.stage = Stage::COMPILING
+}
+
+def create_types_module {
+    types = allocate(Module)
+    @types = {
+        module = "type",
+        scope = scope::enter_scope(null),
+        result = compiler::make_result(),
+        imported = map::make()
+    } !Module
+    map::put(modules, "type", types)
+}
+
 export def compile_main_file(filename: string) {
     let start_frontend = util::millis()
+
+    create_runtime_module()
+    create_types_module()
+
+    let type_tpe = scope::get_type(runtime.scope, make_identifier(["Type"]))
+    map::put(types.result.structures, type_tpe.type_name, type_tpe)
+    let fields_tpe = scope::get_type(runtime.scope, make_identifier(["Field"]))
+    map::put(types.result.structures, fields_tpe.type_name, fields_tpe)
 
     var module = preprocess_file(filename, "main", null)
     if not module { exit(1) }
@@ -305,6 +369,22 @@ export def compile_main_file(filename: string) {
     module.stage = Stage::TYPECHECKING
     compiler::compile(module)
     module.stage = Stage::COMPILING
+
+    let types_main_ident = parser::make_identifier(["main"])
+    types_main_ident.loc.module = types.module
+
+    let named = allocate(typechecking::NamedParameter)
+    @named = {
+        name = "args",
+        tpe = typechecking::array(builtins::string_)
+    } !typechecking::NamedParameter
+    let args = vector::make()
+    vector::push(args, named)
+
+    let main_tpe = typechecking::make_function_type_n(types_main_ident, args, vector::make(), false, false)
+    let types_main = compiler::predeclare_function(main_tpe, types)
+    types_main.block = types.code
+    map::put(types.imported, main_tpe.type_name, map::sentinel)
 
     if dependency_graph {
         print_dependency_graph(module)

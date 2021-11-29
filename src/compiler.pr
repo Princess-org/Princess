@@ -586,6 +586,8 @@ export def load_value(node: *parser::Node, value: Value, state: *State) -> Value
             loc = @value.addr
         } !InsnLoad
         push_insn(load, state)
+        // TODO Temporary hack for builtin functions
+        ret.value_tpe = value.value_tpe
         return ret
     } else {
         return value
@@ -714,39 +716,39 @@ def make_return_type(tpe: *typechecking::Type) -> *typechecking::Type {
     return ret_tpe
 }
 
-def import_structure(tpe: *typechecking::Type, state: *State) {
-    let res = map::get(state.module.result.structures, (@tpe).type_name) !*typechecking::Type
+def import_structure(tpe: *typechecking::Type, module: *toolchain::Module) {
+    let res = map::get(module.result.structures, (@tpe).type_name) !*typechecking::Type
     if not res or (@tpe).kind == typechecking::TypeKind::STUB {
         let size = (@tpe).fields.size
         if size > 0 {
-            map::put(state.module.result.structures, (@tpe).type_name, tpe)
+            map::put(module.result.structures, (@tpe).type_name, tpe)
         }
     }
 }
 
-export def import_structures(tpe: *typechecking::Type, state: *State) {
+export def import_structures(tpe: *typechecking::Type, module: *toolchain::Module) {
     if not tpe { return }
     switch (@tpe).kind !int {
         case typechecking::TypeKind::STRUCT..=typechecking::TypeKind::UNION:
-            import_structure(tpe, state)
+            import_structure(tpe, module)
         case typechecking::TypeKind::ARRAY:
-            import_structures((@tpe).tpe, state)
+            import_structures((@tpe).tpe, module)
         case typechecking::TypeKind::STATIC_ARRAY:
-            import_structures((@tpe).tpe, state)
+            import_structures((@tpe).tpe, module)
         case typechecking::TypeKind::POINTER:
-            import_structures((@tpe).tpe, state)
+            import_structures((@tpe).tpe, module)
         case typechecking::TypeKind::FUNCTION:
             for var i in 0..vector::length((@tpe).parameter_t) {
                 let param = vector::get((@tpe).parameter_t, i) !*typechecking::NamedParameter
-                import_structures((@param).tpe, state)
+                import_structures((@param).tpe, module)
             }
             for var i in 0..vector::length((@tpe).return_t) {
                 let t = vector::get((@tpe).return_t, i) !*typechecking::Type
-                import_structures(t, state)
+                import_structures(t, module)
             }
         case typechecking::TypeKind::STUB:
-            if not map::contains(state.module.result.structures, (@tpe).type_name) {
-                map::put(state.module.result.structures, (@tpe).type_name, tpe)
+            if not map::contains(module.result.structures, (@tpe).type_name) {
+                map::put(module.result.structures, (@tpe).type_name, tpe)
             }
     }
 }
@@ -1165,7 +1167,7 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
 
 def walk_Cast(node: *parser::Node, state: *State) -> Value {
     let value = walk_and_load_expression((@node).value.expr, state)
-    import_structures((@node).tpe, state)
+    import_structures((@node).tpe, state.module)
     return convert_to(node, value, (@node).tpe, state)
 }
 
@@ -1857,7 +1859,7 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
         if not function { return NO_VALUE }
         ret = (@function).ret
         
-        import_structures(tpe, state)
+        import_structures(tpe, state.module)
         map::put((@(@state).module).imported, name, map::sentinel)
 
         let len = vector::length((@function).args)
@@ -1919,7 +1921,7 @@ def walk_Identifier(node: *parser::Node, state: *State) -> Value {
         return @val.value
     }
     let tpe = (@node).tpe
-    import_structures(tpe, state )
+    import_structures(tpe, state.module)
     if (@val).global {
         map::put((@(@state).module).imported, (@val).assembly_name, map::sentinel)
     }
@@ -2775,11 +2777,7 @@ export def walk_expression(node: *parser::Node, state: *State) -> Value {
         case parser::NodeKind::ARRAY_LIT:
             return walk_ArrayLit(node, state)
         case parser::NodeKind::PTR_T:
-            return {
-                kind = ValueKind::TYPE, 
-                tpe = builtins::type_, 
-                value_tpe = typechecking::pointer(walk_and_load_expression((@node).value.t_parr.tpe, state).value_tpe)
-            } !Value
+            return @node.svalue.value
         case parser::NodeKind::IF_EXPR:
             return walk_IfExpr(node, state)
         case:
@@ -3360,7 +3358,7 @@ export def walk_VarDecl(node: *parser::Node, state: *State, set_constant: bool) 
         if (@n).kind == parser::NodeKind::ID_DECL {
             let v = (@n).value.id_decl.value
             let tpe = (@v).tpe
-            import_structures(tpe, state)
+            import_structures(tpe, state.module)
 
             let value = v.svalue
             if not value { continue }
@@ -4268,7 +4266,7 @@ def create_debug_info(node: *parser::Node, function: *Function, tpe: *typechecki
     vector::push((@state).discope, disubp)
 }
  
-// Block may be null
+// block and body may be null
 export def create_function(node: *parser::Node, tpe: *typechecking::Type, body: *vector::Vector, scpe: *scope::Scope, block: *Block, state: *State) {
     let function = map::get(state.module.result.functions, tpe.type_name) !*Function
     if not function { return }
@@ -4279,7 +4277,7 @@ export def create_function(node: *parser::Node, tpe: *typechecking::Type, body: 
     function.allocas = vector::make()
 
     if body {
-        import_structures(tpe, state)
+        import_structures(tpe, state.module)
         map::put(state.module.imported, tpe.type_name, map::sentinel)
         create_debug_info(node, function, tpe, state)
 
@@ -4415,7 +4413,7 @@ def walk_TypeDecl(node: *parser::Node, state: *State) {
         let tpe = (@n).tpe
         if not tpe { continue }
         if typechecking::is_struct(tpe) {
-            import_structures(tpe, state)
+            import_structures(tpe, state.module)
         } else if typechecking::is_enum(tpe) {
             let parameter_t = vector::make()
             let np = allocate(typechecking::NamedParameter)
@@ -4492,7 +4490,7 @@ def walk_TypeDecl(node: *parser::Node, state: *State) {
             (@retinsn).value.ret.value = ret
             push_insn(retinsn, state)
             
-            import_structures((@svalue).tpe, state)
+            import_structures((@svalue).tpe, state.module)
             map::put((@(@state).module).imported, (@function).name, map::sentinel)
             map::put(state.module.result.functions, (@function).name, function)
         }
@@ -4521,7 +4519,7 @@ export def walk_top_VarDecl(node: *parser::Node, state: *State, set_constant: bo
             let value = scope::get((@node).scope, v)
             if not value { continue }
             
-            import_structures((@v).tpe, state)
+            import_structures((@v).tpe, state.module)
             let name = (@value).assembly_name
 
             let global = allocate(Global)
@@ -4706,6 +4704,17 @@ export def compile(state: *State) {
         let std = toolchain::compile_module(std_indent)
         insert_module_main(cstd, cstd_ident, node.scope, body, state)
         insert_module_main(std, std_indent, node.scope, body, state)
+    }
+
+    if state.module.module == "main" {
+        // Import runtime
+        let runtime_ident = parser::make_identifier(["runtime"])
+        insert_module_main(toolchain::runtime, runtime_ident, node.scope, body, state)
+
+        // Import preload
+        let preload_ident = parser::make_identifier(["preload"])
+        let preload = toolchain::compile_module(preload_ident)
+        insert_module_main(preload, preload_ident, node.scope, body, state)
     }
 
     var globals: *Value = null

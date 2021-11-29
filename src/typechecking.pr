@@ -348,6 +348,7 @@ export def equals(a: *Type, b: *Type) -> bool {
         return a.type_name == b.type_name
     }
 
+    if a.kind == TypeKind::TYPE and b == get_type_type() { return true }
     if (@a).kind != (@b).kind { return false }
 
     let kind = (@a).kind
@@ -820,8 +821,14 @@ export def common_type(a: *Type, b: *Type) -> *Type {
 }
 
 def walk_PtrT(node: *parser::Node, state: *State) {
-    walk(node, (@node).value.t_parr.tpe, state)
-    (@node).tpe = type_
+    let expr = (@node).value.t_parr.tpe
+    walk(node, expr, state)
+    assert(expr.tpe == get_type_type())
+
+    let tpe = expr.svalue.value.value_tpe
+    node.svalue = change_value_to_type(pointer(tpe), state)
+
+    (@node).tpe = node.svalue.tpe
 }
 
 def walk_Null(node: *parser::Node, state: *State) {
@@ -863,6 +870,137 @@ def walk_Range(node: *parser::Node, state: *State) {
     (@node).tpe = tpe
 }
 
+var type_type: *Type = null
+def get_type_type -> *Type {
+    if type_type { return type_type }
+    type_type = scope::get_type(toolchain::runtime.scope, make_identifier(["Type"]))
+    return type_type
+}
+
+def do_create_type(tpe: *Type, state: *State) -> *compiler::Value {
+    let value = zero_allocate(compiler::Value)
+
+    value.values = zero_allocate(compiler::Value, 11)
+    value.values[1] = { kind = ValueKind::UNDEF, tpe = builtins::string_ } !compiler::Value
+    value.values[2] = { kind = ValueKind::INT, tpe = builtins::bool_, i = tpe.unsig !int64 } !compiler::Value
+    value.values[3] = { kind = ValueKind::UNDEF, tpe = builtins::size_t_ } !compiler::Value
+    value.values[4] = { kind = ValueKind::UNDEF, tpe = pointer(get_type_type()) } !compiler::Value
+    value.values[5] = { kind = ValueKind::INT, tpe = builtins::size_t_, i = tpe.size } !compiler::Value
+    value.values[6] = { kind = ValueKind::INT, tpe = builtins::size_t_, i = tpe.align } !compiler::Value
+    value.values[7] = { kind = ValueKind::UNDEF, tpe = array(scope::get_type(toolchain::runtime.scope, make_identifier(["Field"]))) } !compiler::Value
+    value.values[8] = { kind = ValueKind::UNDEF, tpe = array(scope::get_type(toolchain::runtime.scope, make_identifier(["Parameter"]))) } !compiler::Value
+    value.values[9] = { kind = ValueKind::UNDEF, tpe = array(get_type_type()) } !compiler::Value
+    value.values[10] = { kind = ValueKind::UNDEF, tpe = array(scope::get_type(toolchain::runtime.scope, make_identifier(["EnumValue"]))) } !compiler::Value
+
+    switch tpe.kind !int {
+        case TypeKind::STRUCT, TypeKind::UNION:
+            for var i in 0..tpe.fields.size {
+                let member = tpe.fields[i]
+                create_type(member.tpe, state)
+            }
+            value.values[0] = { kind = ValueKind::INT, tpe = builtins::int_, i = 3 if tpe.kind == TypeKind::STRUCT else 4 }
+        case TypeKind::BOOL:
+            value.values[0] = { kind = ValueKind::INT, tpe = builtins::int_, i = 0 } !compiler::Value
+        case TypeKind::WORD:
+            value.values[0] = { kind = ValueKind::INT, tpe = builtins::int_, i = 1 } !compiler::Value
+        case TypeKind::FLOAT:
+            value.values[0] = { kind = ValueKind::INT, tpe = builtins::int_, i = 2 } !compiler::Value
+        case TypeKind::ARRAY:
+            create_type(tpe.tpe, state)
+            value.values[0] = { kind = ValueKind::INT, tpe = builtins::int_, i = 5 } !compiler::Value
+        case TypeKind::STATIC_ARRAY:
+            create_type(tpe.tpe, state)
+            value.values[0] = { kind = ValueKind::INT, tpe = builtins::int_, i = 6 } !compiler::Value
+            value.values[3] = { kind = ValueKind::INT, tpe = builtins::size_t_, i = tpe.length} !compiler::Value
+        case TypeKind::POINTER:
+            create_type(tpe.tpe, state)
+            value.values[0] = { kind = ValueKind::INT, tpe = builtins::int_, i = 7 } !compiler::Value
+        case TypeKind::REFERENCE:
+            create_type(tpe.tpe, state)
+            value.values[0] = { kind = ValueKind::INT, tpe = builtins::int_, i = 8 } !compiler::Value
+        case TypeKind::FUNCTION:
+            for var i in 0..vector::length(tpe.parameter_t) {
+                let np = vector::get(tpe.parameter_t, i) !*NamedParameter
+                create_type(np.tpe, state)
+            }
+            for var i in 0..vector::length(tpe.return_t) {
+                create_type(vector::get(tpe.return_t, i) !*Type, state)
+            }
+            value.values[0] = { kind = ValueKind::INT, tpe = builtins::int_, i = 9 } !compiler::Value
+        case TypeKind::ENUM:
+            create_type(tpe.tpe, state)
+            value.values[0] = { kind = ValueKind::INT, tpe = builtins::int_, i = 10 } !compiler::Value
+        case:
+            error(tpe.kind, "\n")
+            assert(false)
+    }
+
+    value.kind = ValueKind::STRUCT
+    value.tpe = get_type_type()
+    return value
+}
+
+def create_type(tpe: *Type, state: *State) -> *compiler::Value {
+    if not tpe { return null }
+
+    let ident = make_identifier([debug::type_to_str(tpe, true)])
+    ident.loc.module = "type"
+
+    var svalue = scope::get(toolchain::types.scope, ident, false, false)
+    if not svalue {
+        scope::create_variable(toolchain::types.scope, ident, parser::ShareMarker::NONE, parser::VarDecl::CONST, get_type_type(), false, null, scope::Phase::DEFINED, null, null)
+        svalue = scope::create_variable(toolchain::types.scope, ident, parser::ShareMarker::NONE, parser::VarDecl::CONST, get_type_type(), do_create_type(tpe, state))
+
+        let global = allocate(compiler::Global)
+        @global = {
+            private = false,
+            name = svalue.assembly_name,
+            tpe = svalue.tpe,
+            value = svalue.value,
+            line = -1
+        }
+        map::put(toolchain::types.result.globals, global.name, global)
+        map::put(toolchain::types.imported, global.name, map::sentinel)
+    }
+    if not map::contains(state.module.result.globals, svalue.assembly_name) {
+        let global = allocate(compiler::Global)
+        @global = {
+            external = true,
+            name = svalue.assembly_name,
+            tpe = svalue.tpe,
+            line = -1
+        }
+        map::put(state.module.result.globals, global.name, global)
+        map::put(state.module.imported, global.name, map::sentinel)
+    }
+
+    let value = allocate(compiler::Value)
+    let addr = allocate(compiler::Value)
+    @addr = { kind = ValueKind::GLOBAL, tpe = pointer(get_type_type()), name = svalue.assembly_name }
+    @value = {
+        kind = compiler::ValueKind::GLOBAL,
+        tpe = get_type_type(),
+        addr = addr
+    } !compiler::Value
+
+    value.value_tpe = tpe
+
+    return value
+}
+
+def change_value_to_type(tpe: *Type, state: *State) -> *scope::Value {
+    let type_tpe = get_type_type()
+    if not map::contains(state.module.result.structures, type_type.type_name) {
+        map::put(state.module.result.structures, type_type.type_name, type_type)
+        let fields_tpe = scope::get_type(toolchain::runtime.scope, make_identifier(["Field"]))
+        map::put(state.module.result.structures, fields_tpe.type_name, fields_tpe)
+    }
+    let value = zero_allocate(scope::Value)
+    value.tpe = type_tpe
+    value.value = create_type(tpe, state)
+    return value
+}
+
 def walk_Identifier(node: *parser::Node, state: *State) {
     if node.value.identifier.args {
         node.value.identifier.types = vector::make()
@@ -879,10 +1017,14 @@ def walk_Identifier(node: *parser::Node, state: *State) {
         }
     }
 
-    var value = scope::get(state.scope, node)
+    var value = scope::get(state.scope, node) !*scope::Value
     if not value {
         errors::errorn(node, "Unknown identifier `", parser::identifier_to_str(node), "`")
         return
+    }
+
+    if value.tpe and value.tpe.kind == TypeKind::TYPE {
+        value = change_value_to_type(value.value.value_tpe, state)
     }
 
     (@node).svalue = value
@@ -1438,12 +1580,7 @@ def walk_TypeDecl(node: *parser::Node, state: *State) {
             tpe = copy(type_lookup(value, state))
             if not tpe { continue }
             (@tpe).name = parser::identifier_to_str(name)
-            if (@value).kind == parser::NodeKind::STRUCT_T or
-                (@value).kind == parser::NodeKind::UNION_T or
-                (@value).kind == parser::NodeKind::ENUM_T {
-                // Name anonymous struct or union
-                (@tpe).type_name = append_module((@tpe).name, (@node).loc.module)
-            }
+            (@tpe).type_name = append_module((@tpe).name, (@node).loc.module)
             tpe = scope::create_type(state.scope, name, share, tpe, scope::Phase::COMPILED, null, null)
         }
         (@name).tpe = tpe
@@ -2305,6 +2442,10 @@ export def typecheck(state: *State) {
         // compile standard library
         toolchain::typecheck_module(parser::make_identifier(["cstd"]))
         toolchain::typecheck_module(parser::make_identifier(["std"]))
+    }
+
+    if state.module.module == "main" {
+        toolchain::typecheck_module(parser::make_identifier(["preload"]))
     }
 
     for var i in 0..vector::length((@node).value.body) {
