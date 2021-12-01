@@ -143,6 +143,61 @@ def walk_Import(node: *parser::Node, state: *typechecking::State) {
     compiler::predeclare_functions(state.module)
 }
 
+export def walk_Def_with_type_argument(node: *parser::Node, parameter_t: *vector::Vector, state: *typechecking::State) {
+    node = parser::deep_copy_node(node)
+    let tpe = node.tpe
+
+    tpe.has_type_argument = false
+    let body = node.value.def_.body
+
+    let function = allocate(typechecking::Function)
+    @function = {
+        tpe = tpe,
+        locals = map::make(),
+        has_defer = false
+    }
+    typechecking::push_function(state, function)
+
+    state.scope = scope::enter_function_scope(state.scope)
+    node.inner_scope = state.scope
+
+    for var i in 0..vector::length(parameter_t) {
+        let np = vector::get(parameter_t, i) !*typechecking::NamedParameter
+        var left: *typechecking::NamedParameter = null
+        if length(np.name) > 0 {
+            for var j in 0..vector::length(tpe.parameter_t) {
+                let l = vector::get(tpe.parameter_t, j) !*typechecking::NamedParameter
+                if l.name == np.name {
+                    left = l
+                }
+            }
+        } else {
+            left = vector::get(tpe.parameter_t, i) !*typechecking::NamedParameter
+        }
+        assert(left != null)
+
+        if typechecking::equals(left.tpe, builtins::type_) {
+            let ident = parser::make_identifier([left.name])
+            if scope::create_type(state.scope, ident, parser::ShareMarker::NONE, np.tpe.tpe) {
+                left.value = scope::get(state.scope, ident).value
+            }
+        }
+    }
+
+    for var i in 0..vector::length(body) {
+        walk(node, vector::get(body, i) !*parser::Node, state)
+    }
+    state.scope = scope::exit_scope(state.scope)
+
+    node.value.def_.locals = function.locals
+    node.value.def_.has_defer = function.has_defer
+    typechecking::pop_function(state)
+
+    typechecking::walk(node.parent, node, state)
+    
+    vector::push(node.parent.body, node)
+}
+
 def walk_Def(node: *parser::Node, state: *typechecking::State) {
     let share = node.value.def_.share
     let name = node.value.def_.name
@@ -155,12 +210,13 @@ def walk_Def(node: *parser::Node, state: *typechecking::State) {
         node.value.def_.is_used = true
     }
 
+    var has_type_argument = false
     let parameter_t = vector::make()
     let return_t = vector::make()
     for var i in 0..vector::length(params) {
         let param = vector::get(params, i) !*parser::Node
         assert(param.kind == parser::NodeKind::PARAMETER)
-        
+
         let named = allocate(typechecking::NamedParameter)
         let name = param.value.param.name
         var value: *compiler::Value = null
@@ -186,7 +242,14 @@ def walk_Def(node: *parser::Node, state: *typechecking::State) {
                 value = gvaluep
             }
         }
-        let tpe = typechecking::type_lookup(param.value.param.tpe, state, true)
+        var tpe: *typechecking::Type = null
+        if param.value.param.kw == parser::VarDecl::TYPE {
+            tpe = builtins::type_
+            has_type_argument = true
+        } else {
+            tpe = typechecking::type_lookup(param.value.param.tpe, state, true)
+        }
+
         named.name = last_ident_to_str(name)
         named.tpe = tpe
         named.varargs = (@param).value.param.varargs
@@ -201,13 +264,14 @@ def walk_Def(node: *parser::Node, state: *typechecking::State) {
     }
 
     let tpe = typechecking::make_function_type_n(name, parameter_t, return_t, true, imported)
+    tpe.has_type_argument = has_type_argument
     if body {
         scope::create_function(state.scope, name, share, tpe, scope::Phase::DEFINED, node, copy_state(state))
     } else {
         scope::create_function(state.scope, name, share, tpe, scope::Phase::DECLARED, null, null)
     }
 
-    if body {
+    if body and not has_type_argument {
         let function = allocate(typechecking::Function)
         @function = {
             tpe = tpe,
@@ -496,6 +560,7 @@ def walk_Call(node: *parser::Node, state: *typechecking::State) {
 
         compile_function(func, state)
     }
+    
     for var i in 0..vector::length(node.value.func_call.args) {
         walk(node, vector::get(node.value.func_call.args, i) !*parser::Node, state)
     }
@@ -799,9 +864,9 @@ export def preprocess(state: *typechecking::State) {
 
     let body = vector::copy(node.value.body)
     for var i in 0..vector::length(body) {
-        walk(node, vector::get(body, i) !*parser::Node, state)
+        let n = vector::get(body, i) !*parser::Node
+        walk(node, n, state)
     }
-
     let end = util::millis()
     time_spent += end - start
 }

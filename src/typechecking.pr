@@ -67,6 +67,7 @@ export type Type = struct {
     length: size_t
     kw: parser::VarDecl
     // Type both used for array/pointer and enum
+    // This is also used for type arguments to specify the actual type
     tpe: *Type
     packed: bool
     // Fields for struct, array of StructMember
@@ -88,6 +89,7 @@ export type Type = struct {
     scope: *scope::Scope
     // For functions
     imported: bool
+    has_type_argument: bool
 }
 
 export type NamedParameter = struct {
@@ -335,6 +337,21 @@ export def copy(a: *Type) -> *Type {
     if not a { return null }
     var t = allocate(Type)
     @t = @a
+
+    if a.kind == TypeKind::FUNCTION {
+        t.return_t = vector::make()
+        for var i in 0..vector::length(a.return_t) {
+            vector::push(t.return_t, copy(vector::get(a.return_t, i) !*Type))
+        }
+        t.parameter_t = vector::make()
+        for var i in 0..vector::length(a.parameter_t) {
+            let np = vector::get(a.parameter_t, i) ! *NamedParameter
+            let np2 = allocate(NamedParameter)
+            @np2 = @np
+            vector::push(t.parameter_t, np2)
+        }
+    }
+
     return t
 }
 
@@ -348,7 +365,6 @@ export def equals(a: *Type, b: *Type) -> bool {
         return a.type_name == b.type_name
     }
 
-    if a.kind == TypeKind::TYPE and b == get_type_type() { return true }
     if (@a).kind != (@b).kind { return false }
 
     let kind = (@a).kind
@@ -462,6 +478,10 @@ def convert_type_score(a: *Type, b: *Type) -> int {
     if equals(a, b) {
         return 0
     }
+    
+    if a.kind == TypeKind::TYPE and equals(b, get_type_type()) { 
+        return 1 
+    }
     if ((@a).kind == TypeKind::POINTER or (@a).kind == TypeKind::REFERENCE) and (@b).kind == TypeKind::NULL {
         return 0
     }
@@ -547,7 +567,22 @@ export def overload_score(a: *Type, param_b: *vector::Vector, positional: bool) 
 
             lvalue = array(left.tpe)
         }
-        let score = convert_type_score(lvalue, right.tpe)
+        var score = -1
+        if lvalue and lvalue.kind == TypeKind::TYPE {
+            if equals(right.tpe, get_type_type()) {
+                if left.value {
+                    if equals(left.value.value_tpe, right.tpe.tpe) {
+                        score = 0
+                    }
+                } else {
+                    score = 1
+                }
+            } else if right.tpe.kind == TypeKind::TYPE and left.value and right.value and equals(left.value.value_tpe, right.value.value_tpe) {
+                score = 0
+            }
+        } else {
+            score = convert_type_score(lvalue, right.tpe)
+        }
         if score < 0 { return -1 }
         sum += score
     }
@@ -564,8 +599,17 @@ export def mangle_function_name(name: string, parameter_t: *vector::Vector) -> s
         let np = vector::get(parameter_t, i) !*NamedParameter
         if np.varargs {
             buffer::append_char(*buf, '[')
-        } 
-        buffer::append_str(*buf, debug::type_to_str(np.tpe, true))
+        }
+        if np.tpe.kind == TypeKind::TYPE {
+            buffer::append_str(*buf, "type")
+            if np.value {
+                buffer::append_char(*buf, '<')
+                buffer::append_str(*buf, debug::type_to_str(np.value.value_tpe, true))
+                buffer::append_char(*buf, '>')
+            }
+        } else {
+            buffer::append_str(*buf, debug::type_to_str(np.tpe, true))
+        }
         if np.varargs {
             buffer::append_char(*buf, ']')
         }
@@ -823,7 +867,7 @@ export def common_type(a: *Type, b: *Type) -> *Type {
 def walk_PtrT(node: *parser::Node, state: *State) {
     let expr = (@node).value.t_parr.tpe
     walk(node, expr, state)
-    assert(expr.tpe == get_type_type())
+    assert(equals(expr.tpe, get_type_type()))
 
     let tpe = expr.svalue.value.value_tpe
     node.svalue = change_value_to_type(pointer(tpe), state)
@@ -870,9 +914,11 @@ def walk_Range(node: *parser::Node, state: *State) {
     (@node).tpe = tpe
 }
 
+// TODO Cache all the types
 var type_type: *Type = null
-def get_type_type -> *Type {
+export def get_type_type -> *Type {
     if type_type { return type_type }
+    if not toolchain::runtime { return null }
     type_type = scope::get_type(toolchain::runtime.scope, make_identifier(["Type"]))
     return type_type
 }
@@ -989,7 +1035,8 @@ def create_type(tpe: *Type, state: *State) -> *compiler::Value {
 }
 
 def change_value_to_type(tpe: *Type, state: *State) -> *scope::Value {
-    let type_tpe = get_type_type()
+    let type_tpe = copy(get_type_type())
+    type_tpe.tpe = tpe 
     if not map::contains(state.module.result.structures, type_type.type_name) {
         map::put(state.module.result.structures, type_type.type_name, type_type)
         let fields_tpe = scope::get_type(toolchain::runtime.scope, make_identifier(["Field"]))
@@ -1480,8 +1527,6 @@ def walk_Def(node: *parser::Node, state: *State) {
     let outer_scope = node.scope
     let inner_scope = node.inner_scope
     let imported = (share !int & parser::ShareMarker::IMPORT !int) !bool
-    
-    node.value.def_.is_used = true
 
     if not name or not params or not returns { return }
 
@@ -1492,12 +1537,18 @@ def walk_Def(node: *parser::Node, state: *State) {
     }
 
     var tpe = node.tpe
-    if not tpe { return }
+    // We basically don't compile the original version of the function if it has a type argument
+    if not tpe or tpe.has_type_argument { return }
+
+    // TODO not is_used also signals that we have a type argument
+    node.value.def_.is_used = true
 
     for var i in 0..vector::length(params) {
         let param = vector::get(params, i) !*parser::Node
         let named = vector::get(tpe.parameter_t, i) !*NamedParameter
-        named.tpe = type_lookup(param.value.param.tpe, state)
+        if named.tpe.kind != TypeKind::TYPE {
+            named.tpe = type_lookup(param.value.param.tpe, state)
+        }
     }
     let return_t = vector::make()
     for var i in 0..vector::length(returns) {
@@ -1513,7 +1564,8 @@ def walk_Def(node: *parser::Node, state: *State) {
         phase = scope::Phase::COMPILED
         for var i in 0..vector::length(tpe.parameter_t) {
             let np = vector::get(tpe.parameter_t, i) !*NamedParameter 
-            var tpe = np.tpe 
+            var tpe = np.tpe
+            if tpe.kind == TypeKind::TYPE { continue }
             if np.varargs {
                 if np.tpe {
                     scope::create_variable(inner_scope, np.node, parser::ShareMarker::NONE, parser::VarDecl::VAR, array(np.tpe), null)
@@ -1652,10 +1704,18 @@ def walk_Call(node: *parser::Node, dry_run: bool, state: *State) -> bool {
         let n = vector::get((@node).value.func_call.args, i) !*parser::Node
         walk(node, n, state)
         let np = allocate(NamedParameter)
-        (@np).name = ""
-        (@np).tpe = (@n).tpe
-        (@np).varargs = false
-        (@np).node = n
+        @np = {
+            name = "",
+            tpe = (@n).tpe,
+            varargs = false,
+            node = n
+        } !NamedParameter
+        
+        if equals(np.tpe, get_type_type()) {
+            np.value = allocate(compiler::Value)
+            @np.value = { kind = compiler::ValueKind::TYPE, tpe = builtins::type_, value_tpe = np.tpe.tpe } !compiler::Value
+        }
+
         vector::push(arguments, np)
     }
     let parameter_map = map::make()
@@ -1671,10 +1731,18 @@ def walk_Call(node: *parser::Node, dry_run: bool, state: *State) -> bool {
         } else {
             map::put(parameter_map, name, map::sentinel)
             let np = allocate(NamedParameter)
-            (@np).name = name
-            (@np).tpe = (@(@n).value.named_arg.value).tpe
-            (@np).varargs = false
-            (@np).node = (@n).value.named_arg.name
+            @np = {
+                name = name,
+                tpe = (@(@n).value.named_arg.value).tpe,
+                varargs = false,
+                node = (@n).value.named_arg.name
+            } !NamedParameter
+
+            if equals(np.tpe, get_type_type()) {
+                np.value = allocate(compiler::Value)
+                @np.value = { kind = compiler::ValueKind::TYPE, tpe = builtins::type_, value_tpe = np.tpe.tpe } !compiler::Value
+            }
+
             vector::push(arguments, np)
         }
     }
@@ -1711,7 +1779,7 @@ def walk_Call(node: *parser::Node, dry_run: bool, state: *State) -> bool {
                 return false
             }
 
-            tpe = (@function).tpe
+            tpe = copy((@function).tpe)
         } else {
             errors::errorn(left, "Can't call expression")
             return false
@@ -1725,8 +1793,10 @@ def walk_Call(node: *parser::Node, dry_run: bool, state: *State) -> bool {
     
     let parameter_t = (@tpe).parameter_t
 
-    // Implicit conversions
-    for var i in 0..vector::length((@node).value.func_call.args) {
+    var i = 0
+    // Implicit conversions, this also removes type parameters from the argument list
+    loop {
+        if i >= vector::length((@node).value.func_call.args) { break }
         let n = vector::get((@node).value.func_call.args, i) !*parser::Node
         var rhstpe: *Type
         if i < vector::length(parameter_t) {
@@ -1736,10 +1806,17 @@ def walk_Call(node: *parser::Node, dry_run: bool, state: *State) -> bool {
             assert((@np).varargs)
             rhstpe = (@np).tpe
         }
-        
-        implicit_conversion(n, rhstpe)
+
+        if rhstpe and rhstpe.kind == TypeKind::TYPE and not tpe.macro {
+            vector::remove((@node).value.func_call.args, i)
+        } else {
+            i += 1
+            implicit_conversion(n, rhstpe)
+        }
     }
-    for var i in 0..vector::length((@node).value.func_call.kwargs) {
+    i = 0
+    loop {
+        if i >= vector::length((@node).value.func_call.kwargs) { break }
         let n = vector::get((@node).value.func_call.kwargs, i) !*parser::Node
         let name = last_ident_to_str((@n).value.named_arg.name)
         let arg = (@n).value.named_arg.value
@@ -1752,8 +1829,28 @@ def walk_Call(node: *parser::Node, dry_run: bool, state: *State) -> bool {
                 break
             }
         }
-        implicit_conversion(arg, rhstpe)
+
+        if rhstpe and rhstpe.kind == TypeKind::TYPE and not tpe.macro {
+            vector::remove((@node).value.func_call.kwargs, i)
+        } else {
+            i += 1
+            implicit_conversion(arg, rhstpe)
+        }
     }
+
+    if not tpe.macro {
+        i = 0
+        loop {
+            if i >= vector::length(parameter_t) { break }
+            let np = vector::get(parameter_t, i) !*NamedParameter
+            if np.tpe and np.tpe.kind == TypeKind::TYPE {
+                vector::remove(parameter_t, i)
+            } else {
+                i += 1
+            }
+        }
+    }
+
     var return_t = (@tpe).return_t
     if (@tpe).proto {
         return_t = (@tpe).proto((@node).value.func_call.args, (@node).value.func_call.kwargs, state)
