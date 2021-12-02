@@ -91,7 +91,7 @@ export type Type = struct {
     scope: *scope::Scope
     // For functions
     imported: bool
-    has_type_argument: bool
+    is_polymorph: bool
 }
 
 export type NamedParameter = struct {
@@ -350,6 +350,7 @@ export def copy(a: *Type) -> *Type {
             let np = vector::get(a.parameter_t, i) ! *NamedParameter
             let np2 = allocate(NamedParameter)
             @np2 = @np
+            np2.tpe = copy(np.tpe)
             vector::push(t.parameter_t, np2)
         }
     }
@@ -523,29 +524,47 @@ def convert_type_score(a: *Type, b: *Type) -> int {
     return -1
 }
 
-def find_type_defs(left: *Type, right: *Type) -> *map::Map {
+export def is_polymorph(tpe: *Type) -> bool {
+    if not tpe { return false }
+    if tpe.kind == TypeKind::TYPE_DEF or tpe.kind == TypeKind::TYPE { return true }
+    else if tpe.kind == TypeKind::POINTER or tpe.kind == TypeKind::REFERENCE or
+        tpe.kind == TypeKind::STATIC_ARRAY or tpe.kind == TypeKind::ARRAY {
+        return is_polymorph(tpe.tpe)
+    } else if tpe.kind == TypeKind::FUNCTION or tpe.kind == TypeKind::TUPLE {
+        for var i in 0..vector::length(tpe.parameter_t) {
+            let np = vector::get(tpe.parameter_t, i) !*NamedParameter
+            if is_polymorph(np.tpe) {
+                return true
+            }
+        }
+    }
+    return false
+}
+
+def find_type_defs(left: *Type, right: *Type, replace: bool) -> *map::Map {
     let types = map::make()
-    find_type_defs(left, right, types, false)
+    find_type_defs(left, right, types, replace, false)
     return types
 }
 
-def find_type_defs(left: *Type, right: *Type, types: *map::Map, is_type: bool) {
+def find_type_defs(left: *Type, right: *Type, types: *map::Map, replace: bool, is_type: bool) {
     if not left or not right { return }
 
     if left.kind == TypeKind::TYPE_DEF {
-        find_type_defs(left.tpe, right, types, true)
+        find_type_defs(left.tpe, right, types, replace, true)
+        if replace { @left = @right }
     } else if left.kind == TypeKind::POINTER or left.kind == TypeKind::REFERENCE or 
         left.kind == TypeKind::STATIC_ARRAY or left.kind == TypeKind::ARRAY {
-        find_type_defs(left.tpe, right.tpe, types, is_type)
+        find_type_defs(left.tpe, right.tpe, types, replace, is_type)
     } else if left.kind == TypeKind::FUNCTION or left.kind == TypeKind::TUPLE {
         for var i in 0..vector::length(left.parameter_t) {
             let l = vector::get(left.parameter_t, i) !*NamedParameter
             let r = vector::get(right.parameter_t, i) !*NamedParameter
-            find_type_defs(l.tpe, r.tpe, types, is_type)
+            find_type_defs(l.tpe, r.tpe, types, replace, is_type)
         }
     }
     if is_type {
-        map::put(types, left.type_name, right)
+        map::put(types, left.name, right)
     }
 }
 
@@ -560,18 +579,16 @@ def replace_parameter(tpe: *Type, types: *map::Map) -> *Type {
             let np = vector::get(tpe.parameter_t, i) !*NamedParameter
             np.tpe = replace_parameter(np.tpe, types)
         }
-    } else if length(tpe.type_name) > 0 {
-        let ntpe = map::get(types, tpe.type_name) !*Type
+    } else if length(tpe.name) > 0 {
+        let ntpe = map::get(types, tpe.name) !*Type
         if ntpe { return ntpe }
     }
     return tpe
 }
 
-export def replace_type_defs(a: *Type, param_b: *vector::Vector) {
-
+export def replace_type_defs(a: *Type, param_b: *vector::Vector, replace: bool, types_map: *map::Map) {
     let param_a = a.parameter_t
 
-    // Sort out TYPE_DEF
     for var i in 0..vector::length(param_a) {
         let left = vector::get(param_a, i) !*NamedParameter
         
@@ -593,12 +610,24 @@ export def replace_type_defs(a: *Type, param_b: *vector::Vector) {
         if not rtpe { return }
         if convert_type_score(ltpe, rtpe) < 0 { return }
 
-        let types = find_type_defs(ltpe, rtpe)
+        let types = find_type_defs(ltpe, rtpe, replace)
 
         for var j in i..vector::length(param_a) {
             let np = vector::get(param_a, j) !*NamedParameter
             if np.tpe {
                 np.tpe = replace_parameter(np.tpe, types)
+            }
+        }
+        for var j in i..vector::length(a.return_t) {
+            let rtpe = vector::get(a.return_t, j) !*Type
+            vector::set(a.return_t, j, replace_parameter(rtpe, types))
+        }
+
+        if types_map {
+            let keys = map::keys(types)
+            for var i in 0..keys.size {
+                let key = keys[i]
+                map::put(types_map, key, map::get(types, key))
             }
         }
 
@@ -615,7 +644,7 @@ export def overload_score(a: *Type, param_b: *vector::Vector, positional: bool) 
     // We need to copy because looking up the typed arguments modifies the function type
     a = copy(a)
 
-    let param_a = (@a).parameter_t
+    var param_a = (@a).parameter_t
     if vector::length(param_a) > vector::length(param_b) {
         let not_default_param = (vector::get(param_a, vector::length(param_b)) !*NamedParameter).value == null
         if vector::length(param_a) == vector::length(param_b) + 1 {
@@ -627,7 +656,7 @@ export def overload_score(a: *Type, param_b: *vector::Vector, positional: bool) 
         }
     }
 
-    replace_type_defs(a, param_b)
+    replace_type_defs(a, param_b, false, null)
 
     var sum = 0
     for var i in 0..vector::length(param_b) {
@@ -1617,7 +1646,7 @@ def walk_Import(node: *parser::Node, state: *State) {
     }
 }
 
-def walk_Def(node: *parser::Node, state: *State) {
+export def walk_Def(node: *parser::Node, state: *State, redefine_type: bool) {
     let share = (@node).value.def_.share
     let body = (@node).value.def_.body
     let name = (@node).value.def_.name
@@ -1638,29 +1667,28 @@ def walk_Def(node: *parser::Node, state: *State) {
 
     var tpe = node.tpe
     // We basically don't compile the original version of the function if it has a type argument
-    if not tpe or tpe.has_type_argument { return }
+    if not tpe or tpe.is_polymorph { return }
 
     // TODO not is_used also signals that we have a type argument
     node.value.def_.is_used = true
 
-    let scpe = state.scope
-    state.scope = inner_scope
-    for var i in 0..vector::length(params) {
-        let param = vector::get(params, i) !*parser::Node
-        let named = vector::get(tpe.parameter_t, i) !*NamedParameter
-        if named.tpe.kind != TypeKind::TYPE {
+    if redefine_type {
+        let scpe = state.scope
+        state.scope = inner_scope
+        for var i in 0..vector::length(params) {
+            let param = vector::get(params, i) !*parser::Node
+            let named = vector::get(tpe.parameter_t, i) !*NamedParameter
             named.tpe = type_lookup(param.value.param.tpe, state)
         }
+        tpe.return_t = vector::make()
+        for var i in 0..vector::length(returns) {
+            let n = vector::get(returns, i) !*parser::Node
+            vector::push(tpe.return_t, type_lookup(n, state))
+        }
+        state.scope = scpe
     }
-    let return_t = vector::make()
-    for var i in 0..vector::length(returns) {
-        let n = vector::get(returns, i) !*parser::Node
-        let tpe = type_lookup(n, state)
-        vector::push(return_t, tpe)
-    }
-    state.scope = scpe
 
-    tpe = make_function_type_n(name, tpe.parameter_t, return_t, extern, imported)
+    tpe = make_function_type_n(name, tpe.parameter_t, tpe.return_t, extern, imported)
 
     var phase = scope::Phase::DECLARED
     if body {
@@ -1706,6 +1734,10 @@ def walk_Def(node: *parser::Node, state: *State) {
     }
 
     node.tpe = tpe
+}
+
+def walk_Def(node: *parser::Node, state: *State) {
+    walk_Def(node, state, true)
 }
 
 def walk_TypeDecl(node: *parser::Node, state: *State) {
