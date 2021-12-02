@@ -37,6 +37,8 @@ export type TypeKind = enum {
     // AUTO_CAST // TODO Actually implement this
     // Forward declaration
     STUB
+    // Placeholder for arguments with polymorphic type parameter in function definition
+    TYPE_DEF
     // Null
     NULL
 }
@@ -479,6 +481,10 @@ def convert_type_score(a: *Type, b: *Type) -> int {
         return 0
     }
     
+    // We need to check if they are actually compatible elsewhere
+    if a.kind == TypeKind::TYPE_DEF {
+        return 1
+    }
     if a.kind == TypeKind::TYPE and equals(b, get_type_type()) { 
         return 1 
     }
@@ -517,11 +523,97 @@ def convert_type_score(a: *Type, b: *Type) -> int {
     return -1
 }
 
+def find_type_defs(left: *Type, right: *Type) -> *map::Map {
+    let types = map::make()
+    find_type_defs(left, right, types, false)
+    return types
+}
+
+def find_type_defs(left: *Type, right: *Type, types: *map::Map, is_type: bool) {
+    if not left or not right { return }
+
+    if left.kind == TypeKind::TYPE_DEF {
+        find_type_defs(left.tpe, right, types, true)
+    } else if left.kind == TypeKind::POINTER or left.kind == TypeKind::REFERENCE or 
+        left.kind == TypeKind::STATIC_ARRAY or left.kind == TypeKind::ARRAY {
+        find_type_defs(left.tpe, right.tpe, types, is_type)
+    } else if left.kind == TypeKind::FUNCTION or left.kind == TypeKind::TUPLE {
+        for var i in 0..vector::length(left.parameter_t) {
+            let l = vector::get(left.parameter_t, i) !*NamedParameter
+            let r = vector::get(right.parameter_t, i) !*NamedParameter
+            find_type_defs(l.tpe, r.tpe, types, is_type)
+        }
+    }
+    if is_type {
+        map::put(types, left.type_name, right)
+    }
+}
+
+def replace_parameter(tpe: *Type, types: *map::Map) -> *Type {
+    if tpe.kind == TypeKind::POINTER or tpe.kind == TypeKind::REFERENCE or 
+        tpe.kind == TypeKind::STATIC_ARRAY or tpe.kind == TypeKind::ARRAY {
+        if tpe.tpe {
+            tpe.tpe = replace_parameter(tpe.tpe, types)
+        }
+    } else if tpe.kind == TypeKind::FUNCTION or tpe.kind == TypeKind::TUPLE {
+        for var i in 0..vector::length(tpe.parameter_t) {
+            let np = vector::get(tpe.parameter_t, i) !*NamedParameter
+            np.tpe = replace_parameter(np.tpe, types)
+        }
+    } else if length(tpe.type_name) > 0 {
+        let ntpe = map::get(types, tpe.type_name) !*Type
+        if ntpe { return ntpe }
+    }
+    return tpe
+}
+
+export def replace_type_defs(a: *Type, param_b: *vector::Vector) {
+
+    let param_a = a.parameter_t
+
+    // Sort out TYPE_DEF
+    for var i in 0..vector::length(param_a) {
+        let left = vector::get(param_a, i) !*NamedParameter
+        
+        let ltpe = left.tpe
+        var rtpe: *Type = null
+        for var j in 0..vector::length(param_b) {
+            let r = vector::get(param_b, j) !*NamedParameter
+            if length(r.name) > 0 and r.name == left.name {
+                rtpe = r.tpe
+                break
+            }
+        }
+        if not rtpe and vector::length(param_a) <= vector::length(param_b) {
+            rtpe = (vector::get(param_b, i) !*NamedParameter).tpe
+        }
+        if not rtpe and left.value {
+            rtpe = left.value.tpe
+        }
+        if not rtpe { return }
+        if convert_type_score(ltpe, rtpe) < 0 { return }
+
+        let types = find_type_defs(ltpe, rtpe)
+
+        for var j in i..vector::length(param_a) {
+            let np = vector::get(param_a, j) !*NamedParameter
+            if np.tpe {
+                np.tpe = replace_parameter(np.tpe, types)
+            }
+        }
+
+        free(types.entries.value)
+        free(types)
+    }
+}
+
 // Calculates a score for overload resultion, the result is 0 for an exact match
 // and a positive integer if the argument types need to be converted.
 // -1 is returned if the argument types don't match.
 export def overload_score(a: *Type, param_b: *vector::Vector, positional: bool) -> int {
     assert(is_function(a))
+    // We need to copy because looking up the typed arguments modifies the function type
+    a = copy(a)
 
     let param_a = (@a).parameter_t
     if vector::length(param_a) > vector::length(param_b) {
@@ -534,6 +626,8 @@ export def overload_score(a: *Type, param_b: *vector::Vector, positional: bool) 
             return -1
         }
     }
+
+    replace_type_defs(a, param_b)
 
     var sum = 0
     for var i in 0..vector::length(param_b) {
@@ -821,6 +915,12 @@ export def type_lookup(node: *parser::Node, state: *State, lookup_default: bool)
             vector::push((@tpe).return_t, type_lookup(arg, state, lookup_default))
         }
         return pointer(tpe)
+    } else if node.kind == parser::NodeKind::TYPE_T {
+        let wrapped = type_lookup(node.value.expr, state, lookup_default)
+        let tpe = make_anonymous_type(TypeKind::TYPE_DEF)
+        tpe.line = node.loc.line
+        tpe.tpe = wrapped
+        return tpe
     }
 
     return null
@@ -1543,6 +1643,8 @@ def walk_Def(node: *parser::Node, state: *State) {
     // TODO not is_used also signals that we have a type argument
     node.value.def_.is_used = true
 
+    let scpe = state.scope
+    state.scope = inner_scope
     for var i in 0..vector::length(params) {
         let param = vector::get(params, i) !*parser::Node
         let named = vector::get(tpe.parameter_t, i) !*NamedParameter
@@ -1556,6 +1658,7 @@ def walk_Def(node: *parser::Node, state: *State) {
         let tpe = type_lookup(n, state)
         vector::push(return_t, tpe)
     }
+    state.scope = scpe
 
     tpe = make_function_type_n(name, tpe.parameter_t, return_t, extern, imported)
 
