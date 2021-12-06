@@ -3354,7 +3354,119 @@ def walk_For(node: *parser::Node, state: *State) {
     pop_scope(state)
 }
 
-export def walk_VarDecl(node: *parser::Node, state: *State, set_constant: bool) {
+def push_ref_init(value: Value, state: *State) {
+    import_structures(typechecking::get_type_type(), state.module)
+    map::put(state.module.imported, "malloc", map::sentinel)
+    let ref_tpe = value.tpe.tpe.tpe
+
+    let ident = make_identifier([debug::type_to_str(ref_tpe, true)])
+    ident.loc.module = "type"
+    var svalue = scope::get(toolchain::types.scope, ident, false, false)
+   
+    if not map::contains(state.module.result.globals, svalue.assembly_name) {
+        let global = allocate(Global)
+        @global = {
+            external = true,
+            name = svalue.assembly_name,
+            tpe = svalue.tpe,
+            line = -1
+        }
+        map::put(state.module.result.globals, global.name, global)
+        map::put(state.module.imported, global.name, map::sentinel)
+    }
+
+    let args = allocate(Value, 1)
+    args[0] = make_int_value(builtins::int64_.size !int)
+    args[0].tpe = builtins::int64_
+    let ret_call = make_local_value(typechecking::pointer(builtins::int8_), null, state)
+    let call = make_insn(InsnKind::CALL)
+    call.value.call = {
+        name = { kind = ValueKind::GLOBAL, name = "malloc" } !Value,
+        ret = ret_call,
+        args = args
+    } !InsnCall
+    push_insn(call, state)
+
+    let bitcast_ret = make_local_value(typechecking::pointer(builtins::int64_), null, state)
+    let bitcast = make_insn(InsnKind::BITCAST)
+    bitcast.value.convert = {
+        ret = bitcast_ret,
+        value = ret_call
+    } !InsnConvert
+    push_insn(bitcast, state)
+
+    let store1 = make_insn(InsnKind::STORE)
+    store1.value.store = {
+        value = { kind = ValueKind::INT, tpe = builtins::int64_, i = 1 } !Value,
+        loc = bitcast_ret
+    } !InsnStore
+    push_insn(store1, state)
+
+    let index1 = allocate(Value, 2)
+    index1[0] = make_int_value(0)
+    index1[1] = make_int_value(0)
+
+    let ret_gep1 = make_local_value(typechecking::pointer(typechecking::pointer(builtins::int64_)), null, state)
+    let gep1 = make_insn(InsnKind::GETELEMENTPTR)
+    gep1.value.gep = {
+        ret = ret_gep1,
+        tpe = value.tpe.tpe,
+        value = value,
+        index = index1
+    } !InsnGetElementPtr
+    push_insn(gep1, state)
+
+    let store2 = make_insn(InsnKind::STORE)
+    store2.value.store = {
+        value = bitcast_ret,
+        loc = ret_gep1
+    } !InsnStore
+    push_insn(store2, state)
+
+    let index2 = allocate(Value, 2)
+    index2[0] = make_int_value(0)
+    index2[1] = make_int_value(1)
+
+    let ret_gep2 = make_local_value(typechecking::pointer(typechecking::pointer(ref_tpe)), null, state)
+    let gep2 = make_insn(InsnKind::GETELEMENTPTR)
+    gep2.value.gep = {
+        ret = ret_gep2,
+        tpe = value.tpe.tpe,
+        value = value,
+        index = index2
+    }
+    push_insn(gep2, state)
+
+    let store3 = make_insn(InsnKind::STORE)
+    store3.value.store = {
+        value = { kind = ValueKind::NULL, tpe = typechecking::pointer(ref_tpe) } !Value,
+        loc = ret_gep2
+    }
+    push_insn(store3, state)
+
+    let index3 = allocate(Value, 2)
+    index3[0] = make_int_value(0)
+    index3[1] = make_int_value(2)
+
+    let ret_gep3 = make_local_value(typechecking::pointer(typechecking::pointer(typechecking::get_type_type())), null, state)
+    let gep3 = make_insn(InsnKind::GETELEMENTPTR)
+    gep3.value.gep = {
+        ret = ret_gep3,
+        tpe = value.tpe.tpe,
+        value = value,
+        index = index3
+    }
+    push_insn(gep3, state)
+
+    let store4 = make_insn(InsnKind::STORE)
+    store4.value.store = {
+        value = { kind = ValueKind::GLOBAL, tpe = typechecking::pointer(typechecking::get_type_type()), name = svalue.assembly_name } !Value,
+        loc = ret_gep3
+    }
+    push_insn(store4, state)
+}
+
+export def walk_VarDecl(node: *parser::Node, state: *State, set_constant: bool = false) {
     let left = node.value.var_decl.left
     let right = node.value.var_decl.right
     let kw = node.value.var_decl.kw
@@ -3375,24 +3487,26 @@ export def walk_VarDecl(node: *parser::Node, state: *State, set_constant: bool) 
 
             let value = v.svalue
             if not value { continue }
-            if value.name != "_" {
-                let name = (@value).assembly_name
+            if value.name == "_" { continue }
 
-                let ret = {
-                    kind = ValueKind::LOCAL,
-                    name = name,
-                    tpe = tpe
-                } !Value
+            let ret = {
+                kind = ValueKind::LOCAL,
+                name = value.assembly_name,
+                tpe = tpe
+            } !Value
 
-                let insn = make_insn_dbg(InsnKind::ALLOCA, loc)
-                (@insn).value.alloca = {
-                    ret = ret
-                } !InsnAlloca
-                push_alloca(insn, state)
+            let insn = make_insn_dbg(InsnKind::ALLOCA, loc)
+            (@insn).value.alloca = {
+                ret = ret
+            } !InsnAlloca
+            push_alloca(insn, state)
 
-                ret.tpe = typechecking::pointer(tpe)
-                push_declare(v, ret, (@value).name, state)
+            ret.tpe = typechecking::pointer(tpe)
+            if tpe.kind == typechecking::TypeKind::REFERENCE {
+                push_ref_init(ret, state)
             }
+
+            push_declare(v, ret, (@value).name, state)
 
             vector::push(assign_left, v)
         } else {
@@ -3414,10 +3528,6 @@ export def walk_VarDecl(node: *parser::Node, state: *State, set_constant: bool) 
         } !parser::NodeAssign
         walk_Assign(assign, state)
     }
-}
-
-def walk_VarDecl(node: *parser::Node, state: *State) {
-    walk_VarDecl(node, state, false)
 }
 
 def walk_Defer(node: *parser::Node, state: *State) {
@@ -4178,7 +4288,7 @@ def defer_unroll(node: *parser::Node, state: *State) {
         name = load_fun_ret,
         ret = NO_VALUE,
         args = args
-    }
+    } !InsnCall
     push_insn(call, state)
 
     let store_env = make_insn(InsnKind::STORE)
@@ -4545,6 +4655,10 @@ export def walk_top_VarDecl(node: *parser::Node, state: *State, set_constant: bo
                 tpe = (@v).tpe,
                 line = (@v).loc.line
             } !Global
+
+            if v.tpe.kind == typechecking::TypeKind::REFERENCE {
+                push_ref_init({ kind = ValueKind::GLOBAL, name = name, tpe = typechecking::pointer(v.tpe) } !Value, state)
+            }
             
             map::put(state.module.result.globals, (@global).name, global)
             vector::push(left, (@n).value.id_decl.value)
@@ -4903,6 +5017,7 @@ export def compile(state: *State) {
         }
     }
 
+    state.current_block = state.module.code
     for var i in 0..vector::length((@node).value.body) {
         let n = vector::get((@node).value.body, i) !*parser::Node
         switch (@n).kind !int {
