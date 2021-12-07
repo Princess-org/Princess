@@ -912,7 +912,113 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
     }
 
     var kind: InsnKind
-    if (@tpe).kind == typechecking::TypeKind::ARRAY {
+    if typechecking::is_ref(tpe) and (typechecking::equals(tpe.tpe, value.tpe) or value.tpe.kind == typechecking::TypeKind::NULL) {
+        var is_null = false
+        if value.tpe.kind == typechecking::TypeKind::NULL { 
+            value.tpe = tpe.tpe 
+            is_null = true
+        }
+
+        map::put(state.module.imported, "malloc", map::sentinel)
+        let svalue = import_type(value.tpe, state)
+
+        let args1 = allocate(Value, 1)
+        args1[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = builtins::int64_.size } !Value
+        let call1_ret = make_local_value(typechecking::pointer(builtins::int8_), null, state)
+        let call1 = make_insn_dbg(InsnKind::CALL, loc)
+        call1.value.call = {
+            name = {kind = ValueKind::GLOBAL, name = "malloc" } !Value,
+            ret = call1_ret,
+            args = args1
+        } !InsnCall
+        push_insn(call1, state)
+
+        let refcount = make_local_value(typechecking::pointer(builtins::int64_), null, state)
+        let bitcast1 = make_insn_dbg(InsnKind::BITCAST, loc)
+        bitcast1.value.convert = {
+            ret = refcount,
+            value = call1_ret
+        } !InsnConvert
+        push_insn(bitcast1, state)
+
+        let store1 = make_insn_dbg(InsnKind::STORE, loc)
+        store1.value.store = {
+            loc = refcount,
+            value = { kind = ValueKind::INT, tpe = builtins::int64_, i = 1 } !Value
+        } !InsnStore
+        push_insn(store1, state)
+
+        let start = { kind = ValueKind::UNDEF, tpe = tpe } !Value
+
+        let index1 = allocate(int, 1)
+        index1[0] = 0
+        let ret_insert1 = make_local_value(tpe, null, state)
+        let insert1 = make_insn_dbg(InsnKind::INSERTVALUE, loc)
+        insert1.value.insert_value = {
+            ret = ret_insert1,
+            value = start,
+            element = refcount,
+            index = index1
+        } !InsnInsertValue
+        push_insn(insert1, state)
+
+        let args2 = allocate(Value, 1)
+        args2[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = value.tpe.size } !Value
+        let call2_ret = make_local_value(typechecking::pointer(builtins::int8_), null, state)
+        let call2 = make_insn_dbg(InsnKind::CALL, loc)
+        call2.value.call = {
+            name = {kind = ValueKind::GLOBAL, name = "malloc" } !Value,
+            ret = call2_ret,
+            args = args1
+        } !InsnCall
+        push_insn(call2, state)
+
+        var heapval: Value
+        if not is_null {
+            heapval = make_local_value(typechecking::pointer(value.tpe), null, state)
+            let bitcast2 = make_insn_dbg(InsnKind::BITCAST, loc)
+            bitcast2.value.convert = {
+                ret = heapval,
+                value = call2_ret
+            } !InsnConvert
+            push_insn(bitcast2, state)
+
+            let store2 = make_insn_dbg(InsnKind::STORE, loc)
+            store2.value.store = {
+                loc = heapval,
+                value = value
+            } !InsnStore
+            push_insn(store2, state)
+        } else {
+            heapval = { kind = ValueKind::NULL, tpe = typechecking::pointer(value.tpe) } !Value
+        }
+        
+        let index2 = allocate(int, 1)
+        index2[0] = 1
+        let ret_insert2 = make_local_value(tpe, null, state)
+        let insert2 = make_insn_dbg(InsnKind::INSERTVALUE, loc)
+        insert2.value.insert_value = {
+            ret = ret_insert2,
+            value = ret_insert1,
+            element = heapval,
+            index = index2
+        }
+        push_insn(insert2, state)
+
+        let index3 = allocate(int, 1)
+        index3[0] = 2
+        let ret_insert3 = make_local_value(tpe, null, state)
+        let insert3 = make_insn_dbg(InsnKind::INSERTVALUE, loc)
+        insert3.value.insert_value = {
+            ret = ret_insert3,
+            value = ret_insert2,
+            element = { kind = ValueKind::GLOBAL, tpe = typechecking::pointer(typechecking::get_type_type()), name = svalue.assembly_name } !Value,
+            index = index3
+        }
+        push_insn(insert3, state)
+
+        return ret_insert3
+    } else if (@tpe).kind == typechecking::TypeKind::ARRAY {
         if (@value.tpe).kind == typechecking::TypeKind::STATIC_ARRAY and
             (@value.tpe).length == 0 {
 
@@ -1960,6 +2066,333 @@ def walk_Identifier(node: *parser::Node, state: *State) -> Value {
     }
 }
 
+def decrease_ref_count_scoped(scpe: *scope::Scope, loc: *Value, state: *State) {
+    let keys = map::keys(scpe.fields)
+    for var i in 0..keys.size {
+        let key = keys[i]
+        let value = map::get(scpe.fields, key) !*scope::Value
+        if typechecking::is_ref(value.tpe) {
+            let name = value.assembly_name
+            var kind = ValueKind::LOCAL
+            if value.global {
+                kind = ValueKind::GLOBAL
+            }
+            decrease_ref_count({ kind = kind, tpe = typechecking::pointer(value.tpe), name = name } !Value, loc, state)
+        }
+    }
+}
+
+def decrease_ref_count(value: Value, loc: *Value, state: *State) {
+    map::put(state.module.imported, "free", map::sentinel)
+
+    let index1 = allocate(Value, 2)
+    index1[0] = make_int_value(0)
+    index1[1] = make_int_value(0)
+
+    let gep1_ret = make_local_value(typechecking::pointer(typechecking::pointer(builtins::int64_)), null, state)
+    let gep1 = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
+    gep1.value.gep = {
+        ret = gep1_ret,
+        tpe = value.tpe.tpe,
+        value = value,
+        index = index1
+    } !InsnGetElementPtr
+    push_insn(gep1, state)
+
+    let index2 = allocate(Value, 2)
+    index2[0] = make_int_value(0)
+    index2[1] = make_int_value(1)
+
+    let gep2_ret = make_local_value(typechecking::pointer(typechecking::pointer(value.tpe.tpe.tpe)), null, state)
+    let gep2 = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
+    gep2.value.gep = {
+        ret = gep2_ret,
+        tpe = value.tpe.tpe,
+        value = value,
+        index = index2
+    } !InsnGetElementPtr
+    push_insn(gep2, state)
+
+    let load1_ret = make_local_value(typechecking::pointer(builtins::int64_), null, state)
+    let load1 = make_insn_dbg(InsnKind::LOAD, loc)
+    load1.value.load = {
+        value = load1_ret,
+        loc = gep1_ret
+    } !InsnLoad
+    push_insn(load1, state)
+
+    let ptr_to_int_ret = make_local_value(builtins::int64_, null, state)
+    let ptr_to_int = make_insn_dbg(InsnKind::PTRTOINT, loc)
+    ptr_to_int.value.convert = {
+        ret = ptr_to_int_ret,
+        value = load1_ret
+    } !InsnConvert
+    push_insn(ptr_to_int, state)
+
+    let cmp1_ret = make_local_value(builtins::bool_, null, state)
+    let cmp1 = make_insn_dbg(InsnKind::ICMP, loc)
+    cmp1.value.icmp = {
+        op = CompareInt::eq,
+        ret = cmp1_ret,
+        left = ptr_to_int_ret,
+        right = { kind = ValueKind::INT, tpe = builtins::int64_, i = 0 } !Value
+    } !InsnIcmp
+    push_insn(cmp1, state)
+
+    let np_label = make_label(state)
+    
+    let br1 = make_insn_dbg(InsnKind::BR, loc)
+    br1.value.br = {
+        cond = cmp1_ret,
+        if_true = np_label
+    } !InsnBr
+    push_insn(br1, state)
+    push_label(np_label, state)
+
+    let load2_ret = make_local_value(builtins::int64_, null, state)
+    let load2 = make_insn_dbg(InsnKind::LOAD, loc)
+    load2.value.load = {
+        value = load2_ret,
+        loc = load1_ret
+    }
+    push_insn(load2, state)
+
+    let dec_ret = make_local_value(builtins::int64_, null, state)
+    let dec = make_insn_dbg(InsnKind::SUB, loc)
+    dec.value.arith = {
+        ret = dec_ret,
+        left = load2_ret,
+        right = { kind = ValueKind::INT, tpe = builtins::int64_, i = 1 } !Value
+    } !InsnArithmetic
+    push_insn(dec, state)
+
+    let cmp2_ret = make_local_value(builtins::bool_, null, state)
+    let cmp2 = make_insn_dbg(InsnKind::ICMP, loc)
+    cmp2.value.icmp = {
+        op = CompareInt::eq,
+        ret = cmp2_ret,
+        left = dec_ret,
+        right = { kind = ValueKind::INT, tpe = builtins::int64_, i = 0 } !Value
+    } !InsnIcmp
+    push_insn(cmp2, state)
+
+    let entry_label = make_label(state)
+
+    let br2 = make_insn_dbg(InsnKind::BR, loc)
+    br2.value.br = {
+        cond = cmp2_ret,
+        if_true = entry_label
+    } !InsnBr
+    push_insn(br2, state)
+    push_label(entry_label, state)
+
+    let bitcast1_ret = make_local_value(typechecking::pointer(builtins::int8_), null, state)
+    let bitcast1 = make_insn_dbg(InsnKind::BITCAST, loc)
+    bitcast1.value.convert = {
+        ret = bitcast1_ret,
+        value = load1_ret
+    } !InsnConvert
+    push_insn(bitcast1, state)
+
+    let args1 = allocate(Value, 1)
+    args1[0] = bitcast1_ret
+
+    let call1 = make_insn_dbg(InsnKind::CALL, loc)
+    call1.value.call = {
+        name = { kind = ValueKind::GLOBAL, name = "free" } !Value,
+        ret = NO_VALUE,
+        args = args1
+    }
+    push_insn(call1, state)
+
+    let load3_ret = make_local_value(typechecking::pointer(value.tpe.tpe.tpe), null, state)
+    let load3 = make_insn_dbg(InsnKind::LOAD, loc)
+    load3.value.load = {
+        value = load3_ret,
+        loc = gep2_ret
+    }
+    push_insn(load3, state)
+
+    let bitcast2_ret = make_local_value(typechecking::pointer(builtins::int8_), null, state)
+    let bitcast2 = make_insn_dbg(InsnKind::BITCAST, loc)
+    bitcast2.value.convert = {
+        ret = bitcast2_ret,
+        value = load3_ret
+    } !InsnConvert
+    push_insn(bitcast2, state)
+
+    let args2 = allocate(Value, 1)
+    args2[0] = bitcast2_ret
+
+    let call2  = make_insn_dbg(InsnKind::CALL, loc)
+    call2.value.call = {
+        name = { kind = ValueKind::GLOBAL, name = "free" } !Value,
+        ret = NO_VALUE,
+        args = args2
+    }
+    push_insn(call2, state)
+
+    let exit_label = make_label(state)
+    br1.value.br.if_false = exit_label
+    br2.value.br.if_false = exit_label
+
+    let br_unc = make_insn_dbg(InsnKind::BR_UNC, loc)
+    br_unc.value.br_unc.label_ = exit_label
+    push_insn(br_unc, state)
+
+    push_label(exit_label, state)
+}
+
+def assign_ref(value: Value, addr: Value, loc: *Value, state: *State) {
+    if not value.addr { return }
+
+    // First increase the ref count of the assigned value
+    let index1 = allocate(Value, 2)
+    index1[0] = make_int_value(0)
+    index1[1] = make_int_value(0)
+    
+    let gep1_ret = make_local_value(typechecking::pointer(typechecking::pointer(builtins::int64_)), null, state)
+    let gep1 = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
+    gep1.value.gep = {
+        ret = gep1_ret,
+        tpe = value.tpe,
+        value = @value.addr,
+        index = index1
+    } !InsnGetElementPtr
+    push_insn(gep1, state)
+
+    let load1_ret = make_local_value(typechecking::pointer(builtins::int64_), null, state)
+    let load1 = make_insn_dbg(InsnKind::LOAD, loc)
+    load1.value.load = {
+        value = load1_ret,
+        loc = gep1_ret
+    } !InsnLoad
+    push_insn(load1, state)
+
+    let load2_ret = make_local_value(builtins::int64_, null, state)
+    let load2 = make_insn_dbg(InsnKind::LOAD, loc)
+    load2.value.load = {
+        value = load2_ret,
+        loc = load1_ret
+    } !InsnLoad
+    push_insn(load2, state)
+
+    let add_ret = make_local_value(builtins::int64_, null, state)
+    let add = make_insn_dbg(InsnKind::ADD, loc)
+    add.value.arith = {
+        ret = add_ret,
+        left = load2_ret,
+        right = { kind = ValueKind::INT, tpe = builtins::int64_, i = 1 } !Value
+    } !InsnArithmetic
+    push_insn(add, state)
+
+    let store1 = make_insn_dbg(InsnKind::STORE, loc)
+    store1.value.store = {
+        loc = load1_ret,
+        value = add_ret
+    } !InsnStore
+    push_insn(store1, state)
+
+    // Now decrease the ref count of the stored value
+    decrease_ref_count(addr, loc, state)
+    
+    // Set the values for the new reference
+    let gep2_ret = make_local_value(typechecking::pointer(typechecking::pointer(builtins::int64_)), null, state)
+    let gep2 = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
+    gep2.value.gep = {
+        ret = gep2_ret,
+        tpe = addr.tpe.tpe,
+        value = addr,
+        index = index1
+    } !InsnGetElementPtr
+    push_insn(gep2, state)
+
+    let index3 = allocate(Value, 2)
+    index3[0] = make_int_value(0)
+    index3[1] = make_int_value(1)
+
+    let gep3_ret = make_local_value(typechecking::pointer(typechecking::pointer(addr.tpe.tpe.tpe)), null, state)
+    let gep3 = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
+    gep3.value.gep = {
+        ret = gep3_ret,
+        tpe = addr.tpe.tpe,
+        value = addr,
+        index = index3
+    } !InsnGetElementPtr
+    push_insn(gep3, state)
+
+    let index4 = allocate(Value, 2)
+    index4[0] = make_int_value(0)
+    index4[1] = make_int_value(2)
+
+    let gep4_ret = make_local_value(typechecking::pointer(typechecking::pointer(typechecking::get_type_type())), null, state)
+    let gep4 = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
+    gep4.value.gep = {
+        ret = gep4_ret,
+        tpe = addr.tpe.tpe,
+        value = addr,
+        index = index4
+    } !InsnGetElementPtr
+    push_insn(gep4, state)
+
+    let gep5_ret = make_local_value(typechecking::pointer(typechecking::pointer(value.tpe.tpe)), null, state)
+    let gep5 = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
+    gep5.value.gep = {
+        ret = gep5_ret,
+        tpe = value.tpe,
+        value = @value.addr,
+        index = index3
+    } !InsnGetElementPtr
+    push_insn(gep5, state)
+
+    let gep6_ret = make_local_value(typechecking::pointer(typechecking::pointer(typechecking::get_type_type())), null, state)
+    let gep6 = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
+    gep6.value.gep = {
+        ret = gep6_ret,
+        tpe = value.tpe,
+        value = @value.addr,
+        index = index4
+    } !InsnGetElementPtr
+    push_insn(gep6, state)
+
+    let load3_ret = make_local_value(typechecking::pointer(value.tpe.tpe), null, state)
+    let load3 = make_insn_dbg(InsnKind::LOAD, loc)
+    load3.value.load = {
+        value = load3_ret,
+        loc = gep5_ret
+    } !InsnLoad
+    push_insn(load3, state)
+
+    let load4_ret = make_local_value(typechecking::pointer(typechecking::get_type_type()), null, state)
+    let load4 = make_insn_dbg(InsnKind::LOAD, loc)
+    load4.value.load = {
+        value = load4_ret,
+        loc = gep6_ret
+    } !InsnLoad
+    push_insn(load4, state)
+
+    let store2 = make_insn_dbg(InsnKind::STORE, loc)
+    store2.value.store = {
+        loc = gep2_ret,
+        value = load1_ret
+    } !InsnStore
+    push_insn(store2, state)
+
+    let store3 = make_insn_dbg(InsnKind::STORE, loc)
+    store3.value.store = {
+        loc = gep3_ret,
+        value = load3_ret
+    } !InsnStore
+    push_insn(store3, state)
+
+    let store4 = make_insn_dbg(InsnKind::STORE, loc)
+    store4.value.store = {
+        loc = gep4_ret,
+        value = load4_ret
+    } !InsnStore
+    push_insn(store4, state)
+}
+
 def walk_Assign(node: *parser::Node, state: *State) -> Value {
     // TODO Make this possible: a, b = c, d = e, f
     // Right now we can only return one value
@@ -1973,7 +2406,12 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
     for var i in 0..vector::length(right) {
         let n = vector::get(right, i) !*parser::Node
         if not n { break }
-        var value = walk_and_load_expression(n, state)
+        var value: Value
+        if typechecking::is_ref(n.tpe) {
+            value = walk_expression(n, state)
+        } else {
+            value = walk_and_load_expression(n, state)
+        }
         let tpe = (@n).tpe
         if not tpe { continue }
         if (@tpe).kind == typechecking::TypeKind::TUPLE {
@@ -2012,28 +2450,41 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
 
                 push_insn(gep, state)
                 
-                let gep_retp = allocate(Value)
-                @gep_retp = gep_ret
-                var ret = make_local_value(t, gep_retp, state)
+                var ret = gep_ret
 
-                let load = make_insn_dbg(InsnKind::LOAD, loc)
-                (@load).value.load = {
-                    value = ret,
-                    loc = gep_ret
-                } !InsnLoad
+                if not typechecking::is_ref(l.tpe) {
+                    let gep_retp = allocate(Value)
+                    @gep_retp = gep_ret
+                    ret = make_local_value(t, gep_retp, state)
 
-                push_insn(load, state)
+                    let load = make_insn_dbg(InsnKind::LOAD, loc)
+                    (@load).value.load = {
+                        value = ret,
+                        loc = gep_ret
+                    } !InsnLoad
 
+                    push_insn(load, state)
+                }
+                
+                let old_tpe = ret.tpe
                 ret = convert_to(n, ret, (@l).tpe, state)
 
-                let store = make_insn_dbg(InsnKind::STORE, loc)
-                (@store).value.store = {
-                    value = ret,
-                    loc = @addr
-                } !InsnStore
+                if typechecking::is_ref(l.tpe) and typechecking::is_ref(old_tpe) {
+                    assign_ref(ret, @addr, loc, state)
+                } else {
+                    if typechecking::is_ref(l.tpe) {
+                        decrease_ref_count(@addr, loc, state)
+                    }
 
-                push_insn(store, state)
+                    let store = make_insn_dbg(InsnKind::STORE, loc)
+                    (@store).value.store = {
+                        value = ret,
+                        loc = @addr
+                    } !InsnStore
 
+                    push_insn(store, state)
+                }
+                
                 last_value = ret
                 j += 1
             }
@@ -2054,15 +2505,24 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
                 push_alloca(alloca, state)
             }
 
+            let old_tpe = value.tpe
             value = convert_to(n, value, (@l).tpe, state)
 
-            let store = make_insn_dbg(InsnKind::STORE, loc)
-            (@store).value.store = {
-                value = value,
-                loc = @addr
-            } !InsnStore
+            if typechecking::is_ref(l.tpe) and typechecking::is_ref(old_tpe) {
+                assign_ref(value, @addr, loc, state)
+            } else {
+                if typechecking::is_ref(l.tpe) {
+                    decrease_ref_count(@addr, loc, state)
+                }
 
-            push_insn(store, state)
+                let store = make_insn_dbg(InsnKind::STORE, loc)
+                (@store).value.store = {
+                    value = value,
+                    loc = @addr
+                } !InsnStore
+
+                push_insn(store, state)
+            }
 
             last_value = value
             j += 1
@@ -2127,9 +2587,24 @@ def walk_AssignEq(node: *parser::Node, state: *State) -> Value {
 
 def walk_Deref(node: *parser::Node, state: *State) -> Value {
     let loc = make_location(node, state)
-    let value = walk_and_load_expression((@node).value.expr, state)
+    var value = walk_and_load_expression((@node).value.expr, state)
     let tpe = value.tpe
     if not tpe { return NO_VALUE }
+
+    if typechecking::is_ref(tpe) {
+        let index = allocate(int, 1)
+        index[0] = 1
+        let extract_ret = make_local_value(typechecking::pointer(tpe.tpe), null, state)
+        let extract = make_insn_dbg(InsnKind::EXTRACTVALUE, make_location(node, state))
+        extract.value.extract_value = {
+            ret = extract_ret,
+            value = value,
+            index = index
+        } !InsnExtractValue
+        push_insn(extract, state)
+
+        value = extract_ret
+    }
 
     let addr = allocate(Value)
     (@addr) = value
@@ -2814,10 +3289,13 @@ def walk_If(node: *parser::Node, state: *State) {
     push_insn(entry, state)
     push_label(entry_label, state)
     push_scope(node, state)
+    var last_node = node
     for var i in 0..vector::length((@node).value.if_.body) {
         let stmt = vector::get((@node).value.if_.body, i) !*parser::Node
         walk(stmt, state)
+        last_node = stmt
     }
+    decrease_ref_count_scoped(node.inner_scope, make_location(last_node, state), state)
     pop_scope(state)
     push_insn(exit, state)
 
@@ -2839,10 +3317,13 @@ def walk_If(node: *parser::Node, state: *State) {
 
         push_label(entry_label, state)
         push_scope(else_if, state)
+        var last_node = else_if
         for var i in 0..vector::length((@else_if).value.else_if.body) {
             let stmt = vector::get((@else_if).value.else_if.body, i) !*parser::Node
             walk(stmt, state)
+            last_node = stmt
         }
+        decrease_ref_count_scoped(else_if.inner_scope, make_location(last_node, state), state)
         pop_scope(state)
         push_insn(exit, state)
     }
@@ -2853,10 +3334,13 @@ def walk_If(node: *parser::Node, state: *State) {
         (@entry).value.br.if_false = entry_label
         push_label(entry_label, state)
         push_scope(else_, state)
+        var last_node = else_
         for var i in 0..vector::length((@else_).value.body) {
             let stmt = vector::get((@else_).value.body, i) !*parser::Node
             walk(stmt, state)
+            last_node = stmt
         }
+        decrease_ref_count_scoped(node.inner_scope, make_location(last_node, state), state)
         pop_scope(state)
         push_insn(exit, state)
     }
@@ -3057,10 +3541,13 @@ def walk_Switch(node: *parser::Node, state: *State) {
         }
 
         push_scope(cse, state)
+        var last_node = cse
         for var j in 0..vector::length((@cse).value.case_.body) {
             let expr = vector::get((@cse).value.case_.body, j) !*parser::Node
             walk(expr, state)
+            last_node = expr
         }
+        decrease_ref_count_scoped(cse.inner_scope, make_location(last_node, state), state)
         pop_scope(state)
 
         push_insn(end, state)
@@ -3157,10 +3644,13 @@ def walk_Loop(node: *parser::Node, state: *State) {
     let start_label = make_label(state)
     push_label(start_label, state)
     push_scope(node, state)
+    var last_node = node
     for var i in 0..vector::length((@node).value.body) {
         let n = vector::get((@node).value.body, i) !*parser::Node
         walk(n, state)
+        last_node = n
     }
+    decrease_ref_count_scoped(node.inner_scope, make_location(last_node, state), state)
     pop_scope(state)
     push_insn(continue_insn, state)
     let end_label = make_label(state)
@@ -3195,10 +3685,13 @@ def walk_While(node: *parser::Node, state: *State) {
     (@br).value.br.if_true = inner
 
     push_scope(node, state)
+    var last_node = node
     for var i in 0..vector::length((@node).value.while_loop.body) {
         let n = vector::get((@node).value.while_loop.body, i) !*parser::Node
         walk(n, state)
+        last_node = n
     }
+    decrease_ref_count_scoped(node.inner_scope, make_location(last_node, state), state)
     pop_scope(state)
 
     push_insn(continue_insn, state)
@@ -3314,10 +3807,13 @@ def walk_For(node: *parser::Node, state: *State) {
     push_label(inner, state)
     (@br).value.br.if_true = inner
 
+    var last_node = node
     for var i in 0..vector::length((@node).value.for_loop.body) {
         let n = vector::get((@node).value.for_loop.body, i) !*parser::Node
         walk(n, state)
+        last_node = n
     }
+    decrease_ref_count_scoped(node.inner_scope, make_location(last_node, state), state)
 
     push_insn(continue_insn, state)
     let inc_label = make_label(state)
@@ -3354,12 +3850,8 @@ def walk_For(node: *parser::Node, state: *State) {
     pop_scope(state)
 }
 
-def push_ref_init(value: Value, state: *State) {
-    import_structures(typechecking::get_type_type(), state.module)
-    map::put(state.module.imported, "malloc", map::sentinel)
-    let ref_tpe = value.tpe.tpe.tpe
-
-    let ident = make_identifier([debug::type_to_str(ref_tpe, true)])
+def import_type(tpe: *typechecking::Type, state: *State) -> *scope::Value {
+    let ident = make_identifier([debug::type_to_str(tpe, true)])
     ident.loc.module = "type"
     var svalue = scope::get(toolchain::types.scope, ident, false, false)
    
@@ -3375,11 +3867,20 @@ def push_ref_init(value: Value, state: *State) {
         map::put(state.module.imported, global.name, map::sentinel)
     }
 
+    return svalue
+}
+
+def push_ref_init(value: Value, loc: *Value, state: *State) {
+    import_structures(typechecking::get_type_type(), state.module)
+    map::put(state.module.imported, "malloc", map::sentinel)
+    let ref_tpe = value.tpe.tpe.tpe
+    let svalue = import_type(ref_tpe, state)
+
     let args = allocate(Value, 1)
     args[0] = make_int_value(builtins::int64_.size !int)
     args[0].tpe = builtins::int64_
     let ret_call = make_local_value(typechecking::pointer(builtins::int8_), null, state)
-    let call = make_insn(InsnKind::CALL)
+    let call = make_insn_dbg(InsnKind::CALL, loc)
     call.value.call = {
         name = { kind = ValueKind::GLOBAL, name = "malloc" } !Value,
         ret = ret_call,
@@ -3388,14 +3889,14 @@ def push_ref_init(value: Value, state: *State) {
     push_insn(call, state)
 
     let bitcast_ret = make_local_value(typechecking::pointer(builtins::int64_), null, state)
-    let bitcast = make_insn(InsnKind::BITCAST)
+    let bitcast = make_insn_dbg(InsnKind::BITCAST, loc)
     bitcast.value.convert = {
         ret = bitcast_ret,
         value = ret_call
     } !InsnConvert
     push_insn(bitcast, state)
 
-    let store1 = make_insn(InsnKind::STORE)
+    let store1 = make_insn_dbg(InsnKind::STORE, loc)
     store1.value.store = {
         value = { kind = ValueKind::INT, tpe = builtins::int64_, i = 1 } !Value,
         loc = bitcast_ret
@@ -3407,7 +3908,7 @@ def push_ref_init(value: Value, state: *State) {
     index1[1] = make_int_value(0)
 
     let ret_gep1 = make_local_value(typechecking::pointer(typechecking::pointer(builtins::int64_)), null, state)
-    let gep1 = make_insn(InsnKind::GETELEMENTPTR)
+    let gep1 = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
     gep1.value.gep = {
         ret = ret_gep1,
         tpe = value.tpe.tpe,
@@ -3416,7 +3917,7 @@ def push_ref_init(value: Value, state: *State) {
     } !InsnGetElementPtr
     push_insn(gep1, state)
 
-    let store2 = make_insn(InsnKind::STORE)
+    let store2 = make_insn_dbg(InsnKind::STORE, loc)
     store2.value.store = {
         value = bitcast_ret,
         loc = ret_gep1
@@ -3428,7 +3929,7 @@ def push_ref_init(value: Value, state: *State) {
     index2[1] = make_int_value(1)
 
     let ret_gep2 = make_local_value(typechecking::pointer(typechecking::pointer(ref_tpe)), null, state)
-    let gep2 = make_insn(InsnKind::GETELEMENTPTR)
+    let gep2 = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
     gep2.value.gep = {
         ret = ret_gep2,
         tpe = value.tpe.tpe,
@@ -3437,7 +3938,7 @@ def push_ref_init(value: Value, state: *State) {
     }
     push_insn(gep2, state)
 
-    let store3 = make_insn(InsnKind::STORE)
+    let store3 = make_insn_dbg(InsnKind::STORE, loc)
     store3.value.store = {
         value = { kind = ValueKind::NULL, tpe = typechecking::pointer(ref_tpe) } !Value,
         loc = ret_gep2
@@ -3449,7 +3950,7 @@ def push_ref_init(value: Value, state: *State) {
     index3[1] = make_int_value(2)
 
     let ret_gep3 = make_local_value(typechecking::pointer(typechecking::pointer(typechecking::get_type_type())), null, state)
-    let gep3 = make_insn(InsnKind::GETELEMENTPTR)
+    let gep3 = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
     gep3.value.gep = {
         ret = ret_gep3,
         tpe = value.tpe.tpe,
@@ -3458,7 +3959,7 @@ def push_ref_init(value: Value, state: *State) {
     }
     push_insn(gep3, state)
 
-    let store4 = make_insn(InsnKind::STORE)
+    let store4 = make_insn_dbg(InsnKind::STORE, loc)
     store4.value.store = {
         value = { kind = ValueKind::GLOBAL, tpe = typechecking::pointer(typechecking::get_type_type()), name = svalue.assembly_name } !Value,
         loc = ret_gep3
@@ -3502,8 +4003,8 @@ export def walk_VarDecl(node: *parser::Node, state: *State, set_constant: bool =
             push_alloca(insn, state)
 
             ret.tpe = typechecking::pointer(tpe)
-            if tpe.kind == typechecking::TypeKind::REFERENCE {
-                push_ref_init(ret, state)
+            if typechecking::is_ref(tpe) {
+                push_ref_init(ret, loc, state)
             }
 
             push_declare(v, ret, (@value).name, state)
@@ -4477,6 +4978,8 @@ export def create_function(node: *parser::Node, tpe: *typechecking::Type, body: 
             last_node = node
         }
 
+        decrease_ref_count_scoped(scpe, make_location(last_node, state), state)
+
         vector::insert(function.block.insn, 0, function.allocas)
 
         // TODO Make another compiler pass that checks for missing return statements and dead code
@@ -4626,6 +5129,7 @@ def walk_TypeDecl(node: *parser::Node, state: *State) {
 export def walk_top_VarDecl(node: *parser::Node, state: *State, set_constant: bool) -> *parser::Node {
     let share = node.value.var_decl.share
     let kw = node.value.var_decl.kw
+    let right = node.value.var_decl.right
 
     if kw == parser::VarDecl::CONST and not set_constant {
         return null
@@ -4656,8 +5160,9 @@ export def walk_top_VarDecl(node: *parser::Node, state: *State, set_constant: bo
                 line = (@v).loc.line
             } !Global
 
-            if v.tpe.kind == typechecking::TypeKind::REFERENCE {
-                push_ref_init({ kind = ValueKind::GLOBAL, name = name, tpe = typechecking::pointer(v.tpe) } !Value, state)
+            if typechecking::is_ref(v.tpe) {
+                let v2 = { kind = ValueKind::GLOBAL, name = name, tpe = typechecking::pointer(v.tpe) } !Value
+                push_ref_init(v2, make_location(n, state), state)
             }
             
             map::put(state.module.result.globals, (@global).name, global)
@@ -4676,7 +5181,7 @@ export def walk_top_VarDecl(node: *parser::Node, state: *State, set_constant: bo
 
         node_assign.value.assign = {
             left = left,
-            right = (@node).value.var_decl.right
+            right = right
         } !parser::NodeAssign
         return node_assign
     }
