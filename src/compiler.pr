@@ -2243,10 +2243,8 @@ def decrease_ref_count(value: Value, loc: *Value, state: *State) {
     push_label(exit_label, state)
 }
 
-def assign_ref(value: Value, addr: Value, loc: *Value, state: *State) {
-    if not value.addr { return }
+def increase_ref_count(value: Value, loc: *Value, state: *State) {
 
-    // First increase the ref count of the assigned value
     let index1 = allocate(Value, 2)
     index1[0] = make_int_value(0)
     index1[1] = make_int_value(0)
@@ -2255,8 +2253,8 @@ def assign_ref(value: Value, addr: Value, loc: *Value, state: *State) {
     let gep1 = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
     gep1.value.gep = {
         ret = gep1_ret,
-        tpe = value.tpe,
-        value = @value.addr,
+        tpe = value.tpe.tpe,
+        value = value,
         index = index1
     } !InsnGetElementPtr
     push_insn(gep1, state)
@@ -2292,11 +2290,40 @@ def assign_ref(value: Value, addr: Value, loc: *Value, state: *State) {
         value = add_ret
     } !InsnStore
     push_insn(store1, state)
+}
+
+def assign_ref(value: Value, addr: Value, loc: *Value, state: *State) {
+    if not value.addr { return }
+
+    // First increase the ref count of the assigned value
+    increase_ref_count(@value.addr, loc, state)
 
     // Now decrease the ref count of the stored value
     decrease_ref_count(addr, loc, state)
-    
+
     // Set the values for the new reference
+    let index1 = allocate(Value, 2)
+    index1[0] = make_int_value(0)
+    index1[1] = make_int_value(0)
+
+    let gep1_ret = make_local_value(typechecking::pointer(typechecking::pointer(builtins::int64_)), null, state)
+    let gep1 = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
+    gep1.value.gep = {
+        ret = gep1_ret,
+        tpe = value.tpe,
+        value = value,
+        index = index1
+    } !InsnGetElementPtr
+    push_insn(gep1, state)
+
+    let load1_ret = make_local_value(typechecking::pointer(builtins::int64_), null, state)
+    let load1 = make_insn_dbg(InsnKind::LOAD, loc)
+    load1.value.load = {
+        value = load1_ret,
+        loc = gep1_ret
+    } !InsnLoad
+    push_insn(load1, state)
+    
     let gep2_ret = make_local_value(typechecking::pointer(typechecking::pointer(builtins::int64_)), null, state)
     let gep2 = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
     gep2.value.gep = {
@@ -2363,6 +2390,14 @@ def assign_ref(value: Value, addr: Value, loc: *Value, state: *State) {
     } !InsnLoad
     push_insn(load3, state)
 
+    let bitcast_ret = make_local_value(typechecking::pointer(addr.tpe.tpe.tpe), null, state)
+    let bitcast = make_insn_dbg(InsnKind::BITCAST, loc)
+    bitcast.value.convert = {
+        ret = bitcast_ret,
+        value = load3_ret
+    }
+    push_insn(bitcast, state)
+
     let load4_ret = make_local_value(typechecking::pointer(typechecking::get_type_type()), null, state)
     let load4 = make_insn_dbg(InsnKind::LOAD, loc)
     load4.value.load = {
@@ -2381,7 +2416,7 @@ def assign_ref(value: Value, addr: Value, loc: *Value, state: *State) {
     let store3 = make_insn_dbg(InsnKind::STORE, loc)
     store3.value.store = {
         loc = gep3_ret,
-        value = load3_ret
+        value = bitcast_ret
     } !InsnStore
     push_insn(store3, state)
 
@@ -2406,12 +2441,7 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
     for var i in 0..vector::length(right) {
         let n = vector::get(right, i) !*parser::Node
         if not n { break }
-        var value: Value
-        if typechecking::is_ref(n.tpe) {
-            value = walk_expression(n, state)
-        } else {
-            value = walk_and_load_expression(n, state)
-        }
+        var value = walk_and_load_expression(n, state)
         let tpe = (@n).tpe
         if not tpe { continue }
         if (@tpe).kind == typechecking::TypeKind::TUPLE {
@@ -2466,10 +2496,9 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
                     push_insn(load, state)
                 }
                 
-                let old_tpe = ret.tpe
                 ret = convert_to(n, ret, (@l).tpe, state)
 
-                if typechecking::is_ref(l.tpe) and typechecking::is_ref(old_tpe) {
+                if typechecking::is_ref(l.tpe) and typechecking::is_ref(ret.tpe) {
                     assign_ref(ret, @addr, loc, state)
                 } else {
                     if typechecking::is_ref(l.tpe) {
@@ -2505,11 +2534,10 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
                 push_alloca(alloca, state)
             }
 
-            let old_tpe = value.tpe
             value = convert_to(n, value, (@l).tpe, state)
 
-            if typechecking::is_ref(l.tpe) and typechecking::is_ref(old_tpe) {
-                assign_ref(value, @addr, loc, state)
+            if typechecking::is_ref(l.tpe) and value.addr and typechecking::is_ref(value.addr.tpe) {
+                assign_ref(@value.addr, @addr, loc, state)
             } else {
                 if typechecking::is_ref(l.tpe) {
                     decrease_ref_count(@addr, loc, state)
@@ -3854,6 +3882,7 @@ def import_type(tpe: *typechecking::Type, state: *State) -> *scope::Value {
     let ident = make_identifier([debug::type_to_str(tpe, true)])
     ident.loc.module = "type"
     var svalue = scope::get(toolchain::types.scope, ident, false, false)
+    if not svalue { return null }
    
     if not map::contains(state.module.result.globals, svalue.assembly_name) {
         let global = allocate(Global)
@@ -3871,7 +3900,6 @@ def import_type(tpe: *typechecking::Type, state: *State) -> *scope::Value {
 }
 
 def push_ref_init(value: Value, loc: *Value, state: *State) {
-    import_structures(typechecking::get_type_type(), state.module)
     map::put(state.module.imported, "malloc", map::sentinel)
     let ref_tpe = value.tpe.tpe.tpe
     let svalue = import_type(ref_tpe, state)
@@ -3959,9 +3987,24 @@ def push_ref_init(value: Value, loc: *Value, state: *State) {
     }
     push_insn(gep3, state)
 
+    var tpe_value: Value
+    if svalue {
+        tpe_value = { 
+            kind = ValueKind::GLOBAL, 
+            tpe = typechecking::pointer(typechecking::get_type_type()), 
+            name = svalue.assembly_name 
+        } !Value
+    } else {
+        tpe_value = {
+            kind = ValueKind::NULL,
+            tpe = typechecking::pointer(typechecking::get_type_type())
+        } !Value
+    }
+    
+
     let store4 = make_insn_dbg(InsnKind::STORE, loc)
     store4.value.store = {
-        value = { kind = ValueKind::GLOBAL, tpe = typechecking::pointer(typechecking::get_type_type()), name = svalue.assembly_name } !Value,
+        value = tpe_value,
         loc = ret_gep3
     }
     push_insn(store4, state)
@@ -4947,8 +4990,8 @@ export def create_function(node: *parser::Node, tpe: *typechecking::Type, body: 
             } !InsnAlloca
             push_alloca(alloca, state)
 
+            ret.tpe = typechecking::pointer(value)
             if (@np).node {
-                ret.tpe = typechecking::pointer(value)
                 push_declare_arg((@np).node, ret, old_name, i + 1, state)
             }
             
@@ -4967,6 +5010,10 @@ export def create_function(node: *parser::Node, tpe: *typechecking::Type, body: 
             } !InsnStore
 
             push_insn(store, state)
+
+            if typechecking::is_ref(value) {
+                increase_ref_count(ret, null, state)
+            }
         }
 
         generate_defer_types(state)
@@ -5163,6 +5210,7 @@ export def walk_top_VarDecl(node: *parser::Node, state: *State, set_constant: bo
             if typechecking::is_ref(v.tpe) {
                 let v2 = { kind = ValueKind::GLOBAL, name = name, tpe = typechecking::pointer(v.tpe) } !Value
                 push_ref_init(v2, make_location(n, state), state)
+                map::put(state.module.imported, global.name, map::sentinel)
             }
             
             map::put(state.module.result.globals, (@global).name, global)
@@ -5320,6 +5368,8 @@ export def compile(state: *State) {
     let start = util::millis()
     let node = state.module.node
     assert((@node).kind == parser::NodeKind::PROGRAM)
+
+    import_structures(typechecking::get_type_type(), state.module)
 
     let keys = map::keys(node.scope.fields)
     for var i in 0..keys.size {
