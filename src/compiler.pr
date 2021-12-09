@@ -1121,6 +1121,29 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
         return convert_ref_to_ref(tpe, value, loc, state)
     } else if typechecking::equals(tpe, toolchain::ref_type) and typechecking::is_ref(value.tpe) {
         return convert_ref_to_ref(tpe, value, loc, state)
+    } else if typechecking::is_pointer(tpe) and typechecking::is_ref(value.tpe) {
+
+        let index = allocate(int, 1)
+        index[0] = 1
+        let extract_ret = make_local_value(typechecking::pointer(value.tpe.tpe), null, state)
+        let extract = make_insn_dbg(InsnKind::EXTRACTVALUE, loc)
+        extract.value.extract_value = {
+            ret = extract_ret,
+            value = value,
+            index = index
+        } !InsnExtractValue
+        push_insn(extract, state)
+
+        let bitcast_ret = make_local_value(typechecking::pointer(tpe.tpe), null, state)
+        let bitcast = make_insn_dbg(InsnKind::BITCAST, loc)
+        bitcast.value.convert = {
+            ret = bitcast_ret,
+            value = extract_ret
+        } !InsnConvert
+        push_insn(bitcast, state)
+
+        return bitcast_ret
+
     } else if (@tpe).kind == typechecking::TypeKind::ARRAY {
         if (@value.tpe).kind == typechecking::TypeKind::STATIC_ARRAY and
             (@value.tpe).length == 0 {
@@ -3071,6 +3094,91 @@ def compare(node: *parser::Node, left: Value, right: Value, state: *State) -> Va
     if not left.tpe or not right.tpe { return NO_VALUE }
     let loc = make_location(node, state)
 
+    if typechecking::equals(left.tpe, right.tpe) { 
+        if typechecking::equals(left.tpe, builtins::string_) {
+            map::put((@(@state).module).imported, "strcmp", map::sentinel)
+
+            let args = allocate(Value, 2)
+            args[0] = charp_str(left, state)
+            args[1] = charp_str(right, state)
+
+            let call_ret = make_local_value(builtins::int_, null, state)
+            let call = make_insn_dbg(InsnKind::CALL, loc)
+            (@call).value.call = {
+                name = {
+                    kind = ValueKind::GLOBAL,
+                    name = "strcmp"
+                } !Value,
+                ret = call_ret,
+                args = args
+            } !InsnCall
+            push_insn(call, state)
+
+            var op: CompareInt
+            switch (@node).kind !int {
+                case parser::NodeKind::EQ:  op = CompareInt::eq
+                case parser::NodeKind::NEQ: op = CompareInt::ne
+                case parser::NodeKind::GT:  op = CompareInt::ugt
+                case parser::NodeKind::LT:  op = CompareInt::ult
+                case parser::NodeKind::GEQ: op = CompareInt::uge
+                case parser::NodeKind::LEQ: op = CompareInt::ule
+                case: assert(false)
+            }
+
+            let cmp_ret = make_local_value(builtins::bool_, null, state)
+            let cmp = make_insn_dbg(InsnKind::ICMP, loc)
+            (@cmp).value.icmp = {
+                op = op,
+                ret = cmp_ret,
+                left = call_ret,
+                right = {
+                    kind = ValueKind::INT,
+                    tpe = builtins::int_,
+                    i = 0
+                } !Value
+            } !InsnIcmp
+            push_insn(cmp, state)
+
+            return cmp_ret
+        } else if typechecking::equals(left.tpe, typechecking::pointer(toolchain::type_type)) {
+            let svalue = scope::get(toolchain::runtime.scope, parser::make_identifier(["equals"]))
+            predeclare_function(svalue.tpe, state.module)
+            map::put(state.module.imported, svalue.tpe.type_name, map::sentinel)
+
+            let args = allocate(Value, 2)
+            args[0] = left
+            args[1] = right
+
+            let call_ret = make_local_value(builtins::bool_, null, state)
+            let call = make_insn_dbg(InsnKind::CALL, loc)
+            call.value.call = {
+                name = { kind = ValueKind::GLOBAL, name = svalue.tpe.type_name } !Value,
+                ret = call_ret,
+                args = args
+            } !InsnCall
+            push_insn(call, state)
+
+            var ret: Value
+            if node.kind == parser::NodeKind::NEQ {
+                ret = make_local_value(builtins::bool_, null, state)
+                let xor = make_insn_dbg(InsnKind::XOR, loc)
+                (@xor).value.arith = {
+                    ret = ret,
+                    left = call_ret,
+                    right = { kind = ValueKind::BOOL, i = 1, tpe = builtins::bool_ } !Value
+                } !InsnArithmetic
+                push_insn(xor, state)
+            } else if node.kind == parser::NodeKind::EQ {
+                ret = call_ret
+            } else {
+                errors::errorn(node, "Can't compare types")
+                return NO_VALUE
+            }
+
+            return ret
+        }
+    }
+
     var tpe: *typechecking::Type = null
     if typechecking::is_enum(left.tpe) {
         left.tpe = (@left.tpe).tpe
@@ -3159,53 +3267,6 @@ def compare(node: *parser::Node, left: Value, right: Value, state: *State) -> Va
         push_insn(insn, state)
 
         return ret
-    } else if typechecking::equals(left.tpe, right.tpe) { 
-        if typechecking::equals(left.tpe, builtins::string_) {
-            map::put((@(@state).module).imported, "strcmp", map::sentinel)
-
-            let args = allocate(Value, 2)
-            args[0] = charp_str(left, state)
-            args[1] = charp_str(right, state)
-
-            let call_ret = make_local_value(builtins::int_, null, state)
-            let call = make_insn_dbg(InsnKind::CALL, loc)
-            (@call).value.call = {
-                name = {
-                    kind = ValueKind::GLOBAL,
-                    name = "strcmp"
-                } !Value,
-                ret = call_ret,
-                args = args
-            } !InsnCall
-            push_insn(call, state)
-
-            var op: CompareInt
-            switch (@node).kind !int {
-                case parser::NodeKind::EQ:  op = CompareInt::eq
-                case parser::NodeKind::NEQ: op = CompareInt::ne
-                case parser::NodeKind::GT:  op = CompareInt::ugt
-                case parser::NodeKind::LT:  op = CompareInt::ult
-                case parser::NodeKind::GEQ: op = CompareInt::uge
-                case parser::NodeKind::LEQ: op = CompareInt::ule
-                case: assert(false)
-            }
-
-            let cmp_ret = make_local_value(builtins::bool_, null, state)
-            let cmp = make_insn_dbg(InsnKind::ICMP, loc)
-            (@cmp).value.icmp = {
-                op = op,
-                ret = cmp_ret,
-                left = call_ret,
-                right = {
-                    kind = ValueKind::INT,
-                    tpe = builtins::int_,
-                    i = 0
-                } !Value
-            } !InsnIcmp
-            push_insn(cmp, state)
-
-            return cmp_ret
-        }
     }
     return NO_VALUE
 }
