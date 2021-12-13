@@ -4396,6 +4396,132 @@ def walk_Defer(node: *parser::Node, state: *State) {
     map::put(state.module.result.functions, function.name, function)
 }
 
+def walk_Assert(node: *parser::Node, state: *State) {
+    let loc = make_location(node, state)
+
+    let cond = node.value.assert_.cond
+    let msg = node.value.assert_.message
+
+    // TODO We should probably write a function that does it like in builtin_functions
+    import_structures(scope::get(state.module.scope, parser::make_identifier(["fprintf"])).tpe, state.module)
+    map::put(state.module.imported, "stderr", map::sentinel)
+    map::put(state.module.imported, "fprintf", map::sentinel)
+    map::put(state.module.imported, "abort", map::sentinel)
+
+    var br: *Insn
+    var fmt: string
+    var args: [Value]
+
+    if cond {
+        let expr = walk_and_load_expression(cond, state)
+        let if_false = make_label(state)
+    
+        br = make_insn_dbg(InsnKind::BR, loc)
+        br.value.br = {
+            cond = expr,
+            if_false = if_false
+        } !InsnBr
+        push_insn(br, state)
+
+        push_label(if_false, state)
+
+        if msg {
+            args = allocate(Value, 7)
+            fmt = "%s:%d:%s: Assertion %s failed! %s\n"
+
+            args[6] = charp_str(walk_and_load_expression(msg, state), state)
+        } else {
+            args = allocate(Value, 6)
+            fmt = "%s:%d:%s: Assertion %s failed!\n"
+        }
+
+        let buf = buffer::make_buffer()
+        
+        var line = cond.loc.lines[cond.loc.line]
+        var str: string
+        str.value = line.value ++ cond.loc.column
+        if cond.loc.end_line == cond.loc.line {
+            str.size = cond.loc.end_column - cond.loc.column + 1
+        } else {
+            str.size = line.size - cond.loc.column - 1
+        }
+        buffer::append_str(*buf, str)
+
+        // TODO This doesn't work at all
+        for var i in cond.loc.line..(cond.loc.end_line - 1) {
+            buffer::append_str(*buf, cond.loc.lines[i])
+        }
+        if cond.loc.end_line > cond.loc.line {
+            line = cond.loc.lines[cond.loc.end_line]
+            str.value = line.value
+            str.size = cond.loc.end_column
+            buffer::append_str(*buf, str)
+        }
+        buffer::append_char(*buf, '\0')
+    	
+        args[5] = charp(buffer::to_string(*buf), state)
+    } else {
+        args = allocate(Value, 5)
+        fmt = "%s:%d:%s: Unreachable!\n"
+    }
+
+    let stderr = make_local_value(builtins::File_, null, state)
+    let load = make_insn_dbg(InsnKind::LOAD, loc)
+    load.value.load = {
+        value = stderr,
+        loc = { 
+            kind = ValueKind::GLOBAL, 
+            name = "stderr", 
+            tpe = typechecking::pointer(builtins::File_) 
+        } !Value
+    } !InsnLoad
+    push_insn(load, state)
+
+    args[0] = stderr
+    args[1] = charp(fmt, state)
+    args[2] = charp(node.loc.filename, state)
+    args[3] = { kind = ValueKind::INT, tpe = builtins::int_, i = node.loc.line + 1 } !Value
+
+    var current_function = "main"
+    if state.current_function {
+        current_function = state.current_function.unmangled
+    }
+
+    args[4] = charp(current_function, state)
+    
+    let proto = allocate(typechecking::NamedParameter, 3)
+    proto[0] = { tpe = builtins::File_ } !typechecking::NamedParameter
+    proto[1] = { tpe = typechecking::pointer(builtins::char_) } !typechecking::NamedParameter
+    proto[2] = { varargs = true } !typechecking::NamedParameter
+
+    let fprintf = make_insn_dbg(InsnKind::CALL, loc)
+    fprintf.value.call = {
+        name = { kind = ValueKind::GLOBAL, name = "fprintf" } !Value,
+        ret = make_local_value(builtins::int_, null, state),
+        args = args,
+        proto = proto
+    } !InsnCall
+    push_insn(fprintf, state)
+
+    let abort = make_insn_dbg(InsnKind::CALL, loc)
+    abort.value.call = {
+        name = { kind = ValueKind::GLOBAL, name = "abort" } !Value,
+        ret = NO_VALUE,
+        args = allocate(Value, 0)
+    } !InsnCall
+    push_insn(abort, state)
+
+    let unreachable = make_insn(InsnKind::UNREACHABLE)
+    push_insn(unreachable, state)
+    
+    let if_true = make_label(state)
+    push_label(if_true, state)
+    
+    if cond {
+        br.value.br.if_true = if_true
+    }
+}
+
 export def walk(node: *parser::Node, state: *State) {
     if not node { return }
     switch (@node).kind !int {
@@ -4422,6 +4548,8 @@ export def walk(node: *parser::Node, state: *State) {
             walk_For(node, state)
         case parser::NodeKind::DEFER:
             walk_Defer(node, state)
+        case parser::NodeKind::ASSERT:
+            walk_Assert(node, state)
         case parser::NodeKind::TYPE_DECL:
             walk_TypeDecl(node, state)
         case: walk_expression(node, state)
