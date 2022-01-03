@@ -521,7 +521,7 @@ def process_module(name: str):
 
     with open(folder / f"{name}.json", "w") as fp:
         p = subprocess.Popen(
-            ["clang" if sys.platform == "win32" else "clang-12", "-Xclang", "-ast-dump=json", "-fsyntax-only", folder / f"{name}.h"], 
+            ["clang" if sys.platform == "win32" else "clang-13", "-Xclang", "-ast-dump=json", "-fsyntax-only", folder / f"{name}.h"], 
             stdout = fp)
         p.wait()
 
