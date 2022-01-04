@@ -432,8 +432,9 @@ def walk_EnumDecl(node, file: File):
     file.STRUCT_IDS[node["id"]] = record
 
 def is_anonymous(qual_type):
-    return ("anonymous struct at" in qual_type or 
-        "anonymous union" in qual_type or 
+    return ("unnamed struct at" in qual_type or 
+        "unnamed union" in qual_type or 
+        "unnamed at" in qual_type or
         "anonymous at" in qual_type)
 
 def walk_TypedefDecl(node, file: File):
