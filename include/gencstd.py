@@ -1,3 +1,5 @@
+#!/usr/bin/python3.9
+
 from abc import ABC, abstractmethod
 import subprocess, json, sys
 import tatsu
