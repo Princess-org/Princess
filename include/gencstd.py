@@ -422,11 +422,11 @@ def walk_EnumDecl(node, file: File):
             
             fields.append((field_name, inner))
 
-    if not name:
-        prev = "0"
-        for f in fields:
-            file.GLOBALS[f[0]] = ConstDecl(f[0], PRIMITIVES["int"], f[1] if f[1] else prev)
-            prev = f[0] + " + 1"
+    #if not name:
+    prev = "0"
+    for f in fields:
+        file.GLOBALS[f[0]] = ConstDecl(f[0], PRIMITIVES["int"], f[1] if f[1] else prev)
+        prev = f[0] + " + 1"
 
     record = Enum(name, fields)
     if name:
@@ -558,13 +558,13 @@ def process_module(name: str):
         print(f"export var __VARS: [{len(VARS)}; *]", file = fp)
         print(f"export var __VAR_NAMES: [{len(VARS)}; string]", file = fp)
 
+        for g in CONSTS.values():
+            print(g.to_declaration(0, file), file = fp)
+
         for type in file.TYPEDEFS.values():
             type.print_references(file)
         for type in file.TAGGED.values():
             type.print_references(file)
-
-        for g in CONSTS.values():
-            print(g.to_declaration(0, file), file = fp)
 
         num_decls = 0
         for g in DEFS.values():

@@ -21,4 +21,8 @@
 #include <float.h>
 #include <limits.h>
 
+#ifdef _WIN32
+    #include <conio.h>
+#endif
+
 #include "../princess.h"
