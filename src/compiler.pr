@@ -688,32 +688,18 @@ def pop_scope(state: *State) {
 
 // TODO We might want to cache this somewhere
 def make_return_type(tpe: *typechecking::Type) -> *typechecking::Type {
-    // Create anonymous struct as return type
-    let ret_tpe = typechecking::make_anonymous_type(typechecking::TypeKind::STRUCT)
-    (@ret_tpe).packed = false
     let length = vector::length((@tpe).return_t)
     let fields = allocate(typechecking::StructMember, length)
 
-    // TODO Somehow refactor this with typechecking::type_lookup
-    var offset = 0
-    var align = 1
     for var i in 0..length {
         let t = vector::get((@tpe).return_t, i) !*typechecking::Type
         // TODO Add an underscore in front for the debugger
         let name = util::int_to_str(i)
 
-        offset = (ceil(offset / (@t).align  !double) * (@tpe).align) !int
-        align = util::lcm(align, (@t).align !int)
-
-        fields[i] = { (@tpe).line, name, t, offset } !typechecking::StructMember
-        offset += (@t).size
+        fields[i] = { line = (@tpe).line, name = name, tpe = t } !typechecking::StructMember
     }
-    offset = (ceil(offset / align !double) * align) !int
 
-    (@ret_tpe).size = offset
-    (@ret_tpe).align = align
-    (@ret_tpe).fields = fields
-    return ret_tpe
+    return typechecking::make_struct_type(fields)
 }
 
 def import_structure(tpe: *typechecking::Type, module: *toolchain::Module) {
@@ -819,7 +805,7 @@ def walk_String(node: *parser::Node, state: *State) -> Value {
     (@strtpe).tpe = builtins::char_
     (@strtpe).length = (@node).value.str.size
     (@strtpe).size = (@strtpe).length * (size_of char)
-    (@strtpe).align = size_of char
+    (@strtpe).align = align_of char
     
     let str_value = allocate(Value)
     @str_value = {
@@ -4598,8 +4584,9 @@ def di_composite_type(value: *Value, tpe: *typechecking::Type, name: string, c: 
         debug_values[6] = {
             name = "size", value = { kind = DebugValueKind::INT, i = (@elem.tpe).size * 8 } !DebugValue
         } !DebugParam
+        let type_member = vector::get(tpe.field_types, elem.index) !*typechecking::TypeMember
         debug_values[7] = {
-            name = "offset", value = { kind = DebugValueKind::INT, i = elem.offset * 8 } !DebugValue
+            name = "offset", value = { kind = DebugValueKind::INT, i = type_member.offset * 8 } !DebugValue
         } !DebugParam
 
         let di = allocate(Value)
@@ -4817,15 +4804,12 @@ def di_array_type(value: *Value, tpe: *typechecking::Type, state: *State) -> *Va
 }
 
 def di_ref_type(value: *Value, tpe: *typechecking::Type, state: *State) -> *Value {
-    let ref = typechecking::make_anonymous_type(typechecking::TypeKind::STRUCT)
     let fields = allocate(StructMember, 3)
-    fields[0] = { 0, "ref_count", typechecking::pointer(builtins::int64_), 0 } !StructMember
-    fields[1] = { 0, "value", typechecking::pointer(tpe.tpe), (size_of type *) } !StructMember
-    fields[2] = { 0, "tpe", typechecking::pointer(toolchain::type_type), (size_of type *) * 2 } !StructMember
-    ref.fields = fields
-    ref.size = (size_of type *) * 3
-    ref.align = 1
-
+    fields[0] = { name = "ref_count", tpe = typechecking::pointer(builtins::int64_) } !StructMember
+    fields[1] = { name = "value", tpe = typechecking::pointer(tpe.tpe) } !StructMember
+    fields[2] = { name = "tpe", tpe = typechecking::pointer(toolchain::type_type) } !StructMember
+    let ref = typechecking::make_struct_type(fields)
+ 
     return di_composite_type(value, ref, "<ref>", "DW_TAG_structure_type", state)
 }
 
@@ -4905,55 +4889,31 @@ def generate_defer_types(state: *State) {
     buffer::append_str(*buf, ".env")
     let env_name = buffer::to_string(*buf)
 
-    let env = typechecking::make_type_raw(typechecking::TypeKind::STRUCT)
-    env.type_name = env_name
-    env.fields = allocate(typechecking::StructMember, map::size(function.locals))
-
-    var offset = 0 !size_t
-    var align = 1 !size_t
+   
+    let env_fields = allocate(typechecking::StructMember, map::size(function.locals))
 
     let keys = map::keys(function.locals)
     for var i in 0..keys.size {
         let tpe = map::get(function.locals, keys[i]) !*typechecking::Type
-
-        offset = (ceil(offset / tpe.align !double) * tpe.align) !int
-        align = util::lcm(align !int, tpe.align !int)
-
-        env.fields[i] = {
-            tpe = tpe,
-            offset = offset
+        env_fields[i] = {
+            tpe = tpe
         } !typechecking::StructMember
-
-        offset += tpe.size
     }
-    offset = (ceil(offset / align !double) * align) !int
-
-    env.align = align
-    env.size = offset
+    let env = typechecking::make_struct_type(env_fields)
+    env.type_name = env_name
 
     map::put(state.module.result.structures, env_name, env)
     function.env = env
-
-    offset = 0
-    align = 1
 
     buf = buffer::make_buffer()
     buffer::append_str(*buf, function.name)
     buffer::append_str(*buf, ".defers")
     let defers_name = buffer::to_string(*buf)
+    let defers_fields = allocate(typechecking::StructMember, 3)
 
-    offset = (ceil(offset / env.align !double) * env.align) !int
-    align = util::lcm(align !int, env.align !int)
-
-    let defers = typechecking::make_type_raw(typechecking::TypeKind::STRUCT)
-    defers.type_name = defers_name
-    defers.fields = allocate(typechecking::StructMember, 3)
-    defers.fields[0] = {
-        tpe = env,
-        offset = offset
+    defers_fields[0] = {
+        tpe = env
     } !typechecking::StructMember
-
-    offset += env.size
 
     let defer_function = typechecking::make_type_raw(typechecking::TypeKind::FUNCTION)
     defer_function.parameter_t = vector::make()
@@ -4967,33 +4927,18 @@ def generate_defer_types(state: *State) {
     defer_function.size = size_of type ->
     
     let defer_functionp = typechecking::pointer(defer_function)
-
-    offset = (ceil(offset / defer_functionp.align !double) * defer_functionp.align) !int
-    align = util::lcm(align !int, defer_functionp.align !int)
-    
-    defers.fields[1] = {
-        tpe = defer_functionp,
-        offset = offset
+    defers_fields[1] = {
+        tpe = defer_functionp
     } !typechecking::StructMember
 
-    offset += defer_functionp.size
+    let defersp = typechecking::pointer(null)
 
-    let defersp = typechecking::pointer(defers)
-
-    offset = (ceil(offset / defer_functionp.align !double) * defer_functionp.align) !int
-    align = util::lcm(align !int, defer_functionp.align !int)
-
-    defers.fields[2] = {
-        tpe = defersp,
-        offset = offset
+    defers_fields[2] = {
+        tpe = defersp
     } !typechecking::StructMember
 
-    offset += defer_functionp.size
-
-    offset = (ceil(offset / align !double) * align) !int
-    defers.size = offset
-    defers.align = align
-
+    let defers = typechecking::make_struct_type(defers_fields)
+    defersp.tpe = defers
     map::put(state.module.result.structures, defers_name, defers)
     function.defers = defers
 
