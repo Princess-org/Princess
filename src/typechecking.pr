@@ -45,12 +45,22 @@ export type TypeKind = enum {
     CHAR
 }
 
+export type TypeMember = struct {
+    tpe: *Type
+    offset: size_t
+}
+
 export type StructMember = struct {
     // Source line
     line: int
     name: string
     tpe: *Type
-    offset: size_t
+    // index into the field_types vector
+    index: size_t
+
+    is_bitfield: bool
+    bit_size: size_t
+    bit_offset: size_t
 }
 
 export type Type = struct {
@@ -66,7 +76,6 @@ export type Type = struct {
     size: size_t
     align: size_t
     unsig: bool
-    // TODO Add kw (parser::VarDecl) for arrays and pointers
     // Static array
     length: size_t
     kw: parser::VarDecl
@@ -76,8 +85,8 @@ export type Type = struct {
     packed: bool
     // Fields for struct, array of StructMember
     fields: [StructMember]
-    // Biggest field of a union
-    biggest_field: *StructMember
+    // Vector of TypeMember
+    field_types: *vector::Vector
     // Function and Tuple
     // Vector of Type
     return_t: *vector::Vector
@@ -346,17 +355,6 @@ def make_unique_name(name: string, state: *State) -> string {
 
     (@state).counter += 1
     return buffer::to_string(*buf)
-}
-
-export def make_anonymous_type(kind: TypeKind) -> *Type {
-    var t = allocate(Type)
-    @t = {
-        line = -1,
-        kind = kind,
-        type_name = "",
-        name = ""
-    } !Type
-    return t
 }
 
 // TODO Not a deep copy
@@ -842,6 +840,66 @@ def check_is_identifier_assignable(node: *parser::Node, state: *State) -> bool {
     return true
 }
 
+export def make_struct_type(fields: [StructMember]) -> *Type {
+    let struct_tpe = make_type_raw(TypeKind::STRUCT)
+    let field_types = vector::make()
+
+    var j = 0
+    var bit_offset = 0
+    var offset = 0 !size_t
+    var align = 1 !size_t
+    var bit_type: *Type = null
+
+    for var i in 0..fields.size {
+        let field = *fields[i]
+        let tpe = field.tpe
+        field.index = j
+        
+        // TODO This is the msvc way of doing bit fields, on Linux the ABI might differ
+        if field.is_bitfield {
+            field.bit_offset = bit_offset
+            if i < fields.size - 1 {
+                if not bit_type {
+                    bit_type = tpe
+                } 
+                if field.bit_size > 0 and
+                    equals(bit_type, tpe) and 
+                    bit_offset + field.bit_size < bit_type.size * 8 {
+                    
+                    bit_offset += field.bit_size
+                    continue
+                }
+            }
+        }
+
+        offset = (ceil(offset / tpe.align !double) * tpe.align) !int
+        align = util::lcm(align !int, tpe.align !int)
+
+        let type_member = allocate(TypeMember)
+        @type_member = {
+            tpe = tpe,
+            offset = offset
+        } !TypeMember
+
+        offset += tpe.size
+        vector::push(field_types, type_member)
+        
+        j += 1
+        bit_offset = 0
+        bit_type = null
+    }
+
+    offset = (ceil(offset / align !double) * align) !int
+    assert(offset > 0)
+
+    struct_tpe.size = offset
+    struct_tpe.align = align
+    struct_tpe.fields = fields
+    struct_tpe.field_types = field_types
+
+    return struct_tpe
+}
+
 export def type_lookup(node: *parser::Node, state: *State, lookup_default: bool) -> *Type {
     if not node { return null }
     if (@node).kind == parser::NodeKind::IDENTIFIER {
@@ -871,10 +929,6 @@ export def type_lookup(node: *parser::Node, state: *State, lookup_default: bool)
         let tpe = type_lookup(node.value.t_parr.tpe, state, lookup_default)
         return reference(tpe, node.value.t_parr.kw)
     } else if (@node).kind == parser::NodeKind::STRUCT_T {
-        let tpe = make_anonymous_type(TypeKind::STRUCT)
-        (@tpe).type_name = make_unique_name("<anonymous>", state)
-        (@tpe).name = "<anonymous>"
-        (@tpe).packed = false
         
         let length = vector::length((@node).value.body)
         if length == 0 {
@@ -883,47 +937,46 @@ export def type_lookup(node: *parser::Node, state: *State, lookup_default: bool)
         }
 
         let fields = allocate(StructMember, length)
-
-        var offset = 0 !size_t
-        var align = 1 !size_t
         for var i in 0..length {
             let field = vector::get((@node).value.body, i) !*parser::Node
+            if not field { continue }
             let line = (@field).loc.line
 
-            var tpe: *Type = null
+            var field_tpe: *Type = null
             var name = ""
+            var is_bitfield = false
+            var bit_size = 0 !size_t
 
             if (@field).kind == parser::NodeKind::ID_DECL_STRUCT {
                 let ident = (@field).value.id_decl_struct.ident
                 name = last_ident_to_str(ident)
-                tpe = type_lookup((@field).value.id_decl_struct.tpe, state, lookup_default)
+                field_tpe = type_lookup((@field).value.id_decl_struct.tpe, state, lookup_default)
+                if field.value.id_decl_struct.is_bitfield {
+                    is_bitfield = true
+                    bit_size = field.value.id_decl_struct.bit_size
+                }
             } else if (@field).kind == parser::NodeKind::STRUCT_T or
                 (@field).kind == parser::NodeKind::UNION_T {
-                tpe = type_lookup(field, state, lookup_default)
+                field_tpe = type_lookup(field, state, lookup_default)
             }
             
-            if is_stub(tpe) {
-                fields[i] = { line, name, null, offset } !StructMember
-                continue 
-            }
-            
-            offset = (ceil(offset / (@tpe).align !double) * (@tpe).align) !int
-            align = util::lcm(align !int, (@tpe).align !int)
-
-            fields[i] = { line, name, tpe, offset } !StructMember
-            offset += (@tpe).size
+            fields[i] = { 
+                line = line, 
+                name = name, 
+                tpe = field_tpe,
+                is_bitfield = is_bitfield, 
+                bit_size = bit_size
+            } !StructMember
         }
-        offset = (ceil(offset / align !double) * align) !int
-        assert(offset > 0)
         
-        (@tpe).line = (@node).loc.line
-        (@tpe).size = offset
-        (@tpe).align = align
-        (@tpe).fields = fields
+        let tpe = make_struct_type(fields)
+        tpe.type_name = make_unique_name("<anonymous>", state)
+        tpe.name = "<anonymous>"
+        tpe.line = node.loc.line
 
         return tpe
     } else if (@node).kind == parser::NodeKind::UNION_T {
-        let tpe = make_anonymous_type(TypeKind::UNION)
+        let tpe = make_type_raw(TypeKind::UNION)
         (@tpe).type_name = make_unique_name("<anonymous>", state)
         (@tpe).name = "<anonymous>"
 
@@ -934,43 +987,58 @@ export def type_lookup(node: *parser::Node, state: *State, lookup_default: bool)
         }
 
         let fields = allocate(StructMember, length)
+        let field_types = vector::make()
 
         var size = 0 !size_t
         var align = 1 !size_t
+        var biggest_type: *Type = null
         for var i in 0..length {
             let field = vector::get((@node).value.body, i) !*parser::Node
             let line = (@field).loc.line
             
             var field_tpe: *Type = null
             var name = ""
+            var is_bitfield = false
+            var bit_size = 0 !size_t
 
             if (@field).kind == parser::NodeKind::ID_DECL_STRUCT {
                 let ident = (@field).value.id_decl_struct.ident
                 name = last_ident_to_str(ident)
                 field_tpe = type_lookup((@field).value.id_decl_struct.tpe, state, lookup_default)
+                if field.value.id_decl_struct.is_bitfield {
+                    is_bitfield = true
+                    bit_size = field.value.id_decl_struct.bit_size
+                }
             } else if (@field).kind == parser::NodeKind::STRUCT_T or
                 (@field).kind == parser::NodeKind::UNION_T {
                 field_tpe = type_lookup(field, state, lookup_default)
             }
-            
-            if is_stub(field_tpe) {
-                fields[i] = { line, name, null, 0 } !StructMember
-                continue 
-            }
 
-            fields[i] = { line, name, field_tpe, 0 } !StructMember
+            fields[i] = { 
+                line = line, 
+                name = name, 
+                tpe = field_tpe,
+                is_bitfield = is_bitfield, 
+                bit_size = bit_size
+            } !StructMember
 
             if field_tpe.size > size {
                 size = field_tpe.size
-                tpe.biggest_field = *fields[i]
+                biggest_type = field_tpe
             }
+            // TODO Alignment of bit fields on Windows is strange
             align = max(field_tpe.align, align) !size_t
         }
 
-        (@tpe).line = (@node).loc.line
-        (@tpe).size = size
-        (@tpe).align = align
-        (@tpe).fields = fields
+        let type_member = allocate(TypeMember)
+        @type_member = { biggest_type, 0 } !TypeMember
+        vector::push(field_types, type_member)
+
+        tpe.line = (@node).loc.line
+        tpe.size = size
+        tpe.align = align
+        tpe.fields = fields
+        tpe.field_types = field_types
 
         return tpe
     } else if (@node).kind == parser::NodeKind::ENUM_T {
@@ -978,7 +1046,7 @@ export def type_lookup(node: *parser::Node, state: *State, lookup_default: bool)
         if (@node).value.t_enum.tpe {
             enum_tpe = type_lookup((@node).value.t_enum.tpe, state, lookup_default)
         }
-        let tpe = make_anonymous_type(TypeKind::ENUM)
+        let tpe = make_type_raw(TypeKind::ENUM)
         (@tpe).line = (@node).loc.line
         (@tpe).tpe = enum_tpe
         (@tpe).size = (@enum_tpe).size
@@ -1013,7 +1081,7 @@ export def type_lookup(node: *parser::Node, state: *State, lookup_default: bool)
         return pointer(tpe)
     } else if node.kind == parser::NodeKind::TYPE_T {
         let wrapped = type_lookup(node.value.expr, state, lookup_default)
-        let tpe = make_anonymous_type(TypeKind::TYPE_DEF)
+        let tpe = make_type_raw(TypeKind::TYPE_DEF)
         tpe.line = node.loc.line
         tpe.tpe = wrapped
         return tpe
@@ -1027,7 +1095,7 @@ export def type_lookup(node: *parser::Node, state: *State, lookup_default: bool)
         return signed
     } else if node.kind == parser::NodeKind::WORD_T {
         let n = node.value.i / 8
-        let tpe = make_anonymous_type(TypeKind::WORD)
+        let tpe = make_type_raw(TypeKind::WORD)
         tpe.size = n
         tpe.align = n
         return tpe
@@ -1179,8 +1247,9 @@ def push_struct_members(tpe: *Type, global: compiler::Value, module: *toolchain:
         name_values[1] = { kind = compiler::ValueKind::UNDEF, tpe = pointer(builtins::int8_) } !compiler::Value
 
         let field_values = allocate(compiler::Value, 3)
+        let type_member = vector::get(tpe.field_types, field.index) !*TypeMember
         field_values[0] = { kind = compiler::ValueKind::STRUCT, tpe = builtins::string_, values = name_values } !compiler::Value
-        field_values[1] = { kind = compiler::ValueKind::INT, tpe = builtins::uint64_, i = field.offset !int64 } !compiler::Value
+        field_values[1] = { kind = compiler::ValueKind::INT, tpe = builtins::uint64_, i = type_member.offset !int64 } !compiler::Value
         field_values[2] = { kind = compiler::ValueKind::UNDEF, tpe = pointer(toolchain::type_type) } !compiler::Value
 
         let value = { kind = compiler::ValueKind::STRUCT, tpe = field_type, values = field_values } !compiler::Value
@@ -2709,12 +2778,16 @@ def walk_StructLit(node: *parser::Node, state: *State) {
     for var i in 0..vector::length((@node).value.struct_lit.args) {
         let n = vector::get((@node).value.struct_lit.args, i) !*parser::Node
         if i > (@tpe).fields.size {
-            errors::errorn(n, "Too many arguments to array literal")
+            errors::errorn(n, "Too many arguments to struct literal")
             return
         }
-        walk(node, n, state)
-        
+
         var ntpe = (@tpe).fields[i].tpe
+        if is_struct(ntpe) {
+            n.tpe = ntpe
+        }
+
+        walk(node, n, state)
         implicit_conversion(n, ntpe)
 
         if not ntpe or not (@n).tpe { continue }
