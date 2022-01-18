@@ -15,6 +15,7 @@ import compiler
 import preprocess
 import errors
 import runtime
+import eval
 
 export type TypeKind = enum {
     TYPE
@@ -1595,7 +1596,42 @@ def change_value_to_type(tpe: *Type, state: *State) -> *scope::Value {
     compiler::import_structures(type_type, state.module)
     let value = zero_allocate(scope::Value)
     value.tpe = pointer(type_tpe)
+
+    // We need an independent block that we can run for constant evaluation
+    let old_block = toolchain::types_state.current_block
+    let new_block = compiler::make_block()
+    new_block.counter = old_block.counter
+    toolchain::types_state.current_block = new_block
+
     value.value = create_type(tpe, state.module)
+
+    let function = allocate(compiler::Function)
+    @function = {
+        name = "main",
+        unmangled = "main",
+        forward_declare = true,
+        allocas = vector::make(),
+        block = new_block
+    } !compiler::Function
+    preprocess::compiler_state.current_function = function
+    preprocess::compiler_state.current_block = new_block
+
+    // Copy constants into the right module
+    let keys = map::keys(toolchain::types.result.globals)
+    for var i in 0..keys.size {
+        let key = keys[i]
+        let global = map::get(toolchain::types.result.globals, key)
+        map::put(preprocess::const_module.result.globals, key, global)
+    }
+
+    eval::eval(*preprocess::compiler_state)
+
+    old_block.counter = new_block.counter
+    for var i in 0..vector::length(new_block.insn) {
+        vector::push(old_block.insn, vector::get(new_block.insn, i))
+    }
+    toolchain::types_state.current_block = old_block
+
     return value
 }
 
@@ -2133,7 +2169,7 @@ export def walk_Def(node: *parser::Node, state: *State, redefine_type: bool) {
         // TODO what about forward declarations?
         scope::create_variable(outer_scope, name, share, parser::VarDecl::CONST, tpe, null)
     } else {
-        scope::create_function(outer_scope, name, share, tpe, phase, null, null)
+        scope::create_function(outer_scope, name, share, tpe, phase, node, state)
     }
     
     if body {
@@ -2356,14 +2392,12 @@ export def walk_Call(node: *parser::Node, dry_run: bool, state: *State) -> bool 
     
     let parameter_t = (@tpe).parameter_t
 
-    var i = 0
-    var j = 0
     // Implicit conversions, this also removes type parameters from the argument list
     for var i in 0..vector::length(node.value.func_call.args) {
         let n = vector::get((@node).value.func_call.args, i) !*parser::Node
         var rhstpe: *Type = null
         if i < vector::length(parameter_t) {
-            rhstpe = (@(vector::get(parameter_t, j) !*NamedParameter)).tpe
+            rhstpe = (@(vector::get(parameter_t, i) !*NamedParameter)).tpe
         } else {
             let np = vector::peek(parameter_t) !*NamedParameter
             assert((@np).varargs)
