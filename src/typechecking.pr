@@ -574,7 +574,7 @@ def convert_type_score(a: *Type, b: *Type, is_type: bool = false) -> int {
             }
             return -1
         }
-        return 1
+        return 10
     }
     return -1
 }
@@ -601,7 +601,15 @@ def find_type_defs(left: *Type, right: *Type, types: *map::Map, replace: bool, i
 
     if left.kind == TypeKind::TYPE_DEF {
         find_type_defs(left.tpe, right, types, replace, true)
-        if replace { @left = @right }
+        if replace {
+            if left.tpe.kind == TypeKind::ARRAY and right.kind == TypeKind::STATIC_ARRAY {
+                // Turn static array into a dynamic array
+                @left = @right
+                left.kind = TypeKind::ARRAY
+            } else {
+                @left = @right
+            }
+        }
     } else if left.kind == TypeKind::POINTER or left.kind == TypeKind::REFERENCE or 
         left.kind == TypeKind::STATIC_ARRAY or left.kind == TypeKind::ARRAY {
         find_type_defs(left.tpe, right.tpe, types, replace, is_type)
@@ -1063,7 +1071,20 @@ export def type_lookup(node: *parser::Node, state: *State, lookup_default: bool)
     } else if (@node).kind == parser::NodeKind::ARRAY_STATIC_T {
         let array_tpe = type_lookup((@node).value.t_arrs.tpe, state, lookup_default)
 
-        return make_static_array(array_tpe, (@(@node).value.t_arrs.n).value.i, node.value.t_arrs.kw)
+        var n = util::MAX_UINT64 !int64
+        if node.value.t_arrs.n {
+            n = 0
+            let value = preprocess::expr(node.value.t_arrs.n, state)
+            if value.tpe.kind != TypeKind::WORD {
+                errors::errorn(node.value.t_arrs.n, "Type needs to be a positive integer, got ", debug::type_to_str(value.tpe))
+            } else if not value.tpe.unsig and value.i < 0 {
+                errors::errorn(node.value.t_arrs.n, "Negative array size not allowed")
+            } else {
+                n = value.i
+            }
+        }
+
+        return make_static_array(array_tpe, n, node.value.t_arrs.kw)
     } else if (@node).kind == parser::NodeKind::FUNCTION_T {
         let tpe = make_function_type()
         (@tpe).line = (@node).loc.line
@@ -1852,18 +1873,26 @@ export def walk_VarDecl(node: *parser::Node, state: *State, set_constant: bool) 
             }
             if not ltpe and balanced {
                 errors::errorn(node, "Need to specify a type")
+                continue
             }
 
             let ident = (@node).value.id_decl.value
             let is_underscore = scope::last_path_element(ident) == "_"
 
+            var rtpe: *Type = null
             if i < vector::length(rtypes) {
-                let rtpe = vector::get(rtypes, i) !*Type
-
-                if is_underscore { ltpe = rtpe }
+                rtpe = vector::get(rtypes, i) !*Type
+                
+                if ltpe.kind == TypeKind::STATIC_ARRAY and ltpe.length == util::MAX_UINT64 or is_underscore {
+                    ltpe = rtpe
+                }
                 if not is_assignable(ltpe, rtpe) {
                     errors::errorn(node, "Incompatible types ", debug::type_to_str(rtpe), " and ", debug::type_to_str(ltpe))
                 }
+            }
+
+            if not rtpe and ltpe.kind == TypeKind::STATIC_ARRAY and ltpe.length == util::MAX_UINT64 {
+                errors::errorn(node, "Array size indeterminate")
             }
 
             ident.scope = state.scope
@@ -1875,7 +1904,6 @@ export def walk_VarDecl(node: *parser::Node, state: *State, set_constant: bool) 
                 ident.svalue = scope::create_variable(state.scope, ident, share, kw, ltpe, extern, null)
             }
             
-
             if function {
                 map::put(function.locals, ident.svalue.assembly_name, ltpe)
             }
