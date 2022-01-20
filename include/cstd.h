@@ -20,5 +20,3 @@
 #include <errno.h>
 #include <float.h>
 #include <limits.h>
-
-#include "../princess.h"
