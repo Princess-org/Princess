@@ -7,6 +7,7 @@ import compiler
 import scope
 import debug
 import toolchain
+import builtins
 
 def type_to_str(tpe: *typechecking::Type) -> string {
     if not tpe { return "void" }
@@ -117,7 +118,7 @@ def type_to_str(tpe: *typechecking::Type) -> string {
             buffer::append_str(*buf, (@tpe).type_name)
             buffer::append_char(*buf, '"')
         case: 
-            error((@tpe).kind, "\n")
+            error((@tpe).kind !int, "\n")
             assert(false)
     }
     return buffer::to_string(*buf)
@@ -189,6 +190,9 @@ def value_to_str(value: compiler::Value) -> string {
             if value.metadata {
                 buffer::append_char(*buf, '!')
             }
+            if value.tpe and value.tpe.packed {
+                buffer::append_char(*buf, '<')
+            }
             buffer::append_char(*buf, '{')
             for var i in 0..value.values.size {
                 // TODO Figure out why we need that cast
@@ -203,6 +207,9 @@ def value_to_str(value: compiler::Value) -> string {
                 }
             }
             buffer::append_char(*buf, '}')
+            if value.tpe and value.tpe.packed {
+                buffer::append_char(*buf, '>')
+            }
         case compiler::ValueKind::ARRAY:
             buffer::append_char(*buf, '[')
             for var i in 0..value.values.size {
@@ -676,26 +683,58 @@ def emit_stub(fp: File, stub: *typechecking::Type) {
 }
 
 def emit_global(fp: File, global: *compiler::Global) {
-    write_string(fp, "@\"", (@global).name, "\"")
+    write_string(fp, "@\"", global.name, "\"")
     write_string(fp, " = ")
-    if (@global).external {
+    
+    if global.linkonce_odr {
+        write_string(fp, "linkonce_odr ")
+    }
+    if global.hidden {
+        write_string(fp, "hidden ")
+    }
+    if global.external {
         write_string(fp, "external ")
     }
-    if (@global).private {
+    if global.private {
         write_string(fp, "private ")
     }
-    write_string(fp, "global ")
-    
-    write_string(fp, type_to_str((@global).tpe))
+    if global.constant {
+        write_string(fp, "constant ")
+    } else {
+        write_string(fp, "global ")
+    }
+
+    write_string(fp, type_to_str(global.tpe))
     write_string(fp, " ")
-    if (@global).value {
-        write_string(fp, value_to_str(@(@global).value))
-    } else if not (@global).external {
+    if global.value {
+        write_string(fp, value_to_str(@global.value))
+    } else if not global.external {
         write_string(fp, "zeroinitializer")
     }
-    if (@global).debug {
+
+    if global.section.value and length(global.section) > 0 {
+        write_string(fp, ", section \"")
+        write_string(fp, global.section)
+        write_string(fp, "\"")
+    }
+
+    if global.has_comdat {
+        write_string(fp, ", comdat")
+        if global.comdat.value and length(global.comdat) > 0 {
+            write_string(fp, "($")
+            write_string(fp, global.comdat)
+            write_string(fp, ")")
+        }
+    }
+
+    if global.align > 0 {
+        write_string(fp, ", align ")
+        write_string(fp, util::int_to_str(global.align))
+    }
+
+    if global.debug {
         write_string(fp, ", !dbg ")
-        write_string(fp, value_to_str(@(@global).debug))
+        write_string(fp, value_to_str(@global.debug))
     }
     write_string(fp, "\n")
 }
@@ -742,6 +781,70 @@ def gen_header(fp: File, module: *toolchain::Module) {
     write_string(fp, "%__va_list_tag = type { i32, i32, i8*, i8* }\n")
 }
 
+def gen_coverage_mapping(fp: File, module: *toolchain::Module) {
+    let buf = buffer::make_buffer()
+
+    var n_filenames = 1
+    let filenames = buffer::make_buffer()
+    let keys = map::keys(toolchain::modules)
+    for var i in 0..keys.size {
+        let name = keys[i]
+        let module = map::get(toolchain::modules, name) !*toolchain::Module
+        if not toolchain::is_builtin(module) {
+            util::append_leb128(*filenames, module.filename.size)
+            buffer::append_str(*filenames, module.filename)
+            n_filenames += 1
+        }
+    }
+
+    util::append_leb128(*buf, n_filenames)
+    util::append_leb128(*buf, filenames.size)
+    util::append_leb128(*buf, 0)
+    util::append_leb128(*buf, 0)
+    buffer::append_str(*buf, buffer::to_string(*filenames))
+    let str = buffer::to_string(*buf)
+
+    let data_tpe = typechecking::make_string_type(str)
+
+    let header_fields = allocate(typechecking::StructMember, 4)
+    header_fields[0] = { tpe = builtins::int32_ } !typechecking::StructMember
+    header_fields[1] = { tpe = builtins::int32_ } !typechecking::StructMember
+    header_fields[2] = { tpe = builtins::int32_ } !typechecking::StructMember
+    header_fields[3] = { tpe = builtins::int32_ } !typechecking::StructMember
+    let header_tpe = typechecking::make_struct_type(header_fields)
+    
+    let header_values = allocate(compiler::Value, 4)
+    header_values[0] = { kind = compiler::ValueKind::INT, tpe = builtins::int32_, i = 0 } !compiler::Value
+    header_values[1] = { kind = compiler::ValueKind::INT, tpe = builtins::int32_, i = buf.size } !compiler::Value
+    header_values[2] = { kind = compiler::ValueKind::INT, tpe = builtins::int32_, i = 0 } !compiler::Value
+    header_values[3] = { kind = compiler::ValueKind::INT, tpe = builtins::int32_, i = 7 } !compiler::Value
+
+    let mapping_fields = allocate(typechecking::StructMember, 2)
+    mapping_fields[0] = { tpe = header_tpe } !typechecking::StructMember
+    mapping_fields[1] = { tpe = data_tpe } !typechecking::StructMember
+    let tpe = typechecking::make_struct_type(mapping_fields)
+
+    let mapping_values = allocate(compiler::Value, 2)
+    mapping_values[0] = { kind = compiler::ValueKind::STRUCT, tpe = header_tpe, values = header_values } !compiler::Value
+    mapping_values[1] = { kind = compiler::ValueKind::STRING, tpe = data_tpe, s = str } !compiler::Value
+
+    let mapping_value = allocate(compiler::Value)
+    @mapping_value = { kind = compiler::ValueKind::STRUCT, tpe = tpe, values = mapping_values } !compiler::Value
+
+    let mapping_global = allocate(compiler::Global)
+    @mapping_global = {
+        name = "__llvm_coverage_mapping",
+        constant = true,
+        private = true,
+        tpe = tpe,
+        value = mapping_value,
+        section = "__llvm_covmap",
+        align = 8
+    } !compiler::Global
+
+    map::put(module.result.globals, mapping_global.name, mapping_global)
+}
+
 export var time_spent: int64 = 0
 
 export def gen(module: *toolchain::Module) -> string {
@@ -769,6 +872,20 @@ export def gen(module: *toolchain::Module) -> string {
         map::put((@module).imported, "strlen", map::sentinel)
 
         gen_main_function(fp)
+        if toolchain::coverage {
+            gen_coverage_mapping(fp, module)
+        }
+    }
+
+    let keys_comdat = map::keys(result.comdat)
+    for var i in 0..keys_comdat.size {
+        let name = keys_comdat[i]
+        let comdat = map::get(result.comdat, name) !*compiler::Comdat
+        write_string(fp, "$\"")
+        write_string(fp, name)
+        write_string(fp, "\" = comdat ")
+        write_string(fp, comdat.to_string())
+        write_string(fp, "\n")
     }
 
     let keys_structures = map::keys((@result).structures)
@@ -799,7 +916,10 @@ export def gen(module: *toolchain::Module) -> string {
             emit_global(fp, global)
         }
     }
-    
+
+    if toolchain::coverage {
+        write_string(fp, "declare void @llvm.instrprof.increment(i8*, i64, i32, i32)\n")
+    }
     if toolchain::debug_sym {
         write_string(fp, "declare void @llvm.dbg.declare(metadata, metadata, metadata)\n")
     }
