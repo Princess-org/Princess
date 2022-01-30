@@ -34,8 +34,9 @@ export type DebugParam = struct {
 
 export type ValueKind = enum {
     NULL; ZEROINITIALIZER; UNDEF; LOCAL; GLOBAL
-    BOOL; INT; FLOAT; STRING; POINTER
-    ARRAY; STRUCT; UNION; TYPE; ADDRESS
+    BOOL; INT; FLOAT; STRING; 
+    NZSTRING; // Non zero terminated string
+    POINTER; ARRAY; STRUCT; UNION; TYPE; ADDRESS
     METADATA; DEBUG_INFO; FUNCTION
 }
 
@@ -86,7 +87,10 @@ export type InsnKind = enum {
     TRUNC; ZEXT; SEXT; FPTRUNC; FPEXT
     FPTOUI; FPTOSI; UITOFP; SITOFP
     PTRTOINT; INTTOPTR; BITCAST; SWITCH
-    CALL; BR_UNC; BR; UNREACHABLE
+    CALL; BR_UNC; BR; UNREACHABLE; 
+    // This is a special instruction for "llvm.instrprof.increment"
+    // because the number of counters isn't known when inserting the instruction
+    PROF_INCREMENT
 }
 
 export type CompareFloat = enum {
@@ -196,6 +200,10 @@ export type InsnBr = struct {
     if_false: Label
 }
 
+export type InsnProfIncrement = struct {
+    index: int
+}
+
 export type InsnValue = struct #union {
     arith: InsnArithmetic
     ret: InsnReturn
@@ -213,6 +221,7 @@ export type InsnValue = struct #union {
     fcmp: InsnFcmp
     fneg: InsnFneg
     switch_: InsnSwitch
+    prof_increment: InsnProfIncrement
 }
 
 export type Insn = struct {
@@ -277,8 +286,10 @@ export type Result = struct {
     referenced: *map::Map
 }
 
+// This is the per function based coverage
 export type Coverage = struct {
-    a: int
+    name_value: Value
+    counter: int
 }
 
 export type Global = struct {
@@ -310,6 +321,7 @@ export type State = struct {
     local_counter: int
     // TODO Make this a stack for nested functions
     current_function: *Function
+    current_coverage: *Coverage
     current_block: *Block
     // Vector of LoopState 
     loops: *vector::Vector
@@ -820,7 +832,7 @@ def walk_String(node: *parser::Node, state: *State) -> Value {
     let loc = make_location(node, state)
     let tpe = (@node).tpe
 
-    let strtpe = typechecking::make_string_type(node.value.str)
+    let strtpe = typechecking::make_string_type(node.value.str.size)
     
     let str_value = allocate(Value)
     @str_value = {
@@ -5230,6 +5242,18 @@ def create_debug_info(node: *parser::Node, function: *Function, tpe: *typechecki
 
     vector::push((@state).discope, disubp)
 }
+
+def create_instrprof_increment(node: *parser::Node, state: *State) {
+    let coverage = state.current_coverage
+
+    let increment = make_insn(InsnKind::PROF_INCREMENT)
+    increment.value.prof_increment = {
+        index = coverage.counter
+    } !InsnProfIncrement
+    push_insn(increment, state)
+
+    coverage.counter += 1
+}
  
 // block and body may be null
 export def create_function(
@@ -5244,6 +5268,39 @@ export def create_function(
     
     let function = map::get(state.module.result.functions, tpe.type_name) !*Function
     if not function { return }
+
+    var const_name: string
+    var name_tpe: *typechecking::Type
+    var previous_coverage = state.current_coverage
+    if toolchain::coverage {
+        state.current_coverage = map::get(state.module.result.coverage, function.name) !*Coverage
+        if not state.current_coverage {
+            // This might seem redundant but this way we can allow preprocessing to insert coverage records for a function
+            state.current_coverage = zero_allocate(Coverage)
+            map::put(state.module.result.coverage, function.name, state.current_coverage)
+        }
+
+        // Generate name variable for this function
+        let buf = buffer::make_buffer()
+        buffer::append_str(*buf, "__profn_")
+        buffer::append_str(*buf, function.name)
+        const_name = buffer::to_string(*buf)
+        name_tpe = typechecking::make_string_type(length(function.name))
+
+        let value = allocate(Value)
+        @value = { kind = ValueKind::NZSTRING, tpe = name_tpe, s = function.name } !Value
+
+        let global = allocate(Global)
+        @global = {
+            constant = true,
+            private = true,
+            name = const_name,
+            value = value,
+            tpe = name_tpe
+        } !Global
+
+        map::put(state.module.result.globals, global.name, global)
+    }
 
     let previous_function = state.current_function
     state.current_function = function
@@ -5327,6 +5384,26 @@ export def create_function(
 
         generate_defer_types(state)
 
+        if toolchain::coverage {
+            let index = allocate(Value, 2)
+            index[0] = make_int_value(0)
+            index[1] = make_int_value(0)
+
+            // Generate one dummy counter for the whole function TODO
+            let gep_ret = make_local_value(typechecking::pointer(builtins::int8_), null, state)
+            let gep = make_insn(InsnKind::GETELEMENTPTR)
+            gep.value.gep = {
+                ret = gep_ret,
+                tpe = name_tpe,
+                value = { kind = ValueKind::GLOBAL, tpe = typechecking::pointer(name_tpe), name = const_name } !Value,
+                index = index
+            } !InsnGetElementPtr
+            push_insn(gep, state)
+            state.current_coverage.name_value = gep_ret
+
+            create_instrprof_increment(node, state)
+        }
+
         var last_node: *Node = node
         for var i in 0..vector::length(body) {
             let node = vector::get(body, i) !*parser::Node
@@ -5366,6 +5443,7 @@ export def create_function(
         function.is_compiled = true
         state.current_block = previous_block
         state.current_function = previous_function 
+        state.current_coverage = previous_coverage
     }
 }
 

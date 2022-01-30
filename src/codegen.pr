@@ -224,13 +224,14 @@ def value_to_str(value: compiler::Value) -> string {
                 }
             }
             buffer::append_char(*buf, ']')
-        case compiler::ValueKind::STRING:
+        case compiler::ValueKind::STRING, compiler::ValueKind::NZSTRING:
             if value.metadata {
                 buffer::append_char(*buf, '!')
             } else {
                 buffer::append_char(*buf, 'c')
             }
-            buffer::append_str(*buf, util::repr(value.s, not value.metadata))
+            buffer::append_str(*buf, util::repr(value.s, not value.metadata and 
+                value.kind != compiler::ValueKind::NZSTRING))
         case compiler::ValueKind::DEBUG_INFO:
             if value.distinct {
                 buffer::append_str(*buf, "distinct ")
@@ -494,7 +495,18 @@ def emit_switch(fp: File, insn: *compiler::Insn) {
     write_string(fp, "\t]")
 }
 
-def emit(fp: File, insn: *compiler::Insn) {
+def emit_increment(fp: File, insn: *compiler::Insn, coverage: *compiler::Coverage) {
+    if not toolchain::coverage { return }
+    write_string(fp, "call void @llvm.instrprof.increment(i8* ")
+    write_string(fp, value_to_str(coverage.name_value))
+    write_string(fp, ", i64 0, i32 ")
+    write_string(fp, util::int_to_str(coverage.counter))
+    write_string(fp, ", i32 ")
+    write_string(fp, util::int_to_str(insn.value.prof_increment.index))
+    write_string(fp, ")\n")
+}
+
+def emit(fp: File, insn: *compiler::Insn, coverage: *compiler::Coverage) {
     write_string(fp, "\t")
     switch (@insn).kind !int {
         case compiler::InsnKind::FNEG:
@@ -587,6 +599,8 @@ def emit(fp: File, insn: *compiler::Insn) {
             emit_ret(fp, insn)
         case compiler::InsnKind::UNREACHABLE:
             write_string(fp, "unreachable")
+        case compiler::InsnKind::PROF_INCREMENT:
+            emit_increment(fp, insn, coverage)
         case: assert(false)
     }
     if (@insn).debug {
@@ -596,15 +610,15 @@ def emit(fp: File, insn: *compiler::Insn) {
     write_string(fp, "\n")
 }
 
-def emit_block(fp: File, block: *compiler::Block) {
+def emit_block(fp: File, block: *compiler::Block, coverage: *compiler::Coverage) {
     write_string(fp, (@block).label_, ":\n")
     for var i in 0..vector::length((@block).insn) {
         let insn = vector::get((@block).insn, i) !*compiler::Insn
-        emit(fp, insn)
+        emit(fp, insn, coverage)
     }
 }
 
-def emit_function(fp: File, function: *compiler::Function, module: *toolchain::Module) {
+def emit_function(fp: File, function: *compiler::Function, coverage: *compiler::Coverage, module: *toolchain::Module) {
     let forward_declare = function.forward_declare or function.module != module
 
     if forward_declare {
@@ -639,7 +653,7 @@ def emit_function(fp: File, function: *compiler::Function, module: *toolchain::M
         write_string(fp, " {\n")
         var block = (@function).block
         while block {
-            emit_block(fp, block)
+            emit_block(fp, block, coverage)
             block = (@block).next
         }
         write_string(fp, "}\n")
@@ -804,7 +818,7 @@ def gen_coverage_mapping(fp: File, module: *toolchain::Module) {
     buffer::append_str(*buf, buffer::to_string(*filenames))
     let str = buffer::to_string(*buf)
 
-    let data_tpe = typechecking::make_string_type(str)
+    let data_tpe = typechecking::make_string_type(length(str))
 
     let header_fields = allocate(typechecking::StructMember, 4)
     header_fields[0] = { tpe = builtins::int32_ } !typechecking::StructMember
@@ -826,7 +840,7 @@ def gen_coverage_mapping(fp: File, module: *toolchain::Module) {
 
     let mapping_values = allocate(compiler::Value, 2)
     mapping_values[0] = { kind = compiler::ValueKind::STRUCT, tpe = header_tpe, values = header_values } !compiler::Value
-    mapping_values[1] = { kind = compiler::ValueKind::STRING, tpe = data_tpe, s = str } !compiler::Value
+    mapping_values[1] = { kind = compiler::ValueKind::NZSTRING, tpe = data_tpe, s = str } !compiler::Value
 
     let mapping_value = allocate(compiler::Value)
     @mapping_value = { kind = compiler::ValueKind::STRUCT, tpe = tpe, values = mapping_values } !compiler::Value
@@ -903,9 +917,11 @@ export def gen(module: *toolchain::Module) -> string {
 
     let keys_functions = map::keys((@result).functions)
     for var i in 0..keys_functions.size {
-        let function = map::get((@result).functions, keys_functions[i]) !*compiler::Function
+        let name = keys_functions[i]
+        let function = map::get((@result).functions, name) !*compiler::Function
+        let coverage = map::get(result.coverage, name) !*compiler::Coverage
         if map::contains((@module).imported, (@function).name) {
-            emit_function(fp, function, module)
+            emit_function(fp, function, coverage, module)
         }
     }
 
