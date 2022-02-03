@@ -726,7 +726,7 @@ def union_to_ffi(tpe: *typechecking::Type) -> *ffi::ffi_type {
     return null
 }
 
-def type_to_ffi(tpe: *typechecking::Type) -> *ffi::ffi_type {
+def type_to_ffi(tpe: *typechecking::Type, varargs: bool = false) -> *ffi::ffi_type {
     if not tpe {
         return *ffi::ffi_type_void
     } else if tpe.kind == typechecking::TypeKind::STRUCT {
@@ -767,12 +767,24 @@ def type_to_ffi(tpe: *typechecking::Type) -> *ffi::ffi_type {
     }
 }
 
+// ARGH C Why
+def promote(tpe: *typechecking::Type) -> *typechecking::Type {
+    if typechecking::equals(tpe, builtins::float_) { return builtins::double_ }
+    if (tpe.kind == typechecking::TypeKind::WORD or tpe.kind == typechecking::TypeKind::CHAR) and tpe.size < builtins::int_.size {
+        if tpe.unsig { return builtins::uint_ }
+        return builtins::int_
+    }
+    return tpe
+}
+
 def ffi_call(args: [compiler::Value], ret: compiler::Value, parameter_t: *vector::Vector, ret_tpe: *typechecking::Type, ffi_function: *preload::FfiFunction, varargs: bool, state: *State) {
     let ffi_cif = *ffi_function.ffi_cif
 
     let ffi_args = allocate((size_of type *ffi::ffi_type) * args.size) !**ffi::ffi_type
     for var i in 0..args.size {
-        ffi_args[i] = type_to_ffi(args[i].tpe)
+        var tpe = args[i].tpe
+        if varargs { tpe = promote(tpe) }
+        ffi_args[i] = type_to_ffi(tpe)
     }
 
     var status: ffi::ffi_status = ffi::ffi_status::FFI_OK
@@ -789,15 +801,16 @@ def ffi_call(args: [compiler::Value], ret: compiler::Value, parameter_t: *vector
 
     let avalues = allocate((size_of type *) * args.size) !**
     for var i in 0..args.size {
-        let arg = args[i]
-        var mem: * = null
+        var arg = args[i]
         if arg.kind == compiler::ValueKind::LOCAL or arg.kind == compiler::ValueKind::GLOBAL {
-            mem = get_address(arg, state)
-        } else {
-            // We need to allocate memory for static values
-            mem = allocate(arg.tpe.size)
-            set(mem, arg.tpe, arg)
+            arg = get(get_address(arg, state), arg.tpe)
         }
+        
+        var tpe = arg.tpe
+        if varargs { tpe = promote(tpe) }
+
+        let mem = allocate(tpe.size)
+        set(mem, tpe, arg)
         avalues[i] = mem
     } 
 
@@ -814,6 +827,11 @@ def ffi_call(args: [compiler::Value], ret: compiler::Value, parameter_t: *vector
     }
     
     ffi::ffi_call(ffi_cif, ffi_function.ptr, rvalue, avalues)
+
+    for var i in 0..args.size {
+        free(avalues[i])
+    }
+    free(avalues)
 }
 
 def eval_Call(insn: *compiler::Insn, state: *State) {
@@ -846,7 +864,7 @@ def eval_Call(insn: *compiler::Insn, state: *State) {
         errors::errorv("Function `", name, "` not found")
         return
     }
-
+    
     /*print(name, " ")
     for var i in 0..args.size {
         print(debug::type_to_str(args[i].tpe), " ")
@@ -1105,6 +1123,8 @@ def eval_block(block: *compiler::Block, state: *State) {
             print(insn.kind, " ", insn.value.load.loc.name, "\n")
         } else if insn.kind == compiler::InsnKind::ALLOCA {
             print(insn.kind, " ", insn.value.alloca.ret.name, "\n")
+        } else if insn.kind == compiler::InsnKind::STORE {
+            print(insn.kind, " ", insn.value.store.loc.name, " ", insn.value.store.value.name, "\n")
         } else {
             print(insn.kind, "\n")
         }

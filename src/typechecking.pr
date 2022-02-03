@@ -15,6 +15,7 @@ import compiler
 import preprocess
 import errors
 import runtime
+import eval
 
 export type TypeKind = enum {
     TYPE
@@ -92,12 +93,6 @@ export type Type = struct {
     return_t: *vector::Vector
     // Vector of NamedParameter
     parameter_t: *vector::Vector
-    // Macro for builtin functions
-    macro: (*parser::Node, [compiler::Value], *compiler::State) -> compiler::Value
-    // This calculates the return types for functions 
-    // where the return types depend on the argument types
-    proto: (*vector::Vector, *vector::Vector, *State) -> (*vector::Vector)
-    //          args            kwargs                        return_t
     // Enum scope
     scope: *scope::Scope
     // For functions
@@ -269,8 +264,6 @@ export def make_function_type() -> *Type {
     let tpe = make_type_raw(TypeKind::FUNCTION)
     (@tpe).size = size_of type () -> ()
     (@tpe).align = align_of type () -> ()
-    (@tpe).macro = null
-    (@tpe).proto = null
     (@tpe).imported = false
     return tpe
 }
@@ -436,6 +429,9 @@ export def equals(a: *Type, b: *Type) -> bool {
         }
         return true
     }
+    if kind == TypeKind::TYPE_DEF {
+        return equals(a.tpe, b.tpe)
+    }
 
     assert(false)
 }
@@ -443,6 +439,11 @@ export def equals(a: *Type, b: *Type) -> bool {
 // Returns true if b is assignable to a
 def is_assignable(a: *Type, b: *Type) -> bool {
     if equals(a, b) { return true }
+
+    if a.kind == TypeKind::STATIC_ARRAY and b.kind == TypeKind::STATIC_ARRAY {
+        return equals(a.tpe, b.tpe) and 
+            (a.length == b.length or a.length !uint64 == util::MAX_UINT64)
+    }
     if (@a).kind == TypeKind::WORD or a.kind == TypeKind::CHAR {
         if (@b).kind == TypeKind::WORD or b.kind == TypeKind::CHAR {
             return (@a).size >= (@b).size
@@ -561,8 +562,11 @@ def convert_type_score(a: *Type, b: *Type, is_type: bool = false) -> int {
         }
     }
     if is_type { 
-        if a.kind == TypeKind::ARRAY and (b.kind == TypeKind::ARRAY or b.kind == TypeKind::STATIC_ARRAY) {
-            return convert_type_score(a.tpe, b.tpe, true)
+        if a.kind == TypeKind::ARRAY {
+            if (b.kind == TypeKind::ARRAY or b.kind == TypeKind::STATIC_ARRAY) {
+                return convert_type_score(a.tpe, b.tpe, true)
+            }
+            return -1
         }
         if a.kind == TypeKind::POINTER or a.kind == TypeKind::REFERENCE or a.kind == TypeKind::STATIC_ARRAY {
             if a.kind == b.kind {
@@ -570,7 +574,7 @@ def convert_type_score(a: *Type, b: *Type, is_type: bool = false) -> int {
             }
             return -1
         }
-        return 1
+        return 10
     }
     return -1
 }
@@ -597,7 +601,15 @@ def find_type_defs(left: *Type, right: *Type, types: *map::Map, replace: bool, i
 
     if left.kind == TypeKind::TYPE_DEF {
         find_type_defs(left.tpe, right, types, replace, true)
-        if replace { @left = @right }
+        if replace {
+            if left.tpe.kind == TypeKind::ARRAY and right.kind == TypeKind::STATIC_ARRAY {
+                // Turn static array into a dynamic array
+                @left = @right
+                left.kind = TypeKind::ARRAY
+            } else {
+                @left = @right
+            }
+        }
     } else if left.kind == TypeKind::POINTER or left.kind == TypeKind::REFERENCE or 
         left.kind == TypeKind::STATIC_ARRAY or left.kind == TypeKind::ARRAY {
         find_type_defs(left.tpe, right.tpe, types, replace, is_type)
@@ -1059,7 +1071,20 @@ export def type_lookup(node: *parser::Node, state: *State, lookup_default: bool)
     } else if (@node).kind == parser::NodeKind::ARRAY_STATIC_T {
         let array_tpe = type_lookup((@node).value.t_arrs.tpe, state, lookup_default)
 
-        return make_static_array(array_tpe, (@(@node).value.t_arrs.n).value.i, node.value.t_arrs.kw)
+        var n = util::MAX_UINT64 !int64
+        if node.value.t_arrs.n {
+            n = 0
+            let value = preprocess::expr(node.value.t_arrs.n, state)
+            if value.tpe.kind != TypeKind::WORD {
+                errors::errorn(node.value.t_arrs.n, "Type needs to be a positive integer, got ", debug::type_to_str(value.tpe))
+            } else if not value.tpe.unsig and value.i < 0 {
+                errors::errorn(node.value.t_arrs.n, "Negative array size not allowed")
+            } else {
+                n = value.i
+            }
+        }
+
+        return make_static_array(array_tpe, n, node.value.t_arrs.kw)
     } else if (@node).kind == parser::NodeKind::FUNCTION_T {
         let tpe = make_function_type()
         (@tpe).line = (@node).loc.line
@@ -1148,13 +1173,50 @@ export def common_type(a: *Type, b: *Type) -> *Type {
 def walk_PtrT(node: *parser::Node, state: *State) {
     let expr = (@node).value.t_parr.tpe
     walk(node, expr, state)
-    assert equals(expr.tpe, pointer(toolchain::type_type))
 
     let tpe = expr.svalue.value.value_tpe
-    node.svalue = change_value_to_type(pointer(tpe), state)
+    node.svalue = change_value_to_type(pointer(tpe, node.value.t_parr.kw), state)
 
     (@node).tpe = node.svalue.tpe
 }
+
+def walk_ArrayT(node: *parser::Node, state: *State) {
+    let expr = (@node).value.t_parr.tpe
+    walk(node, expr, state)
+    
+    let tpe = expr.svalue.value.value_tpe
+    node.svalue = change_value_to_type(array(tpe, node.value.t_parr.kw), state)
+
+    (@node).tpe = node.svalue.tpe
+}
+
+def walk_ArrayStaticT(node: *parser::Node, state: *State) {
+    let n = node.value.t_arrs.n
+    let expr = node.value.t_arrs.tpe
+    if not n {
+        errors::errorn(n, "Type needs to be sized")
+        return
+    }
+
+    var size = 0 !int64
+    let value = preprocess::expr(n, state)
+    if value.tpe.kind != TypeKind::WORD {
+        errors::errorn(n, "Type needs to be a positive integer, got ", debug::type_to_str(value.tpe))
+    } else if not value.tpe.unsig and value.i < 0 {
+        errors::errorn(n, "Negative array size not allowed")
+    } else {
+        size = value.i
+    }
+
+    walk(node, expr, state)
+
+    let tpe = expr.svalue.value.value_tpe
+    node.svalue = change_value_to_type(make_static_array(tpe, size, node.value.t_arrs.kw), state)
+
+    node.tpe = node.svalue.tpe
+}
+
+def walk_ArrayStaticT
 
 def walk_TypeOfT(node: *parser::Node, state: *State) {
     let expr = node.value.expr
@@ -1595,7 +1657,42 @@ def change_value_to_type(tpe: *Type, state: *State) -> *scope::Value {
     compiler::import_structures(type_type, state.module)
     let value = zero_allocate(scope::Value)
     value.tpe = pointer(type_tpe)
+
+    // We need an independent block that we can run for constant evaluation
+    let old_block = toolchain::types_state.current_block
+    let new_block = compiler::make_block()
+    new_block.counter = old_block.counter
+    toolchain::types_state.current_block = new_block
+
     value.value = create_type(tpe, state.module)
+
+    let function = allocate(compiler::Function)
+    @function = {
+        name = "main",
+        unmangled = "main",
+        forward_declare = true,
+        allocas = vector::make(),
+        block = new_block
+    } !compiler::Function
+    preprocess::compiler_state.current_function = function
+    preprocess::compiler_state.current_block = new_block
+
+    // Copy constants into the right module
+    let keys = map::keys(toolchain::types.result.globals)
+    for var i in 0..keys.size {
+        let key = keys[i]
+        let global = map::get(toolchain::types.result.globals, key)
+        map::put(preprocess::const_module.result.globals, key, global)
+    }
+
+    eval::eval(*preprocess::compiler_state)
+
+    old_block.counter = new_block.counter
+    for var i in 0..vector::length(new_block.insn) {
+        vector::push(old_block.insn, vector::get(new_block.insn, i))
+    }
+    toolchain::types_state.current_block = old_block
+
     return value
 }
 
@@ -1818,13 +1915,21 @@ export def walk_VarDecl(node: *parser::Node, state: *State, set_constant: bool) 
             let ident = (@node).value.id_decl.value
             let is_underscore = scope::last_path_element(ident) == "_"
 
+            var rtpe: *Type = null
             if i < vector::length(rtypes) {
-                let rtpe = vector::get(rtypes, i) !*Type
-
-                if is_underscore { ltpe = rtpe }
-                if not is_assignable(ltpe, rtpe) {
+                rtpe = vector::get(rtypes, i) !*Type
+                
+                if is_underscore {
+                    ltpe = rtpe
+                } else if not is_assignable(ltpe, rtpe) {
                     errors::errorn(node, "Incompatible types ", debug::type_to_str(rtpe), " and ", debug::type_to_str(ltpe))
+                } else if ltpe and ltpe.kind == TypeKind::STATIC_ARRAY and ltpe.length == util::MAX_UINT64 {
+                    ltpe.length = rtpe.length
                 }
+            }
+
+            if not rtpe and ltpe and ltpe.kind == TypeKind::STATIC_ARRAY and ltpe.length == util::MAX_UINT64 {
+                errors::errorn(node, "Array size indeterminate")
             }
 
             ident.scope = state.scope
@@ -1836,7 +1941,6 @@ export def walk_VarDecl(node: *parser::Node, state: *State, set_constant: bool) 
                 ident.svalue = scope::create_variable(state.scope, ident, share, kw, ltpe, extern, null)
             }
             
-
             if function {
                 map::put(function.locals, ident.svalue.assembly_name, ltpe)
             }
@@ -2133,7 +2237,7 @@ export def walk_Def(node: *parser::Node, state: *State, redefine_type: bool) {
         // TODO what about forward declarations?
         scope::create_variable(outer_scope, name, share, parser::VarDecl::CONST, tpe, null)
     } else {
-        scope::create_function(outer_scope, name, share, tpe, phase, null, null)
+        scope::create_function(outer_scope, name, share, tpe, phase, node, state)
     }
     
     if body {
@@ -2356,32 +2460,21 @@ export def walk_Call(node: *parser::Node, dry_run: bool, state: *State) -> bool 
     
     let parameter_t = (@tpe).parameter_t
 
-    var i = 0
-    var j = 0
     // Implicit conversions, this also removes type parameters from the argument list
-    loop {
-        if i >= vector::length((@node).value.func_call.args) { break }
+    for var i in 0..vector::length(node.value.func_call.args) {
         let n = vector::get((@node).value.func_call.args, i) !*parser::Node
         var rhstpe: *Type = null
-        if j < vector::length(parameter_t) {
-            rhstpe = (@(vector::get(parameter_t, j) !*NamedParameter)).tpe
+        if i < vector::length(parameter_t) {
+            rhstpe = (@(vector::get(parameter_t, i) !*NamedParameter)).tpe
         } else {
             let np = vector::peek(parameter_t) !*NamedParameter
             assert((@np).varargs)
             rhstpe = (@np).tpe
         }
 
-        if rhstpe and rhstpe.kind == TypeKind::TYPE and not tpe.macro {
-            vector::remove((@node).value.func_call.args, i)
-        } else {
-            i += 1
-            implicit_conversion(n, rhstpe)
-        }
-        j += 1
+        implicit_conversion(n, rhstpe)
     }
-    i = 0
-    loop {
-        if i >= vector::length((@node).value.func_call.kwargs) { break }
+    for var i in 0..vector::length(node.value.func_call.kwargs) {
         let n = vector::get((@node).value.func_call.kwargs, i) !*parser::Node
         let name = last_ident_to_str((@n).value.named_arg.name)
         let arg = (@n).value.named_arg.value
@@ -2395,33 +2488,10 @@ export def walk_Call(node: *parser::Node, dry_run: bool, state: *State) -> bool 
             }
         }
 
-        if rhstpe and rhstpe.kind == TypeKind::TYPE and not tpe.macro {
-            vector::remove((@node).value.func_call.kwargs, i)
-        } else {
-            i += 1
-            implicit_conversion(arg, rhstpe)
-        }
+        implicit_conversion(arg, rhstpe)
     }
 
-    if not tpe.macro {
-        i = 0
-        loop {
-            if i >= vector::length(parameter_t) { break }
-            let np = vector::get(parameter_t, i) !*NamedParameter
-            if np.tpe and np.tpe.kind == TypeKind::TYPE {
-                vector::remove(parameter_t, i)
-            } else {
-                i += 1
-            }
-        }
-    }
-
-    var return_t = (@tpe).return_t
-    if (@tpe).proto {
-        return_t = (@tpe).proto((@node).value.func_call.args, (@node).value.func_call.kwargs, state)
-    }
-
-    (@node).tpe = flatten_return_type(node, return_t)
+    node.tpe = flatten_return_type(node, tpe.return_t)
     return true
 }
 
@@ -2862,51 +2932,17 @@ def walk_ArrayLit(node: *parser::Node, state: *State) {
 }
 
 def walk_SizeOf(node: *parser::Node, state: *State) {
-    let expr = (@node).value.expr
-    // Need to special case here
-    if (@expr).kind == parser::NodeKind::IDENTIFIER {
-        let value = scope::get(state.scope, expr)
-        if not value {
-            errors::errorn(expr, "Unknown identifier `", parser::identifier_to_str(expr), "`")
-            return
-        }
-        if (@value).modifier == parser::VarDecl::TYPE {
-            (@expr).tpe = (@value).value.value_tpe
-        } else {
-            (@expr).tpe = (@value).tpe
-        }
-    } else {
-        (@expr).tpe = type_lookup(expr, state)
-        if not (@expr).tpe {
-            walk(node, expr, state)
-        }
-    }
-
-    (@node).tpe = builtins::size_t_
+    let expr = node.value.expr
+    if not expr { return }
+    expr.tpe = type_lookup(expr, state)
+    node.tpe = builtins::size_t_
 }
 
 def walk_AlignOf(node: *parser::Node, state: *State) {
-    let expr = (@node).value.expr
-    // Need to special case here
-    if (@expr).kind == parser::NodeKind::IDENTIFIER {
-        let value = scope::get(state.scope, expr)
-        if not value {
-            errors::errorn(expr, "Unknown identifier `", parser::identifier_to_str(expr), "`")
-            return
-        }
-        if (@value).modifier == parser::VarDecl::TYPE {
-            (@expr).tpe = (@value).value.value_tpe
-        } else {
-            (@expr).tpe = (@value).tpe
-        }
-    } else {
-        (@expr).tpe = type_lookup(expr, state)
-        if not (@expr).tpe {
-            walk(node, expr, state)
-        }
-    }
-
-    (@node).tpe = builtins::size_t_
+    let expr = node.value.expr
+    if not expr { return }
+    expr.tpe = type_lookup(expr, state)
+    node.tpe = builtins::size_t_
 }
 
 def walk_ComparisionOp(node: *parser::Node, state: *State) {
@@ -3073,6 +3109,11 @@ export def walk(parent: *parser::Node, node: *parser::Node, state: *State) {
             walk_Assert(node, state)
         case parser::NodeKind::PTR_T:
             walk_PtrT(node, state)
+        case parser::NodeKind::ARRAY_T:
+            walk_ArrayT(node, state)
+        case parser::NodeKind::ARRAY_STATIC_T:
+            walk_ArrayStaticT(node, state)
+        // TODO Function types
         case parser::NodeKind::TYPE_OF_T:
             walk_TypeOfT(node, state)
         case:
@@ -3100,6 +3141,7 @@ export var time_spent: int64 = 0
 
 export def typecheck(state: *State) {
     let start = util::millis()
+    debug::trace("Typechecking ", state.module.module)
 
     let node = state.module.node
     assert((@node).kind == parser::NodeKind::PROGRAM)
@@ -3135,6 +3177,14 @@ export def typecheck(state: *State) {
         switch n.kind !int {
             case parser::NodeKind::TYPE_DECL, parser::NodeKind::DEF, parser::NodeKind::VAR_DECL:
             case: walk(node, n, state)
+        }
+    }
+
+    let keys = map::keys(node.scope.fields)
+    for var i in 0..keys.size {
+        let value = map::get(node.scope.fields, keys[i]) !*scope::Value
+        if value.phase == scope::Phase::DEFINED {
+            walk(value.node.parent, value.node, value.state)
         }
     }
 

@@ -1941,7 +1941,38 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
     }
     if not tpe { return NO_VALUE }
 
-    let parameter_t = (@tpe).parameter_t
+    // Filter out type arguments
+    let parameter_t = vector::make()
+    let call_args = vector::make()
+    let call_kwargs = vector::make()
+
+    for var i in 0..vector::length(tpe.parameter_t) {
+        let np = vector::get(tpe.parameter_t, i) !*NamedParameter
+        if not np or not np.tpe or np.tpe.kind != typechecking::TypeKind::TYPE {
+            vector::push(parameter_t, np)
+        } 
+    }
+    for var i in 0..vector::length(node.value.func_call.args) {
+        let n = vector::get(node.value.func_call.args, i)
+        var np = vector::peek(tpe.parameter_t) !*NamedParameter
+        if i < vector::length(tpe.parameter_t) {
+            np = vector::get(tpe.parameter_t, i) !*NamedParameter
+        }
+        if not np.tpe or np.tpe.kind != typechecking::TypeKind::TYPE {
+            vector::push(call_args, n)
+        }
+    }
+    
+    for var i in 0..vector::length(node.value.func_call.kwargs) {
+        let n = vector::get(node.value.func_call.kwargs, i) !*parser::Node
+        let name = typechecking::last_ident_to_str(n.value.named_arg.name)
+        for var j in 0..vector::length(parameter_t) {
+            let np = vector::get(parameter_t, j) !*typechecking::NamedParameter
+            if np.name == name and (not np.tpe or np.tpe.kind != typechecking::TypeKind::TYPE) {
+                vector::push(call_kwargs, n)
+            }
+        }
+    }
 
     var args: [Value]
     var varargs: [Value]
@@ -1951,14 +1982,14 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
     var pass_varargs_as_array = last_np and last_np.varargs and last_np.tpe
     var pass_array_as_varargs = false
 
-    let last_arg = vector::peek(node.value.func_call.args) !*parser::Node
+    let last_arg = vector::peek(call_args) !*parser::Node
     if pass_varargs_as_array and last_arg and typechecking::is_array(last_arg.tpe) and
         typechecking::equals(last_arg.tpe.tpe, last_np.tpe) {
         pass_varargs_as_array = false
         pass_array_as_varargs = true
     }
 
-    let total_defined_args = vector::length((@node).value.func_call.args) + vector::length((@node).value.func_call.kwargs)
+    let total_defined_args = vector::length(call_args) + vector::length(call_kwargs)
     var total_args = total_defined_args
     if last_np and last_np.varargs {
         total_args = max(total_defined_args, len - 1) !int
@@ -1974,8 +2005,8 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
         args = allocate(Value, total_args)
     }
 
-    for var i in 0..vector::length((@node).value.func_call.args) {
-        let n = vector::get((@node).value.func_call.args, i) !*parser::Node
+    for var i in 0..vector::length(call_args) {
+        let n = vector::get(call_args, i) !*parser::Node
         if i == len - 1 and pass_array_as_varargs {
             var expr = walk_and_load_expression(n, state)
             expr = convert_to(n, expr, typechecking::array(last_np.tpe), state)
@@ -1997,8 +2028,8 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
             return NO_VALUE
         }
     }
-    for var i in 0..vector::length((@node).value.func_call.kwargs) {
-        let n = vector::get((@node).value.func_call.kwargs, i) !*parser::Node
+    for var i in 0..vector::length(call_kwargs) {
+        let n = vector::get(call_kwargs, i) !*parser::Node
         assert((@n).kind == parser::NodeKind::NAMED_ARG)
         // Find named parameter
         let name = typechecking::last_ident_to_str((@n).value.named_arg.name)
@@ -2050,11 +2081,6 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
         args[args.size - 1] = convert_to(node, value, typechecking::array(last_np.tpe), state)
     }
 
-    if (@tpe).macro {
-        // TODO We kinda have to cache the return value here too
-        return (@tpe).macro(node, args, state)
-    }
-
     var proto = [] ![NamedParameter]
     var name_v: Value
     var ret: *typechecking::Type = null
@@ -2065,9 +2091,9 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
             ret = vector::peek((@tpe).return_t) !*typechecking::Type
         }
         name_v = walk_and_load_expression((@node).value.func_call.left, state)
-        proto = allocate(NamedParameter, vector::length(tpe.parameter_t))
-        for var i in 0..vector::length(tpe.parameter_t) {
-            proto[i] = @(vector::get(tpe.parameter_t, i) !*NamedParameter)
+        proto = allocate(NamedParameter, vector::length(parameter_t))
+        for var i in 0..vector::length(parameter_t) {
+            proto[i] = @(vector::get(parameter_t, i) !*NamedParameter)
         }
     } else {    
         var name = (@tpe).type_name
@@ -2077,12 +2103,17 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
         ret = (@function).ret
         
         import_structures(tpe, state.module)
-        map::put((@(@state).module).imported, name, map::sentinel)
+        map::put(state.module.imported, name, map::sentinel)
 
-        let len = vector::length(tpe.parameter_t)
+        /*let svalue = node.value.func_call.left.svalue
+        if svalue and svalue.state {
+            map::put(svalue.state.module.imported, name, map::sentinel)
+        }*/
+
+        let len = vector::length(parameter_t)
         proto = allocate(NamedParameter, len)
         for var i in 0..len {
-            proto[i] = @(vector::get(tpe.parameter_t, i) !*NamedParameter)
+            proto[i] = @(vector::get(parameter_t, i) !*NamedParameter)
         }
 
         name_v = {
@@ -3046,6 +3077,7 @@ def walk_ArraySubscript(node: *parser::Node, state: *State) -> Value {
 }
 
 def walk_SizeOf(node: *parser::Node, state: *State) -> Value {
+    if not node.value.expr { return NO_VALUE }
     var tpe = (@(@node).value.expr).tpe
     if not tpe {
         errors::errorn(node, "Invalid expression")
@@ -3058,6 +3090,7 @@ def walk_SizeOf(node: *parser::Node, state: *State) -> Value {
 }
 
 def walk_AlignOf(node: *parser::Node, state: *State) -> Value {
+    if not node.value.expr { return NO_VALUE }
     var tpe = (@(@node).value.expr).tpe
     if not tpe {
         errors::errorn(node, "Invalid expression")
@@ -3450,6 +3483,7 @@ export def walk_expression(node: *parser::Node, state: *State) -> Value {
         case parser::NodeKind::ARRAY_LIT:
             return walk_ArrayLit(node, state)
         case parser::NodeKind::PTR_T, parser::NodeKind::ARRAY_T, parser::NodeKind::FUNCTION_T, parser::NodeKind::TYPE_OF_T:
+            if not node.svalue { return NO_VALUE }
             return @node.svalue.value
         case parser::NodeKind::IF_EXPR:
             return walk_IfExpr(node, state)
@@ -4392,7 +4426,7 @@ def walk_Assert(node: *parser::Node, state: *State) {
     var args: [Value]
 
     if cond {
-        let expr = walk_and_load_expression(cond, state)
+        let expr = convert_to(cond, walk_and_load_expression(cond, state), builtins::bool_, state)
         let if_false = make_label(state)
     
         br = make_insn_dbg(InsnKind::BR, loc)
@@ -5122,7 +5156,9 @@ export def predeclare_function(tpe: *typechecking::Type, module: *toolchain::Mod
     for var i in 0..vector::length((@tpe).parameter_t) {
         let np = allocate(typechecking::NamedParameter)
         (@np) = @(vector::get((@tpe).parameter_t, i) !*typechecking::NamedParameter)
-        vector::push((@function).args, np)
+        if not np.tpe or np.tpe.kind != typechecking::TypeKind::TYPE {
+            vector::push((@function).args, np)
+        }
     }
 
     map::put(module.result.functions, (@function).name, function)
@@ -5616,18 +5652,12 @@ export def compile(module: *toolchain::Module) {
 
 export def compile(state: *State, is_main: bool, no_cleanup: bool = false) {
     let start = util::millis()
+    debug::trace("Compiling ", state.module.module)
+
     let node = state.module.node
     assert((@node).kind == parser::NodeKind::PROGRAM)
 
     import_structures(toolchain::type_type, state.module)
-
-    let keys = map::keys(node.scope.fields)
-    for var i in 0..keys.size {
-        let value = map::get(node.scope.fields, keys[i]) !*scope::Value
-        if value.phase == scope::Phase::DEFINED {
-            typechecking::walk(value.node.parent, value.node, value.state)
-        }
-    }
 
     let body = vector::make()
 
@@ -5662,7 +5692,7 @@ export def compile(state: *State, is_main: bool, no_cleanup: bool = false) {
         var dirname = util::dirname(state.module.filename)
         if length(dirname) == 0 { dirname = "." }
         let abspath = allocate(char, PATH_MAX)
-        absolute_path(dirname, abspath.value)
+        absolute_path(dirname, abspath)
         abspath.size = strlen(abspath) + 1
         let file = util::basename(state.module.filename)
 

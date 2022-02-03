@@ -148,13 +148,11 @@ export def is_preload(module: *Module) -> bool {
 
     let mfilename = zero_allocate(char, PATH_MAX)
     defer free(mfilename)
-    absolute_path(module.filename.value, mfilename.value)
-    mfilename.size = strlen(mfilename) + 1
+    absolute_path(module.filename, mfilename)
 
     let ifilename = zero_allocate(char, PATH_MAX)
     defer free(ifilename)
-    absolute_path(include.value, ifilename.value)
-    ifilename.size = strlen(ifilename) + 1
+    absolute_path(include, ifilename)
 
     let s = starts_with(mfilename, ifilename)
     // TODO Defer is currently called before returning, this creates used after free bugs
@@ -252,6 +250,7 @@ export def preprocess_file(filename: string, modulename: string, forward_declare
         close(fh)
         let lines = util::split_lines(buf)
 
+        debug::trace("Lexing ", modulename)
         let tokens = lexer::lex(buf)
         free(buf)
         let node = parser::parse(tokens, lines, filename, modulename)
@@ -313,7 +312,7 @@ def generate_runtime_source -> string {
     runtime.size = strlen(runtime) + 1
     let fp = open(runtime, "r")
     let source = util::read_all(fp)
-    close(runtime)
+    close(fp)
     return source
 }
 
@@ -326,6 +325,8 @@ export var type_type: *typechecking::Type
 export var ref_type: *typechecking::Type
 
 def create_runtime_module {
+    debug::trace("Creating runtime module")
+
     let lines = util::split_lines(runtime_source)
     let tokens = lexer::lex(runtime_source)
     let node = parser::parse(tokens, lines, "runtime.pr", "runtime")
@@ -357,12 +358,14 @@ def create_runtime_module {
 }
 
 def create_types_module {
+    debug::trace("Creating types module")
     types = allocate(Module)
     @types = {
         module = "type",
         scope = scope::enter_scope(null),
         result = compiler::make_result(),
         imported = map::make(),
+        dependants = vector::make(),
         code = compiler::make_block()
     } !Module
     map::put(modules, "type", types)
@@ -387,6 +390,8 @@ export def prepare_preload {
 }
 
 export def create_types_main {
+    debug::trace("Creating main function for types module")
+
     let types_main_ident = parser::make_identifier(["main"])
     types_main_ident.loc.module = types.module
 
@@ -444,21 +449,15 @@ export def compile_main_file(filename: string) {
     let end_frontend = util::millis()
 
     if errors::error_count == 0 {
-        let exe_folder = util::exe_folder()
-        let compile_header = buffer::make_buffer()
-        buffer::append_str(*compile_header, "clang-13 -S -emit-llvm -o ")
-        buffer::append_str(*compile_header, outfolder)
-        buffer::append_str(*compile_header, "/princess.ll -x c ")
-        buffer::append_str(*compile_header, exe_folder)
-        buffer::append_str(*compile_header, "/../princess.h")
-        system(buffer::to_string(*compile_header))
 
         let link_command = buffer::make_buffer()
-        buffer::append_str(*link_command, "llvm-link-13 -S -o ")
+        buffer::append_str(*link_command, "llvm-link-13 -S ")
+        if debug::verbose { 
+            buffer::append_str(*link_command, "-v ")
+        }
+        buffer::append_str(*link_command, "-o ")
         buffer::append_str(*link_command, outfolder)
         buffer::append_str(*link_command, "/out.ll ")
-        buffer::append_str(*link_command, outfolder)
-        buffer::append_str(*link_command, "/princess.ll ")
 
         let filenames = map::keys(modules)
         for var i in 0..filenames.size {
@@ -478,6 +477,8 @@ export def compile_main_file(filename: string) {
             print("Backend: \n")
         }
 
+        debug::trace("Linking with llvm-link...")
+        debug::trace(buffer::to_string(*link_command), "\n")
         let start_linking = util::millis()
         system(buffer::to_string(*link_command))
         let end_linking = util::millis()
@@ -485,12 +486,18 @@ export def compile_main_file(filename: string) {
         let start_compiling = util::millis()
         // TODO Add linker flags
         let compile_command = buffer::make_buffer()
-        buffer::append_str(*compile_command, "clang-13 -lrt -lm -lpthread -lcrypt -lffi --output ")
+        buffer::append_str(*compile_command, "clang-13 -lrt -lm -lpthread -lcrypt -lffi ")
+        if debug::verbose { 
+            buffer::append_str(*compile_command, "-v ")
+        }
+        buffer::append_str(*compile_command, "--output ")
         buffer::append_str(*compile_command, outfile)
         buffer::append_char(*compile_command, ' ')
         buffer::append_str(*compile_command, outfolder)
         buffer::append_str(*compile_command, "/out.ll")
 
+        debug::trace("Compiling with clang...")
+        debug::trace(buffer::to_string(*compile_command))
         system(buffer::to_string(*compile_command))
 
         let end_compiling = util::millis()
