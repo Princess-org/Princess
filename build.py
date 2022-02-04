@@ -40,7 +40,7 @@ def release():
     shutil.copy(Path("bin/princess2"), FOLDER / "bin/princess")
     shutil.copy(Path("version"), FOLDER)
     for path in glob.glob("include/*.h"):
-        shutil.copy(path, FOLDER / "bin/princess")
+        shutil.copy(path, FOLDER / "include")
     shutil.copy(Path("include/preload.pr"), FOLDER / "include")
     shutil.copy(Path("include/gencstd.py"), FOLDER / "include")
     shutil.copytree(Path("std"), FOLDER / "std")
@@ -68,12 +68,12 @@ def download():
     with open(ARCHIVE, "wb") as fp:
         fp.write(requests.get(SOURCE_URL).content)
 
-    shutil.unpack_archive(ARCHIVE, "bin")
-
     if sys.platform == "win32":
         FOLDER = f"princess-win32-{VERSION}"
     else:
         FOLDER = f"princess-{VERSION}"
+
+    shutil.unpack_archive(ARCHIVE, Path("bin") / FOLDER)
 
     shutil.copy(Path("bin") / FOLDER / "bin" / EXE_FILE, "bin")
     shutil.rmtree(Path("bin") / FOLDER)
