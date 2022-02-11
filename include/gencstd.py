@@ -509,7 +509,7 @@ def walk_RecordDecl(node, file: File):
 def walk_FunctionDecl(node, file: File):
     name = node["name"]
     ret = Walker(file).walk(parse(get_type(node)))
-    if not "storageClass" in node or node["storageClass"] != "static":
+    if node.get("storageClass", None) != "static":
         variadic = node.get("variadic", False)
         args = []
         if "inner" in node:
