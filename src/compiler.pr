@@ -1435,7 +1435,10 @@ def walk_StructLitUnion(node: *parser::Node, state: *State) -> Value {
     }
 
     let value = convert_to(arg, walk_and_load_expression(arg, state), arg_tpe, state)
-    
+    if typechecking::is_ref(arg_tpe) {
+        increase_ref_count_of_value(value, loc, state)
+    }
+
     let alloca_ret = make_named_local(tpe, null, state)
     let alloca = make_insn_dbg(InsnKind::ALLOCA, loc)
     (@alloca).value.alloca = {
@@ -1533,8 +1536,12 @@ def walk_StructLit(node: *parser::Node, state: *State) -> Value {
     }
     for var i in 0..vector::length(args) {
         let arg = vector::get(args, i) !*parser::Node
+        let arg_tpe = tpe.fields[i].tpe
         let value = walk_and_load_expression(arg, state)
-        values[i] = convert_to(arg, value, tpe.fields[i].tpe, state)
+        values[i] = convert_to(arg, value, arg_tpe, state)
+        if typechecking::is_ref(arg_tpe) {
+            increase_ref_count_of_value(values[i], loc, state)
+        }
     }
     for var i in 0..vector::length(kwargs) {
         let kwarg = vector::get(kwargs, i) !*parser::Node
@@ -1545,6 +1552,9 @@ def walk_StructLit(node: *parser::Node, state: *State) -> Value {
             let field = tpe.fields[j]
             if field.name == name {
                 values[j] = convert_to(kwarg, value, field.tpe, state)
+                if typechecking::is_ref(field.tpe) {
+                    increase_ref_count_of_value(values[j], loc, state)
+                }
                 break
             }
         }
@@ -2388,8 +2398,49 @@ def decrease_ref_count(value: Value, loc: *Value, state: *State) {
     push_label(exit_label, state)
 }
 
-def increase_ref_count(value: Value, loc: *Value, state: *State) {
+def increase_pointer_by_one(value: Value, loc: *Value, state: *State) {
+    let load2_ret = make_local_value(builtins::int64_, null, state)
+    let load2 = make_insn_dbg(InsnKind::LOAD, loc)
+    load2.value.load = {
+        value = load2_ret,
+        loc = value
+    } !InsnLoad
+    push_insn(load2, state)
 
+    let add_ret = make_local_value(builtins::int64_, null, state)
+    let add = make_insn_dbg(InsnKind::ADD, loc)
+    add.value.arith = {
+        ret = add_ret,
+        left = load2_ret,
+        right = { kind = ValueKind::INT, tpe = builtins::int64_, i = 1 } !Value
+    } !InsnArithmetic
+    push_insn(add, state)
+
+    let store1 = make_insn_dbg(InsnKind::STORE, loc)
+    store1.value.store = {
+        loc = value,
+        value = add_ret
+    } !InsnStore
+    push_insn(store1, state)
+}
+
+def increase_ref_count_of_value(value: Value, loc: *Value, state: *State) {
+    let index = allocate(int, 1)
+    index[0] = 0
+
+    let extract_ret = make_local_value(typechecking::pointer(builtins::int64_), null, state)
+    let extract = make_insn_dbg(InsnKind::EXTRACTVALUE, loc)
+    extract.value.extract_value = {
+        ret = extract_ret,
+        value = value,
+        index = index
+    } !InsnExtractValue
+    push_insn(extract, state)
+
+    increase_pointer_by_one(extract_ret, loc, state)
+}
+ 
+def increase_ref_count(value: Value, loc: *Value, state: *State) {
     let index1 = allocate(Value, 2)
     index1[0] = make_int_value(0)
     index1[1] = make_int_value(0)
@@ -2412,29 +2463,7 @@ def increase_ref_count(value: Value, loc: *Value, state: *State) {
     } !InsnLoad
     push_insn(load1, state)
 
-    let load2_ret = make_local_value(builtins::int64_, null, state)
-    let load2 = make_insn_dbg(InsnKind::LOAD, loc)
-    load2.value.load = {
-        value = load2_ret,
-        loc = load1_ret
-    } !InsnLoad
-    push_insn(load2, state)
-
-    let add_ret = make_local_value(builtins::int64_, null, state)
-    let add = make_insn_dbg(InsnKind::ADD, loc)
-    add.value.arith = {
-        ret = add_ret,
-        left = load2_ret,
-        right = { kind = ValueKind::INT, tpe = builtins::int64_, i = 1 } !Value
-    } !InsnArithmetic
-    push_insn(add, state)
-
-    let store1 = make_insn_dbg(InsnKind::STORE, loc)
-    store1.value.store = {
-        loc = load1_ret,
-        value = add_ret
-    } !InsnStore
-    push_insn(store1, state)
+    increase_pointer_by_one(load1_ret, loc, state)
 }
 
 def assign_ref(value: Value, addr: Value, loc: *Value, state: *State) {
