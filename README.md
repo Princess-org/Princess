@@ -14,7 +14,7 @@ stand alone assembly files
 
 ### Keywords:
 ```
-export, type, struct, def, in, null, return, break, go_to, 
+export, type, struct, interface, def, in, null, return, break, go_to, 
 case, switch, label, if, else, for, while, continue, 
 const, do, word, unsigned, enum, size_of, offset_of, import, defined, 
 type_of, align_of, as, loop, this, and, or, not, defer, is
@@ -231,11 +231,11 @@ type Polymorph(type A) = struct {
 
 ### Structural types:
 ```
-type S = {
+type S = interface {
     def a_fun -> S
     def b_fun(par: string)
 }
-type B = {
+type B = interface {
     def c_fun
 }
 ```
@@ -280,7 +280,7 @@ To illustrate the difference between references, pointers and distinct types:
 ```
 // Imagine we didn't leak any memory
 
-type I = { def some_function(v: int) }
+type I = interface { def some_function(v: int) }
 type S1 = struct { a: int   }
 type S2 = struct { a: float }
 

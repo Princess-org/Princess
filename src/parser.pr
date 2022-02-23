@@ -108,6 +108,8 @@ export type NodeKind = enum {
     ARRAY_STATIC_T
     TYPE_T
     TYPE_OF_T
+    STRUCTURAL_T
+    STRUCTURAL_T_MEMBER
 }
 
 export type ShareMarker = enum {
@@ -124,7 +126,9 @@ export type VarDecl = enum {
     TYPE
 }
 
+// TODO Use flags for the boolean values
 export type NodeDef = struct {
+    dllimport: bool
     extern: bool
     share: ShareMarker
     name: *Node
@@ -195,6 +199,7 @@ export type NodeIdDecl = struct {
 
 export type NodeVarDecl = struct {
     extern: bool
+    dllimport: bool
     share: ShareMarker
     kw: VarDecl
     left: *vector::Vector
@@ -284,6 +289,12 @@ export type NodeAssert = struct {
     message: *Node
 }
 
+export type NodeStructuralMember = struct {
+    name: *Node
+    params: *vector::Vector
+    returns: *vector::Vector
+}
+
 export type NodeValue = struct #union {
     bin_op: NodeBinaryOp
     var_decl: NodeVarDecl
@@ -297,6 +308,7 @@ export type NodeValue = struct #union {
     t_func: NodeFunctionT
     t_parr: NodePtrArrayT
     t_arrs: NodeArrayStaticT
+    structural_member: NodeStructuralMember
     func_call: NodeFuncCall
     assign: NodeAssign
     if_expr: NodeIfExpr
@@ -410,7 +422,7 @@ export def deep_copy_node(node: *Node) -> *Node {
     switch node.kind {
         case NodeKind::PROGRAM, NodeKind::LOOP, NodeKind::ELSE, NodeKind::DEFER,
             NodeKind::ARRAY_LIT, NodeKind::IMPORT, NodeKind::RETURN, 
-            NodeKind::STRUCT_T, NodeKind::UNION_T:
+            NodeKind::STRUCT_T, NodeKind::UNION_T, NodeKind::STRUCTURAL_T:
             copy.value.body = deep_copy_vector_of_nodes(node.value.body)
             copy.body = copy.value.body
         case NodeKind::ASSERT:
@@ -505,6 +517,10 @@ export def deep_copy_node(node: *Node) -> *Node {
             copy.value.t_parr.tpe = deep_copy_node(node.value.t_parr.tpe)
         case NodeKind::ARRAY_STATIC_T:
             copy.value.t_arrs.tpe = deep_copy_node(node.value.t_arrs.tpe)
+        case NodeKind::STRUCTURAL_T_MEMBER:
+            copy.value.structural_member.name = deep_copy_node(node.value.structural_member.name)
+            copy.value.structural_member.params = deep_copy_vector_of_nodes(node.value.structural_member.params)
+            copy.value.structural_member.returns = deep_copy_vector_of_nodes(node.value.structural_member.returns)
         case NodeKind::ERROR, NodeKind::DEFINED, NodeKind::SIZE_OF, NodeKind::ALIGN_OF, NodeKind::TYPE_OF_T,
             NodeKind::UADD..=NodeKind::NOT, NodeKind::ID_ASSIGN, NodeKind::UNSIGNED_T, NodeKind::TYPE_T:
             // Unary op
@@ -1035,10 +1051,119 @@ def expect_type_of(parse_state: *ParseState) -> *Node {
     return node
 }
 
+def expect_structural_type(parse_state: *ParseState) -> *Node {
+    var tok = peek(parse_state)
+    let line = tok.line
+    let column = tok.column
+
+    expect(parse_state, lexer::TokenType::K_INTERFACE, "Expected interface")
+    skip_newline(parse_state)
+    expect(parse_state, lexer::TokenType::O_BRACE, "Expected '{'")
+
+    let defs = vector::make()
+    loop {
+        skip_newline(parse_state)
+        tok = peek(parse_state)
+        if tok.tpe == lexer::TokenType::K_DEF {
+            tok = pop(parse_state)
+            let line = tok.line
+            let column = tok.column
+        	
+            skip_newline(parse_state)
+            let name = expect_identifier(parse_state)
+            skip_newline(parse_state)
+            
+            let params = vector::make()
+            let returns = vector::make()
+
+            tok = peek(parse_state)
+            if tok.tpe == lexer::TokenType::O_PAREN {
+                pop(parse_state)
+                tok = peek(parse_state)
+                if tok.tpe != lexer::TokenType::C_PAREN and tok.tpe != lexer::TokenType::EOF {
+                    loop {
+                        skip_newline(parse_state)
+                        tok = peek(parse_state)
+                        let line = tok.line
+                        let column = tok.column
+
+                        let name = expect_identifier(parse_state)
+                        skip_newline(parse_state)
+                        expect(parse_state, lexer::TokenType::COLON, "Expected ':'")
+                        skip_newline(parse_state)
+                        let tpe = expect_type(parse_state)
+
+                        let param = make_node(NodeKind::PARAMETER, line, column, parse_state)
+                        param.value.param = {
+                            name = name,
+                            tpe = tpe
+                        } !NodeParam
+
+                        vector::push(params, param)
+
+                        tok = peek(parse_state)
+                        if tok.tpe == lexer::TokenType::COMMA {
+                            pop(parse_state)
+                            continue
+                        } else {
+                            break
+                        }
+                    }
+                }
+                expect(parse_state, lexer::TokenType::C_PAREN, "Expected ')'")
+                tok = peek(parse_state)
+            }
+
+            skip_newline(parse_state)
+            tok = peek(parse_state)
+            if tok.tpe == lexer::TokenType::ARROW {
+                pop(parse_state)
+                skip_newline(parse_state)
+                loop {
+                    let tpe = expect_type(parse_state)
+                    vector::push(returns, tpe)
+
+                    tok = peek(parse_state)
+                    if tok.tpe == lexer::TokenType::COMMA {
+                        pop(parse_state)
+                        skip_newline(parse_state)
+                        continue
+                    } else {
+                        break
+                    }
+                }
+            }
+
+            let member = make_node(NodeKind::STRUCTURAL_T_MEMBER, line, column, parse_state)
+            member.value.structural_member = {
+                name = name,
+                params = params,
+                returns = returns
+            } !NodeStructuralMember
+        } else if tok.tpe == lexer::TokenType::C_BRACE or tok.tpe == lexer::TokenType::EOF {
+            tok = pop(parse_state)
+            break
+        } else {
+            tok = pop(parse_state)
+            errors::errort(tok, parse_state, "Expected def")
+        }
+    }
+    if tok.tpe != lexer::TokenType::C_BRACE {
+        errors::errort(tok, parse_state, "Expected '}'")
+    }
+
+    let node = make_node(NodeKind::STRUCTURAL_T, line, column, parse_state)
+    node.value.body = defs
+    return node
+}
+
 def parse_type2(parse_state: *ParseState, inline_types: bool) -> *Node {
     var tok = pop(parse_state)
 
-    if tok.tpe == lexer::TokenType::O_PAREN {
+    if tok.tpe == lexer::TokenType::K_INTERFACE {
+        unget_token(parse_state, tok)
+        return expect_structural_type(parse_state)
+    } else if tok.tpe == lexer::TokenType::O_PAREN {
         var node = expect_type(parse_state, inline_types)
         expect(parse_state, lexer::TokenType::C_PAREN, "Expected ')'")
         return node
@@ -1161,7 +1286,7 @@ def expect_type(parse_state: *ParseState, inline_types: bool) -> *Node {
     let token = peek(parse_state)
     let node = parse_type(parse_state, inline_types)
     if not node {
-       errors::errort(token, parse_state, "Expected type") 
+        errors::errort(token, parse_state, "Expected type") 
     }
     return node
 }
@@ -1802,7 +1927,6 @@ def expect_expression_no_assign(parse_state: *ParseState) -> *Node {
     return node
 }
 
-// TODO Make sure varargs can only be in the last position
 def parse_def(parse_state: *ParseState, share: ShareMarker) -> *Node {
     var token = peek(parse_state)
     let line = token.line
@@ -1813,10 +1937,13 @@ def parse_def(parse_state: *ParseState, share: ShareMarker) -> *Node {
 
     token = peek(parse_state)
     var extern = false
+    var dllimport = false
     while token.tpe == lexer::TokenType::PRAGMA {
         pop(parse_state)
         if token.value.str == "#extern" {
             extern = true
+        } else if token.value.str == "#dllimport" {
+            dllimport = true
         } else {
             errors::errort(token, parse_state, "Invalid pragma")
         }
@@ -1960,6 +2087,7 @@ def parse_def(parse_state: *ParseState, share: ShareMarker) -> *Node {
     
     var node = make_node(NodeKind::DEF, line, column, parse_state)
     (@node).value.def_ = {
+        dllimport = dllimport,
         extern = extern,
         share = share,
         name = name,
@@ -1986,10 +2114,13 @@ def parse_vardecl(parse_state: *ParseState, share: ShareMarker, vardecl: VarDecl
     tok = peek(parse_state)
 
     var extern = false
+    var dllimport = false
     while tok.tpe == lexer::TokenType::PRAGMA {
         pop(parse_state)
         if tok.value.str == "#extern" {
             extern = true
+        } else if tok.value.str == "#dllimport" {
+            dllimport = true
         } else {
             errors::errort(tok, parse_state, "Invalid pragma")
         }
@@ -2071,6 +2202,7 @@ def parse_vardecl(parse_state: *ParseState, share: ShareMarker, vardecl: VarDecl
     var node = make_node(NodeKind::VAR_DECL, line, column, parse_state)
     (@node).value.var_decl = {
         extern = extern,
+        dllimport = dllimport,
         share = share,
         kw = vardecl,
         left = vec_left,
@@ -2676,11 +2808,12 @@ export def parse(list: *lexer::TokenList, lines: [string], filename: string, mod
     debug::trace("Parsing ", module)
     let start = util::millis()
 
-    var parse_state: ParseState
-    parse_state.filename = filename
-    parse_state.module = module
-    parse_state.lines = lines
-    parse_state.tokens = *list
+    var parse_state = {
+        filename = filename,
+        module = module,
+        lines = lines,
+        tokens = *list
+    } !ParseState
     
     var vec = vector::make()
     parse_block(*parse_state, vec)

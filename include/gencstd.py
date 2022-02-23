@@ -1,5 +1,9 @@
+#!/usr/bin/python3.9
+
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 import subprocess, json, sys
+from typing import List
 import tatsu
 from tatsu.walkers import NodeWalker
 from pathlib import Path
@@ -49,7 +53,7 @@ def escape_name(name: str) -> str:
     if name == "type":
         return "type_"
     return name
-
+    
 # Types
 
 class Type:
@@ -134,10 +138,24 @@ class Array(Type):
         else:
             return f"*{self.type.to_string(file)}"
 
+@dataclass
+class Field:
+    type: Type
+    name: str
+    is_bitfield: bool
+    bit_size: int
+
+    def to_definition(self, file: File) -> str:
+        res = ""
+        if self.is_bitfield:
+            res += f"#bits({self.bit_size}) "
+        res += f"{escape_name(self.name)}: {self.type.to_string(file)}"
+        return res
+
 class Record(Type):
     def __init__(self) -> None:
         self.typename = None
-        self.fields = []
+        self.fields: List[Field] = []
         self.name = None
 
     def to_string(self, file: File) -> str:
@@ -158,8 +176,8 @@ class Record(Type):
             file.has_printed.add(self)
         else: return
 
-        for _, t in self.fields:
-            t.print_references(file)
+        for f in self.fields:
+            f.type.print_references(file)
 
         name = self.typename or self.name
         if name:
@@ -178,10 +196,8 @@ class Struct(Record):
     def to_definition(self, file: File) -> str:
         if self.fields:
             res = "struct { "
-            for (name, tpe) in self.fields:
-                if name:
-                    res += escape_name(name) + ": "
-                res += tpe.to_string(file) + "; "
+            for field in self.fields:
+                res += field.to_definition(file) + "; "
             res += "}"
             return res
 
@@ -195,10 +211,8 @@ class Union(Record):
     def to_definition(self, file: File) -> str:
         if self.fields:
             res = "struct #union { "
-            for (name, tpe) in self.fields:
-                if name:
-                    res += escape_name(name) + ": "
-                res += tpe.to_string(file) + "; "
+            for field in self.fields:
+                res += field.to_definition(file) + "; "
             res += "}"
             return res
 
@@ -420,11 +434,11 @@ def walk_EnumDecl(node, file: File):
             
             fields.append((field_name, inner))
 
-    if not name:
-        prev = "0"
-        for f in fields:
-            file.GLOBALS[f[0]] = ConstDecl(f[0], PRIMITIVES["int"], f[1] if f[1] else prev)
-            prev = f[0] + " + 1"
+    #if not name:
+    prev = "0"
+    for f in fields:
+        file.GLOBALS[f[0]] = ConstDecl(f[0], PRIMITIVES["int"], f[1] if f[1] else prev)
+        prev = f[0] + " + 1"
 
     record = Enum(name, fields)
     if name:
@@ -462,15 +476,21 @@ def walk_RecordDecl(node, file: File):
 
     fields = []
     if "inner" in node:
-        for field in node["inner"]:
+        for i, field in enumerate(node["inner"]):
             if field["kind"] == "FieldDecl":
+                is_bitfield = field.get("isBitfield", False)
+                bit_size = 0
+                if is_bitfield:
+                    bit_size = int(field["inner"][0]["value"])
+
                 qual_type = get_type(field)
                 if is_anonymous(qual_type):
                     tpe = file.last_record
                 else:
                     tpe = Walker(file).walk(parse(qual_type))
                 
-                fields.append((field.get("name", ""), tpe))
+                field_name = field.get("name", "" if is_bitfield else "_" + str(i))
+                fields.append(Field(tpe, field_name, is_bitfield, bit_size))
             elif field["kind"] == "RecordDecl":
                 file.last_record = walk_RecordDecl(field, file)
     
@@ -489,14 +509,14 @@ def walk_RecordDecl(node, file: File):
 def walk_FunctionDecl(node, file: File):
     name = node["name"]
     ret = Walker(file).walk(parse(get_type(node)))
-    if not "storageClass" in node or node["storageClass"] != "static":
+    if node.get("storageClass", None) != "static":
         variadic = node.get("variadic", False)
         args = []
         if "inner" in node:
             for (i, param) in enumerate(node["inner"]):
                 if param["kind"] != "ParmVarDecl":
                     continue
-                argname = param.get("name", "_" + str(i))
+                argname = escape_name(param.get("name", "_" + str(i)))
                 tpe = Walker(file).walk(parse(get_type(param)))
                 args.append((argname, tpe))
 
@@ -556,13 +576,13 @@ def process_module(name: str):
         print(f"export var __VARS: [{len(VARS)}; *]", file = fp)
         print(f"export var __VAR_NAMES: [{len(VARS)}; string]", file = fp)
 
+        for g in CONSTS.values():
+            print(g.to_declaration(0, file), file = fp)
+
         for type in file.TYPEDEFS.values():
             type.print_references(file)
         for type in file.TAGGED.values():
             type.print_references(file)
-
-        for g in CONSTS.values():
-            print(g.to_declaration(0, file), file = fp)
 
         num_decls = 0
         for g in DEFS.values():
@@ -579,11 +599,12 @@ def process_module(name: str):
 def main():
     if sys.platform != "win32":
         process_module("linux")
-    else:
-        process_module("windows")
 
     process_module("cstd")
     process_module("ffi")
+
+    if sys.platform == "win32":
+        process_module("windows")
 
 if __name__ == "__main__":
     main()

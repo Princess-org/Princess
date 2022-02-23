@@ -144,6 +144,24 @@ export type InsnGetElementPtr = struct {
     index: [Value]
 }
 
+export def gep(state: *State, ret: *typechecking::Type, tpe: *typechecking::Type, value: Value, index: int...) -> Value {
+    let gep_index = allocate(Value, index.size)
+    for var i in 0..index.size {
+        gep_index[i] = make_int_value(index[i])
+    }
+    let gep_ret = make_local_value(ret, null, state)
+    let gep = make_insn(InsnKind::GETELEMENTPTR)
+    gep.value.gep = {
+        ret = gep_ret,
+        tpe = tpe,
+        value = value,
+        index = gep_index
+    } !InsnGetElementPtr
+    push_insn(gep, state)
+
+    return gep_ret
+}
+
 export type InsnConvert = struct {
     ret: Value
     value: Value
@@ -158,6 +176,15 @@ export type InsnExtractValue = struct {
 export type InsnStore = struct {
     value: Value
     loc: Value
+}
+
+export def store(state: *State, loc: Value, value: Value) {
+    let store = make_insn(InsnKind::STORE)
+    store.value.store = {
+        loc = loc,
+        value = value
+    }
+    push_insn(store, state)
 }
 
 export type InsnLoad = struct {
@@ -233,6 +260,7 @@ export type Block = struct {
 export type Function = struct {
     module: *toolchain::Module
     imported: bool
+    dllimport: bool
     // True if we have C style varargs
     varargs: bool
     name: string
@@ -270,6 +298,7 @@ export type Result = struct {
 }
 
 export type Global = struct {
+    dllimport: bool 
     external: bool
     private: bool
     name: string
@@ -634,10 +663,10 @@ export def charp_static(global: *Value, state: *State) -> Value {
 
 export def charp(str: string, state: *State) -> Value {
     let tpe = typechecking::make_type_raw(typechecking::TypeKind::STATIC_ARRAY)
-    (@tpe).tpe = builtins::char_
-    (@tpe).length = str.size
-    (@tpe).size = (@tpe).length * (size_of char)
-    (@tpe).align = align_of char
+    tpe.tpe = builtins::char_
+    tpe.length = str.size
+    tpe.size = tpe.length * (size_of char)
+    tpe.align = align_of char
 
     let value = allocate(Value)
     @value = {
@@ -688,26 +717,26 @@ def pop_scope(state: *State) {
 
 // TODO We might want to cache this somewhere
 def make_return_type(tpe: *typechecking::Type) -> *typechecking::Type {
-    let length = vector::length((@tpe).return_t)
+    let length = vector::length(tpe.return_t)
     let fields = allocate(typechecking::StructMember, length)
 
     for var i in 0..length {
-        let t = vector::get((@tpe).return_t, i) !*typechecking::Type
+        let t = vector::get(tpe.return_t, i) !*typechecking::Type
         // TODO Add an underscore in front for the debugger
         let name = util::int_to_str(i)
 
-        fields[i] = { line = (@tpe).line, name = name, tpe = t } !typechecking::StructMember
+        fields[i] = { line = tpe.line, name = name, tpe = t } !typechecking::StructMember
     }
 
     return typechecking::make_struct_type(fields)
 }
 
 def import_structure(tpe: *typechecking::Type, module: *toolchain::Module) {
-    let res = map::get(module.result.structures, (@tpe).type_name) !*typechecking::Type
-    if not res or (@tpe).kind == typechecking::TypeKind::STUB {
-        let size = (@tpe).fields.size
+    let res = map::get(module.result.structures, tpe.type_name) !*typechecking::Type
+    if not res or tpe.kind == typechecking::TypeKind::STUB {
+        let size = tpe.fields.size
         if size > 0 {
-            map::put(module.result.structures, (@tpe).type_name, tpe)
+            map::put(module.result.structures, tpe.type_name, tpe)
             for var i in 0..size {
                 let field = tpe.fields[i]
                 import_structures(field.tpe, module)
@@ -718,27 +747,27 @@ def import_structure(tpe: *typechecking::Type, module: *toolchain::Module) {
 
 export def import_structures(tpe: *typechecking::Type, module: *toolchain::Module) {
     if not tpe { return }
-    switch (@tpe).kind !int {
+    switch tpe.kind !int {
         case typechecking::TypeKind::STRUCT..=typechecking::TypeKind::UNION:
             import_structure(tpe, module)
         case typechecking::TypeKind::ARRAY:
-            import_structures((@tpe).tpe, module)
+            import_structures(tpe.tpe, module)
         case typechecking::TypeKind::STATIC_ARRAY:
-            import_structures((@tpe).tpe, module)
+            import_structures(tpe.tpe, module)
         case typechecking::TypeKind::POINTER:
-            import_structures((@tpe).tpe, module)
+            import_structures(tpe.tpe, module)
         case typechecking::TypeKind::FUNCTION:
-            for var i in 0..vector::length((@tpe).parameter_t) {
-                let param = vector::get((@tpe).parameter_t, i) !*typechecking::NamedParameter
+            for var i in 0..vector::length(tpe.parameter_t) {
+                let param = vector::get(tpe.parameter_t, i) !*typechecking::NamedParameter
                 import_structures((@param).tpe, module)
             }
-            for var i in 0..vector::length((@tpe).return_t) {
-                let t = vector::get((@tpe).return_t, i) !*typechecking::Type
+            for var i in 0..vector::length(tpe.return_t) {
+                let t = vector::get(tpe.return_t, i) !*typechecking::Type
                 import_structures(t, module)
             }
         case typechecking::TypeKind::STUB:
-            if not map::contains(module.result.structures, (@tpe).type_name) {
-                map::put(module.result.structures, (@tpe).type_name, tpe)
+            if not map::contains(module.result.structures, tpe.type_name) {
+                map::put(module.result.structures, tpe.type_name, tpe)
             }
     }
 }
@@ -830,7 +859,7 @@ def walk_String(node: *parser::Node, state: *State) -> Value {
     index[1] = make_int_value(0)
     index[1].tpe = builtins::size_t_
 
-    let gep_ret = make_local_value(typechecking::pointer((@tpe).tpe), null, state)
+    let gep_ret = make_local_value(typechecking::pointer(tpe.tpe), null, state)
     let gep = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
     (@gep).value.gep = {
         ret = gep_ret,
@@ -852,7 +881,7 @@ def walk_String(node: *parser::Node, state: *State) -> Value {
     } !Value
     values[1] = {
         kind = ValueKind::UNDEF,
-        tpe = typechecking::pointer((@tpe).tpe)
+        tpe = typechecking::pointer(tpe.tpe)
     } !Value
 
     let value = {
@@ -910,7 +939,7 @@ def convert_ref_to_ref(tpe: *typechecking::Type, value: Value, loc: *Value, stat
     let index3 = allocate(int, 1)
     index3[0] = 2
     
-    let extract3_ret = make_local_value(typechecking::pointer(toolchain::type_type), null, state)
+    let extract3_ret = make_local_value(typechecking::pointer(builtins::Type_), null, state)
     let extract3 = make_insn_dbg(InsnKind::EXTRACTVALUE, loc)
     extract3.value.extract_value = {
         ret = extract3_ret,
@@ -962,10 +991,11 @@ def convert_ref_to_ref(tpe: *typechecking::Type, value: Value, loc: *Value, stat
     return insert3_ret
 }
 
-def create_type(tpe: *typechecking::Type, module: *toolchain::Module) -> Value {
-    let value = typechecking::create_type(tpe, module)
+// TODO This name is stupid
+def do_create_type(tpe: *typechecking::Type, module: *toolchain::Module) -> Value {
+    let value = create_type(tpe, module)
     if value { return @value }
-    return { kind = ValueKind::NULL, tpe = typechecking::pointer(toolchain::type_type) } !Value
+    return { kind = ValueKind::NULL, tpe = typechecking::pointer(builtins::Type_) } !Value
 }
 
 export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Type, state: *State) -> Value {
@@ -985,7 +1015,7 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
         }
 
         map::put(state.module.imported, "malloc", map::sentinel)
-        let svalue = create_type(value.tpe, state.module)
+        let svalue = do_create_type(value.tpe, state.module)
 
         let args1 = allocate(Value, 1)
         args1[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = builtins::int64_.size } !Value
@@ -1027,19 +1057,19 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
         } !InsnInsertValue
         push_insn(insert1, state)
 
-        let args2 = allocate(Value, 1)
-        args2[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = value.tpe.size } !Value
-        let call2_ret = make_local_value(typechecking::pointer(builtins::int8_), null, state)
-        let call2 = make_insn_dbg(InsnKind::CALL, loc)
-        call2.value.call = {
-            name = {kind = ValueKind::GLOBAL, name = "malloc" } !Value,
-            ret = call2_ret,
-            args = args2
-        } !InsnCall
-        push_insn(call2, state)
-
         var heapval: Value
         if not is_null {
+            let args2 = allocate(Value, 1)
+            args2[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = value.tpe.size } !Value
+            let call2_ret = make_local_value(typechecking::pointer(builtins::int8_), null, state)
+            let call2 = make_insn_dbg(InsnKind::CALL, loc)
+            call2.value.call = {
+                name = {kind = ValueKind::GLOBAL, name = "malloc" } !Value,
+                ret = call2_ret,
+                args = args2
+            } !InsnCall
+            push_insn(call2, state)
+            
             heapval = make_local_value(typechecking::pointer(value.tpe), null, state)
             let bitcast2 = make_insn_dbg(InsnKind::BITCAST, loc)
             bitcast2.value.convert = {
@@ -1096,9 +1126,9 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
         return ret_insert3
     } else if typechecking::is_ref(tpe) and typechecking::is_ref(value.tpe) {
         return convert_ref_to_ref(tpe, value, loc, state)
-    } else if typechecking::is_ref(tpe) and typechecking::equals(value.tpe, toolchain::ref_type) {
+    } else if typechecking::is_ref(tpe) and typechecking::equals(value.tpe, builtins::Ref_) {
         return convert_ref_to_ref(tpe, value, loc, state)
-    } else if typechecking::equals(tpe, toolchain::ref_type) and typechecking::is_ref(value.tpe) {
+    } else if typechecking::equals(tpe, builtins::Ref_) and typechecking::is_ref(value.tpe) {
         return convert_ref_to_ref(tpe, value, loc, state)
     } else if typechecking::is_pointer(tpe) and typechecking::is_ref(value.tpe) {
 
@@ -1123,7 +1153,7 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
 
         return bitcast_ret
 
-    } else if (@tpe).kind == typechecking::TypeKind::ARRAY {
+    } else if tpe.kind == typechecking::TypeKind::ARRAY {
         if (@value.tpe).kind == typechecking::TypeKind::STATIC_ARRAY and
             (@value.tpe).length == 0 {
 
@@ -1135,7 +1165,7 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
             } !Value
             values[1] = {
                 kind = ValueKind::NULL,
-                tpe = typechecking::pointer((@tpe).tpe)
+                tpe = typechecking::pointer(tpe.tpe)
             } !Value
             return {
                 kind = ValueKind::STRUCT,
@@ -1143,7 +1173,7 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
                 tpe = tpe
             } !Value
         } else if (@value.tpe).kind == typechecking::TypeKind::STATIC_ARRAY and 
-            (not (@tpe).tpe or typechecking::equals((@tpe).tpe, (@value.tpe).tpe)) {
+            (not tpe.tpe or typechecking::equals(tpe.tpe, (@value.tpe).tpe)) {
 
             var local = make_local_value(typechecking::pointer((@value.tpe).tpe), null, state)
 
@@ -1163,7 +1193,7 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
 
             push_insn(gep, state)
 
-            if not (@tpe).tpe {
+            if not tpe.tpe {
                 let local1 = local
                 local = make_local_value(typechecking::pointer(null), null, state)
                 let bitcast = make_insn_dbg(InsnKind::BITCAST, loc)
@@ -1185,7 +1215,7 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
             } !Value
             values[1] = {
                 kind = ValueKind::UNDEF,
-                tpe = typechecking::pointer((@tpe).tpe)
+                tpe = typechecking::pointer(tpe.tpe)
             } !Value
 
             let value = {
@@ -1207,7 +1237,7 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
             push_insn(insert, state)
 
             return ret
-        } else if not (@tpe).tpe and (@value.tpe).kind == typechecking::TypeKind::ARRAY {
+        } else if not tpe.tpe and (@value.tpe).kind == typechecking::TypeKind::ARRAY {
             let index1 = allocate(int, 1)
             index1[0] = 0
 
@@ -1269,7 +1299,7 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
         } else {
             return value
         }
-    } else if (@tpe).kind == typechecking::TypeKind::BOOL {
+    } else if tpe.kind == typechecking::TypeKind::BOOL {
         if typechecking::is_pointer(value.tpe) {
             // TODO This isn't the correct type, we need something like
             // intptr_t
@@ -1313,18 +1343,18 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
         if value.tpe.kind == typechecking::TypeKind::BOOL {
             kind = InsnKind::ZEXT
         } else if typechecking::is_integer(value.tpe) {
-            if (@value.tpe).size == (@tpe).size {
+            if (@value.tpe).size == tpe.size {
                 // Types only differ in sign, llvm doesn't treat them any different
                 return value
-            } else if (@value.tpe).size > (@tpe).size {
+            } else if (@value.tpe).size > tpe.size {
                 kind = InsnKind::TRUNC
-            } else if (@tpe).unsig {
+            } else if tpe.unsig {
                 kind = InsnKind::ZEXT
             } else {
                 kind = InsnKind::SEXT
             }
         } else if typechecking::is_float(value.tpe) {
-            if (@tpe).unsig {
+            if tpe.unsig {
                 kind = InsnKind::FPTOUI
             } else {
                 kind = InsnKind::FPTOSI
@@ -1342,7 +1372,7 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
                 kind = InsnKind::SITOFP
             }
         } else if typechecking::is_float(value.tpe) {
-            if (@value.tpe).size > (@tpe).size {
+            if (@value.tpe).size > tpe.size {
                 kind = InsnKind::FPTRUNC
             } else {
                 kind = InsnKind::FPEXT
@@ -1398,7 +1428,7 @@ def walk_StructLitUnion(node: *parser::Node, state: *State) -> Value {
         errors::errorn(node, "Union initalizer can only have one argument")
         return NO_VALUE
     } else if largs == 0 and lkwargs == 0 {
-        let arraytpe = typechecking::make_static_array(builtins::char_, (@tpe).size)
+        let arraytpe = typechecking::make_static_array(builtins::char_, tpe.size)
 
         let values = allocate(Value, 1)
         values[0] = {
@@ -1417,14 +1447,14 @@ def walk_StructLitUnion(node: *parser::Node, state: *State) -> Value {
     var arg_tpe: *typechecking::Type = null
     if largs == 1 {
         arg = vector::get(args, 0) !*parser::Node
-        arg_tpe = (@tpe).fields[0].tpe
+        arg_tpe = tpe.fields[0].tpe
     } else {
         let kwarg = vector::get(kwargs, 0) !*parser::Node
         arg = (@kwarg).value.named_arg.value
         let name = typechecking::last_ident_to_str((@kwarg).value.named_arg.name)
 
-        for var j in 0..(@tpe).fields.size {
-            let field = (@tpe).fields[j]
+        for var j in 0..tpe.fields.size {
+            let field = tpe.fields[j]
             if field.name == name {
                 arg_tpe = field.tpe
                 break
@@ -1433,7 +1463,10 @@ def walk_StructLitUnion(node: *parser::Node, state: *State) -> Value {
     }
 
     let value = convert_to(arg, walk_and_load_expression(arg, state), arg_tpe, state)
-    
+    if typechecking::is_ref(arg_tpe) {
+        increase_ref_count_of_value(value, loc, state)
+    }
+
     let alloca_ret = make_named_local(tpe, null, state)
     let alloca = make_insn_dbg(InsnKind::ALLOCA, loc)
     (@alloca).value.alloca = {
@@ -1518,31 +1551,38 @@ def walk_StructLit(node: *parser::Node, state: *State) -> Value {
 
     let tpe = (@node).tpe
     if not tpe { return NO_VALUE }
-    if (@tpe).kind == typechecking::TypeKind::UNION {
+    if tpe.kind == typechecking::TypeKind::UNION {
         return walk_StructLitUnion(node, state)
     }
 
-    let values = allocate(Value, (@tpe).fields.size)
+    let values = allocate(Value, tpe.fields.size)
     for var i in 0..values.size {
         values[i] = {
             kind = ValueKind::ZEROINITIALIZER,
-            tpe = (@tpe).fields[i].tpe
+            tpe = tpe.fields[i].tpe
         } !Value
     }
     for var i in 0..vector::length(args) {
         let arg = vector::get(args, i) !*parser::Node
+        let arg_tpe = tpe.fields[i].tpe
         let value = walk_and_load_expression(arg, state)
-        values[i] = convert_to(arg, value, (@tpe).fields[i].tpe, state)
+        values[i] = convert_to(arg, value, arg_tpe, state)
+        if typechecking::is_ref(arg_tpe) {
+            increase_ref_count_of_value(values[i], loc, state)
+        }
     }
     for var i in 0..vector::length(kwargs) {
         let kwarg = vector::get(kwargs, i) !*parser::Node
         let name = typechecking::last_ident_to_str((@kwarg).value.named_arg.name)
         let value = walk_and_load_expression((@kwarg).value.named_arg.value, state)
         
-        for var j in 0..(@tpe).fields.size {
-            let field = (@tpe).fields[j]
+        for var j in 0..tpe.fields.size {
+            let field = tpe.fields[j]
             if field.name == name {
                 values[j] = convert_to(kwarg, value, field.tpe, state)
+                if typechecking::is_ref(field.tpe) {
+                    increase_ref_count_of_value(values[j], loc, state)
+                }
                 break
             }
         }
@@ -1652,7 +1692,7 @@ def walk_USub(node: *parser::Node, state: *State) -> Value {
     let expr = walk_and_load_expression((@node).value.expr, state)
 
     let ret = make_local_value(tpe, null, state)
-    if (@tpe).kind == typechecking::TypeKind::FLOAT {
+    if tpe.kind == typechecking::TypeKind::FLOAT {
         let fneg = make_insn_dbg(InsnKind::FNEG, loc)
         (@fneg).value.fneg = {
             ret = ret,
@@ -1866,7 +1906,7 @@ def walk_Mod(node: *parser::Node, state: *State) -> Value {
     var insn_kind = InsnKind::SREM
     if typechecking::is_float(tpe) {
         insn_kind = InsnKind::FREM 
-    } else if (@tpe).unsig {
+    } else if tpe.unsig {
         insn_kind = InsnKind::UREM
     }
     return walk_ArithmeticOp(node, insn_kind, tpe, state)
@@ -1879,7 +1919,7 @@ def walk_Div(node: *parser::Node, state: *State) -> Value {
     var insn_kind = InsnKind::SDIV
     if typechecking::is_float(tpe) {
         insn_kind = InsnKind::FDIV 
-    } else if (@tpe).unsig {
+    } else if tpe.unsig {
         insn_kind = InsnKind::UDIV
     }
     return walk_ArithmeticOp(node, insn_kind, tpe, state)
@@ -1936,7 +1976,7 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
     var tpe = (@node).function
     var is_fp = false
     if typechecking::is_function_pointer(tpe) {
-        tpe = (@tpe).tpe
+        tpe = tpe.tpe
         is_fp = true
     }
     if not tpe { return NO_VALUE }
@@ -2085,10 +2125,10 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
     var name_v: Value
     var ret: *typechecking::Type = null
     if is_fp {
-        if vector::length((@tpe).return_t) > 1 {
+        if vector::length(tpe.return_t) > 1 {
             ret = make_return_type(tpe)
         } else {
-            ret = vector::peek((@tpe).return_t) !*typechecking::Type
+            ret = vector::peek(tpe.return_t) !*typechecking::Type
         }
         name_v = walk_and_load_expression((@node).value.func_call.left, state)
         proto = allocate(NamedParameter, vector::length(parameter_t))
@@ -2096,7 +2136,7 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
             proto[i] = @(vector::get(parameter_t, i) !*NamedParameter)
         }
     } else {    
-        var name = (@tpe).type_name
+        var name = tpe.type_name
         let function = map::get(state.module.result.functions, name) !*Function
         //print(name, " ", function, "\n")
         if not function { return NO_VALUE }
@@ -2162,7 +2202,12 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
 }
 
 def walk_Identifier(node: *parser::Node, state: *State) -> Value {
-    let val = (@node).svalue
+    var val = (@node).svalue
+
+    if val.tpe and val.tpe.kind == TypeKind::TYPE {
+        val = change_value_to_type(node.tpe.tpe.tpe, state)
+        node.svalue = val
+    }
 
     if not val { return NO_VALUE }
     if (@val).value {
@@ -2191,7 +2236,7 @@ def walk_Identifier(node: *parser::Node, state: *State) -> Value {
         let value = make_address_value(tpe, locv, state)
         return value
     } else {
-        (@locv).name = (@tpe).type_name
+        (@locv).name = tpe.type_name
         let value = { 
             kind = ValueKind::LOCAL, 
             name = name, 
@@ -2386,8 +2431,49 @@ def decrease_ref_count(value: Value, loc: *Value, state: *State) {
     push_label(exit_label, state)
 }
 
-def increase_ref_count(value: Value, loc: *Value, state: *State) {
+def increase_pointer_by_one(value: Value, loc: *Value, state: *State) {
+    let load2_ret = make_local_value(builtins::int64_, null, state)
+    let load2 = make_insn_dbg(InsnKind::LOAD, loc)
+    load2.value.load = {
+        value = load2_ret,
+        loc = value
+    } !InsnLoad
+    push_insn(load2, state)
 
+    let add_ret = make_local_value(builtins::int64_, null, state)
+    let add = make_insn_dbg(InsnKind::ADD, loc)
+    add.value.arith = {
+        ret = add_ret,
+        left = load2_ret,
+        right = { kind = ValueKind::INT, tpe = builtins::int64_, i = 1 } !Value
+    } !InsnArithmetic
+    push_insn(add, state)
+
+    let store1 = make_insn_dbg(InsnKind::STORE, loc)
+    store1.value.store = {
+        loc = value,
+        value = add_ret
+    } !InsnStore
+    push_insn(store1, state)
+}
+
+def increase_ref_count_of_value(value: Value, loc: *Value, state: *State) {
+    let index = allocate(int, 1)
+    index[0] = 0
+
+    let extract_ret = make_local_value(typechecking::pointer(builtins::int64_), null, state)
+    let extract = make_insn_dbg(InsnKind::EXTRACTVALUE, loc)
+    extract.value.extract_value = {
+        ret = extract_ret,
+        value = value,
+        index = index
+    } !InsnExtractValue
+    push_insn(extract, state)
+
+    increase_pointer_by_one(extract_ret, loc, state)
+}
+ 
+def increase_ref_count(value: Value, loc: *Value, state: *State) {
     let index1 = allocate(Value, 2)
     index1[0] = make_int_value(0)
     index1[1] = make_int_value(0)
@@ -2410,29 +2496,7 @@ def increase_ref_count(value: Value, loc: *Value, state: *State) {
     } !InsnLoad
     push_insn(load1, state)
 
-    let load2_ret = make_local_value(builtins::int64_, null, state)
-    let load2 = make_insn_dbg(InsnKind::LOAD, loc)
-    load2.value.load = {
-        value = load2_ret,
-        loc = load1_ret
-    } !InsnLoad
-    push_insn(load2, state)
-
-    let add_ret = make_local_value(builtins::int64_, null, state)
-    let add = make_insn_dbg(InsnKind::ADD, loc)
-    add.value.arith = {
-        ret = add_ret,
-        left = load2_ret,
-        right = { kind = ValueKind::INT, tpe = builtins::int64_, i = 1 } !Value
-    } !InsnArithmetic
-    push_insn(add, state)
-
-    let store1 = make_insn_dbg(InsnKind::STORE, loc)
-    store1.value.store = {
-        loc = load1_ret,
-        value = add_ret
-    } !InsnStore
-    push_insn(store1, state)
+    increase_pointer_by_one(load1_ret, loc, state)
 }
 
 def assign_ref(value: Value, addr: Value, loc: *Value, state: *State) {
@@ -2495,7 +2559,7 @@ def assign_ref(value: Value, addr: Value, loc: *Value, state: *State) {
     index4[0] = make_int_value(0)
     index4[1] = make_int_value(2)
 
-    let gep4_ret = make_local_value(typechecking::pointer(typechecking::pointer(toolchain::type_type)), null, state)
+    let gep4_ret = make_local_value(typechecking::pointer(typechecking::pointer(builtins::Type_)), null, state)
     let gep4 = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
     gep4.value.gep = {
         ret = gep4_ret,
@@ -2515,7 +2579,7 @@ def assign_ref(value: Value, addr: Value, loc: *Value, state: *State) {
     } !InsnGetElementPtr
     push_insn(gep5, state)
 
-    let gep6_ret = make_local_value(typechecking::pointer(typechecking::pointer(toolchain::type_type)), null, state)
+    let gep6_ret = make_local_value(typechecking::pointer(typechecking::pointer(builtins::Type_)), null, state)
     let gep6 = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
     gep6.value.gep = {
         ret = gep6_ret,
@@ -2541,7 +2605,7 @@ def assign_ref(value: Value, addr: Value, loc: *Value, state: *State) {
     }
     push_insn(bitcast, state)
 
-    let load4_ret = make_local_value(typechecking::pointer(toolchain::type_type), null, state)
+    let load4_ret = make_local_value(typechecking::pointer(builtins::Type_), null, state)
     let load4 = make_insn_dbg(InsnKind::LOAD, loc)
     load4.value.load = {
         value = load4_ret,
@@ -2587,9 +2651,9 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
         var value = walk_and_load_expression(n, state)
         let tpe = (@n).tpe
         if not tpe { continue }
-        if (@tpe).kind == typechecking::TypeKind::TUPLE {
-            for var k in 0..vector::length((@tpe).return_t) {
-                let t = vector::get((@tpe).return_t, k) !*typechecking::Type
+        if tpe.kind == typechecking::TypeKind::TUPLE {
+            for var k in 0..vector::length(tpe.return_t) {
+                let t = vector::get(tpe.return_t, k) !*typechecking::Type
                 if j >= vector::length(left) { return NO_VALUE }
                 let l = vector::get(left, j) !*parser::Node
 
@@ -2787,7 +2851,7 @@ def walk_Deref(node: *parser::Node, state: *State) -> Value {
 
     let addr = allocate(Value)
     (@addr) = value
-    let ret = make_address_value((@tpe).tpe, addr, state)
+    let ret = make_address_value(tpe.tpe, addr, state)
     return ret
 }
 
@@ -2826,7 +2890,7 @@ type Member = struct {
 
 // This list needs to be reversed to find the actual indices
 def resolve_member(vec: *vector::Vector, tpe: *typechecking::Type, name: string) -> bool {
-    let fields = (@tpe).fields
+    let fields = tpe.fields
     for var i in 0..fields.size {
         let field = fields[i]
         if length(field.name) > 0 {
@@ -2858,7 +2922,7 @@ def resolve_member(vec: *vector::Vector, tpe: *typechecking::Type, name: string)
 def walk_MemberAccess_struct(node: *parser::Node, tpe: *typechecking::Type, member: *Member, value: Value, state: *State) -> Value {
     let loc = make_location(node, state)
     
-    if (@tpe).kind == typechecking::TypeKind::UNION {
+    if tpe.kind == typechecking::TypeKind::UNION {
 
         let index = allocate(Value, 3)
         index[0] = make_int_value(0)
@@ -2905,7 +2969,7 @@ def walk_MemberAccess(node: *parser::Node, state: *State) -> Value {
 
     var value = walk_expression(left, state)
     if not value.addr {
-        if typechecking::equals(value.tpe, typechecking::pointer(toolchain::type_type)) {
+        if typechecking::equals(value.tpe, typechecking::pointer(builtins::Type_)) {
             // TODO This should be handled in typechecking
             value.addr = allocate(Value)
             @value.addr = value
@@ -2918,9 +2982,9 @@ def walk_MemberAccess(node: *parser::Node, state: *State) -> Value {
     // TODO This might double error
     let name = typechecking::last_ident_to_str(right)
 
-    if (@tpe).kind == typechecking::TypeKind::STATIC_ARRAY {
+    if tpe.kind == typechecking::TypeKind::STATIC_ARRAY {
         if name == "size" {
-            let i = make_int_value((@tpe).length !int)
+            let i = make_int_value(tpe.length !int)
             i.tpe = builtins::size_t_
             return i
         } else if name == "value" {
@@ -2942,7 +3006,7 @@ def walk_MemberAccess(node: *parser::Node, state: *State) -> Value {
             push_insn(gep, state)
             return gep_ret
         } else { assert(false) }
-    } else if (@tpe).kind == typechecking::TypeKind::ARRAY {
+    } else if tpe.kind == typechecking::TypeKind::ARRAY {
         let index = allocate(Value, 2)
         index[0] = make_int_value(0)
 
@@ -3083,7 +3147,7 @@ def walk_SizeOf(node: *parser::Node, state: *State) -> Value {
         errors::errorn(node, "Invalid expression")
         return NO_VALUE
     }
-    let value = make_int_value((@tpe).size !int)
+    let value = make_int_value(tpe.size !int)
     value.tpe = builtins::size_t_
     
     return value
@@ -3096,7 +3160,7 @@ def walk_AlignOf(node: *parser::Node, state: *State) -> Value {
         errors::errorn(node, "Invalid expression")
         return NO_VALUE
     }
-    let value = make_int_value((@tpe).align !int)
+    let value = make_int_value(tpe.align !int)
     value.tpe = builtins::size_t_
     
     return value
@@ -3152,7 +3216,7 @@ def compare(node: *parser::Node, left: Value, right: Value, state: *State) -> Va
             push_insn(cmp, state)
 
             return cmp_ret
-        } else if typechecking::equals(left.tpe, typechecking::pointer(toolchain::type_type)) {
+        } else if typechecking::equals(left.tpe, typechecking::pointer(builtins::Type_)) {
             let svalue = scope::get(toolchain::runtime.scope, parser::make_identifier(["equals"]))
             predeclare_function(svalue.tpe, state.module)
             map::put(state.module.imported, svalue.tpe.type_name, map::sentinel)
@@ -3246,7 +3310,7 @@ def compare(node: *parser::Node, left: Value, right: Value, state: *State) -> Va
             } !InsnFcmp
         } else {
             var op: CompareInt
-            if (@tpe).unsig {
+            if tpe.unsig {
                 switch (@node).kind !int {
                     case parser::NodeKind::EQ:  op = CompareInt::eq
                     case parser::NodeKind::NEQ: op = CompareInt::ne
@@ -3403,6 +3467,39 @@ def walk_IfExpr(node: *parser::Node, state: *State) -> Value {
     return { kind = ValueKind::LOCAL, tpe = if_true.tpe, addr = addrp } !Value
 }
 
+def walk_PtrT(node: *parser::Node, state: *State) -> Value {
+    let expr = node.value.t_parr.tpe
+    node.svalue = change_value_to_type(node.tpe.tpe, state)
+    if not node.svalue { return NO_VALUE }
+    return @node.svalue.value
+}
+
+def walk_ArrayT(node: *parser::Node, state: *State) -> Value {
+    let expr = node.value.t_parr.tpe
+    node.svalue = change_value_to_type(node.tpe.tpe, state)
+    if not node.svalue { return NO_VALUE }
+    return @node.svalue.value
+}
+
+def walk_ArrayStaticT(node: *parser::Node, state: *State) -> Value {
+    let expr = node.value.t_parr.tpe
+    node.svalue = change_value_to_type(node.tpe.tpe, state)
+    if not node.svalue { return NO_VALUE }
+    return @node.svalue.value
+}
+
+// TODO implement this
+def walk_FunctionT(node: *parser::Node, state: *State) -> Value {
+    return NO_VALUE
+}
+
+def walk_TypeOfT(node: *parser::Node, state: *State) -> Value {
+    let expr = node.value.expr
+    node.svalue = change_value_to_type(expr.tpe, state)
+    if not node.svalue { return NO_VALUE }
+    return @node.svalue.value
+}
+
 export def walk_expression(node: *parser::Node, state: *State) -> Value {
     if not node { return NO_VALUE }
     switch (@node).kind !int {
@@ -3482,9 +3579,16 @@ export def walk_expression(node: *parser::Node, state: *State) -> Value {
             return walk_StructLit(node, state)
         case parser::NodeKind::ARRAY_LIT:
             return walk_ArrayLit(node, state)
-        case parser::NodeKind::PTR_T, parser::NodeKind::ARRAY_T, parser::NodeKind::FUNCTION_T, parser::NodeKind::TYPE_OF_T:
-            if not node.svalue { return NO_VALUE }
-            return @node.svalue.value
+        case parser::NodeKind::ARRAY_STATIC_T:
+            return walk_ArrayStaticT(node, state)
+        case parser::NodeKind::PTR_T:
+            return walk_PtrT(node, state)
+        case parser::NodeKind::ARRAY_T:
+            return walk_ArrayT(node, state)
+        case parser::NodeKind::FUNCTION_T:
+            return walk_FunctionT(node, state)
+        case parser::NodeKind::TYPE_OF_T:
+            return walk_TypeOfT(node, state)
         case parser::NodeKind::IF_EXPR:
             return walk_IfExpr(node, state)
         case:
@@ -4082,7 +4186,7 @@ def push_ref_init(value: Value, loc: *Value, state: *State) {
     map::put(state.module.imported, "malloc", map::sentinel)
     let ref_tpe = value.tpe.tpe.tpe
 
-    let svalue = create_type(ref_tpe, state.module)
+    let svalue = do_create_type(ref_tpe, state.module)
 
     let args = allocate(Value, 1)
     args[0] = make_int_value(builtins::int64_.size !int)
@@ -4157,7 +4261,7 @@ def push_ref_init(value: Value, loc: *Value, state: *State) {
     index3[0] = make_int_value(0)
     index3[1] = make_int_value(2)
 
-    let ret_gep3 = make_local_value(typechecking::pointer(typechecking::pointer(toolchain::type_type)), null, state)
+    let ret_gep3 = make_local_value(typechecking::pointer(typechecking::pointer(builtins::Type_)), null, state)
     let gep3 = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
     gep3.value.gep = {
         ret = ret_gep3,
@@ -4415,9 +4519,14 @@ def walk_Assert(node: *parser::Node, state: *State) {
     let cond = node.value.assert_.cond
     let msg = node.value.assert_.message
 
-    // TODO We should probably write a function that does it like in builtin_functions
     import_structures(scope::get(state.module.scope, parser::make_identifier(["fprintf"])).tpe, state.module)
-    map::put(state.module.imported, "stderr", map::sentinel)
+
+    let std_module = map::get(toolchain::modules, "std") !*toolchain::Module
+    let stderr_fun = scope::get(std_module.scope, parser::make_identifier(["stderr"])).tpe
+    let fun = predeclare_function(stderr_fun, std_module)
+    map::put(state.module.result.functions, stderr_fun.type_name, fun)
+
+    map::put(state.module.imported, stderr_fun.type_name, map::sentinel)
     map::put(state.module.imported, "fprintf", map::sentinel)
     map::put(state.module.imported, "abort", map::sentinel)
 
@@ -4479,16 +4588,16 @@ def walk_Assert(node: *parser::Node, state: *State) {
     }
 
     let stderr = make_local_value(builtins::File_, null, state)
-    let load = make_insn_dbg(InsnKind::LOAD, loc)
-    load.value.load = {
-        value = stderr,
-        loc = { 
-            kind = ValueKind::GLOBAL, 
-            name = "stderr", 
-            tpe = typechecking::pointer(builtins::File_) 
-        } !Value
-    } !InsnLoad
-    push_insn(load, state)
+    let call = make_insn_dbg(InsnKind::CALL, loc)
+    call.value.call = {
+        name = {
+            kind = ValueKind::GLOBAL,
+            name = stderr_fun.type_name
+        } !Value,
+        ret = stderr,
+        args = allocate(Value, 0)
+    } !InsnCall
+    push_insn(call, state)
 
     args[0] = stderr
     args[1] = charp(fmt, state)
@@ -4575,10 +4684,10 @@ def di_basic_type(tpe: *typechecking::Type, name: string, c: string, state: *Sta
         name = "name", value = { kind = DebugValueKind::STRING, s = name } !DebugValue
     } !DebugParam
     debug_values[1] = {
-        name = "size", value = { kind = DebugValueKind::INT, i = (@tpe).size * 8 } !DebugValue
+        name = "size", value = { kind = DebugValueKind::INT, i = tpe.size * 8 } !DebugValue
     } !DebugParam
     debug_values[2] = {
-        name = "align", value = { kind = DebugValueKind::INT, i = (@tpe).align * 8 } !DebugValue
+        name = "align", value = { kind = DebugValueKind::INT, i = tpe.align * 8 } !DebugValue
     } !DebugParam
     debug_values[3] = {
         name = "encoding", value = { kind = DebugValueKind::CONST, name = c } !DebugValue
@@ -4593,9 +4702,9 @@ def di_basic_type(tpe: *typechecking::Type, name: string, c: string, state: *Sta
 }
 
 def di_composite_type(value: *Value, tpe: *typechecking::Type, name: string, c: string, state: *State) -> *Value {
-    let elementsarr = allocate(Value, (@tpe).fields.size)
-    for var i in 0..(@tpe).fields.size {
-        let elem = (@tpe).fields[i]
+    let elementsarr = allocate(Value, tpe.fields.size)
+    for var i in 0..tpe.fields.size {
+        let elem = tpe.fields[i]
         let debug_values = allocate(DebugParam, 8)
         debug_values[0] = {
             name = "tag", value = { kind = DebugValueKind::CONST, name = "DW_TAG_member" } !DebugValue
@@ -4648,10 +4757,10 @@ def di_composite_type(value: *Value, tpe: *typechecking::Type, name: string, c: 
         name = "file", value = meta_to_debug_value((@state).difile)
     } !DebugParam
     debug_values[2] = {
-        name = "line", value = { kind = DebugValueKind::INT, i = (@tpe).line + 1 } !DebugValue
+        name = "line", value = { kind = DebugValueKind::INT, i = tpe.line + 1 } !DebugValue
     } !DebugParam
     debug_values[3] = {
-        name = "size", value = { kind = DebugValueKind::INT, i = (@tpe).size * 8 } !DebugValue
+        name = "size", value = { kind = DebugValueKind::INT, i = tpe.size * 8 } !DebugValue
     } !DebugParam
     debug_values[4] = {
         name = "elements", value = meta_to_debug_value(elementsp)
@@ -4678,7 +4787,7 @@ def di_forward_declare(tpe: *typechecking::Type, name: string, state: *State) ->
         name = "file", value = meta_to_debug_value((@state).difile)
     } !DebugParam
     debug_values[2] = {
-        name = "line", value = { kind = DebugValueKind::INT, i = (@tpe).line + 1 } !DebugValue
+        name = "line", value = { kind = DebugValueKind::INT, i = tpe.line + 1 } !DebugValue
     } !DebugParam
     debug_values[3] = {
         name = "name", value = { kind = DebugValueKind::STRING, s = name } !DebugValue
@@ -4697,13 +4806,13 @@ def di_forward_declare(tpe: *typechecking::Type, name: string, state: *State) ->
 }
 
 def di_subroutine_type(tpe: *typechecking::Type, state: *State) -> *Value {
-    let values = allocate(Value, vector::length((@tpe).parameter_t) + 1)
+    let values = allocate(Value, vector::length(tpe.parameter_t) + 1)
 
     var ret_tpe: *typechecking::Type = null
-    if vector::length((@tpe).return_t) > 1 {
+    if vector::length(tpe.return_t) > 1 {
         ret_tpe = make_return_type(tpe)
-    } else if vector::length((@tpe).return_t) == 1 {
-        ret_tpe = vector::get((@tpe).return_t, 0) !*typechecking::Type
+    } else if vector::length(tpe.return_t) == 1 {
+        ret_tpe = vector::get(tpe.return_t, 0) !*typechecking::Type
     }
 
     if ret_tpe {
@@ -4712,8 +4821,8 @@ def di_subroutine_type(tpe: *typechecking::Type, state: *State) -> *Value {
         values[0] = NO_VALUE
     }
 
-    for var i in 0..vector::length((@tpe).parameter_t) {
-        let np = vector::get((@tpe).parameter_t, i) !*typechecking::NamedParameter
+    for var i in 0..vector::length(tpe.parameter_t) {
+        let np = vector::get(tpe.parameter_t, i) !*typechecking::NamedParameter
         values[i + 1] = @di_type((@np).tpe, state)
     }
 
@@ -4769,7 +4878,7 @@ def di_pointer_type(tpe: *typechecking::Type, state: *State) -> *Value {
         name = "tag", value = { kind = DebugValueKind::CONST, name = "DW_TAG_pointer_type" } !DebugValue
     } !DebugParam
     debug_values[1] = {
-        name = "baseType", value = meta_to_debug_value(di_type((@tpe).tpe, state))
+        name = "baseType", value = meta_to_debug_value(di_type(tpe.tpe, state))
     } !DebugParam
     debug_values[2] = {
         name = "size", value = { kind = DebugValueKind::INT, i = (size_of type *) * 8 } !DebugValue
@@ -4789,7 +4898,7 @@ def di_static_array_type(tpe: *typechecking::Type, state: *State) -> *Value {
     
     let debug_values1 = allocate(DebugParam, 1)
     debug_values1[0] = {
-        name = "count", value = { kind = DebugValueKind::INT, i = (@tpe).length } !DebugValue
+        name = "count", value = { kind = DebugValueKind::INT, i = tpe.length } !DebugValue
     } !DebugParam
     let value = allocate(Value)
     @value = {
@@ -4812,10 +4921,10 @@ def di_static_array_type(tpe: *typechecking::Type, state: *State) -> *Value {
         name = "tag", value = { kind = DebugValueKind::CONST, name = "DW_TAG_array_type" } !DebugValue
     } !DebugParam
     debug_values[1] = {
-        name = "baseType", value = meta_to_debug_value(di_type((@tpe).tpe, state))
+        name = "baseType", value = meta_to_debug_value(di_type(tpe.tpe, state))
     } !DebugParam
     debug_values[2] = {
-        name = "size", value = { kind = DebugValueKind::INT, i = (@tpe).size * 8 } !DebugValue
+        name = "size", value = { kind = DebugValueKind::INT, i = tpe.size * 8 } !DebugValue
     } !DebugParam
     debug_values[3] = {
         name = "elements", value = meta_to_debug_value(push_meta(elements, state))
@@ -4842,7 +4951,7 @@ def di_ref_type(value: *Value, tpe: *typechecking::Type, state: *State) -> *Valu
     let fields = allocate(StructMember, 3)
     fields[0] = { name = "ref_count", tpe = typechecking::pointer(builtins::int64_) } !StructMember
     fields[1] = { name = "value", tpe = typechecking::pointer(tpe.tpe) } !StructMember
-    fields[2] = { name = "tpe", tpe = typechecking::pointer(toolchain::type_type) } !StructMember
+    fields[2] = { name = "tpe", tpe = typechecking::pointer(builtins::Type_) } !StructMember
     let ref = typechecking::make_struct_type(fields)
  
     return di_composite_type(value, ref, "<ref>", "DW_TAG_structure_type", state)
@@ -4851,14 +4960,14 @@ def di_ref_type(value: *Value, tpe: *typechecking::Type, state: *State) -> *Valu
 def di_type(tpe: *typechecking::Type, state: *State) -> *Value {
     if not tpe { return null }
 
-    let anonymous = length((@tpe).type_name) == 0
+    let anonymous = length(tpe.type_name) == 0
     var ditpe: *Value = null
     if not anonymous {
-        ditpe = map::get((@state).ditypes, (@tpe).type_name) !*Value
+        ditpe = map::get((@state).ditypes, tpe.type_name) !*Value
     }
     if ditpe { return ditpe }
 
-    var name = (@tpe).type_name
+    var name = tpe.type_name
     if anonymous {
         name = "<anonymous>"
     }
@@ -4866,13 +4975,13 @@ def di_type(tpe: *typechecking::Type, state: *State) -> *Value {
     ditpe = allocate(Value)
     let ditpep = push_meta(ditpe, state)
     if not anonymous {
-        map::put((@state).ditypes, (@tpe).type_name, ditpep)
+        map::put((@state).ditypes, tpe.type_name, ditpep)
     }
 
-    switch (@tpe).kind !int {
+    switch tpe.kind !int {
         // TODO compare with char for special casing
         case typechecking::TypeKind::WORD:
-            if (@tpe).unsig {
+            if tpe.unsig {
                 @ditpe = @di_basic_type(tpe, name, "DW_ATE_unsigned", state)
             } else {
                 @ditpe = @di_basic_type(tpe, name, "DW_ATE_signed", state)
@@ -4889,10 +4998,10 @@ def di_type(tpe: *typechecking::Type, state: *State) -> *Value {
             @ditpe = @di_composite_type(ditpep, tpe, name, "DW_TAG_union_type", state)
         case typechecking::TypeKind::ENUM:
             // TODO Use enumeration type
-            if (@(@tpe).tpe).unsig {
-                @ditpe = @di_basic_type((@tpe).tpe, name, "DW_ATE_unsigned", state)
+            if (@tpe.tpe).unsig {
+                @ditpe = @di_basic_type(tpe.tpe, name, "DW_ATE_unsigned", state)
             } else {
-                @ditpe = @di_basic_type((@tpe).tpe, name, "DW_ATE_signed", state)
+                @ditpe = @di_basic_type(tpe.tpe, name, "DW_ATE_signed", state)
             }
         case typechecking::TypeKind::FUNCTION:
             @ditpe = @di_function_type(tpe, state)
@@ -4907,9 +5016,9 @@ def di_type(tpe: *typechecking::Type, state: *State) -> *Value {
         case typechecking::TypeKind::STUB:
             @ditpe = @di_forward_declare(tpe, name, state)
         case typechecking::TypeKind::TYPE:
-            @ditpe = @di_composite_type(ditpep, toolchain::type_type, "<type>", "DW_TAG_structure_type", state)
+            @ditpe = @di_composite_type(ditpep, builtins::Type_, "<type>", "DW_TAG_structure_type", state)
         case:
-            error((@tpe).kind, "\n") 
+            error(tpe.kind, "\n") 
             assert(false)
     }
     return ditpep
@@ -5130,12 +5239,13 @@ export def predeclare_function(tpe: *typechecking::Type, module: *toolchain::Mod
 
     function = allocate(Function)
     @function = {
-        name = (@tpe).type_name,
-        unmangled = (@tpe).name,
+        name = tpe.type_name,
+        unmangled = tpe.name,
         forward_declare = true,
         allocas = vector::make(),
-        imported = (@tpe).imported,
-        module = module
+        imported = tpe.imported,
+        module = module,
+        dllimport = tpe.dllimport
     } !Function
 
     if vector::length(tpe.parameter_t) > 0 {
@@ -5145,17 +5255,17 @@ export def predeclare_function(tpe: *typechecking::Type, module: *toolchain::Mod
         }
     }
     
-    if vector::length((@tpe).return_t) > 1 {
+    if vector::length(tpe.return_t) > 1 {
         function.ret = make_return_type(tpe)
         function.multiple_returns = true
     } else {
-        function.ret = vector::peek((@tpe).return_t) !*typechecking::Type
+        function.ret = vector::peek(tpe.return_t) !*typechecking::Type
     }
 
     (@function).args = vector::make()
-    for var i in 0..vector::length((@tpe).parameter_t) {
+    for var i in 0..vector::length(tpe.parameter_t) {
         let np = allocate(typechecking::NamedParameter)
-        (@np) = @(vector::get((@tpe).parameter_t, i) !*typechecking::NamedParameter)
+        (@np) = @(vector::get(tpe.parameter_t, i) !*typechecking::NamedParameter)
         if not np.tpe or np.tpe.kind != typechecking::TypeKind::TYPE {
             vector::push((@function).args, np)
         }
@@ -5408,14 +5518,14 @@ def walk_TypeDecl(node: *parser::Node, state: *State) {
                 value = { 
                     kind = ValueKind::LOCAL, 
                     name = "enum.value",
-                    tpe = (@tpe).tpe
+                    tpe = tpe.tpe
                 } !Value,
                 switch_values = switch_values
             } !InsnSwitch
             push_insn(swtch, state)
             
             // Create enum strings
-            let scpe = (@tpe).scope
+            let scpe = tpe.scope
             let keys = map::keys((@scpe).fields)
             let used = map::make()
             for var i in 0..keys.size {
@@ -5490,7 +5600,8 @@ export def walk_top_VarDecl(node: *parser::Node, state: *State, set_constant: bo
                 external = external,
                 name = name,
                 tpe = (@v).tpe,
-                line = (@v).loc.line
+                line = (@v).loc.line,
+                dllimport = value.dllimport
             } !Global
 
             if typechecking::is_ref(v.tpe) {
@@ -5587,6 +5698,506 @@ def walk_top_Import(node: *parser::Node, body: *vector::Vector, state: *State) {
     }
 }
 
+def push_tpe_tpe(tpe: *Type, global: Value, module: *toolchain::Module, state: *State) {
+    let index = allocate(Value, 2)
+    index[0] = make_int_value(0)
+    index[1] = make_int_value(4)
+
+    let gep_ret = make_local_value(pointer(pointer(builtins::Type_)), null, state)
+    let gep = make_insn(InsnKind::GETELEMENTPTR)
+    gep.value.gep = {
+        ret = gep_ret,
+        tpe = builtins::Type_,
+        value = global,
+        index = index
+    } !InsnGetElementPtr
+    push_insn(gep, state)
+
+    var value: Value
+    if tpe.tpe {
+        value = @create_type(tpe.tpe, module)
+    } else {
+        value = { kind = ValueKind::NULL, tpe = pointer(builtins::Type_) } !Value
+    }
+
+    let store = make_insn(InsnKind::STORE)
+    store.value.store = {
+        loc = gep_ret,
+        value = value
+    } !InsnStore
+    push_insn(store, state)
+}
+
+def push_struct_members(tpe: *Type, global: Value, module: *toolchain::Module, state: *State) {
+    // TODO cache these
+    let field_type = scope::get_type(toolchain::runtime.scope, make_identifier(["Field"]))
+
+    let fields_sarray = make_static_array(field_type, tpe.fields.size)
+    let fields = make_global_value(fields_sarray, "fields", null, state)
+    for var i in 0..tpe.fields.size {
+        let field = tpe.fields[i]
+
+        let name_values = allocate(Value, 2)
+        name_values[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = field.name.size } !Value
+        name_values[1] = { kind = ValueKind::UNDEF, tpe = pointer(builtins::int8_) } !Value
+
+        let field_values = allocate(Value, 3)
+        let type_member = vector::get(tpe.field_types, field.index) !*TypeMember
+        field_values[0] = { kind = ValueKind::STRUCT, tpe = builtins::string_, values = name_values } !Value
+        field_values[1] = { kind = ValueKind::INT, tpe = builtins::uint64_, i = type_member.offset !int64 } !Value
+        field_values[2] = { kind = ValueKind::UNDEF, tpe = pointer(builtins::Type_) } !Value
+
+        let value = { kind = ValueKind::STRUCT, tpe = field_type, values = field_values } !Value
+        let name = charp(field.name, state)
+
+        let index1 = allocate(int, 2)
+        index1[0] = 0
+        index1[1] = 1
+        let insert_name_ret = make_local_value(field_type, null, state)
+        let insert_name = make_insn(InsnKind::INSERTVALUE)
+        insert_name.value.insert_value = {
+            ret = insert_name_ret,
+            value = value,
+            element = name,
+            index = index1
+        } !InsnInsertValue
+        push_insn(insert_name, state)
+
+        let tpe = @create_type(field.tpe, module)
+
+        let index2 = allocate(int, 1)
+        index2[0] = 2
+        let insert_type_ret = make_local_value(field_type, null, state)
+        let insert_type = make_insn(InsnKind::INSERTVALUE)
+        insert_type.value.insert_value = {
+            ret = insert_type_ret,
+            value = insert_name_ret,
+            element = tpe,
+            index = index2
+        } !InsnInsertValue
+        push_insn(insert_type, state)
+
+        let index3 = allocate(Value, 2)
+        index3[0] = make_int_value(0)
+        index3[1] = make_int_value(i)
+        let gep_ret = make_local_value(pointer(field_type), null, state)
+        let gep = make_insn(InsnKind::GETELEMENTPTR)
+        gep.value.gep = {
+            ret = gep_ret,
+            tpe = fields_sarray,
+            value = fields,
+            index = index3
+        } !InsnGetElementPtr
+        push_insn(gep, state)
+
+        let store = make_insn(InsnKind::STORE)
+        store.value.store = {
+            loc = gep_ret,
+            value = insert_type_ret
+        }
+        push_insn(store, state)
+    }
+
+    let index1 = allocate(Value, 2)
+    index1[0] = make_int_value(0)
+    index1[1] = make_int_value(0)
+    let gep1_ret = make_local_value(pointer(field_type), null, state)
+    let gep1 = make_insn(InsnKind::GETELEMENTPTR)
+    gep1.value.gep = {
+        ret = gep1_ret,
+        tpe = fields_sarray,
+        value = fields,
+        index = index1
+    } !InsnGetElementPtr
+    push_insn(gep1, state)
+
+    let index2 = allocate(Value, 3)
+    index2[0] = make_int_value(0)
+    index2[1] = make_int_value(7)
+    index2[2] = make_int_value(1)
+    let gep2_ret = make_local_value(pointer(pointer(field_type)), null, state)
+    let gep2 = make_insn(InsnKind::GETELEMENTPTR)
+    gep2.value.gep = {
+        ret = gep2_ret,
+        tpe = builtins::Type_,
+        value = global,
+        index = index2
+    } !InsnGetElementPtr
+    push_insn(gep2, state)
+
+    let store = make_insn(InsnKind::STORE)
+    store.value.store = {
+        loc = gep2_ret,
+        value = gep1_ret
+    }
+    push_insn(store, state)
+}
+
+def push_enum_values(tpe: *Type, global: Value, module: *toolchain::Module, state: *State) {
+    let enum_type = scope::get_type(toolchain::runtime.scope, make_identifier(["EnumValue"]))
+
+    let values_sarray = make_static_array(enum_type, map::size(tpe.scope.fields))
+    let values = make_global_value(values_sarray, "values", null, state)
+    
+    let keys = map::keys(tpe.scope.fields)
+    for var i in 0..keys.size {
+        let key = keys[i]
+        let svalue = map::get(tpe.scope.fields, key) !*scope::Value
+        
+        let name_values = allocate(Value, 2)
+        name_values[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = key.size } !Value
+        name_values[1] = { kind = ValueKind::UNDEF, tpe = pointer(builtins::int8_) } !Value
+
+        let eval_values = allocate(Value, 2)
+        eval_values[0] = { kind = ValueKind::STRUCT, tpe = builtins::string_, values = name_values } !Value
+        eval_values[1] = { kind = ValueKind::INT, tpe = builtins::int64_, i = svalue.value.i !int64 } !Value
+
+        let value = { kind = ValueKind::STRUCT, tpe = enum_type, values = eval_values } !Value
+        let name = charp(key, state)
+
+        let index1 = allocate(int, 2)
+        index1[0] = 0
+        index1[1] = 1
+        let insert_name_ret = make_local_value(enum_type, null, state)
+        let insert_name = make_insn(InsnKind::INSERTVALUE)
+        insert_name.value.insert_value = {
+            ret = insert_name_ret,
+            value = value,
+            element = name,
+            index = index1
+        } !InsnInsertValue
+        push_insn(insert_name, state)
+        
+        let index3 = allocate(Value, 2)
+        index3[0] = make_int_value(0)
+        index3[1] = make_int_value(i)
+        let gep_ret = make_local_value(pointer(enum_type), null, state)
+        let gep = make_insn(InsnKind::GETELEMENTPTR)
+        gep.value.gep = {
+            ret = gep_ret,
+            tpe = values_sarray,
+            value = values,
+            index = index3
+        } !InsnGetElementPtr
+        push_insn(gep, state)
+
+        let store = make_insn(InsnKind::STORE)
+        store.value.store = {
+            loc = gep_ret,
+            value = insert_name_ret
+        }
+        push_insn(store, state)
+    }
+
+    let index1 = allocate(Value, 2)
+    index1[0] = make_int_value(0)
+    index1[1] = make_int_value(0)
+    let gep1_ret = make_local_value(pointer(enum_type), null, state)
+    let gep1 = make_insn(InsnKind::GETELEMENTPTR)
+    gep1.value.gep = {
+        ret = gep1_ret,
+        tpe = values_sarray,
+        value = values,
+        index = index1
+    } !InsnGetElementPtr
+    push_insn(gep1, state)
+
+    let index2 = allocate(Value, 3)
+    index2[0] = make_int_value(0)
+    index2[1] = make_int_value(10)
+    index2[2] = make_int_value(1)
+    let gep2_ret = make_local_value(pointer(pointer(enum_type)), null, state)
+    let gep2 = make_insn(InsnKind::GETELEMENTPTR)
+    gep2.value.gep = {
+        ret = gep2_ret,
+        tpe = builtins::Type_,
+        value = global,
+        index = index2
+    } !InsnGetElementPtr
+    push_insn(gep2, state)
+
+    let store = make_insn(InsnKind::STORE)
+    store.value.store = {
+        loc = gep2_ret,
+        value = gep1_ret
+    }
+    push_insn(store, state)
+}
+
+def push_type_names(tpe: *Type, global: Value, module: *toolchain::Module, state: *State) {
+    let member_functions = typechecking::get_member_functions(tpe)
+    if vector::length(member_functions) == 0 { return }
+
+    let members_sarray = make_static_array(builtins::Function_, vector::length(member_functions))
+    let members = make_global_value(members_sarray, "type_members", null, state)
+
+    for var i in 0..vector::length(member_functions) {
+        let member_function = vector::get(member_functions, i) !*TypeEntryMember
+
+    }
+
+    let gep_ret = state.gep(pointer(builtins::Function_), members_sarray, members, 0, 0)
+    let gep2_ret = state.gep(pointer(pointer(builtins::Function_)), builtins::Type_, global, 0, 13, 1)
+    state.store(gep2_ret, gep_ret)
+}
+
+def do_create_type(tpe: *Type, svalue: *scope::Value, module: *toolchain::Module) -> *Value {
+    let global = { kind = ValueKind::GLOBAL, tpe = pointer(builtins::Type_), name = svalue.assembly_name } !Value
+
+    let field_type = scope::get_type(toolchain::runtime.scope, make_identifier(["Field"]))
+    let enum_type = scope::get_type(toolchain::runtime.scope, make_identifier(["EnumValue"]))
+
+    let value = zero_allocate(Value)
+    let state = *toolchain::types_state
+
+    let name_str = debug::type_to_str(tpe, true)
+
+    let name_values = allocate(Value, 2)
+    name_values[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = name_str.size } !Value
+    name_values[1] = { kind = ValueKind::UNDEF, tpe = pointer(builtins::int8_) } !Value
+
+    let module_values = allocate(Value, 2)
+    module_values[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = module.module.size } !Value
+    module_values[1] = { kind = ValueKind::UNDEF, tpe = pointer(builtins::int8_) } !Value
+
+    let type_names = allocate(Value, 2)
+    type_names[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = vector::length(typechecking::get_member_functions(tpe)) } !Value
+    type_names[1] = { kind = ValueKind::UNDEF, tpe = pointer(builtins::Function_) } !Value
+
+    value.values = zero_allocate(Value, 14)
+    value.values[1] = { kind = ValueKind::STRUCT, tpe = builtins::string_, values = name_values } !Value
+    value.values[2] = { kind = ValueKind::INT, tpe = builtins::bool_, i = tpe.unsig !int64 } !Value
+    value.values[3] = { kind = ValueKind::UNDEF, tpe = builtins::size_t_ } !Value
+    value.values[4] = { kind = ValueKind::UNDEF, tpe = pointer(builtins::Type_) } !Value
+    value.values[5] = { kind = ValueKind::INT, tpe = builtins::size_t_, i = tpe.size } !Value
+    value.values[6] = { kind = ValueKind::INT, tpe = builtins::size_t_, i = tpe.align } !Value
+    value.values[7] = { kind = ValueKind::UNDEF, tpe = array(field_type) } !Value
+    value.values[8] = { kind = ValueKind::UNDEF, tpe = array(pointer(builtins::Type_)) } !Value
+    value.values[9] = { kind = ValueKind::UNDEF, tpe = array(pointer(builtins::Type_)) } !Value
+    value.values[10] = { kind = ValueKind::UNDEF, tpe = array(enum_type) } !Value
+    value.values[11] = { kind = ValueKind::STRUCT, tpe = builtins::string_, values = module_values } !Value
+    value.values[12] = { kind = ValueKind::UNDEF, tpe = array(builtins::Function_) } !Value
+    value.values[13] = { kind = ValueKind::STRUCT, tpe = array(builtins::Function_), values = type_names } !Value
+
+    let index = allocate(Value, 3)
+    index[0] = make_int_value(0)
+    index[1] = make_int_value(1)
+    index[2] = make_int_value(1)
+
+    let gep_ret = make_local_value(pointer(pointer(builtins::char_)), null, state)
+    let gep = make_insn(InsnKind::GETELEMENTPTR)
+    gep.value.gep = {
+        ret = gep_ret,
+        tpe = builtins::Type_,
+        value = global,
+        index = index
+    } !InsnGetElementPtr
+    push_insn(gep, state)
+
+    let name = charp(name_str, state)
+    let store = make_insn(InsnKind::STORE)
+    store.value.store = {
+        loc = gep_ret,
+        value = name
+    } !InsnStore
+    push_insn(store, state)
+    
+    let index2 = allocate(Value, 3)
+    index2[0] = make_int_value(0)
+    index2[1] = make_int_value(11)
+    index2[2] = make_int_value(1)
+
+    let gep2_ret = make_local_value(pointer(pointer(builtins::char_)), null, state)
+    let gep2 = make_insn(InsnKind::GETELEMENTPTR)
+    gep2.value.gep = {
+        ret = gep2_ret,
+        tpe = builtins::Type_,
+        value = global,
+        index = index2
+    } !InsnGetElementPtr
+    push_insn(gep2, state)
+
+    let module_name = charp(module.module, state)
+    let store2 = make_insn(InsnKind::STORE)
+    store2.value.store = {
+        loc = gep2_ret,
+        value = module_name
+    } !InsnStore
+    push_insn(store2, state)
+
+    push_type_names(tpe, global, module, state)
+
+    switch tpe.kind !int {
+        case TypeKind::STRUCT, TypeKind::UNION:
+            value.values[0] = { kind = ValueKind::INT, tpe = builtins::int_, i = 3 if tpe.kind == TypeKind::STRUCT else 4 } !Value
+            let field_values = allocate(Value, 2)
+            field_values[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = tpe.fields.size } !Value
+            field_values[1] = { kind = ValueKind::UNDEF, tpe = pointer(field_type) } !Value
+            value.values[7] = { kind = ValueKind::STRUCT, tpe = array(field_type), values = field_values } !Value
+            push_struct_members(tpe, global, module, state)
+        case TypeKind::BOOL:
+            value.values[0] = { kind = ValueKind::INT, tpe = builtins::int_, i = 0 } !Value
+        case TypeKind::WORD:
+            value.values[0] = { kind = ValueKind::INT, tpe = builtins::int_, i = 1 } !Value
+        case TypeKind::CHAR:
+            value.values[0] = { kind = ValueKind::INT, tpe = builtins::int_, i = 11 } !Value
+        case TypeKind::FLOAT:
+            value.values[0] = { kind = ValueKind::INT, tpe = builtins::int_, i = 2 } !Value
+        case TypeKind::ARRAY:
+            create_type(tpe.tpe, module)
+            value.values[0] = { kind = ValueKind::INT, tpe = builtins::int_, i = 5 } !Value
+            push_tpe_tpe(tpe, global, module, state)
+        case TypeKind::STATIC_ARRAY:
+            create_type(tpe.tpe, module)
+            value.values[0] = { kind = ValueKind::INT, tpe = builtins::int_, i = 6 } !Value
+            value.values[3] = { kind = ValueKind::INT, tpe = builtins::size_t_, i = tpe.length} !Value
+            push_tpe_tpe(tpe, global, module, state)
+        case TypeKind::POINTER:
+            create_type(tpe.tpe, module)
+            value.values[0] = { kind = ValueKind::INT, tpe = builtins::int_, i = 7 } !Value
+            push_tpe_tpe(tpe, global, module, state)
+        case TypeKind::REFERENCE:
+            create_type(tpe.tpe, module)
+            value.values[0] = { kind = ValueKind::INT, tpe = builtins::int_, i = 8 } !Value
+            push_tpe_tpe(tpe, global, module, state)
+        case TypeKind::FUNCTION:
+            //TODO Functions
+            for var i in 0..vector::length(tpe.parameter_t) {
+                let np = vector::get(tpe.parameter_t, i) !*NamedParameter
+                create_type(np.tpe, module)
+            }
+            for var i in 0..vector::length(tpe.return_t) {
+                create_type(vector::get(tpe.return_t, i) !*Type, module)
+            }
+            value.values[0] = { kind = ValueKind::INT, tpe = builtins::int_, i = 9 } !Value
+        case TypeKind::ENUM:
+            create_type(tpe.tpe, module)
+            value.values[0] = { kind = ValueKind::INT, tpe = builtins::int_, i = 10 } !Value
+            let enum_values = allocate(Value, 2)
+            enum_values[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = map::size(tpe.scope.fields) } !Value
+            enum_values[1] = { kind = ValueKind::UNDEF, tpe = pointer(enum_type) } !Value
+            value.values[10] = { kind = ValueKind::STRUCT, tpe = array(enum_type), values = enum_values } !Value
+            push_tpe_tpe(tpe, global, module, state)
+            push_enum_values(tpe, global, module, state)
+        case:
+            error(tpe.kind, "\n")
+            assert(false)
+    }
+
+    value.kind = ValueKind::STRUCT
+    value.tpe = builtins::Type_
+    return value
+}
+
+export def create_type(tpe: *Type, module: *toolchain::Module) -> *Value {
+    if not tpe { return null }
+
+    let ident = make_identifier([debug::type_to_str(tpe, true)])
+    ident.loc.module = "type"
+
+    var svalue = scope::get(toolchain::types.scope, ident, false, false)
+    if not svalue {
+        svalue = scope::create_variable(
+            toolchain::types.scope, ident, parser::ShareMarker::NONE, 
+            parser::VarDecl::CONST, builtins::Type_, 
+            false, false, null, scope::Phase::DEFINED, null, null)
+
+        svalue = scope::create_variable(
+            toolchain::types.scope, 
+            ident, parser::ShareMarker::NONE, parser::VarDecl::CONST, 
+            builtins::Type_, do_create_type(tpe, svalue, module))
+
+        let global = allocate(Global)
+        @global = {
+            private = false,
+            name = svalue.assembly_name,
+            tpe = svalue.tpe,
+            value = svalue.value,
+            line = -1
+        }
+        map::put(toolchain::types.result.globals, global.name, global)
+        map::put(toolchain::types.imported, global.name, map::sentinel)
+    }
+    if not map::contains(module.result.globals, svalue.assembly_name) {
+        let global = allocate(Global)
+        @global = {
+            external = true,
+            name = svalue.assembly_name,
+            tpe = svalue.tpe,
+            line = -1
+        }
+        map::put(module.result.globals, global.name, global)
+        map::put(module.imported, global.name, map::sentinel)
+    }
+
+    let value = allocate(Value)
+    @value = {
+        kind = ValueKind::GLOBAL,
+        tpe = typechecking::pointer(builtins::Type_), 
+        name = svalue.assembly_name
+    } !Value
+
+    value.value_tpe = tpe
+
+    return value
+}
+
+def change_value_to_type(tpe: *Type, state: *State) -> *scope::Value {
+    let type_tpe = copy(builtins::Type_)
+    type_tpe.tpe = tpe 
+    import_structures(builtins::Type_, state.module)
+    let value = zero_allocate(scope::Value)
+    value.tpe = typechecking::pointer(type_tpe)
+
+    // We need an independent block that we can run for constant evaluation
+    let old_block = toolchain::types_state.current_block
+    let new_block = make_block()
+    new_block.counter = old_block.counter
+    toolchain::types_state.current_block = new_block
+
+    value.value = create_type(tpe, state.module)
+
+    let old_cstate_block = preprocess::compiler_state.current_block
+    let old_cstate_function = preprocess::compiler_state.current_function
+
+    let function = allocate(Function)
+    @function = {
+        name = "main",
+        unmangled = "main",
+        forward_declare = true,
+        allocas = vector::make(),
+        block = new_block
+    } !Function
+    preprocess::compiler_state.current_function = function
+    preprocess::compiler_state.current_block = new_block
+
+    // Copy constants into the right module
+    // TODO This always copies the whole thing
+    let keys = map::keys(toolchain::types.result.globals)
+    for var i in 0..keys.size {
+        let key = keys[i]
+        let global = map::get(toolchain::types.result.globals, key)
+        map::put(preprocess::const_module.result.globals, key, global)
+    }
+
+    let old_module = preprocess::compiler_state.module
+    preprocess::compiler_state.module = preprocess::const_module
+    eval::eval(*preprocess::compiler_state)
+    preprocess::compiler_state.module = old_module
+
+    old_block.counter = new_block.counter
+    for var i in 0..vector::length(new_block.insn) {
+        vector::push(old_block.insn, vector::get(new_block.insn, i))
+    }
+    toolchain::types_state.current_block = old_block
+
+    preprocess::compiler_state.current_block = old_cstate_block
+    preprocess::compiler_state.current_function = old_cstate_function
+
+    return value
+}
+
+
 export def make_result -> *Result {
     let result = allocate(Result)
     @result = {
@@ -5657,7 +6268,7 @@ export def compile(state: *State, is_main: bool, no_cleanup: bool = false) {
     let node = state.module.node
     assert((@node).kind == parser::NodeKind::PROGRAM)
 
-    import_structures(toolchain::type_type, state.module)
+    import_structures(builtins::Type_, state.module)
 
     let body = vector::make()
 
@@ -5692,7 +6303,7 @@ export def compile(state: *State, is_main: bool, no_cleanup: bool = false) {
         var dirname = util::dirname(state.module.filename)
         if length(dirname) == 0 { dirname = "." }
         let abspath = allocate(char, PATH_MAX)
-        absolute_path(dirname, abspath)
+        absolute_path(dirname, *abspath)
         abspath.size = strlen(abspath) + 1
         let file = util::basename(state.module.filename)
 
