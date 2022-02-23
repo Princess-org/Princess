@@ -362,8 +362,6 @@ When comparing pointers you have to cast one of them to `*` (void pointer) to co
 let va, vb = 2, 3
 var a, b = *va, *vb
 
-var b: *int = a++
-var c: *int = ++a
 var d: *int = a ++ 4
 var e: *int = a -- 4
 let f: size = a -- b // (distance, scalar)
@@ -374,13 +372,11 @@ let f: size = a -- b // (distance, scalar)
 ```
 // size_of:
     size_of <type>
-    size_of <expression>
 // align_of:
     align_of <type>
-    align_of <expression>
 ```
     
-Tip: In case of ambigiouty, expression is always preferred, use "type T" to specifically treat something as a type
+Tip: If you need the size of an expression use `size_of type_of expr`
 
 ### Arrays: 
 
