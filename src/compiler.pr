@@ -369,6 +369,13 @@ export type State = struct {
 // Map of TypeEntry
 export let types_map = map::make()
 
+export def get_member_functions(tpe: *Type) -> *vector::Vector {
+    let name = debug::type_to_str(tpe, full_name = true)
+    let type_entry = map::get(types_map, name) !*TypeEntry
+    if not type_entry { return vector::make() }
+    return type_entry.functions
+}
+
 export let CONTAINS     = 1 !*
 export let NOT_CONTAINS = 2 !*
 
@@ -6075,8 +6082,8 @@ def push_type_member(exported: bool, f_name: string, pars: *vector::Vector, rets
     return member
 }
 
-def push_type_names(tpe: *Type, global: Value, module: *toolchain::Module, state: *State) {
-    let member_functions = typechecking::get_member_functions(tpe)
+def push_type_members(tpe: *Type, global: Value, module: *toolchain::Module, state: *State) {
+    let member_functions = get_member_functions(tpe)
     if vector::length(member_functions) == 0 { return }
 
     let members_sarray = make_static_array(builtins::Function_, vector::length(member_functions))
@@ -6086,7 +6093,12 @@ def push_type_names(tpe: *Type, global: Value, module: *toolchain::Module, state
         let member_function = vector::get(member_functions, i) !*TypeEntryMember
         let function = member_function.function
 
-        let member = push_type_member(member_function.exported, function.name, function.parameter_t, function.return_t, module, state)
+        let member = push_type_member(
+            member_function.exported, 
+            function.type_name, 
+            function.parameter_t, function.return_t, 
+            module, state)
+
         let gep_ret = state.gep(pointer(builtins::Function_), members_sarray, members, [0, i])
         state.store(gep_ret, member)
     }
@@ -6138,7 +6150,7 @@ def do_create_type(tpe: *Type, svalue: *scope::Value, module: *toolchain::Module
     module_values[1] = { kind = ValueKind::UNDEF, tpe = pointer(builtins::int8_) } !Value
 
     let type_names = allocate(Value, 2)
-    type_names[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = vector::length(typechecking::get_member_functions(tpe)) } !Value
+    type_names[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = vector::length(get_member_functions(tpe)) } !Value
     type_names[1] = { kind = ValueKind::UNDEF, tpe = pointer(builtins::Function_) } !Value
 
     value.values = zero_allocate(Value, 14)
@@ -6202,7 +6214,7 @@ def do_create_type(tpe: *Type, svalue: *scope::Value, module: *toolchain::Module
     } !InsnStore
     push_insn(store2, state)
 
-    push_type_names(tpe, global, module, state)
+    push_type_members(tpe, global, module, state)
 
     switch tpe.kind !int {
         case TypeKind::STRUCT, TypeKind::UNION:
@@ -6275,8 +6287,47 @@ def do_create_type(tpe: *Type, svalue: *scope::Value, module: *toolchain::Module
     return value
 }
 
+// Vector of ToResolve
+let types_to_resolve = vector::make()
+type ToResolve = struct {
+    module: *toolchain::Module
+    tpe: *typechecking::Type
+}
+
+// This is needed because some of the types might be stubs when they are first referenced
+// Resolve these later
+export def resolve_types {
+    for var i in 0..vector::length(types_to_resolve) {
+        let to_resolve = vector::get(types_to_resolve, i) !*ToResolve
+        let tpe = to_resolve.tpe
+        if tpe.kind == typechecking::TypeKind::STUB { continue }
+
+        let ident = make_identifier([debug::type_to_str(tpe, true)])
+        ident.loc.module = "type"
+        
+        let svalue = scope::get(toolchain::types.scope, ident)
+        svalue.value = do_create_type(tpe, svalue, to_resolve.module)
+
+        let global = allocate(Global)
+        @global = {
+            private = false,
+            name = svalue.assembly_name,
+            tpe = svalue.tpe,
+            value = svalue.value,
+            line = -1
+        }
+        map::put(toolchain::types.result.globals, global.name, global)
+        map::put(toolchain::types.imported, global.name, map::sentinel)
+    }
+}
+
 export def create_type(tpe: *Type, module: *toolchain::Module) -> *Value {
     if not tpe { return null }
+    if tpe.kind == typechecking::TypeKind::STUB {
+        let to_resolve = allocate(ToResolve)
+        @to_resolve = { module, tpe } !ToResolve
+        vector::push(types_to_resolve, to_resolve)
+    }
 
     let ident = make_identifier([debug::type_to_str(tpe, true)])
     ident.loc.module = "type"
