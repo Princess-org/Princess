@@ -36,7 +36,6 @@ def release():
     (FOLDER / "bin").mkdir(exist_ok=True)
     (FOLDER / "include").mkdir(exist_ok=True)
 
-    shutil.copy(Path("princess.h"), FOLDER)
     shutil.copy(Path("bin/princess2"), FOLDER / "bin/princess")
     shutil.copy(Path("version"), FOLDER)
     for path in glob.glob("include/*.h"):
