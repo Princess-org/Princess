@@ -65,9 +65,6 @@ export type StructMember = struct {
     bit_offset: size_t
 }
 
-// Vector of StructuralType
-export let structural_types = vector::make()
-
 export type StructuralType = struct {
     // Vector of StructuralTypeMember
     members: *vector::Vector
@@ -381,6 +378,60 @@ def make_unique_name(name: string, state: *State) -> string {
     return buffer::to_string(*buf)
 }
 
+// Map of type names to identify which ones
+// implement structural types
+// Map of TypeEntry
+export let types_map = map::make()
+
+export def get_member_functions(tpe: *Type) -> *vector::Vector {
+    let name = debug::type_to_str(tpe, full_name = true)
+    let type_entry = map::get(types_map, name) !*TypeEntry
+    if not type_entry { return vector::make() }
+    return type_entry.functions
+}
+
+export let CONTAINS     = 1 !*
+export let NOT_CONTAINS = 2 !*
+
+export type TypeEntry = struct {
+    name: string
+    // Vector of TypeEntryMember
+    functions: *vector::Vector
+    cached: *map::Map    
+}
+
+export type TypeEntryMember = struct {
+    function: *Type
+    exported: bool
+    module: *toolchain::Module
+}
+
+export def create_type_entry(tpe: *Type, exported: bool, entry: *Type, module: *toolchain::Module) {
+    let name = debug::type_to_str(tpe, full_name = true)
+    var type_entry = map::get(types_map, name) !*TypeEntry
+    if not type_entry {
+        type_entry = allocate(TypeEntry)
+        @type_entry = {
+            name = name,
+            functions = vector::make(),
+            cached = map::make()
+        } !TypeEntry
+        map::put(types_map, name, type_entry)
+    } else {
+        // Clear the cache for REPL
+        map::clear(type_entry.cached)
+    }
+
+    let member_function = allocate(TypeEntryMember)
+    @member_function = {
+        function = entry,
+        exported = exported,
+        module = module
+    } !TypeEntryMember
+    vector::push(type_entry.functions, member_function)
+}
+
+
 // TODO Not a deep copy
 export def copy(a: *Type) -> *Type {
     if not a { return null }
@@ -428,7 +479,8 @@ export def equals(a: *Type, b: *Type) -> bool {
     if kind == TypeKind::ENUM or
         kind == TypeKind::STRUCT or
         kind == TypeKind::UNION or
-        kind == TypeKind::STUB {
+        kind == TypeKind::STUB or
+        kind == TypeKind::STRUCTURAL {
         
         return (@a).type_name == (@b).type_name
     }
@@ -467,8 +519,122 @@ export def equals(a: *Type, b: *Type) -> bool {
     assert(false)
 }
 
+def has_function(entry: *TypeEntry, mb: *StructuralTypeMember) -> bool {
+    for var i in 0..vector::length(entry.functions) {
+        let member = vector::get(entry.functions, i) !*TypeEntryMember
+        let function = member.function
+        if function.name != mb.name { continue }
+
+        if vector::length(function.parameter_t) + 1 != vector::length(mb.parameter_t) { continue }
+        var mismatch = false
+        for var k in 0..vector::length(mb.parameter_t) {
+            let npa = vector::get(function.parameter_t, k + 1) !*NamedParameter
+            let npb = vector::get(mb.parameter_t, k) !*NamedParameter
+            if not equals(npa.tpe, npb.tpe) {
+                mismatch = true
+                break
+            }
+        }
+        if mismatch { continue }
+
+        if vector::length(function.return_t) != vector::length(mb.return_t) { continue }
+        for var k in 0..vector::length(mb.parameter_t) {
+            let ta = vector::get(function.return_t, k) !*Type
+            let tb = vector::get(mb.return_t, k) !*Type
+            if not equals(ta, tb) {
+                mismatch = true
+                break
+            }
+        }
+        if mismatch { continue }
+    }
+    return false
+}
+
+// Returns true if a implements b
+// b needs to be a structural type
+export def implements(a: *Type, b: *Type) -> bool {
+    assert b.kind == TypeKind::STRUCTURAL
+
+    let namea = debug::type_to_str(a, full_name = true)
+    var type_entry = map::get(types_map, namea) !*TypeEntry
+    if not type_entry {
+        type_entry = allocate(TypeEntry)
+        @type_entry = {
+            name = namea,
+            functions = vector::make(),
+            cached = map::make()
+        } !TypeEntry
+        map::put(types_map, namea, type_entry)
+    }
+    let nameb = debug::type_to_str(b, full_name = true)
+    let cached = map::get(type_entry.cached, nameb)
+    if cached {
+        return cached == CONTAINS
+    }
+
+    let sb = b.structure
+    if a.kind == TypeKind::STRUCTURAL {
+        let sa = a.structure
+        for var i in 0..vector::length(sb.members) {
+            let mb = vector::get(sb.members, i) !*StructuralTypeMember
+
+            var found = false
+            for var j in 0..vector::length(sa.members) {
+                let ma = vector::get(sa.members, j) !*StructuralTypeMember
+                if ma.name != mb.name { continue }
+                if vector::length(ma.parameter_t) != vector::length(mb.parameter_t) { continue }
+
+                var mismatch = false
+                for var k in 0..vector::length(ma.parameter_t) {
+                    let npa = vector::get(ma.parameter_t, k) !*NamedParameter
+                    let npb = vector::get(mb.parameter_t, k) !*NamedParameter
+                    if not equals(npa.tpe, npb.tpe) {
+                        mismatch = true
+                        break
+                    }
+                }
+                if mismatch { continue }
+
+                if vector::length(ma.return_t) != vector::length(mb.return_t) { continue }
+                
+                for var k in 0..vector::length(ma.parameter_t) {
+                    let ta = vector::get(ma.return_t, k) !*Type
+                    let tb = vector::get(mb.return_t, k) !*Type
+                    if not equals(ta, tb) {
+                        mismatch = true
+                        break
+                    }
+                }
+                if mismatch { continue }
+            
+                found = true
+            }
+            if not found {
+                found = has_function(type_entry, mb)
+            }
+            if not found { 
+                map::put(type_entry.cached, nameb, NOT_CONTAINS)
+                return false 
+            }
+        }
+        map::put(type_entry.cached, nameb, CONTAINS)
+        return true
+    } else {
+        for var i in 0..vector::length(sb.members) {
+            let mb = vector::get(sb.members, i) !*StructuralTypeMember
+            if not has_function(type_entry, mb) { 
+                map::put(type_entry.cached, nameb, NOT_CONTAINS)
+                return false 
+            }
+        }
+        map::put(type_entry.cached, nameb, CONTAINS)
+        return true
+    }
+}
+
 // Returns true if b is assignable to a
-def is_assignable(a: *Type, b: *Type) -> bool {
+export def is_assignable(a: *Type, b: *Type) -> bool {
     if equals(a, b) { return true }
 
     if a.kind == TypeKind::STATIC_ARRAY and b.kind == TypeKind::STATIC_ARRAY {
@@ -612,8 +778,11 @@ def convert_type_score(a: *Type, b: *Type, is_type: bool = false) -> int {
 
 export def is_polymorph(tpe: *Type) -> bool {
     if not tpe { return false }
-    if tpe.kind == TypeKind::TYPE_DEF or tpe.kind == TypeKind::TYPE { return true }
-    else if tpe.kind == TypeKind::POINTER or tpe.kind == TypeKind::REFERENCE or
+    if tpe.kind == TypeKind::TYPE_DEF or 
+        tpe.kind == TypeKind::TYPE or
+        tpe.kind == TypeKind::STRUCTURAL { 
+            return true 
+    } else if tpe.kind == TypeKind::POINTER or tpe.kind == TypeKind::REFERENCE or
         tpe.kind == TypeKind::STATIC_ARRAY or tpe.kind == TypeKind::ARRAY {
         return is_polymorph(tpe.tpe)
     } else if tpe.kind == TypeKind::FUNCTION or tpe.kind == TypeKind::TUPLE {
@@ -1209,7 +1378,6 @@ export def type_lookup(node: *parser::Node, state: *State, lookup_default: bool 
             module = state.module
         } !StructuralType
 
-        vector::push(structural_types, structural_type)
         tpe.structure = structural_type
 
         return tpe
