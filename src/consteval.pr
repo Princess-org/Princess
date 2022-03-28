@@ -91,8 +91,9 @@ def walk_StaticIf(node: *parser::Node, state: *typechecking::State) {
     let is_static = state.is_static
     state.is_static = true
     walk(node, node.value.if_.cond, state)
-    state.is_static = is_static
     var result = boolean_expr(node.value.if_.cond, state)
+    walk(node, node.value.if_.cond, state)
+    state.is_static = is_static
 
     var body: *vector::Vector = null
     if result.i {
@@ -100,11 +101,14 @@ def walk_StaticIf(node: *parser::Node, state: *typechecking::State) {
     } else {
         for var i in 0..vector::length(node.value.if_.else_if) {
             let else_if = vector::get(node.value.if_.else_if, i) !*parser::Node
+            
             let is_static = state.is_static
             state.is_static = true
             walk(else_if, else_if.value.else_if.cond, state)
-            state.is_static = is_static
             result = boolean_expr(else_if.value.else_if.cond, state)
+            walk(else_if, else_if.value.else_if.cond, state)
+            state.is_static = is_static
+
             if result.i { 
                 body = else_if.value.else_if.body
                 break
@@ -143,76 +147,6 @@ def walk_Import(node: *parser::Node, state: *typechecking::State) {
         scope::insert_module(state.scope, alias, module)
     }
     compiler::predeclare_functions(state.module)
-}
-
-export def walk_Def_with_type_argument(node: *parser::Node, parameter_t: *vector::Vector, state: *typechecking::State) {
-    node = parser::deep_copy_node(node)
-    let share = node.value.def_.share
-    let tpe = node.tpe
-
-    tpe.is_polymorph = false
-    var body = node.value.def_.body
-
-    let function = allocate(typechecking::Function)
-    @function = {
-        tpe = tpe,
-        locals = map::make(),
-        has_defer = false
-    }
-    typechecking::push_function(state, function)
-
-    state.scope = scope::enter_function_scope(state.scope)
-    node.inner_scope = state.scope
-
-    for var i in 0..vector::length(parameter_t) {
-        let np = vector::get(parameter_t, i) !*typechecking::NamedParameter
-        var left: *typechecking::NamedParameter = null
-        if length(np.name) > 0 {
-            for var j in 0..vector::length(tpe.parameter_t) {
-                let l = vector::get(tpe.parameter_t, j) !*typechecking::NamedParameter
-                if l.name == np.name {
-                    left = l
-                }
-            }
-        } else {
-            left = vector::get(tpe.parameter_t, i) !*typechecking::NamedParameter
-        }
-        assert(left != null)
-
-        if typechecking::equals(left.tpe, builtins::type_) {
-            left.value = allocate(compiler::Value)
-            @left.value = { kind = compiler::ValueKind::TYPE, tpe = builtins::type_, value_tpe = np.tpe.tpe.tpe } !compiler::Value
-        }
-    }
-
-    let types_map = map::make()
-    typechecking::replace_type_defs(tpe, parameter_t, true, types_map)
-
-    let keys = map::keys(types_map)
-    for var i in 0..keys.size {
-        let key = keys[i]
-        let tpe2 = map::get(types_map, key) !*typechecking::Type
-        scope::create_type(state.scope, parser::make_identifier([key]), parser::ShareMarker::NONE, tpe2)
-    }
-
-    if vector::length(tpe.parameter_t) > 0 {
-        let first_param = vector::get(tpe.parameter_t, 0) !*NamedParameter
-        typechecking::create_type_entry(first_param.tpe, (share !int & parser::ShareMarker::EXPORT !int) != 0, tpe, state.module)
-    }
-
-    body = vector::copy(body)
-    for var i in 0..vector::length(body) {
-        walk(node, vector::get(body, i) !*parser::Node, state)
-    }
-    state.scope = scope::exit_scope(state.scope)
-
-    node.value.def_.locals = function.locals
-    node.value.def_.has_defer = function.has_defer
-    typechecking::pop_function(state)
-
-    typechecking::walk_Def(node, state, false)
-
-    vector::push(state.module.node.body, node)
 }
 
 def walk_Def(node: *parser::Node, state: *typechecking::State) {
@@ -302,38 +236,17 @@ def walk_Def(node: *parser::Node, state: *typechecking::State) {
 
     let tpe = typechecking::make_function_type_n(name, parameter_t, return_t, extern, imported, dllimport)
     
-    tpe.is_polymorph = typechecking::is_polymorph(tpe)
     if body {
+        node.inner_scope = scope::enter_scope(state.scope)
         scope::create_function(state.scope, name, share, tpe, scope::Phase::DEFINED, node, copy_state(state))
     } else {
-        scope::create_function(state.scope, name, share, tpe, scope::Phase::DECLARED, null, null)
+        scope::create_function(state.scope, name, share, tpe, scope::Phase::DECLARED, node, null)
     }
 
-    if not tpe.is_polymorph and vector::length(tpe.parameter_t) > 0 {
+    // TODO Move this to typechecking maybe
+    if vector::length(tpe.parameter_t) > 0 {
         let first_param = vector::get(tpe.parameter_t, 0) !*NamedParameter
         typechecking::create_type_entry(first_param.tpe, (share !int & parser::ShareMarker::EXPORT !int) != 0, tpe, state.module)
-    }
-
-    if body and not tpe.is_polymorph {
-        let function = allocate(typechecking::Function)
-        @function = {
-            tpe = tpe,
-            locals = map::make(),
-            has_defer = false
-        }
-        typechecking::push_function(state, function)
-
-        state.scope = scope::enter_function_scope(state.scope)
-        node.inner_scope = state.scope
-        body = vector::copy(body)
-        for var i in 0..vector::length(body) {
-            walk(node, vector::get(body, i) !*parser::Node, state)
-        }
-        state.scope = scope::exit_scope(state.scope)
-
-        node.value.def_.locals = function.locals
-        node.value.def_.has_defer = function.has_defer
-        typechecking::pop_function(state)
     }
 
     node.tpe = tpe
@@ -434,15 +347,21 @@ def walk_top_VarDecl(node: *parser::Node, state: *typechecking::State) {
     let dllimport = node.value.var_decl.dllimport
 
     if kw == parser::VarDecl::CONST {
+        let is_static = state.is_static
+        state.is_static = true
+
         for var i in 0..vector::length(right) {
-            let is_static = state.is_static
-            state.is_static = true
             walk(node, vector::get(right, i) !*parser::Node, state)
-            state.is_static = is_static
         }
 
         set_current_function()
         typechecking::walk_VarDecl(node, state, true)
+
+        // We need to walk twice to catch static function calls
+        for var i in 0..vector::length(right) {
+            walk(node, vector::get(right, i) !*parser::Node, state)
+        }
+
         let assign = compiler::walk_top_VarDecl(node, *compiler_state, true)
         compiler::walk_expression(assign, *compiler_state)
         eval::eval(*compiler_state)
@@ -459,6 +378,7 @@ def walk_top_VarDecl(node: *parser::Node, state: *typechecking::State) {
                 ident.svalue.value = global.value
             }
         }
+        state.is_static = is_static
 
         return
     }
@@ -490,16 +410,22 @@ def walk_VarDecl(node: *parser::Node, state: *typechecking::State) {
     let left = node.value.var_decl.left
     let right = node.value.var_decl.right
 
-    if kw == parser::VarDecl::CONST and not state.is_compiling_function {
+    if kw == parser::VarDecl::CONST {
+        let is_static = state.is_static
+        state.is_static = true
+
         for var i in 0..vector::length(right) {
-            let is_static = state.is_static
-            state.is_static = true
             walk(node, vector::get(right, i) !*parser::Node, state)
-            state.is_static = is_static
         }
 
         set_current_function()
         typechecking::walk_VarDecl(node, state, true)
+
+        // We need to walk twice to catch static function calls
+        for var i in 0..vector::length(right) {
+            walk(node, vector::get(right, i) !*parser::Node, state)
+        }
+
         compiler::walk_VarDecl(node, *compiler_state, true)
         let estate = eval::eval(*compiler_state)
         let locals = eval::get_stack_frame(*estate).locals
@@ -522,6 +448,7 @@ def walk_VarDecl(node: *parser::Node, state: *typechecking::State) {
             value.value = constantp
         }
 
+        state.is_static = is_static
         return
     }
 
@@ -560,36 +487,28 @@ def walk_Return(node: *parser::Node, state: *typechecking::State) {
     }
 }
 
-def compile_function(node: *parser::Node, state: *typechecking::State) {
+// This function compiles a function that is called in constant evaluation
+export def compile_function(node: *parser::Node, state: *typechecking::State) {
     if not node { return }
 
     let function = compiler::predeclare_function(node.tpe, node.module)
-    map::put(state.module.result.functions, function.name, function)
-    map::put(compiler_state.module.result.functions, function.name, function)
-    
-    if not function.is_compiled {
-        function.is_compiled = true
+    //map::put(state.module.result.functions, function.name, function)
+    map::put(const_module.result.functions, function.name, function)
 
-        let is_compiling_function = state.is_compiling_function
-        let module = state.module
-        let cmodule = compiler_state.module
-        state.is_compiling_function = true
-        state.module = compiler_state.module = node.module
+    if function.is_compiled { return }
+    function.is_compiled = true
+    if not node.value.def_.body { return }
 
-        // This is a big ugly but what can we do
-        let debug = toolchain::debug_sym
-        toolchain::debug_sym = false
-
-        for var i in 0..vector::length(node.value.def_.body) {
-            walk(node, vector::get(node.value.def_.body, i) !*parser::Node, state)
-        }
-        compiler::create_function(node, node.tpe, node.value.def_.body, node.inner_scope, null, *compiler_state)
-
-        toolchain::debug_sym = debug
-        state.is_compiling_function = is_compiling_function
-        compiler_state.module = cmodule
-        state.module = module
+    for var i in 0..vector::length(node.value.def_.body) {
+        let n = vector::get(node.value.def_.body, i) !*parser::Node
+        walk(n.parent, n, state)
     }
+
+    // This is a big ugly but what can we do
+    let debug = toolchain::debug_sym
+    toolchain::debug_sym = false
+    compiler::create_function(node, node.tpe, node.value.def_.body, node.inner_scope, null, *compiler_state)
+    toolchain::debug_sym = debug
 }
 
 def walk_Call(node: *parser::Node, state: *typechecking::State) {
@@ -597,11 +516,8 @@ def walk_Call(node: *parser::Node, state: *typechecking::State) {
     walk(node, left, state)
 
     if state.is_static {
-        typechecking::walk(node.parent, node, state)
-
         if not left.svalue { return }
         let func = left.svalue.node
-
         compile_function(func, state)
     }
     
@@ -758,10 +674,12 @@ def walk_Error(node: *parser::Node, state: *typechecking::State) {
     let is_static = state.is_static
     state.is_static = true
     walk(node, expr, state)
-    state.is_static = is_static
 
     set_current_function()
     typechecking::walk(node, expr, state)
+    walk(node, expr, state)
+    state.is_static = is_static
+
     var result = compiler::walk_expression(expr, *compiler_state)
     let estate = eval::eval(*compiler_state)
     result = eval::get_value(result, *estate)
@@ -800,7 +718,7 @@ def walk_top(parent: *parser::Node, node: *parser::Node, state: *typechecking::S
     }
 }
 
-def walk(parent: *parser::Node, node: *parser::Node, state: *typechecking::State) {
+export def walk(parent: *parser::Node, node: *parser::Node, state: *typechecking::State) {
     if not node { return }
 
     node.parent = parent

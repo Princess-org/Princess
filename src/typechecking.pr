@@ -114,7 +114,6 @@ export type Type = struct {
     scope: *scope::Scope
     // For functions
     imported: bool
-    is_polymorph: bool
     // Structural types
     structure: *StructuralType
 }
@@ -142,7 +141,6 @@ export type State = struct {
     function_stack: *vector::Vector
     // Used by consteval
     is_static: bool
-    is_compiling_function: bool
 }
 
 export def current_function(state: *State) -> *Function {
@@ -843,7 +841,7 @@ def replace_parameter(tpe: *Type, types: *map::Map) -> *Type {
     return tpe
 }
 
-export def replace_type_defs(a: *Type, param_b: *vector::Vector, replace: bool, types_map: *map::Map) {
+def replace_type_defs(a: *Type, param_b: *vector::Vector, replace: bool, types_map: *map::Map) {
     let param_a = a.parameter_t
 
     for var i in 0..vector::length(param_a) {
@@ -1989,7 +1987,27 @@ def walk_Import(node: *parser::Node, state: *State) {
     }
 }
 
-export def walk_Def(node: *parser::Node, state: *State, redefine_type: bool = true) {
+// Redefine function parameters to get rid of the stub types
+export def lookup_parameters(node: *parser::Node, state: *State) {
+    let share = node.value.def_.share
+    let params = node.value.def_.params
+    let returns = node.value.def_.returns
+    let tpe = node.tpe
+
+    for var i in 0..vector::length(params) {
+        let param = vector::get(params, i) !*parser::Node
+        let named = vector::get(tpe.parameter_t, i) !*NamedParameter
+        if named.tpe.kind != TypeKind::TYPE {
+            named.tpe = type_lookup(param.value.param.tpe, state)            
+        }
+    }
+    for var i in 0..vector::length(returns) {
+        let n = vector::get(returns, i) !*parser::Node
+        vector::set(tpe.return_t, i, type_lookup(n, state))
+    }
+}
+
+export def walk_Def(node: *parser::Node, state: *State) {
     let share = node.value.def_.share
     let body = node.value.def_.body
     let name = node.value.def_.name
@@ -2008,29 +2026,9 @@ export def walk_Def(node: *parser::Node, state: *State, redefine_type: bool = tr
             errors::errorn(node, "Can't share non top level function")
         }
     }
-
-    var tpe = node.tpe
-    // We basically don't compile the original version of the function if it has a type argument
-    if not tpe or tpe.is_polymorph { return }
-
-    // TODO not is_used also signals that we have a type argument
-    node.value.def_.is_used = true
-
-    if redefine_type {
-        // This is pretty ugly, we should only read the type once
-        for var i in 0..vector::length(params) {
-            let param = vector::get(params, i) !*parser::Node
-            let named = vector::get(tpe.parameter_t, i) !*NamedParameter
-            named.tpe = type_lookup(param.value.param.tpe, state)
-        }
-        tpe.return_t = vector::make()
-        for var i in 0..vector::length(returns) {
-            let n = vector::get(returns, i) !*parser::Node
-            vector::push(tpe.return_t, type_lookup(n, state))
-        }
-    }
-
-    tpe = make_function_type_n(name, tpe.parameter_t, tpe.return_t, extern, imported, dllimport)
+    
+    if not node.tpe { return }
+    let tpe = make_function_type_n(name, node.tpe.parameter_t, node.tpe.return_t, extern, imported, dllimport)
 
     var phase = scope::Phase::DECLARED
     if body {
@@ -2038,7 +2036,7 @@ export def walk_Def(node: *parser::Node, state: *State, redefine_type: bool = tr
         for var i in 0..vector::length(tpe.parameter_t) {
             let np = vector::get(tpe.parameter_t, i) !*NamedParameter 
             var tpe = np.tpe
-            if tpe.kind == TypeKind::TYPE { continue }
+            if tpe and tpe.kind == TypeKind::TYPE { continue }
             if np.varargs {
                 if np.tpe {
                     scope::create_variable(inner_scope, np.node, parser::ShareMarker::NONE, parser::VarDecl::VAR, array(np.tpe), null)
@@ -2062,16 +2060,26 @@ export def walk_Def(node: *parser::Node, state: *State, redefine_type: bool = tr
         let function = allocate(Function)
         @function = {
             tpe = tpe,
-            locals = node.value.def_.locals,
-            has_defer = node.value.def_.has_defer
+            locals = map::make()
         }
 
+        state.scope = inner_scope
         push_function(state, function)
+
+        let body_copy = vector::copy(body)
+        for var i in 0..vector::length(body_copy) {
+            // Eval constant expressions
+            consteval::walk(node, vector::get(body_copy, i) !*parser::Node, state)
+        }
         for var i in 0..vector::length(body) {
             walk(node, vector::get(body, i) !*parser::Node, state)
         }
-        pop_function(state)
 
+        pop_function(state)
+        state.scope = outer_scope
+
+        node.value.def_.is_used = true
+        node.value.def_.locals = function.locals
         node.value.def_.has_defer = function.has_defer
     }
 
@@ -2764,6 +2772,12 @@ def walk_ComparisionOp(node: *parser::Node, state: *State) {
     let right = node.value.bin_op.right
     walk(node, left, state)
     walk(node, right, state)
+
+    if equals(left.tpe, pointer(builtins::Type_)) {
+        let value = scope::get(toolchain::runtime.scope, parser::make_identifier(["equals"]))
+        consteval::compile_function(value.node, state)
+    }
+
     // TODO We can compare almost everything
     node.tpe = builtins::bool_
 }
@@ -2814,6 +2828,10 @@ def walk_Assert(node: *parser::Node, state: *State) {
     if msg and not equals(msg.tpe, builtins::string_) {
         errors::errorn(msg, "Incompatible type ", debug::type_to_str(msg.tpe), ", must be string type")
     }
+
+    // Compile stderr function
+    let std_module = map::get(toolchain::modules, "std") !*toolchain::Module
+    scope::get(std_module.scope, parser::make_identifier(["stderr"]))
 }
 
 export def walk(parent: *parser::Node, node: *parser::Node, state: *State) {
@@ -2946,6 +2964,56 @@ export def make_state(module: *toolchain::Module) -> State {
     } !State
 }
 
+export def walk_Def_with_type_argument(node: *parser::Node, parameter_t: *vector::Vector, state: *State) {
+    node = parser::deep_copy_node(node)
+    node.inner_scope = scope::enter_function_scope(node.scope)
+
+    let share = node.value.def_.share
+    let tpe = node.tpe
+    var body = node.value.def_.body
+
+    for var i in 0..vector::length(parameter_t) {
+        let np = vector::get(parameter_t, i) !*NamedParameter
+        var left: *NamedParameter = null
+        if length(np.name) > 0 {
+            for var j in 0..vector::length(tpe.parameter_t) {
+                let l = vector::get(tpe.parameter_t, j) !*NamedParameter
+                if l.name == np.name {
+                    left = l
+                }
+            }
+        } else {
+            left = vector::get(tpe.parameter_t, i) !*NamedParameter
+        }
+        assert(left != null)
+
+        if equals(left.tpe, builtins::type_) {
+            left.value = allocate(compiler::Value)
+            @left.value = { kind = compiler::ValueKind::TYPE, tpe = builtins::type_, value_tpe = np.tpe.tpe.tpe } !compiler::Value
+        }
+    }
+
+    let types_map = map::make()
+    replace_type_defs(tpe, parameter_t, true, types_map)
+
+    let keys = map::keys(types_map)
+    for var i in 0..keys.size {
+        let key = keys[i]
+        let tpe2 = map::get(types_map, key) !*Type
+        scope::create_type(node.inner_scope, parser::make_identifier([key]), parser::ShareMarker::NONE, tpe2)
+    }
+
+    if vector::length(tpe.parameter_t) > 0 {
+        let first_param = vector::get(tpe.parameter_t, 0) !*NamedParameter
+        create_type_entry(first_param.tpe, (share !int & parser::ShareMarker::EXPORT !int) != 0, tpe, state.module)
+    }
+
+    walk_Def(node, state)
+
+    // This makes sure that the function is walked by the compiler
+    vector::push(state.module.node.body, node)
+}
+
 export def typecheck(module: *toolchain::Module) {
     let state = make_state(module)
     typecheck(*state)
@@ -2994,11 +3062,13 @@ export def typecheck(state: *State) {
         }
     }
 
-    let keys = map::keys(node.scope.fields)
-    for var i in 0..keys.size {
-        let value = map::get(node.scope.fields, keys[i]) !*scope::Value
-        if value.phase == scope::Phase::DEFINED {
-            walk(value.node.parent, value.node, value.state)
+    if state.module.module != "runtime" {   // TODO This is weird
+        let keys = map::keys(node.scope.fields)
+        for var i in 0..keys.size {
+            let value = map::get(node.scope.fields, keys[i]) !*scope::Value
+            if value.phase == scope::Phase::DEFINED {
+                scope::typecheck(value)
+            }
         }
     }
 
