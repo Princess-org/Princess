@@ -517,11 +517,12 @@ export def equals(a: *Type, b: *Type) -> bool {
     assert(false)
 }
 
-def has_function(entry: *TypeEntry, mb: *StructuralTypeMember) -> bool {
+def has_function(entry: *TypeEntry, mb: *StructuralTypeMember, module: *toolchain::Module) -> bool {
     for var i in 0..vector::length(entry.functions) {
         let member = vector::get(entry.functions, i) !*TypeEntryMember
         let function = member.function
         if function.name != mb.name { continue }
+        if module != member.module and not member.exported { continue }
 
         if vector::length(function.parameter_t) != vector::length(mb.parameter_t) + 1 { continue }
         var mismatch = false
@@ -552,7 +553,7 @@ def has_function(entry: *TypeEntry, mb: *StructuralTypeMember) -> bool {
 
 // Returns true if a implements b
 // b needs to be a structural type
-export def implements(a: *Type, b: *Type) -> bool {
+export def implements(a: *Type, b: *Type, module: *toolchain::Module) -> bool {
     assert b.kind == TypeKind::STRUCTURAL
 
     let namea = debug::type_to_str(a, full_name = true)
@@ -610,7 +611,7 @@ export def implements(a: *Type, b: *Type) -> bool {
                 found = true
             }
             if not found {
-                found = has_function(type_entry, mb)
+                found = has_function(type_entry, mb, module)
             }
             if not found { 
                 map::put(type_entry.cached, nameb, NOT_CONTAINS)
@@ -622,7 +623,7 @@ export def implements(a: *Type, b: *Type) -> bool {
     } else {
         for var i in 0..vector::length(sb.members) {
             let mb = vector::get(sb.members, i) !*StructuralTypeMember
-            if not has_function(type_entry, mb) { 
+            if not has_function(type_entry, mb, module) { 
                 map::put(type_entry.cached, nameb, NOT_CONTAINS)
                 return false 
             }
@@ -633,15 +634,15 @@ export def implements(a: *Type, b: *Type) -> bool {
 }
 
 // Returns true if b is assignable to a
-export def is_assignable(a: *Type, b: *Type) -> bool {
-    return convert_type_score(a, b) >= 0
+export def is_assignable(a: *Type, b: *Type, module: *toolchain::Module) -> bool {
+    return convert_type_score(a, b, module) >= 0
 }
 
 // Tries to convert type b to type a
 // The return value is -1 if b can't be converted to a
 // if the types are equal, 0 is returned.
 // Otherwise a positive integer is returned.
-def convert_type_score(a: *Type, b: *Type, is_type: bool = false) -> int {
+def convert_type_score(a: *Type, b: *Type, module: *toolchain::Module, is_type: bool = false) -> int {
     if not a or not b { return 0 }
     if equals(a, b) {
         return 0
@@ -649,13 +650,13 @@ def convert_type_score(a: *Type, b: *Type, is_type: bool = false) -> int {
     
     // We need to check if they are actually compatible elsewhere
     if a.kind == TypeKind::TYPE_DEF {
-        return convert_type_score(a.tpe, b, true)
+        return convert_type_score(a.tpe, b, module, true)
     }
     if a.kind == TypeKind::TYPE and equals(b, pointer(builtins::Type_)) { 
         return 1 
     }
     if a.kind == TypeKind::STRUCTURAL {
-        if implements(b, a) { return 1 }
+        if implements(b, a, module) { return 1 }
         return -1
     }
     if ((@a).kind == TypeKind::POINTER or (@a).kind == TypeKind::REFERENCE) and (@b).kind == TypeKind::NULL {
@@ -705,13 +706,13 @@ def convert_type_score(a: *Type, b: *Type, is_type: bool = false) -> int {
     if is_type { 
         if a.kind == TypeKind::ARRAY {
             if (b.kind == TypeKind::ARRAY or b.kind == TypeKind::STATIC_ARRAY) {
-                return convert_type_score(a.tpe, b.tpe, true)
+                return convert_type_score(a.tpe, b.tpe, module, true)
             }
             return -1
         }
         if a.kind == TypeKind::POINTER or a.kind == TypeKind::REFERENCE or a.kind == TypeKind::STATIC_ARRAY {
             if a.kind == b.kind {
-                return convert_type_score(a.tpe, b.tpe, true)
+                return convert_type_score(a.tpe, b.tpe, module, true)
             }
             return -1
         }
@@ -787,7 +788,45 @@ def replace_parameter(tpe: *Type, types: *map::Map) -> *Type {
     return tpe
 }
 
-def replace_type_defs(a: *Type, param_b: *vector::Vector, replace: bool, types_map: *map::Map) {
+// This inserts structural members into a function scope.
+// It's needed because the interface definition might use different parameter
+// names from the implementing function
+def insert_structural_members(stpe: *Type, tpe: *Type, scpe: *scope::Scope) {
+    assert stpe.kind == TypeKind::STRUCTURAL
+    let members = stpe.structure.members
+    for var i in 0..vector::length(members) {
+        let member = vector::get(members, i) !*StructuralTypeMember
+        let name = parser::make_identifier([member.name])
+
+        let new_parameters = vector::copy(member.parameter_t)
+        let parameters = vector::make()
+        for var i in 0..vector::length(member.parameter_t) {
+            let np = vector::get(member.parameter_t, i) !*NamedParameter
+            let np2 = allocate(NamedParameter)
+            @np2 = @np
+            np2.name = ""
+            vector::push(parameters, np2)
+        }
+
+        let first_parameter = allocate(NamedParameter)
+        @first_parameter = {
+            tpe = tpe,
+            name = ""
+        } !NamedParameter
+        vector::prepend(parameters, first_parameter)
+        vector::prepend(new_parameters, first_parameter)
+
+        let function = scope::get_function(scpe, name, parameters)
+        let new_tpe = copy(function.tpe)
+        new_tpe.parameter_t = new_parameters
+
+        scope::create_function(scpe, name, parser::ShareMarker::NONE, new_tpe, scope::Phase::COMPILED, function.node, function.state)
+    }
+}
+
+def replace_type_defs(a: *Type, param_b: *vector::Vector, replace: bool, 
+    types_map: *map::Map, module: *toolchain::Module, scpe: *scope::Scope) {
+
     let param_a = a.parameter_t
 
     for var i in 0..vector::length(param_a) {
@@ -817,8 +856,9 @@ def replace_type_defs(a: *Type, param_b: *vector::Vector, replace: bool, types_m
         }
         
         if not rtpe { return }
-        if convert_type_score(ltpe, rtpe) < 0 { return }
+        if convert_type_score(ltpe, rtpe, module) < 0 { return }
         if ltpe.kind == TypeKind::STRUCTURAL {
+            if scpe { insert_structural_members(ltpe, rtpe, scpe) }
             @ltpe = @rtpe
             continue
         }
@@ -859,7 +899,7 @@ def replace_type_defs(a: *Type, param_b: *vector::Vector, replace: bool, types_m
 // Calculates a score for overload resultion, the result is 0 for an exact match
 // and a positive integer if the argument types need to be converted.
 // -1 is returned if the argument types don't match.
-export def overload_score(a: *Type, param_b: *vector::Vector, positional: bool) -> int {
+export def overload_score(a: *Type, param_b: *vector::Vector, module: *toolchain::Module, positional: bool) -> int {
     assert(is_function(a))
     // We need to copy because looking up the typed arguments modifies the function type
     a = copy(a)
@@ -876,7 +916,7 @@ export def overload_score(a: *Type, param_b: *vector::Vector, positional: bool) 
         }
     }
 
-    replace_type_defs(a, param_b, false, null)
+    replace_type_defs(a, param_b, false, null, module, null)
 
     var sum = 0
     for var i in 0..vector::length(param_b) {
@@ -906,7 +946,7 @@ export def overload_score(a: *Type, param_b: *vector::Vector, positional: bool) 
         var lvalue = left.tpe
         if i == vector::length(param_a) - 1 and 
             left.varargs and left.tpe and
-            convert_type_score(array(left.tpe), right.tpe) >= 0 {
+            convert_type_score(array(left.tpe), right.tpe, module) >= 0 {
 
             lvalue = array(left.tpe)
         }
@@ -924,7 +964,7 @@ export def overload_score(a: *Type, param_b: *vector::Vector, positional: bool) 
                 score = 0
             }
         } else {
-            score = convert_type_score(lvalue, right.tpe)
+            score = convert_type_score(lvalue, right.tpe, module)
         }
         if score < 0 { return -1 }
         sum += score
@@ -1606,7 +1646,7 @@ def walk_Assign(node: *parser::Node, state: *State) {
         }
 
         if not ltpe or not rtpe { continue }
-        if not is_assignable(ltpe, rtpe) {
+        if not is_assignable(ltpe, rtpe, state.module) {
             errors::errorn(l, "Incompatible types ", debug::type_to_str(rtpe), " and ", debug::type_to_str(ltpe))
         }
     }
@@ -1690,7 +1730,7 @@ export def walk_VarDecl(node: *parser::Node, state: *State, set_constant: bool =
                 
                 if is_underscore {
                     ltpe = rtpe
-                } else if not is_assignable(ltpe, rtpe) {
+                } else if not is_assignable(ltpe, rtpe, state.module) {
                     errors::errorn(node, "Incompatible types ", debug::type_to_str(rtpe), " and ", debug::type_to_str(ltpe))
                 } else if ltpe and ltpe.kind == TypeKind::STATIC_ARRAY and ltpe.length == util::MAX_UINT64 {
                     ltpe.length = rtpe.length
@@ -1732,7 +1772,7 @@ export def walk_VarDecl(node: *parser::Node, state: *State, set_constant: bool =
             }
 
             if not ltpe or not rtpe { continue }
-            if not is_assignable(ltpe, rtpe) {
+            if not is_assignable(ltpe, rtpe, state.module) {
                 errors::errorn(node, "Incompatible types ", debug::type_to_str(rtpe), " and ", debug::type_to_str(ltpe))
             }
         }
@@ -2099,7 +2139,7 @@ def walk_Return(node: *parser::Node, state: *State) {
         var rettpe = vector::get(rtypes, i) !*Type
         
         if not argtpe or not rettpe { continue }
-        if not is_assignable(argtpe, rettpe) {
+        if not is_assignable(argtpe, rettpe, state.module) {
             // TODO This doesn't point to the actual value
             errors::errorn(node, "Wrong type of return argument, got ", debug::type_to_str(rettpe), ", expected ", debug::type_to_str(argtpe))
         }
@@ -2202,7 +2242,7 @@ export def walk_Call(node: *parser::Node, dry_run: bool, state: *State) -> bool 
                     errors::errorn(left, "Function overload not found")
                     return false
                 }
-                if overload_score(function.tpe, arguments, false) < 0 {
+                if overload_score(function.tpe, arguments, state.module, false) < 0 {
                     let buf = buffer::make_buffer()
                     buffer::append_str(*buf, "Incorrect arguments to overloaded function. ")
                     append_arguments(*buf, arguments)
@@ -2637,7 +2677,7 @@ def walk_StructLit(node: *parser::Node, state: *State) {
         implicit_conversion(n, ntpe)
 
         if not ntpe or not (@n).tpe { continue }
-        if not is_assignable(ntpe, (@n).tpe) {
+        if not is_assignable(ntpe, (@n).tpe, state.module) {
             errors::errorn(n, "Incompatible types ", debug::type_to_str((@n).tpe), " and ", debug::type_to_str(ntpe))
             return
         }
@@ -2658,7 +2698,7 @@ def walk_StructLit(node: *parser::Node, state: *State) {
                 implicit_conversion(n, ntpe)
 
                 if not ntpe or not (@n).tpe { continue }
-                if not is_assignable(ntpe, (@n).tpe) {
+                if not is_assignable(ntpe, (@n).tpe, state.module) {
                     errors::errorn(n, "Incompatible types ", debug::type_to_str((@n).tpe), " and ", debug::type_to_str(ntpe), )
                     return
                 }
@@ -2948,7 +2988,7 @@ export def walk_Def_with_type_argument(node: *parser::Node, parameter_t: *vector
     }
 
     let types_map = map::make()
-    replace_type_defs(tpe, parameter_t, true, types_map)
+    replace_type_defs(tpe, parameter_t, true, types_map, state.module, node.inner_scope)
 
     let keys = map::keys(types_map)
     for var i in 0..keys.size {
