@@ -116,6 +116,7 @@ export type Type = struct {
     imported: bool
     // Structural types
     structure: *StructuralType
+    share: parser::ShareMarker
 }
 
 export type NamedParameter = struct {
@@ -407,7 +408,7 @@ export let CONTAINS     = 1 !*
 export let NOT_CONTAINS = 2 !*
 
 export type TypeEntry = struct {
-    name: string
+    tpe: *Type
     // Vector of TypeEntryMember
     functions: *vector::Vector
     cached: *map::Map    
@@ -425,7 +426,7 @@ export def create_type_entry(tpe: *Type, exported: bool, entry: *Type, module: *
     if not type_entry {
         type_entry = allocate(TypeEntry)
         @type_entry = {
-            name = name,
+            tpe = tpe,
             functions = vector::make(),
             cached = map::make()
         } !TypeEntry
@@ -576,7 +577,7 @@ export def implements(a: *Type, b: *Type, module: *toolchain::Module) -> bool {
     if not type_entry {
         type_entry = allocate(TypeEntry)
         @type_entry = {
-            name = namea,
+            tpe = a,
             functions = vector::make(),
             cached = map::make()
         } !TypeEntry
@@ -663,6 +664,13 @@ def convert_type_score(a: *Type, b: *Type, module: *toolchain::Module, is_type: 
         return 0
     }
     
+    let intfp = get_interface(a)
+    if intfp {
+        if implements(b, intfp, module) { return 1 }
+        if a.kind == TypeKind::REFERENCE and implements(reference(b), intfp, module) { return 1 }
+        return -1
+    }
+
     // We need to check if they are actually compatible elsewhere
     if a.kind == TypeKind::TYPE_DEF {
         return convert_type_score(a.tpe, b, module, true)
@@ -670,14 +678,10 @@ def convert_type_score(a: *Type, b: *Type, module: *toolchain::Module, is_type: 
     if a.kind == TypeKind::TYPE and equals(b, pointer(builtins::Type_)) { 
         return 1 
     }
-    if is_interface(a) {
-        if implements(b, get_interface(a), module) { return 1 }
-        return -1
-    }
     if ((@a).kind == TypeKind::POINTER or (@a).kind == TypeKind::REFERENCE) and (@b).kind == TypeKind::NULL {
         return 0
     }
-    if a.kind == TypeKind::REFERENCE and (equals(a.tpe, b) or a.tpe == null or equals(b, builtins::Ref_)) {
+    if a.kind == TypeKind::REFERENCE and (is_assignable(a.tpe, b, module) or a.tpe == null or equals(b, builtins::Ref_)) {
         return 1
     }
     if equals(a, builtins::Ref_) and b.kind == TypeKind::REFERENCE {
@@ -739,9 +743,10 @@ def convert_type_score(a: *Type, b: *Type, module: *toolchain::Module, is_type: 
 export def is_polymorph(tpe: *Type) -> bool {
     if not tpe { return false }
     if tpe.kind == TypeKind::TYPE_DEF or 
-        tpe.kind == TypeKind::TYPE or
         tpe.kind == TypeKind::STRUCTURAL {
             return true 
+    } else if tpe.kind == TypeKind::TYPE {
+        return tpe.tpe == null
     } else if tpe.kind == TypeKind::POINTER or tpe.kind == TypeKind::REFERENCE or
         tpe.kind == TypeKind::STATIC_ARRAY or tpe.kind == TypeKind::ARRAY {
         return is_polymorph(tpe.tpe)
@@ -839,10 +844,8 @@ def insert_structural_members(stpe: *Type, tpe: *Type, scpe: *scope::Scope) {
     }
 }
 
-def replace_type_defs(a: *Type, param_b: *vector::Vector, replace: bool, 
+def replace_type_defs(param_a: *vector::Vector, return_t: *vector::Vector, param_b: *vector::Vector, replace: bool, 
     types_map: *map::Map, module: *toolchain::Module, scpe: *scope::Scope) {
-
-    let param_a = a.parameter_t
 
     for var i in 0..vector::length(param_a) {
         let left = vector::get(param_a, i) !*NamedParameter
@@ -874,7 +877,7 @@ def replace_type_defs(a: *Type, param_b: *vector::Vector, replace: bool,
         if convert_type_score(ltpe, rtpe, module) < 0 { return }
 
         let intf = get_interface(ltpe)
-        if intf {
+        if intf and replace {
             if scpe { insert_structural_members(intf, rtpe, scpe) }
             @ltpe = @rtpe
             continue
@@ -884,6 +887,7 @@ def replace_type_defs(a: *Type, param_b: *vector::Vector, replace: bool,
         if ltpe.kind == TypeKind::TYPE {
             if length(ltpe.name) > 0 and right and right.value {
                 map::put(types, ltpe.name, right.value.value_tpe)
+                ltpe.tpe = right.value.value_tpe
             }
         } else {
             find_type_defs(ltpe, rtpe, types, replace)
@@ -895,9 +899,9 @@ def replace_type_defs(a: *Type, param_b: *vector::Vector, replace: bool,
                 np.tpe = replace_parameter(np.tpe, types)
             }
         }
-        for var j in 0..vector::length(a.return_t) {
-            let rtpe = vector::get(a.return_t, j) !*Type
-            vector::set(a.return_t, j, replace_parameter(rtpe, types))
+        for var j in 0..vector::length(return_t) {
+            let rtpe = vector::get(return_t, j) !*Type
+            vector::set(return_t, j, replace_parameter(rtpe, types))
         }
 
         if types_map {
@@ -913,15 +917,16 @@ def replace_type_defs(a: *Type, param_b: *vector::Vector, replace: bool,
     }
 }
 
+export def overload_score(a: *Type, param_b: *vector::Vector, module: *toolchain::Module, positional: bool) -> int {
+    a = copy(a)
+    return overload_score(a.parameter_t, a.return_t, param_b, module, positional)
+}
+
 // Calculates a score for overload resultion, the result is 0 for an exact match
 // and a positive integer if the argument types need to be converted.
 // -1 is returned if the argument types don't match.
-export def overload_score(a: *Type, param_b: *vector::Vector, module: *toolchain::Module, positional: bool) -> int {
-    assert(is_function(a))
-    // We need to copy because looking up the typed arguments modifies the function type
-    a = copy(a)
 
-    var param_a = (@a).parameter_t
+export def overload_score(param_a: *vector::Vector, return_t: *vector::Vector, param_b: *vector::Vector, module: *toolchain::Module, positional: bool) -> int {
     if vector::length(param_a) > vector::length(param_b) {
         let not_default_param = (vector::get(param_a, vector::length(param_b)) !*NamedParameter).value == null
         if vector::length(param_a) == vector::length(param_b) + 1 {
@@ -933,7 +938,7 @@ export def overload_score(a: *Type, param_b: *vector::Vector, module: *toolchain
         }
     }
 
-    replace_type_defs(a, param_b, false, null, module, null)
+    replace_type_defs(param_a, return_t, param_b, false, null, module, null)
 
     var sum = 0
     for var i in 0..vector::length(param_b) {
@@ -1005,6 +1010,7 @@ export def mangle_function_name(name: string, parameter_t: *vector::Vector) -> s
             buffer::append_char(*buf, '[')
         }
         if np.tpe.kind == TypeKind::TYPE {
+            // TODO This should be handled by type_to_str
             buffer::append_str(*buf, "type")
             if np.value {
                 buffer::append_char(*buf, '<')
@@ -2126,7 +2132,8 @@ def walk_TypeDecl(node: *parser::Node, state: *State) {
             (@tpe).type_name = append_module((@tpe).name, node.loc.module)
             tpe = scope::create_type(state.scope, name, share, tpe, scope::Phase::COMPILED, null, null)
         }
-        (@name).tpe = tpe
+        name.tpe = tpe
+        name.tpe.share = share
     }
 }
 
@@ -2785,8 +2792,8 @@ def walk_ComparisionOp(node: *parser::Node, state: *State) {
     walk(node, right, state)
 
     if equals(left.tpe, pointer(builtins::Type_)) {
-        let value = scope::get(toolchain::runtime.scope, parser::make_identifier(["equals"]))
-        consteval::compile_function(value.node, state)
+        let equals = scope::get(toolchain::runtime.scope, parser::make_identifier(["equals"]))
+        consteval::compile_function(equals.node, equals.state)
     }
 
     // TODO We can compare almost everything
@@ -3005,7 +3012,7 @@ export def walk_Def_with_type_argument(node: *parser::Node, parameter_t: *vector
     }
 
     let types_map = map::make()
-    replace_type_defs(tpe, parameter_t, true, types_map, state.module, node.inner_scope)
+    replace_type_defs(tpe.parameter_t, tpe.return_t, parameter_t, true, types_map, state.module, node.inner_scope)
 
     let keys = map::keys(types_map)
     for var i in 0..keys.size {
@@ -3073,13 +3080,14 @@ export def typecheck(state: *State) {
         }
     }
 
-    if state.module.module != "runtime" {   // TODO This is weird
-        let keys = map::keys(node.scope.fields)
-        for var i in 0..keys.size {
-            let value = map::get(node.scope.fields, keys[i]) !*scope::Value
+    let keys = map::keys(node.scope.fields)
+    for var i in 0..keys.size {
+        var value = map::get(node.scope.fields, keys[i]) !*scope::Value
+        while value {
             if value.phase == scope::Phase::DEFINED {
                 scope::typecheck(value)
             }
+            value = value.next
         }
     }
 

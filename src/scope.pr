@@ -166,6 +166,61 @@ def find_function(scope: *Scope, node: *parser::Node, v: *Value, parameter_t: *v
         if not dry_run { errors::errorn(node, "Ambiguous reference") }
         return null
     }
+
+    // TODO factor out into its own function
+    if not found and vector::length(parameter_t) >= 1 {
+        let equals = get(toolchain::runtime.scope, parser::make_identifier(["equals"]))
+        consteval::compile_function(equals.node, equals.state)
+
+        let first_parameter = allocate(NamedParameter)
+        @first_parameter = @(vector::get(parameter_t, 0) !*typechecking::NamedParameter)
+        first_parameter.name = "__ref"
+
+        if first_parameter.tpe.kind == typechecking::TypeKind::REFERENCE and 
+            (not first_parameter.tpe.tpe or first_parameter.tpe.tpe.kind == typechecking::TypeKind::STRUCTURAL) {
+            
+            let parameter_t2 = vector::copy(parameter_t)
+            vector::remove(parameter_t2, 0)
+
+            let name = last_path_element(node)
+            let stpe = first_parameter.tpe.tpe
+            let module = stpe.structure.module
+            let scope = module.scope
+
+            var duplicate = false
+            let least_score = util::MAX_INT32 !int
+            var found_member: *typechecking::StructuralTypeMember = null
+            for var i in 0..vector::length(stpe.structure.members) {
+                let member = vector::get(stpe.structure.members, i) !*typechecking::StructuralTypeMember
+                if member.name != name { continue }
+
+                let score = typechecking::overload_score(member.parameter_t, vector::make(), parameter_t2, scope.module, false)
+                if score < least_score {
+                    found_member = member
+                    duplicate = false
+                } else if score == least_score {
+                    duplicate = true
+                }
+            }
+
+            if duplicate {
+                if not dry_run { errors::errorn(node, "Ambiguous referernce") }
+                return null
+            }
+            if not found_member { return null }
+
+            let name_node = parser::make_identifier([name])
+            name_node.loc.module = module.module
+
+            let parameter_t3 = vector::copy(found_member.parameter_t)
+            vector::insert(parameter_t3, 0, first_parameter)
+            let tpe = typechecking::make_function_type_n(name_node, parameter_t3, found_member.return_t)
+            let value = create_function(scope, name_node, stpe.share, tpe)
+            vector::push(module.dyn_dispatch, tpe)
+            return value
+        }
+    }
+
     return found
 }
 
@@ -442,12 +497,12 @@ export def last_path_element(node: *parser::Node) -> string {
 export def create_function(
     scope: *Scope, name_node: *parser::Node, share: parser::ShareMarker, 
     tpe: *typechecking::Type, phase: Phase, node: *parser::Node,
-    state: *typechecking::State) {
+    state: *typechecking::State) -> *Value {
 
     assert((@tpe).kind == typechecking::TypeKind::FUNCTION)
 
     scope = create_path(scope, name_node)
-    if not scope { return }
+    if not scope { return null }
     let name = last_path_element(name_node)
     
     let v = allocate(Value)
@@ -469,30 +524,22 @@ export def create_function(
             errors::errorn(name_node, "Redeclaration of `", name, "`")
         }
         var next = val
-        var prev: *Value = null
         loop {
             if typechecking::overload_score((@next).tpe, (@tpe).parameter_t, scope.module, true) == 0 {
-                if phase == Phase::DECLARED { return }
+                if phase == Phase::DECLARED { return next }
                 if phase == Phase::DEFINED and next.phase != Phase::DECLARED {
                     errors::errorn(name_node, "Function `", name, "` was already declared previously (same arguments)")
+                    return null
                 } else {
                     // Make sure we keep the chain intact
                     // TODO This is quite dodgy but its apparently needed for some reason
                     @next.tpe = @v.tpe
                     v.next = next.next
-                    if next.node {
-                        v.node = next.node
-                    }
-                    if prev {
-                        prev.next = v
-                    } else {
-                        map::put(scope.fields, name, v)
-                    }
+                    @next = @v
                 }
-                return
+                return v
             }
             if (@next).next {
-                prev = next
                 next = (@next).next
             } else {
                 break
@@ -502,12 +549,13 @@ export def create_function(
     } else {
         map::put((@scope).fields, name, v)
     }
+    return v
 }
 
 export def create_function(
     scope: *Scope, name_node: *parser::Node, share: parser::ShareMarker, 
-    tpe: *typechecking::Type) {
-    create_function(scope, name_node, share, tpe, Phase::COMPILED, null, null)
+    tpe: *typechecking::Type) -> *Value {
+    return create_function(scope, name_node, share, tpe, Phase::COMPILED, null, null)
 }
 
 def append_scope_count(scope: *Scope, name: string) -> string {
@@ -566,7 +614,7 @@ export def create_variable(
                 @tpe2 = @v.tpe
             }
             v.dllimport = val.dllimport
-            map::put((@scope).fields, name, v)
+            @val = @v
         }
     } else {
         map::put((@scope).fields, name, v)
@@ -627,7 +675,7 @@ export def create_type(
         if phase != Phase::DECLARED {
             @tpe2.value_tpe = @tpe
             v.value = tpe2
-            map::put((@scope).fields, name, v)
+            @value = @v
         }
         
         return tpe2.value_tpe

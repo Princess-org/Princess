@@ -199,6 +199,27 @@ export type InsnExtractValue = struct {
     index: [int]
 }
 
+export def extract_value(state: *State, ret: *typechecking::Type, value: Value, index: [int]) -> Value {
+    return extract_value(state, ret, value, index, null)
+}
+
+export def extract_value(state: *State, ret: *typechecking::Type, value: Value, index: [int], loc: *Value) -> Value {
+    let ev_index = allocate(int, index.size)
+    for var i in 0..index.size {
+        ev_index[i] = index[i]
+    }
+    let ev_ret = make_local_value(ret, null, state)
+    let ev = make_insn_dbg(InsnKind::EXTRACTVALUE, loc)
+    ev.value.extract_value = {
+        ret = ev_ret,
+        value = value,
+        index = ev_index
+    } !InsnExtractValue
+    push_insn(ev, state)
+
+    return ev_ret
+}
+
 export type InsnStore = struct {
     value: Value
     loc: Value
@@ -223,6 +244,16 @@ export type InsnLoad = struct {
     loc: Value
 }
 
+export def ret(state:* State, value: Value) {
+    ret(state, value, null)
+}
+
+export def ret(state: *State, value: Value, loc: *Value) {
+    let ret = make_insn_dbg(InsnKind::RET, loc)
+    ret.value.ret.value = value
+    push_insn(ret, state)
+}
+
 export type InsnReturn = struct {
     value: Value
 }
@@ -242,6 +273,27 @@ export type InsnCall = struct {
     ret: Value
     args: [Value]
     proto: [typechecking::NamedParameter]
+}
+
+export def call(state: *State, name: string, tpe: *typechecking::Type, args: [Value]) -> Value {
+    return call(state, name, tpe, args, null)
+}
+
+export def call(state: *State, name: string, tpe: *typechecking::Type, args: [Value], loc: *Value) -> Value {
+    let call_args = allocate(Value, args.size)
+    for var i in 0..args.size {
+        call_args[i] = args[i]
+    }
+
+    let ret = make_local_value(tpe, null, state) if tpe else NO_VALUE
+    let call = make_insn_dbg(InsnKind::CALL, loc)
+    call.value.call = {
+        name = { kind = ValueKind::GLOBAL, name = name } !Value,
+        ret = ret,
+        args = call_args
+    }
+    push_insn(call, state)
+    return ret
 }
 
 export type InsnBrUnc = struct {
@@ -362,6 +414,7 @@ export type State = struct {
     discope: *vector::Vector
     // Used by eval
     globals: *map::Map
+    scope: *scope::Scope
 }
 
 export def make_block -> *Block {
@@ -1038,7 +1091,10 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
     }
 
     var kind: InsnKind
-    if typechecking::is_ref(tpe) and (typechecking::equals(tpe.tpe, value.tpe) or tpe.tpe == null or value.tpe.kind == typechecking::TypeKind::NULL) {
+    if typechecking::is_ref(tpe) and (typechecking::is_assignable(tpe.tpe, value.tpe, state.module) or 
+        typechecking::is_assignable(tpe, typechecking::reference(value.tpe), state.module) or 
+        tpe.tpe == null or value.tpe.kind == typechecking::TypeKind::NULL) {
+
         var is_null = false
         if value.tpe.kind == typechecking::TypeKind::NULL { 
             value.tpe = tpe.tpe 
@@ -3962,12 +4018,12 @@ def walk_Return(node: *parser::Node, state: *State) {
         defer_unroll(node, state)
     }
 
-    var scpe = node.scope
+    var scpe = state.scope
     while not scpe.is_function {
         decrease_ref_count_scoped(scpe, loc, state)
         scpe = scpe.parent 
     }
-    decrease_ref_count_scoped(scpe, loc, state)
+    //decrease_ref_count_scoped(scpe, loc, state)
 
 
     let ret = make_insn_dbg(InsnKind::RET, loc)
@@ -4675,6 +4731,11 @@ def walk_Assert(node: *parser::Node, state: *State) {
 }
 
 export def walk(node: *parser::Node, state: *State) {
+    let scpe = state.scope
+    if node.scope {
+        state.scope = node.scope
+    }
+
     if not node { return }
     switch (@node).kind !int {
         case parser::NodeKind::DEF:
@@ -4706,6 +4767,7 @@ export def walk(node: *parser::Node, state: *State) {
             walk_TypeDecl(node, state)
         case: walk_expression(node, state)
     }
+    state.scope = scpe
 }
 
 def di_basic_type(tpe: *typechecking::Type, name: string, c: string, state: *State) -> *Value {
@@ -5092,6 +5154,7 @@ def generate_defer_types(state: *State) {
     defer_function.parameter_t = vector::make()
     let p = allocate(typechecking::NamedParameter)
     @p = {
+        name = "",
         tpe = typechecking::pointer(env)
     } !typechecking::NamedParameter
     vector::push(defer_function.parameter_t, p)
@@ -5358,6 +5421,7 @@ export def create_function(
     state: *State,
     no_cleanup: bool = false
 ) {
+    state.scope = scpe
     
     let function = map::get(state.module.result.functions, tpe.type_name) !*Function
     if not function { return }
@@ -6443,6 +6507,99 @@ export def predeclare_functions(module: *toolchain::Module) {
     }
 }
 
+def generate_vtable_function(function: *Function, tpe: *typechecking::Type, state: *State) {
+    let first_param = (vector::get(tpe.parameter_t, 0) !*typechecking::NamedParameter).tpe
+    let intf = typechecking::get_interface(first_param)
+
+    function.block = make_block()
+    function.forward_declare = false
+    state.current_block = function.block
+
+    var ret_tpe: *typechecking::Type = null
+    if vector::length(tpe.return_t) > 1 {
+        ret_tpe = make_return_type(tpe)
+    } else {
+        ret_tpe = vector::peek(tpe.return_t) !*typechecking::Type
+    }
+
+    let equals = scope::get(toolchain::runtime.scope, parser::make_identifier(["equals"]))
+    predeclare_function(equals.tpe, state.module)
+    map::put(state.module.imported, equals.tpe.type_name, map::sentinel)
+
+    // Extract type
+    let tpe_value = state.extract_value(
+        typechecking::pointer(builtins::Type_), 
+        { kind = ValueKind::LOCAL, tpe = first_param, name = "__ref.value"} !Value,
+        [2]
+    ) 
+
+    let keys = map::keys(typechecking::types_map)
+    for var i in 0..keys.size {
+        let type_entry = map::get(typechecking::types_map, keys[i]) !*typechecking::TypeEntry
+        if typechecking::implements(type_entry.tpe, intf, state.module) {
+            import_structure(type_entry.tpe.tpe, state.module)
+            map::put(state.module.imported, type_entry.tpe.tpe.type_name, map::sentinel)
+
+            let parameter_t = vector::copy(tpe.parameter_t)
+            let np = allocate(typechecking::NamedParameter)
+            @np = { name = "", tpe = type_entry.tpe }
+            vector::set(parameter_t, 0, np)
+            
+            var score = util::MAX_INT32 !int
+            var function: *typechecking::Type = null
+            for var i in 0..vector::length(type_entry.functions) {
+                let member = vector::get(type_entry.functions, i) !*typechecking::TypeEntryMember
+                let s = typechecking::overload_score(member.function, parameter_t, state.module, true)
+                if s < score { 
+                    function = member.function
+                    score = s
+                }
+            }
+
+            predeclare_function(function, state.module)
+            map::put(state.module.imported, function.type_name, map::sentinel)
+
+            let cond = state.call(equals.tpe.type_name, builtins::bool_, [
+                tpe_value,
+                do_create_type(type_entry.tpe.tpe, state.module)
+            ])
+
+            let br = make_insn(InsnKind::BR)
+            br.value.br = { cond = cond } !InsnBr
+            push_insn(br, state)
+            
+            let if_true = make_label(state)
+            br.value.br.if_true = if_true
+            push_label(if_true, state)
+
+            let reference = convert_ref_to_ref(type_entry.tpe, { kind = ValueKind::LOCAL, tpe = first_param, name = "__ref.value"} !Value, null, state)
+
+            let args = allocate(Value, vector::length(tpe.parameter_t))
+            args[0] = reference
+            for var i in 1..vector::length(tpe.parameter_t) {
+                let np = vector::get(tpe.parameter_t, i) !*typechecking::NamedParameter
+                let buf = *buffer::make_buffer()
+                buf.append_str(np.name)
+                buf.append_str(".value")
+                args[i] = { kind = ValueKind::LOCAL, tpe = np.tpe, name = buf.to_string() } !Value
+            }
+            let r = state.call(function.type_name, ret_tpe, args)
+            state.ret(r)
+
+            let if_false = make_label(state)
+            br.value.br.if_false = if_false
+            push_label(if_false, state)
+        }
+    }
+
+    map::put(state.module.imported, "abort", map::sentinel)
+    state.call("abort", null, [] ![Value])
+
+    map::put(state.module.imported, function.name, map::sentinel)
+    push_insn(make_insn(InsnKind::UNREACHABLE), state)
+    
+}
+
 export var time_spent: int64 = 0
 
 export def compile(module: *toolchain::Module) {
@@ -6645,13 +6802,19 @@ export def compile(state: *State, is_main: bool, no_cleanup: bool = false) {
     vector::push(args, named)
 
     let main_tpe = typechecking::make_function_type_n(ident, args, vector::make(), false, false)
-    scope::create_function((@node).scope, ident, parser::ShareMarker::EXPORT, main_tpe)
+    scope::create_function(node.scope, ident, parser::ShareMarker::EXPORT, main_tpe)
     
+    for var i in 0..vector::length(state.module.dyn_dispatch) {
+        let tpe = vector::get(state.module.dyn_dispatch, i) !*typechecking::Type
+        let function = predeclare_function(tpe, state.module)
+        generate_vtable_function(function, tpe, state)
+    }
+
     predeclare_function(main_tpe, state.module)
 
     for var i in 0..vector::length(node.value.body) {
         let n = vector::get(node.value.body, i) !*parser::Node
-        if n.kind == parser::NodeKind::DEF and n.value.def_.is_used {
+        if n.kind == parser::NodeKind::DEF and not typechecking::is_polymorph(n.tpe) {
             predeclare_function(n.tpe, state.module)
         }
     }
@@ -6661,7 +6824,7 @@ export def compile(state: *State, is_main: bool, no_cleanup: bool = false) {
         let n = vector::get((@node).value.body, i) !*parser::Node
         switch (@n).kind !int {
             case parser::NodeKind::DEF:
-                if n.value.def_.is_used and not (n.value.def_.share !int & parser::ShareMarker::IMPORT !int) {
+                if n.value.def_.body and not typechecking::is_polymorph(n.tpe) {
                     create_function(n, n.tpe, n.value.def_.body, n.inner_scope, null, state)
                 }
             case parser::NodeKind::TYPE_DECL:
