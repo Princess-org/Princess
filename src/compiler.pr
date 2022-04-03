@@ -235,13 +235,29 @@ export def store(state: *State, vloc: Value, value: Value, loc: *Value) {
     store.value.store = {
         loc = vloc,
         value = value
-    }
+    } !InsnStore
     push_insn(store, state)
 }
 
 export type InsnLoad = struct {
     value: Value
     loc: Value
+}
+
+export def load(state: *State, tpe: *typechecking::Type, locv: Value) -> Value {
+    return load(state, tpe, locv, null)
+}
+
+export def load(state: *State, tpe: *typechecking::Type, locv: Value, loc: *Value) -> Value {
+    let load_ret = make_local_value(tpe, null, state)
+    let load = make_insn_dbg(InsnKind::LOAD, loc)
+    load.value.load = {
+        loc = locv,
+        value = load_ret
+    } !InsnLoad
+    push_insn(load, state)
+
+    return load_ret
 }
 
 export def ret(state:* State, value: Value) {
@@ -1091,7 +1107,36 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
     }
 
     var kind: InsnKind
-    if typechecking::is_ref(tpe) and (typechecking::is_assignable(tpe.tpe, value.tpe, state.module) or 
+    if typechecking::is_ref(tpe) and typechecking::is_ref(value.tpe) {
+        return convert_ref_to_ref(tpe, value, loc, state)
+    } else if typechecking::is_ref(tpe) and typechecking::equals(value.tpe, builtins::Ref_) {
+        return convert_ref_to_ref(tpe, value, loc, state)
+    } else if typechecking::equals(tpe, builtins::Ref_) and typechecking::is_ref(value.tpe) {
+        return convert_ref_to_ref(tpe, value, loc, state)
+    } else if typechecking::is_pointer(tpe) and typechecking::is_ref(value.tpe) {
+
+        let index = allocate(int, 1)
+        index[0] = 1
+        let extract_ret = make_local_value(typechecking::pointer(value.tpe.tpe), null, state)
+        let extract = make_insn_dbg(InsnKind::EXTRACTVALUE, loc)
+        extract.value.extract_value = {
+            ret = extract_ret,
+            value = value,
+            index = index
+        } !InsnExtractValue
+        push_insn(extract, state)
+
+        let bitcast_ret = make_local_value(typechecking::pointer(tpe.tpe), null, state)
+        let bitcast = make_insn_dbg(InsnKind::BITCAST, loc)
+        bitcast.value.convert = {
+            ret = bitcast_ret,
+            value = extract_ret
+        } !InsnConvert
+        push_insn(bitcast, state)
+
+        return bitcast_ret
+
+    } else if typechecking::is_ref(tpe) and (typechecking::is_assignable(tpe.tpe, value.tpe, state.module) or 
         typechecking::is_assignable(tpe, typechecking::reference(value.tpe), state.module) or 
         tpe.tpe == null or value.tpe.kind == typechecking::TypeKind::NULL) {
 
@@ -1102,7 +1147,7 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
         }
 
         map::put(state.module.imported, "malloc", map::sentinel)
-        let svalue = do_create_type(value.tpe, state.module)
+        let svalue = do_create_type(typechecking::reference(value.tpe), state.module)
 
         let args1 = allocate(Value, 1)
         args1[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = builtins::int64_.size } !Value
@@ -1211,35 +1256,6 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
         push_insn(insert3, state)
 
         return ret_insert3
-    } else if typechecking::is_ref(tpe) and typechecking::is_ref(value.tpe) {
-        return convert_ref_to_ref(tpe, value, loc, state)
-    } else if typechecking::is_ref(tpe) and typechecking::equals(value.tpe, builtins::Ref_) {
-        return convert_ref_to_ref(tpe, value, loc, state)
-    } else if typechecking::equals(tpe, builtins::Ref_) and typechecking::is_ref(value.tpe) {
-        return convert_ref_to_ref(tpe, value, loc, state)
-    } else if typechecking::is_pointer(tpe) and typechecking::is_ref(value.tpe) {
-
-        let index = allocate(int, 1)
-        index[0] = 1
-        let extract_ret = make_local_value(typechecking::pointer(value.tpe.tpe), null, state)
-        let extract = make_insn_dbg(InsnKind::EXTRACTVALUE, loc)
-        extract.value.extract_value = {
-            ret = extract_ret,
-            value = value,
-            index = index
-        } !InsnExtractValue
-        push_insn(extract, state)
-
-        let bitcast_ret = make_local_value(typechecking::pointer(tpe.tpe), null, state)
-        let bitcast = make_insn_dbg(InsnKind::BITCAST, loc)
-        bitcast.value.convert = {
-            ret = bitcast_ret,
-            value = extract_ret
-        } !InsnConvert
-        push_insn(bitcast, state)
-
-        return bitcast_ret
-
     } else if tpe.kind == typechecking::TypeKind::ARRAY {
         if (@value.tpe).kind == typechecking::TypeKind::STATIC_ARRAY and
             (@value.tpe).length == 0 {
@@ -3553,30 +3569,11 @@ def walk_IfExpr(node: *parser::Node, state: *State) -> Value {
     return { kind = ValueKind::LOCAL, tpe = if_true.tpe, addr = addrp } !Value
 }
 
-def walk_PtrT(node: *parser::Node, state: *State) -> Value {
+def walk_Type(node: *parser::Node, state: *State) -> Value {
     let expr = node.value.t_parr.tpe
     node.svalue = change_value_to_type(node.tpe.tpe, state)
     if not node.svalue { return NO_VALUE }
     return @node.svalue.value
-}
-
-def walk_ArrayT(node: *parser::Node, state: *State) -> Value {
-    let expr = node.value.t_parr.tpe
-    node.svalue = change_value_to_type(node.tpe.tpe, state)
-    if not node.svalue { return NO_VALUE }
-    return @node.svalue.value
-}
-
-def walk_ArrayStaticT(node: *parser::Node, state: *State) -> Value {
-    let expr = node.value.t_parr.tpe
-    node.svalue = change_value_to_type(node.tpe.tpe, state)
-    if not node.svalue { return NO_VALUE }
-    return @node.svalue.value
-}
-
-// TODO implement this
-def walk_FunctionT(node: *parser::Node, state: *State) -> Value {
-    return NO_VALUE
 }
 
 def walk_TypeOfT(node: *parser::Node, state: *State) -> Value {
@@ -3665,14 +3662,9 @@ export def walk_expression(node: *parser::Node, state: *State) -> Value {
             return walk_StructLit(node, state)
         case parser::NodeKind::ARRAY_LIT:
             return walk_ArrayLit(node, state)
-        case parser::NodeKind::ARRAY_STATIC_T:
-            return walk_ArrayStaticT(node, state)
-        case parser::NodeKind::PTR_T:
-            return walk_PtrT(node, state)
-        case parser::NodeKind::ARRAY_T:
-            return walk_ArrayT(node, state)
-        case parser::NodeKind::FUNCTION_T:
-            return walk_FunctionT(node, state)
+        case parser::NodeKind::ARRAY_STATIC_T, parser::NodeKind::PTR_T,
+            parser::NodeKind::REF_T, parser::NodeKind::ARRAY_T, parser::NodeKind::FUNCTION_T:
+            return walk_Type(node, state)
         case parser::NodeKind::TYPE_OF_T:
             return walk_TypeOfT(node, state)
         case parser::NodeKind::IF_EXPR:
@@ -4272,7 +4264,7 @@ def push_ref_init(value: Value, loc: *Value, state: *State) {
     map::put(state.module.imported, "malloc", map::sentinel)
     let ref_tpe = value.tpe.tpe.tpe
 
-    let svalue = do_create_type(ref_tpe, state.module)
+    let svalue = do_create_type(value.tpe.tpe, state.module)
 
     let args = allocate(Value, 1)
     args[0] = make_int_value(builtins::int64_.size !int)
@@ -6527,11 +6519,17 @@ def generate_vtable_function(function: *Function, tpe: *typechecking::Type, stat
     map::put(state.module.imported, equals.tpe.type_name, map::sentinel)
 
     // Extract type
-    let tpe_value = state.extract_value(
+    let ref_tpe = state.extract_value(
         typechecking::pointer(builtins::Type_), 
         { kind = ValueKind::LOCAL, tpe = first_param, name = "__ref.value"} !Value,
         [2]
-    ) 
+    )
+    let ref_tpe_deref = state.load(builtins::Type_, ref_tpe)
+    let tpe_value = state.extract_value(
+        typechecking::pointer(builtins::Type_),
+        ref_tpe_deref,
+        [4]
+    )
 
     let keys = map::keys(typechecking::types_map)
     for var i in 0..keys.size {
