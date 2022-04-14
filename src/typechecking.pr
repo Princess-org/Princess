@@ -65,12 +65,6 @@ export type StructMember = struct {
     bit_offset: size_t
 }
 
-export type StructuralType = struct {
-    // Vector of StructuralTypeMember
-    members: *vector::Vector
-    module: *toolchain::Module
-}
-
 export type StructuralTypeMember = struct {
     name: string
     // Vector of NamedParameter
@@ -83,6 +77,7 @@ export type Type = struct {
     kind: TypeKind
     // Source line
     line: int
+    module: *toolchain::Module
     // Name of the type as used by the source code
     // Might be the name of a typedef
     name: string
@@ -115,7 +110,8 @@ export type Type = struct {
     // For functions
     imported: bool
     // Structural types
-    structure: *StructuralType
+    // Vector of StructuralTypeMember
+    members: *vector::Vector
     share: parser::ShareMarker
 }
 
@@ -420,7 +416,7 @@ export type TypeEntryMember = struct {
     module: *toolchain::Module
 }
 
-export def create_type_entry(tpe: *Type, exported: bool, entry: *Type, module: *toolchain::Module) {
+export def create_type_entry(tpe: *Type) -> *TypeEntry {
     let name = debug::type_to_str(tpe, full_name = true)
     var type_entry = map::get(types_map, name) !*TypeEntry
     if not type_entry {
@@ -431,6 +427,15 @@ export def create_type_entry(tpe: *Type, exported: bool, entry: *Type, module: *
             cached = map::make()
         } !TypeEntry
         map::put(types_map, name, type_entry)
+    }
+    return type_entry
+}
+
+export def create_type_entry(tpe: *Type, exported: bool, entry: *Type, module: *toolchain::Module) {
+    let name = debug::type_to_str(tpe, full_name = true)
+    var type_entry = map::get(types_map, name) !*TypeEntry
+    if not type_entry {
+        type_entry = create_type_entry(tpe)
     } else {
         // Clear the cache for REPL
         map::clear(type_entry.cached)
@@ -572,32 +577,20 @@ def has_function(entry: *TypeEntry, mb: *StructuralTypeMember, module: *toolchai
 export def implements(a: *Type, b: *Type, module: *toolchain::Module) -> bool {
     assert b.kind == TypeKind::STRUCTURAL
 
-    let namea = debug::type_to_str(a, full_name = true)
-    var type_entry = map::get(types_map, namea) !*TypeEntry
-    if not type_entry {
-        type_entry = allocate(TypeEntry)
-        @type_entry = {
-            tpe = a,
-            functions = vector::make(),
-            cached = map::make()
-        } !TypeEntry
-        map::put(types_map, namea, type_entry)
-    }
+    var type_entry = create_type_entry(a)
     let nameb = debug::type_to_str(b, full_name = true)
     let cached = map::get(type_entry.cached, nameb)
     if cached {
         return cached == CONTAINS
     }
 
-    let sb = b.structure
     if a.kind == TypeKind::STRUCTURAL {
-        let sa = a.structure
-        for var i in 0..vector::length(sb.members) {
-            let mb = vector::get(sb.members, i) !*StructuralTypeMember
+        for var i in 0..vector::length(b.members) {
+            let mb = vector::get(b.members, i) !*StructuralTypeMember
 
             var found = false
-            for var j in 0..vector::length(sa.members) {
-                let ma = vector::get(sa.members, j) !*StructuralTypeMember
+            for var j in 0..vector::length(a.members) {
+                let ma = vector::get(a.members, j) !*StructuralTypeMember
                 if ma.name != mb.name { continue }
                 if vector::length(ma.parameter_t) != vector::length(mb.parameter_t) { continue }
 
@@ -637,8 +630,8 @@ export def implements(a: *Type, b: *Type, module: *toolchain::Module) -> bool {
         map::put(type_entry.cached, nameb, CONTAINS)
         return true
     } else {
-        for var i in 0..vector::length(sb.members) {
-            let mb = vector::get(sb.members, i) !*StructuralTypeMember
+        for var i in 0..vector::length(b.members) {
+            let mb = vector::get(b.members, i) !*StructuralTypeMember
             if not has_function(type_entry, mb, module) { 
                 map::put(type_entry.cached, nameb, NOT_CONTAINS)
                 return false 
@@ -762,6 +755,33 @@ export def is_polymorph(tpe: *Type) -> bool {
     return false
 }
 
+export def has_destructor(tpe: *Type) -> bool {
+    if not tpe { return false }
+    if is_ref(tpe) { return true }
+    if is_struct(tpe) {
+        if tpe.module {
+            let args = vector::make()
+            let first_arg = allocate(NamedParameter)
+            @first_arg = {
+                name = "",
+                tpe = pointer(tpe)
+            } !NamedParameter
+            vector::push(args, first_arg)
+            let destructor = scope::get_function(tpe.module.scope, parser::make_identifier(["destruct"]), args)
+            if destructor { return true }
+        }
+        if tpe.kind == TypeKind::STRUCT {
+            for var i in 0..tpe.fields.size {
+                let field = tpe.fields[i]
+                if has_destructor(field.tpe) {
+                    return true
+                }
+            }
+        }
+    }
+    return false
+}
+
 def find_type_defs(left: *Type, right: *Type, types: *map::Map, replace: bool, is_type: bool = false) {
     if not left or not right { return }
 
@@ -815,7 +835,7 @@ def replace_parameter(tpe: *Type, types: *map::Map) -> *Type {
 // names from the implementing function
 def insert_structural_members(stpe: *Type, tpe: *Type, scpe: *scope::Scope) {
     assert stpe.kind == TypeKind::STRUCTURAL
-    let members = stpe.structure.members
+    let members = stpe.members
     for var i in 0..vector::length(members) {
         let member = vector::get(members, i) !*StructuralTypeMember
         let name = parser::make_identifier([member.name])
@@ -1011,7 +1031,7 @@ export def mangle_function_name(name: string, parameter_t: *vector::Vector) -> s
         if np.varargs {
             buffer::append_char(*buf, '[')
         }
-        if np.tpe.kind == TypeKind::TYPE {
+        if np.tpe and np.tpe.kind == TypeKind::TYPE {
             // TODO This should be handled by type_to_str
             buffer::append_str(*buf, "type")
             if np.value {
@@ -1159,16 +1179,21 @@ export def type_lookup(node: *parser::Node, state: *State, current_type: *Type =
                 }
                 tpe = scope::create_type(state.scope, node, parser::ShareMarker::NONE, tpe, scope::Phase::DECLARED, null, null)
             }
+            tpe.module = state.module
             return tpe
         }
     } else if node.kind == parser::NodeKind::PTR_T {
         if current_type { current_type = current_type.tpe }
-        let tpe = type_lookup(node.value.t_parr.tpe, state, current_type, lookup_default, parameter_types)
-        return pointer(tpe, node.value.t_parr.kw)
+        var tpe = type_lookup(node.value.t_parr.tpe, state, current_type, lookup_default, parameter_types)
+        tpe = pointer(tpe, node.value.t_parr.kw)
+        tpe.module = state.module
+        return tpe
     } else if node.kind == parser::NodeKind::REF_T {
         if current_type { current_type = current_type.tpe }
-        let tpe = type_lookup(node.value.t_parr.tpe, state, current_type, lookup_default, parameter_types)
-        return reference(tpe, node.value.t_parr.kw)
+        var tpe = type_lookup(node.value.t_parr.tpe, state, current_type, lookup_default, parameter_types)
+        tpe = reference(tpe, node.value.t_parr.kw)
+        tpe.module = state.module
+        return tpe
     } else if node.kind == parser::NodeKind::STRUCT_T {
         
         let length = vector::length(node.value.body)
@@ -1217,6 +1242,7 @@ export def type_lookup(node: *parser::Node, state: *State, current_type: *Type =
         tpe.type_name = make_unique_name("<anonymous>", state)
         tpe.name = "<anonymous>"
         tpe.line = node.loc.line
+        tpe.module = state.module
 
         return tpe
     } else if node.kind == parser::NodeKind::UNION_T {
@@ -1286,6 +1312,7 @@ export def type_lookup(node: *parser::Node, state: *State, current_type: *Type =
         tpe.align = align
         tpe.fields = fields
         tpe.field_types = field_types
+        tpe.module = state.module
 
         return tpe
     } else if node.kind == parser::NodeKind::ENUM_T {
@@ -1299,12 +1326,15 @@ export def type_lookup(node: *parser::Node, state: *State, current_type: *Type =
         (@tpe).tpe = enum_tpe
         (@tpe).size = (@enum_tpe).size
         (@tpe).align = (@enum_tpe).align
+        tpe.module = state.module
 
         return tpe
     } else if node.kind == parser::NodeKind::ARRAY_T {
         if current_type { current_type = current_type.tpe }
         let array_tpe = type_lookup(node.value.t_parr.tpe, state, current_type, lookup_default, parameter_types)
-        return array(array_tpe, node.value.t_parr.kw)
+        let tpe = array(array_tpe, node.value.t_parr.kw)
+        tpe.module = state.module
+        return tpe
     } else if node.kind == parser::NodeKind::ARRAY_STATIC_T {
         if current_type { current_type = current_type.tpe }
         let array_tpe = type_lookup(node.value.t_arrs.tpe, state, current_type, lookup_default, parameter_types)
@@ -1322,9 +1352,11 @@ export def type_lookup(node: *parser::Node, state: *State, current_type: *Type =
             }
         }
 
-        return make_static_array(array_tpe, n, node.value.t_arrs.kw)
+        let tpe = make_static_array(array_tpe, n, node.value.t_arrs.kw)
+        tpe.module = state.module
+        return tpe
     } else if node.kind == parser::NodeKind::FUNCTION_T {
-        let tpe = make_function_type()
+        var tpe = make_function_type()
         (@tpe).line = node.loc.line
         (@tpe).parameter_t = vector::make()
         for var i in 0..vector::length(node.value.t_func.args) {
@@ -1351,13 +1383,17 @@ export def type_lookup(node: *parser::Node, state: *State, current_type: *Type =
             let arg = vector::get(node.value.t_func.ret, i) !*parser::Node
             vector::push((@tpe).return_t, type_lookup(arg, state, return_type, lookup_default, parameter_types))
         }
-        return pointer(tpe)
+        tpe.module = state.module
+        tpe = pointer(tpe)
+        tpe.module = state.module
+        return tpe
     } else if node.kind == parser::NodeKind::TYPE_T {
         if current_type { return current_type }
         let wrapped = type_lookup(node.value.expr, state, current_type, lookup_default, parameter_types)
         let tpe = make_type_raw(TypeKind::TYPE_DEF)
         tpe.line = node.loc.line
         tpe.tpe = wrapped
+        tpe.module = state.module
         return tpe
     } else if node.kind == parser::NodeKind::UNSIGNED_T {
         let signed = copy(type_lookup(node.value.expr, state, current_type, lookup_default, parameter_types)) if not current_type else current_type
@@ -1366,12 +1402,14 @@ export def type_lookup(node: *parser::Node, state: *State, current_type: *Type =
             return null
         }
         signed.unsig = true
+        signed.module = state.module
         return signed
     } else if node.kind == parser::NodeKind::WORD_T {
         let n = node.value.i / 8
         let tpe = make_type_raw(TypeKind::WORD)
         tpe.size = n
         tpe.align = n
+        tpe.module = state.module
         return tpe
     } else if node.kind == parser::NodeKind::TYPE_OF_T {
         if current_type { return current_type }
@@ -1387,7 +1425,7 @@ export def type_lookup(node: *parser::Node, state: *State, current_type: *Type =
         for var i in 0..vector::length(node.value.body) {
             let member = vector::get(node.value.body, i) !*parser::Node
             var current_member: *StructuralTypeMember = null
-            if current_type { current_member = vector::get(current_type.structure.members, i) !*StructuralTypeMember}
+            if current_type { current_member = vector::get(current_type.members, i) !*StructuralTypeMember}
 
             let name = parser::identifier_to_str(member.value.structural_member.name)
             let parameter_t = vector::make()
@@ -1418,14 +1456,8 @@ export def type_lookup(node: *parser::Node, state: *State, current_type: *Type =
             }
             vector::push(members, structural_type_member)
         }
-
-        let structural_type = allocate(StructuralType)
-        @structural_type = {
-            members = members,
-            module = state.module
-        } !StructuralType
-
-        tpe.structure = structural_type
+        tpe.members = members
+        tpe.module = state.module
 
         return tpe
     }
@@ -1566,7 +1598,7 @@ def walk_Range(node: *parser::Node, state: *State) {
     node.tpe = tpe
 }
 
-def walk_Identifier(node: *parser::Node, state: *State) {
+export def lookup_identifier_types(node: *parser::Node, state: *State) {
     if node.value.identifier.args {
         node.value.identifier.types = vector::make()
         for var i in 0..vector::length(node.value.identifier.args) {
@@ -1581,6 +1613,10 @@ def walk_Identifier(node: *parser::Node, state: *State) {
             vector::push(node.value.identifier.types, np)
         }
     }
+}
+
+def walk_Identifier(node: *parser::Node, state: *State) {
+    lookup_identifier_types(node, state)
 
     var value = scope::get(state.scope, node) !*scope::Value
     if not value {
@@ -2104,8 +2140,8 @@ export def walk_Def(node: *parser::Node, state: *State) {
         phase = scope::Phase::COMPILED
         for var i in 0..vector::length(tpe.parameter_t) {
             let np = vector::get(tpe.parameter_t, i) !*NamedParameter 
-            var tpe = np.tpe
-            if tpe and tpe.kind == TypeKind::TYPE { continue }
+            var tpe2 = np.tpe
+            if tpe2 and tpe2.kind == TypeKind::TYPE { continue }
             if np.varargs {
                 if np.tpe {
                     scope::create_variable(inner_scope, np.node, parser::ShareMarker::NONE, parser::VarDecl::VAR, array(np.tpe), null)
@@ -3037,6 +3073,7 @@ export def make_state(module: *toolchain::Module) -> State {
 }
 
 export def walk_Def_with_type_argument(node: *parser::Node, parameter_t: *vector::Vector, state: *State) {
+    let old_node = node
     node = parser::deep_copy_node(node)
     node.inner_scope = scope::enter_function_scope(node.scope)
 

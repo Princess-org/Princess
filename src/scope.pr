@@ -122,7 +122,7 @@ export def exit_scope(scope: *Scope) -> *Scope {
     return parent
 }
 
-def find_stored_function(scope: *Scope, node: *parser::Node, v: *Value, parameter_t: *vector::Vector, score: *int, dry_run: bool) -> *Value {
+def find_function(scope: *Scope, node: *parser::Node, v: *Value, parameter_t: *vector::Vector, score: *int, dry_run: bool) -> *Value {
     if not v { return null }
     if not typechecking::is_function((@v).tpe) {
         return null
@@ -169,17 +169,18 @@ def find_stored_function(scope: *Scope, node: *parser::Node, v: *Value, paramete
     return found
 }
 
-def find_function(scope: *Scope, node: *parser::Node, v: *Value, parameter_t: *vector::Vector, score: *int, dry_run: bool) -> *Value {
-    let found = find_stored_function(scope, node, v, parameter_t, score, dry_run)
-
-    // TODO factor out into its own function
-    if not found and vector::length(parameter_t) >= 1 {
-
-        let first_parameter = allocate(NamedParameter)
-        @first_parameter = @(vector::get(parameter_t, 0) !*typechecking::NamedParameter)
-        first_parameter.name = "__ref"
-
-        if first_parameter.tpe and first_parameter.tpe.kind == typechecking::TypeKind::REFERENCE and 
+def generate_function(scope: *Scope, node: *parser::Node, parameter_t: *vector::Vector, dry_run: bool) -> *Value {
+    let module = scope.module
+    if not module { return null }
+    while not is_global(scope) {
+        scope = scope.parent
+    }
+    
+    let name = last_path_element(node)
+    if vector::length(parameter_t) >= 1 {
+        var first_parameter = vector::get(parameter_t, 0) !*typechecking::NamedParameter
+        if not first_parameter.tpe { return null }
+        if first_parameter.tpe.kind == typechecking::TypeKind::REFERENCE and 
             (first_parameter.tpe.tpe and first_parameter.tpe.tpe.kind == typechecking::TypeKind::STRUCTURAL) {
             
             let equals = get(toolchain::runtime.scope, parser::make_identifier(["equals"]))
@@ -188,16 +189,15 @@ def find_function(scope: *Scope, node: *parser::Node, v: *Value, parameter_t: *v
             let parameter_t2 = vector::copy(parameter_t)
             vector::remove(parameter_t2, 0)
 
-            let name = last_path_element(node)
             let stpe = first_parameter.tpe.tpe
-            let module = stpe.structure.module
+            let module = stpe.module
             let scope = module.scope
 
             var duplicate = false
             let least_score = util::MAX_INT32 !int
             var found_member: *typechecking::StructuralTypeMember = null
-            for var i in 0..vector::length(stpe.structure.members) {
-                let member = vector::get(stpe.structure.members, i) !*typechecking::StructuralTypeMember
+            for var i in 0..vector::length(stpe.members) {
+                let member = vector::get(stpe.members, i) !*typechecking::StructuralTypeMember
                 if member.name != name { continue }
 
                 let score = typechecking::overload_score(member.parameter_t, vector::make(), parameter_t2, scope.module, false)
@@ -219,17 +219,35 @@ def find_function(scope: *Scope, node: *parser::Node, v: *Value, parameter_t: *v
             name_node.loc.module = module.module
 
             let parameter_t3 = vector::copy(found_member.parameter_t)
-            vector::insert(parameter_t3, 0, first_parameter)
+            
+            let fp = allocate(typechecking::NamedParameter)
+            @fp = @first_parameter
+            fp.name = "__ref"
+            vector::insert(parameter_t3, 0, fp)
             let tpe = typechecking::make_function_type_n(name_node, parameter_t3, found_member.return_t)
             let value = create_function(scope, name_node, stpe.share, tpe)
             vector::push(module.dyn_dispatch, tpe)
+            return value
+        } else if first_parameter.tpe.kind == typechecking::TypeKind::POINTER and 
+            name == "__destruct__" and typechecking::has_destructor(first_parameter.tpe.tpe) {
+            
+            let args = vector::make()
+            let first_param = allocate(typechecking::NamedParameter)
+            @first_param = {
+                name = "__ptr",
+                tpe = first_parameter.tpe
+            } !typechecking::NamedParameter
+            vector::push(args, first_param)
 
-            @score = 0
+            let name_node = parser::make_identifier(["__destruct__"])
+            let tpe = typechecking::make_function_type_n(name_node, args, vector::make())
+            let value = create_function(builtins::builtins, name_node, parser::ShareMarker::EXPORT, tpe)
+            compiler::predeclare_function(tpe, module)
+            map::put(compiler::destructors, debug::type_to_str(first_parameter.tpe, full_name = true), tpe)
             return value
         }
     }
-
-    return found
+    return null
 }
 
 export def get_underscore(scope: *Scope) -> *Value {
@@ -330,9 +348,12 @@ export def get_function(scope: *Scope, id: *parser::Node, parameter_t: *vector::
             return value 
         }
         if (@scope).parent and not first_value {
-            return get_function((@scope).parent, id, parameter_t, check_export, dry_run)
+            value = get_function((@scope).parent, id, parameter_t, check_export, dry_run)
         }
-        return null
+        if not value {
+            value = generate_function(scope, id, parameter_t, dry_run)
+        }
+        return value
     } else {
         let head = vector::head_vec((@id).value.identifier.path)
         let tail = vector::tail((@id).value.identifier.path)
@@ -379,6 +400,9 @@ export def get(scope: *Scope, id: *parser::Node, force_compile: bool = true, che
                 if value and force_compile and value.phase == Phase::DEFINED {
                     value = typecheck_function(value, id, scope, false, id.value.identifier.types)
                 }
+                if not value {
+                    value = generate_function(scope, id, id.value.identifier.types, dry_run)
+                }
                 return value
             } else if is_function(value.tpe) and id.parent and id.parent.kind == parser::NodeKind::PTR and value.next {
                 if not dry_run { errors::errorn(id, "Ambiguous reference") }
@@ -422,9 +446,12 @@ export def get(scope: *Scope, id: *parser::Node, force_compile: bool = true, che
             return value
         }
         if (@scope).parent {
-            return get((@scope).parent, id, force_compile, check_export, dry_run)
+            value = get((@scope).parent, id, force_compile, check_export, dry_run)
         }
-        return null
+        if not value and id.value.identifier.types {
+            value = generate_function(scope, id, id.value.identifier.types, dry_run)
+        }
+        return value
     } else {
         let head = vector::head_vec((@id).value.identifier.path)
         let tail = vector::tail((@id).value.identifier.path)
@@ -541,7 +568,7 @@ export def create_function(
                 } else {
                     // Make sure we keep the chain intact
                     // TODO This is quite dodgy but its apparently needed for some reason
-                    @next.tpe = @v.tpe
+                    next.tpe = v.tpe
                     v.next = next.next
                     @next = @v
                 }
