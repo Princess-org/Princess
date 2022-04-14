@@ -176,10 +176,10 @@ export type InsnGetElementPtr = struct {
     index: [Value]
 }
 
-export def gep(state: *State, ret: *typechecking::Type, tpe: *typechecking::Type, value: Value, index: [int], loc: *Value = null) -> Value {
+export def gep(state: *State, ret: *typechecking::Type, tpe: *typechecking::Type, value: Value, index: [Value], loc: *Value = null) -> Value {
     let gep_index = allocate(Value, index.size)
     for var i in 0..index.size {
-        gep_index[i] = make_int_value(index[i])
+        gep_index[i] = index[i]
     }
     let gep_ret = make_local_value(ret, null, state)
     let gep = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
@@ -321,6 +321,17 @@ export def add(state: *State, ret: *typechecking::Type, left: Value, right: Valu
 
 export type InsnAlloca = struct {
     ret: Value
+}
+
+export def alloca(state: *State, tpe: *typechecking::Type, loc: *Value = null) -> Value {
+    let alloca_ret = make_named_local(tpe, null, state)
+    let alloca = make_insn_dbg(InsnKind::ALLOCA, loc)
+    alloca.value.alloca = {
+        ret = alloca_ret
+    } !InsnAlloca
+    push_alloca(alloca, state)
+    alloca_ret.tpe = typechecking::pointer(tpe)
+    return alloca_ret
 }
 
 export type InsnCall = struct {
@@ -2399,29 +2410,63 @@ def insert_destructors(scpe: *scope::Scope, loc: *Value, state: *State) {
     for var i in 0..keys.size {
         let key = keys[i]
         let value = map::get(scpe.fields, key) !*scope::Value
-        if typechecking::has_destructor(value.tpe) {
-            let name = value.assembly_name
-            var kind = ValueKind::LOCAL
-            if value.global {
-                kind = ValueKind::GLOBAL
-            }
-            insert_destructor({ kind = kind, tpe = typechecking::pointer(value.tpe), name = name } !Value, scpe, loc, state)
+        
+        let name = value.assembly_name
+        var kind = ValueKind::LOCAL
+        if value.global {
+            kind = ValueKind::GLOBAL
         }
+        insert_destructor({ kind = kind, tpe = typechecking::pointer(value.tpe), name = name } !Value, scpe, loc, state)
     }
 }
 
 def insert_destructor(value: Value, scpe: *scope::Scope, loc: *Value, state: *State) {
-    let args = vector::make()
-    let np = allocate(typechecking::NamedParameter)
-    @np = {
-        name = "",
-        tpe = value.tpe
+    if value.tpe.tpe and value.tpe.tpe.kind == typechecking::TypeKind::STATIC_ARRAY and typechecking::has_destructor(value.tpe.tpe) {
+        let counter_ptr = state.alloca(builtins::size_t_, loc)
+        state.store(counter_ptr, { kind = ValueKind::INT, tpe = builtins::size_t_, i = 0 } !Value, loc)
+        
+        let br_to_start = make_insn_dbg(InsnKind::BR_UNC, loc)
+        push_insn(br_to_start, state)
+
+        let loop_start = make_label(state)
+        push_label(loop_start, state)
+        br_to_start.value.br_unc.label_ = loop_start
+        
+        let counter_value = state.load(builtins::size_t_, counter_ptr, loc)
+        let cond = state.icmp(CompareInt::eq, counter_value, { kind = ValueKind::INT, tpe = builtins::size_t_, i = value.tpe.tpe.length } !Value, loc)
+        let br = make_insn_dbg(InsnKind::BR, loc)
+        br.value.br = { cond = cond } !InsnBr
+        push_insn(br, state)
+
+        let loop_inner = make_label(state)
+        push_label(loop_inner, state)
+        br.value.br.if_false = loop_inner
+
+        let element = state.gep(pointer(value.tpe.tpe.tpe), value.tpe.tpe, value, [make_int_value(0), counter_value])
+        insert_destructor(element, scpe, loc, state)
+
+        let counter_inc = state.add(builtins::size_t_, counter_value, { kind = ValueKind::INT, tpe = builtins::size_t_, i = 1 } !Value, loc)
+        state.store(counter_ptr, counter_inc)
+
+        push_insn(br_to_start, state)
+
+        let loop_end = make_label(state)
+        push_label(loop_end, state)
+        br.value.br.if_true = loop_end
+        
+    } else if typechecking::has_destructor(value.tpe.tpe) {
+        let args = vector::make()
+        let np = allocate(typechecking::NamedParameter)
+        @np = {
+            name = "",
+            tpe = value.tpe
+        }
+        vector::push(args, np)
+        let destructor = scope::get_function(scpe, parser::make_identifier(["__destruct__"]), args)
+        predeclare_function(destructor.tpe, state.module)
+        map::put(state.module.imported, destructor.tpe.type_name, map::sentinel)
+        state.call(destructor.tpe.type_name, null, [value], loc)
     }
-    vector::push(args, np)
-    let destructor = scope::get_function(scpe, parser::make_identifier(["__destruct__"]), args)
-    predeclare_function(destructor.tpe, state.module)
-    map::put(state.module.imported, destructor.tpe.type_name, map::sentinel)
-    state.call(destructor.tpe.type_name, null, [value], loc)
 }
 
 def increase_pointer_by_one(value: Value, loc: *Value, state: *State) {
@@ -2642,7 +2687,13 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
     for var i in 0..vector::length(right) {
         let n = vector::get(right, i) !*parser::Node
         if not n { break }
-        var value = walk_and_load_expression(n, state)
+        var is_undef = false
+        var value = NO_VALUE
+        if n.kind == parser::NodeKind::UNDEF { 
+            is_undef = true
+        } else {
+            value = walk_and_load_expression(n, state)
+        }
         let tpe = (@n).tpe
         if not tpe { continue }
         if tpe.kind == typechecking::TypeKind::TUPLE {
@@ -2725,6 +2776,10 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
         } else {
             if j >= vector::length(left) { return NO_VALUE }
             let l = vector::get(left, j) !*parser::Node
+            if not l.is_initializer and is_undef {
+                errors::errorn(n, "Undef used outside of initializer")
+            }
+
             let addr = walk_expression(l, state).addr
             if not addr { 
                 errors::errorn(l, "Can't assign, expression has no address")
@@ -2748,19 +2803,21 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
                     insert_destructor(@addr, state.scope, loc, state)
                 }
 
-                let store = make_insn_dbg(InsnKind::STORE, loc)
-                (@store).value.store = {
-                    value = value,
-                    loc = @addr
-                } !InsnStore
+                if not is_undef {
+                    let store = make_insn_dbg(InsnKind::STORE, loc)
+                    (@store).value.store = {
+                        value = value,
+                        loc = @addr
+                    } !InsnStore
 
-                push_insn(store, state)
+                    push_insn(store, state)
+                }
 
                 if typechecking::is_ref(l.tpe) {
                     increase_ref_count(@addr, loc, state)
                 }
             }
-
+            
             last_value = value
             j += 1
         }
@@ -3481,6 +3538,9 @@ export def walk_expression(node: *parser::Node, state: *State) -> Value {
     switch (@node).kind !int {
         case parser::NodeKind::NULL:
             return walk_Null(node, state)
+        case parser::NodeKind::UNDEF:
+            errors::errorn(node, "Undef used outside of initializer")
+            return NO_VALUE
         case parser::NodeKind::IDENTIFIER:
             return walk_Identifier(node, state)
         case parser::NodeKind::INTEGER:
@@ -4189,6 +4249,17 @@ export def walk_VarDecl(node: *parser::Node, state: *State, set_constant: bool =
 
                 ret.tpe = typechecking::pointer(tpe)
                 push_declare(v, ret, (@value).name, state)
+
+                var is_undef = false
+                if i < vector::length(right) {
+                    let r = vector::get(right, i) !*parser::Node
+                    if r.kind == parser::NodeKind::UNDEF {
+                        is_undef = true
+                    }
+                }
+                if not is_undef {
+                    state.store(ret, { kind = ValueKind::ZEROINITIALIZER, tpe = tpe } !Value)
+                }
             }
 
             v.is_initializer = true
@@ -5740,7 +5811,7 @@ def create_destructor(tpe: *typechecking::Type, value: Value, state: *State) {
     if structure_type and structure_type.kind == typechecking::TypeKind::STRUCT {
         for var i in 0..structure_type.fields.size {
             let field = structure_type.fields[i]
-            let field_value = state.gep(pointer(field.tpe), value.tpe.tpe, value, [0, i])
+            let field_value = state.gep(pointer(field.tpe), value.tpe.tpe, value, [make_int_value(0), make_int_value(i)])
             let destructor = map::get(destructors, debug::type_to_str(field.tpe, full_name = true)) !*typechecking::Type
             if destructor {
                 state.call(destructor.type_name, null, [field_value])
@@ -6031,11 +6102,11 @@ def push_type_member(exported: bool, f_name: string, pars: *vector::Vector, rets
     if vector::length(pars) > 0 {
         let parameter_t_s_array = make_static_array(pointer(builtins::Type_), vector::length(pars))
         let parameter_t = make_global_value(parameter_t_s_array, "parameter_t", null, state)
-        parameter_t_ret = state.gep(pointer(pointer(builtins::Type_)), parameter_t_s_array, parameter_t, [0, 0])
+        parameter_t_ret = state.gep(pointer(pointer(builtins::Type_)), parameter_t_s_array, parameter_t, [make_int_value(0), make_int_value(0)])
 
         for var i in 0..vector::length(pars) {
             let np = vector::get(pars, i) !*typechecking::NamedParameter
-            let gep_ret = state.gep(pointer(pointer(builtins::Type_)), parameter_t_s_array, parameter_t, [0, i])
+            let gep_ret = state.gep(pointer(pointer(builtins::Type_)), parameter_t_s_array, parameter_t, [make_int_value(0), make_int_value(i)])
             var tpe = np.tpe
             if np.varargs {
                 if tpe {
@@ -6052,11 +6123,11 @@ def push_type_member(exported: bool, f_name: string, pars: *vector::Vector, rets
     if vector::length(rets) > 0 {
         let return_t_s_array = make_static_array(pointer(builtins::Type_), vector::length(rets))
         let return_t = make_global_value(return_t_s_array, "return_t", null, state)
-        return_t_ret = state.gep(pointer(pointer(builtins::Type_)), return_t_s_array, return_t, [0, 0])
+        return_t_ret = state.gep(pointer(pointer(builtins::Type_)), return_t_s_array, return_t, [make_int_value(0), make_int_value(0)])
 
         for var i in 0..vector::length(rets) {
             let tpe = vector::get(rets, i) !*typechecking::Type
-            let gep_ret = state.gep(pointer(pointer(builtins::Type_)), return_t_s_array, return_t, [0, i])
+            let gep_ret = state.gep(pointer(pointer(builtins::Type_)), return_t_s_array, return_t, [make_int_value(0), make_int_value(i)])
             state.store(gep_ret, @create_type(tpe, module))
         }
     }
@@ -6090,12 +6161,12 @@ def push_type_members(tpe: *Type, global: Value, module: *toolchain::Module, sta
             function.parameter_t, function.return_t, 
             module, state)
 
-        let gep_ret = state.gep(pointer(builtins::Function_), members_sarray, members, [0, i])
+        let gep_ret = state.gep(pointer(builtins::Function_), members_sarray, members, [make_int_value(0), make_int_value(i)])
         state.store(gep_ret, member)
     }
 
-    let gep_ret = state.gep(pointer(builtins::Function_), members_sarray, members, [0, 0])
-    let gep2_ret = state.gep(pointer(pointer(builtins::Function_)), builtins::Type_, global, [0, 13, 1])
+    let gep_ret = state.gep(pointer(builtins::Function_), members_sarray, members, [make_int_value(0), make_int_value(0)])
+    let gep2_ret = state.gep(pointer(pointer(builtins::Function_)), builtins::Type_, global, [make_int_value(0), make_int_value(13), make_int_value(1)])
     state.store(gep2_ret, gep_ret)
 }
 
@@ -6111,12 +6182,12 @@ def push_structural_members(tpe: *Type, global: Value, module: *toolchain::Modul
 
         // TODO exported same as type?
         let member = push_type_member(false, smember.name, smember.parameter_t, smember.return_t, module, state)
-        let gep_ret = state.gep(pointer(builtins::Function_), members_sarray, members, [0, i])
+        let gep_ret = state.gep(pointer(builtins::Function_), members_sarray, members, [make_int_value(0), make_int_value(i)])
         state.store(gep_ret, member)
     }
 
-    let gep_ret = state.gep(pointer(builtins::Function_), members_sarray, members, [0, 0])
-    let gep2_ret = state.gep(pointer(pointer(builtins::Function_)), builtins::Type_, global, [0, 12, 1])
+    let gep_ret = state.gep(pointer(builtins::Function_), members_sarray, members, [make_int_value(0), make_int_value(0)])
+    let gep2_ret = state.gep(pointer(pointer(builtins::Function_)), builtins::Type_, global, [make_int_value(0), make_int_value(12), make_int_value(1)])
     state.store(gep2_ret, gep_ret)
 }
 
