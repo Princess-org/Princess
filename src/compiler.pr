@@ -2132,6 +2132,7 @@ def walk_BNot(node: *parser::Node, state: *State) -> Value {
 
 // TODO Refactor this
 def walk_Call(node: *parser::Node, state: *State) -> Value {
+    let loc = make_location(node, state)
     let left = node.value.func_call.left
     var tpe = (@node).function
     var is_fp = false
@@ -2227,6 +2228,12 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
         } else {
             return NO_VALUE
         }
+        let old = args[i]
+        if is_copied(n) and typechecking::has_copy_constructor(old.tpe) {
+            let ret = state.alloca(old.tpe, loc)
+            insert_copy_constructor(ret, old, loc, state)
+            args[i] = state.load(old.tpe, ret, loc)
+        }
     }
     for var i in 0..vector::length(call_kwargs) {
         let n = vector::get(call_kwargs, i) !*parser::Node
@@ -2239,6 +2246,12 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
             if (@p).name == name {
                 var expr = walk_and_load_expression(value, state)
                 expr = convert_to(n, expr, (@p).tpe, state)
+
+                if is_copied(value) and typechecking::has_copy_constructor(expr.tpe) {
+                    let ret = state.alloca(expr.tpe, loc)
+                    insert_copy_constructor(ret, expr, loc, state)
+                    expr = state.load(expr.tpe, ret, loc)
+                }
                 args[j] = expr
             }
         }
@@ -2261,7 +2274,7 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
             }
 
             let ret = make_local_value(arg.tpe, null, state)
-            let load = make_insn(InsnKind::LOAD)
+            let load = make_insn_dbg(InsnKind::LOAD, loc)
             load.value.load = {
                 value = ret,
                 loc = @arg.value
@@ -2340,7 +2353,6 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
         value = make_local_value(ret, addrp, state)
     }
 
-    let loc = make_location(node, state)
     let insn = make_insn_dbg(InsnKind::CALL, loc)
     (@insn).value.call = {
         name = name_v,
@@ -2419,6 +2431,33 @@ def walk_Identifier(node: *parser::Node, state: *State) -> Value {
         } !Value
         return value
     }
+}
+
+def is_copied(node: *parser::Node) -> bool {
+    if not node { return false }
+    return node.kind == parser::NodeKind::DEREF or 
+        node.kind == parser::NodeKind::IDENTIFIER
+}
+
+// This function assumes that value.tpe has a copy constructor
+def insert_copy_constructor(addr: Value, value: Value, loc: *Value, state: *State) {
+    let scpe = value.tpe.module.scope
+    let args = vector::make()
+    let np = allocate(typechecking::NamedParameter)
+    @np = {
+        name = "",
+        tpe = addr.tpe
+    }
+    vector::push(args, np)
+    vector::push(args, np)
+    let ctor = scope::get_function(scpe, parser::make_identifier(["construct"]), args)
+    predeclare_function(ctor.tpe, state.module)
+    map::put(state.module.imported, ctor.tpe.type_name, map::sentinel)
+
+    // allocate set value
+    let ret = state.alloca(value.tpe, loc)
+    state.store(ret, value)
+    state.call(ctor.tpe.type_name, null, [addr, ret])
 }
 
 def insert_destructors(scpe: *scope::Scope, loc: *Value, state: *State) {
@@ -2834,7 +2873,9 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
                     insert_destructor(addr, state.scope, loc, state)
                 }
 
-                if not is_undef {
+                if is_copied(n) and typechecking::has_copy_constructor(l.tpe) {
+                    insert_copy_constructor(@addr, value, loc, state)
+                } else if not is_undef {
                     let store = make_insn_dbg(InsnKind::STORE, loc)
                     (@store).value.store = {
                         value = value,
@@ -3973,7 +4014,15 @@ def walk_Return(node: *parser::Node, state: *State) {
         for var i in 0..ret_args.size {
             let n = vector::get((@node).value.body, i) !*parser::Node
             let tpe = (@(@current_function).ret).fields[i].tpe
-            ret_args[i] = convert_to(n, walk_and_load_expression(n, state), tpe, state)
+            var expr = convert_to(n, walk_and_load_expression(n, state), tpe, state)
+
+            if is_copied(n) and typechecking::has_copy_constructor(expr.tpe) {
+                let ret = state.alloca(expr.tpe, loc)
+                insert_copy_constructor(ret, expr, loc, state)
+                expr = state.load(expr.tpe, ret, loc)
+            }
+
+            ret_args[i] = expr
         }
         value = {
             kind = ValueKind::STRUCT,
@@ -3987,6 +4036,11 @@ def walk_Return(node: *parser::Node, state: *State) {
         if tpe {
             let arg = vector::peek((@node).value.body) !*parser::Node
             value = convert_to(arg, walk_and_load_expression(arg, state), tpe, state)
+            if is_copied(arg) and typechecking::has_copy_constructor(value.tpe) {
+                let ret = state.alloca(value.tpe, loc)
+                insert_copy_constructor(ret, value, loc, state)
+                value = state.load(value.tpe, ret, loc)
+            }
         }
     }
 
