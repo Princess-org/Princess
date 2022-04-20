@@ -2441,23 +2441,62 @@ def is_copied(node: *parser::Node) -> bool {
 
 // This function assumes that value.tpe has a copy constructor
 def insert_copy_constructor(addr: Value, value: Value, loc: *Value, state: *State) {
-    let scpe = value.tpe.module.scope
-    let args = vector::make()
-    let np = allocate(typechecking::NamedParameter)
-    @np = {
-        name = "",
-        tpe = addr.tpe
-    }
-    vector::push(args, np)
-    vector::push(args, np)
-    let ctor = scope::get_function(scpe, parser::make_identifier(["construct"]), args)
-    predeclare_function(ctor.tpe, state.module)
-    map::put(state.module.imported, ctor.tpe.type_name, map::sentinel)
+    if value.tpe.kind == typechecking::TypeKind::STATIC_ARRAY {
+        let array_loc = state.alloca(value.tpe, loc)
+        state.store(array_loc, value)
 
-    // allocate set value
-    let ret = state.alloca(value.tpe, loc)
-    state.store(ret, value)
-    state.call(ctor.tpe.type_name, null, [addr, ret])
+        let counter_ptr = state.alloca(builtins::size_t_, loc)
+        state.store(counter_ptr, { kind = ValueKind::INT, tpe = builtins::size_t_, i = 0 } !Value, loc)
+        
+        let br_to_start = make_insn_dbg(InsnKind::BR_UNC, loc)
+        push_insn(br_to_start, state)
+
+        let loop_start = make_label(state)
+        push_label(loop_start, state)
+        br_to_start.value.br_unc.label_ = loop_start
+        
+        let counter_value = state.load(builtins::size_t_, counter_ptr, loc)
+        let cond = state.icmp(CompareInt::eq, counter_value, { kind = ValueKind::INT, tpe = builtins::size_t_, i = value.tpe.length } !Value, loc)
+        let br = make_insn_dbg(InsnKind::BR, loc)
+        br.value.br = { cond = cond } !InsnBr
+        push_insn(br, state)
+
+        let loop_inner = make_label(state)
+        push_label(loop_inner, state)
+        br.value.br.if_false = loop_inner
+
+        let value_ptr = state.gep(pointer(value.tpe.tpe), value.tpe, array_loc, [make_int_value(0), counter_value])
+        let array_ptr = state.gep(pointer(value.tpe.tpe), value.tpe, addr, [make_int_value(0), counter_value])
+        value = state.load(value.tpe.tpe, value_ptr)
+        insert_copy_constructor(array_ptr, value, loc, state)
+
+        let counter_inc = state.add(builtins::size_t_, counter_value, { kind = ValueKind::INT, tpe = builtins::size_t_, i = 1 } !Value, loc)
+        state.store(counter_ptr, counter_inc)
+
+        push_insn(br_to_start, state)
+
+        let loop_end = make_label(state)
+        push_label(loop_end, state)
+        br.value.br.if_true = loop_end
+    } else {
+        let scpe = value.tpe.module.scope
+        let args = vector::make()
+        let np = allocate(typechecking::NamedParameter)
+        @np = {
+            name = "",
+            tpe = addr.tpe
+        }
+        vector::push(args, np)
+        vector::push(args, np)
+        let ctor = scope::get_function(scpe, parser::make_identifier(["construct"]), args)
+        predeclare_function(ctor.tpe, state.module)
+        map::put(state.module.imported, ctor.tpe.type_name, map::sentinel)
+
+        // allocate set value
+        let ret = state.alloca(value.tpe, loc)
+        state.store(ret, value)
+        state.call(ctor.tpe.type_name, null, [addr, ret])
+    }
 }
 
 def insert_destructors(scpe: *scope::Scope, loc: *Value, state: *State) {
