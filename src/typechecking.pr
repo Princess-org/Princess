@@ -761,26 +761,42 @@ export def has_destructor(tpe: *Type) -> bool {
     if not tpe { return false }
     if is_ref(tpe) { return true }
     if tpe.kind == TypeKind::STATIC_ARRAY { return has_destructor(tpe.tpe) }
-    if is_struct(tpe) {
-        if tpe.module {
-            let args = vector::make()
-            let first_arg = allocate(NamedParameter)
-            @first_arg = {
-                name = "",
-                tpe = pointer(tpe)
-            } !NamedParameter
-            vector::push(args, first_arg)
-            let destructor = scope::get_function(tpe.module.scope, parser::make_identifier(["destruct"]), args)
-            if destructor { return true }
-        }
-        if tpe.kind == TypeKind::STRUCT {
-            for var i in 0..tpe.fields.size {
-                let field = tpe.fields[i]
-                if has_destructor(field.tpe) {
-                    return true
-                }
+    if tpe.module {
+        let args = vector::make()
+        let first_arg = allocate(NamedParameter)
+        @first_arg = {
+            name = "",
+            tpe = pointer(tpe)
+        } !NamedParameter
+        vector::push(args, first_arg)
+        let destructor = scope::get_function(tpe.module.scope, parser::make_identifier(["destruct"]), args)
+        if destructor { return true }
+    }
+    if tpe.kind == TypeKind::STRUCT {
+        for var i in 0..tpe.fields.size {
+            let field = tpe.fields[i]
+            if has_destructor(field.tpe) {
+                return true
             }
         }
+    }
+    return false
+}
+
+export def has_copy_constructor(tpe: *Type) -> bool {
+    if not tpe { return false }
+    if tpe.kind == TypeKind::STATIC_ARRAY { return has_copy_constructor(tpe.tpe) }
+    if tpe.module {
+        let args = vector::make()
+        let arg = allocate(NamedParameter)
+        @arg = {
+            name = "",
+            tpe = pointer(tpe)
+        } !NamedParameter
+        vector::push(args, arg)
+        vector::push(args, arg)
+        let constructor = scope::get_function(tpe.module.scope, parser::make_identifier(["construct"]), args)
+        if constructor { return true }
     }
     return false
 }
@@ -1181,8 +1197,8 @@ export def type_lookup(node: *parser::Node, state: *State, current_type: *Type =
                     tpe.type_name = append_module(tpe.type_name, state.module.module)
                 }
                 tpe = scope::create_type(state.scope, node, parser::ShareMarker::NONE, tpe, scope::Phase::DECLARED, null, null)
+                tpe.module = state.module
             }
-            tpe.module = state.module
             return tpe
         }
     } else if node.kind == parser::NodeKind::PTR_T {
@@ -2124,6 +2140,40 @@ export def lookup_parameters(node: *parser::Node, state: *State, skip_type_param
     free(parameter_types)
 }
 
+def check_is_valid_function(ident: *parser::Node, par: *vector::Vector, state: *State) {
+    let name = parser::identifier_to_str(ident)
+    if name == "destruct" {
+        if vector::length(par) != 1 {
+            errors::errorn(ident, "Destructor takes exactly one parameter of a pointer type")
+            return
+        }
+        let first = (vector::get(par, 0) !*NamedParameter).tpe
+        if not first or first.kind != TypeKind::POINTER {
+            errors::errorn(ident, "Destructor takes exactly one parameter of a pointer type")
+            return
+        }
+        if not first.tpe or first.tpe.module != state.module {
+            errors::errorn(ident, "Argument type needs to be defined in the same file as the destructor")
+            return
+        }
+    } else if name == "construct" {
+        if vector::length(par) != 2 {
+            errors::errorn(ident, "Copy constructor takes exactly two parameters of the same pointer type")
+            return
+        }
+        let first = (vector::get(par, 0) !*NamedParameter).tpe
+        let second = (vector::get(par, 1) !*NamedParameter).tpe
+        if first.kind != TypeKind::POINTER or not equals(first, second) {
+            errors::errorn(ident, "Copy constructor takes two parameters of the same pointer type")
+            return
+        }
+        if not first.tpe or first.tpe.module != state.module {
+            errors::errorn(ident, "Argument types need to be defined in the same file as the copy constructor")
+            return
+        }
+    }
+}
+
 export def walk_Def(node: *parser::Node, state: *State) {
     let share = node.value.def_.share
     let body = node.value.def_.body
@@ -2146,6 +2196,7 @@ export def walk_Def(node: *parser::Node, state: *State) {
     
     if not node.tpe { return }
     let tpe = make_function_type_n(name, node.tpe.parameter_t, node.tpe.return_t, extern, imported, dllimport)
+    check_is_valid_function(name, node.tpe.parameter_t, state)
 
     var phase = scope::Phase::DECLARED
     if body {
