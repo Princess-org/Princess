@@ -439,6 +439,7 @@ export type Result = struct {
     // Map of Value
     metadata: *map::Map
 
+    finalizer: *typechecking::Type
     referenced: *map::Map
 }
 
@@ -477,6 +478,8 @@ export type State = struct {
     // Used by eval
     globals: *map::Map
     scope: *scope::Scope
+    // Destructor function
+    finalizer: *Function
 }
 
 export def make_block -> *Block {
@@ -2221,7 +2224,13 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
             if last_np.tpe {
                 var expr = walk_and_load_expression(n, state)
                 expr = convert_to(n, expr, last_np.tpe, state)
+                if is_copied(n) and typechecking::has_copy_constructor(expr.tpe) {
+                    let ret = state.alloca(expr.tpe, loc)
+                    insert_copy_constructor(ret, expr, loc, state)
+                    expr = state.load(expr.tpe, ret, loc)
+                }
                 varargs[i - len + 1] = expr
+                continue
             } else {
                 args[i] = walk_and_load_expression(n, state)
             }
@@ -2229,6 +2238,7 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
             return NO_VALUE
         }
         let old = args[i]
+        // TODO Factor this out into a function
         if is_copied(n) and typechecking::has_copy_constructor(old.tpe) {
             let ret = state.alloca(old.tpe, loc)
             insert_copy_constructor(ret, old, loc, state)
@@ -2257,8 +2267,9 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
         }
     }
 
-    for var i in 0..len {
+    for var i in 0..args.size {
         if args[i].tpe != null { continue }
+        if i >= vector::length(parameter_t) { continue }
         let arg = vector::get(parameter_t, i) !*typechecking::NamedParameter
         if arg.value == null { continue }
 
@@ -5680,9 +5691,20 @@ export def walk_top_VarDecl(node: *parser::Node, state: *State, set_constant: bo
             } !Global
             
             map::put(state.module.result.globals, (@global).name, global)
+            map::put(state.module.imported, global.name, map::sentinel)
 
             v.is_initializer = true
             vector::push(left, v)
+
+            if kw != parser::VarDecl::CONST {
+                // Create destructor
+                let old_block = state.current_block
+                state.current_block = make_block()
+                insert_destructor({ kind = ValueKind::GLOBAL, tpe = pointer(global.tpe), name = global.name } !Value, state.scope, null, state)
+
+                vector::insert(state.finalizer.block.insn, 0, state.current_block.insn)
+                state.current_block = old_block
+            }
         } else {
             vector::push(left, n.value.expr)
         }
@@ -5720,6 +5742,20 @@ def insert_module_main(module: *toolchain::Module, name: *parser::Node, scpe: *s
     // Build dependency graph
     vector::push(state.module.dependants, module)
 
+    let finalizer = module.result.finalizer
+    if finalizer {
+        // Insert finalizer
+        let finalizer_call = make_insn(InsnKind::CALL)
+        finalizer_call.value.call = {
+            name = { kind = ValueKind::GLOBAL, name = finalizer.type_name } !Value,
+            ret = NO_VALUE,
+            args = [] ![Value]
+        } !InsnCall
+        vector::insert(state.finalizer.block.insn, 0, finalizer_call)
+        predeclare_function(finalizer, state.module)
+        map::put(state.module.imported, finalizer.type_name, map::sentinel)
+    }
+
     let args = vector::make()
     let arg = parser::make_identifier(["args"])
     (@arg).scope = scpe
@@ -5732,11 +5768,11 @@ def insert_module_main(module: *toolchain::Module, name: *parser::Node, scpe: *s
     for var j in 0..name_size {
         array[j] = @(vector::get(name.value.identifier.path, j) !*string)
     }
-    array[array.size - 1] = "main"
+    array[array.size - 1] = "__main__"
     let ident = parser::make_identifier(array)
     (@ident).scope = scpe
 
-    let main_value = scope::get(module.scope, parser::make_identifier(["main"]))
+    let main_value = scope::get(module.scope, parser::make_identifier(["__main__"]))
     if not main_value { return }
 
     let call = allocate(parser::Node)
@@ -6485,8 +6521,8 @@ def do_create_type(tpe: *Type, svalue: *scope::Value, module: *toolchain::Module
 
     let function = allocate(Function)
     @function = {
-        name = "main",
-        unmangled = "main",
+        name = "__main__",
+        unmangled = "__main__",
         forward_declare = true,
         allocas = vector::make(),
         block = new_block
@@ -6773,6 +6809,15 @@ export def compile(state: *State, is_main: bool, no_cleanup: bool = false) {
     let node = state.module.node
     assert((@node).kind == parser::NodeKind::PROGRAM)
 
+    let finalizer_ident = parser::make_identifier(["__finalizer__"])
+    finalizer_ident.loc.module = state.module.module
+    let finalizer = typechecking::make_function_type_n(finalizer_ident, vector::make(), vector::make())
+    state.module.result.finalizer = finalizer
+
+    state.finalizer = predeclare_function(finalizer, state.module)
+    state.finalizer.forward_declare = false
+    state.finalizer.block = make_block()
+
     import_structures(builtins::Type_, state.module)
 
     let body = vector::make()
@@ -6944,7 +6989,7 @@ export def compile(state: *State, is_main: bool, no_cleanup: bool = false) {
     // TODO This doesn't work for functions that return multiple parameters
     predeclare_functions(state.module)
 
-    let ident = parser::make_identifier(["main"])
+    let ident = parser::make_identifier(["__main__"])
     (@ident).loc.module = state.module.module
     (@ident).loc.filename = state.module.filename
     (@ident).loc.line = 0
@@ -6978,6 +7023,7 @@ export def compile(state: *State, is_main: bool, no_cleanup: bool = false) {
         }
     }
 
+    state.scope = state.module.scope
     state.current_block = state.module.code
     for var i in 0..vector::length((@node).value.body) {
         let n = vector::get((@node).value.body, i) !*parser::Node
@@ -6997,7 +7043,7 @@ export def compile(state: *State, is_main: bool, no_cleanup: bool = false) {
         }
     }
 
-    create_function(ident, main_tpe, body, node.scope, state.module.code, state, no_cleanup)
+    create_function(ident, main_tpe, body, node.scope, state.module.code, state, true)
 
     if toolchain::debug_sym {
         let keys = map::keys(state.module.result.globals)
@@ -7059,6 +7105,17 @@ export def compile(state: *State, is_main: bool, no_cleanup: bool = false) {
             values = values
         } !Value
     }
+
+    if no_cleanup {
+        // In the repl we clear out the finalizer
+        state.finalizer.block = make_block()
+    }
+    let ret = make_insn(InsnKind::RET)
+    ret.value.ret.value = NO_VALUE
+    vector::push(state.finalizer.block.insn, ret)
+
+    map::put(state.module.result.functions, state.finalizer.name, state.finalizer)
+    map::put(state.module.imported, state.finalizer.name, map::sentinel)
 
     let end = util::millis()
     time_spent += end - start
