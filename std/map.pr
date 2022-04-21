@@ -5,11 +5,16 @@ type Entry = struct {
     key: string
     value: *
     next: *Entry
+    // We maintain a linked list for ordering
+    l_prev: *Entry
+    l_next: *Entry
 }
 
 export type Map = struct {
     size: size_t
     entries: [*Entry]
+    tail: *Entry
+    head: *Entry
 }
 
 def hash(str: string) -> uint32 {
@@ -26,37 +31,28 @@ def maybe_rehash(map: *Map) {
         return
     }
     
-    let entries = (@map).entries
-    let new_entries = zero_allocate(type *Entry, allocated * 2)
-    
-    for var i in 0..entries.size {
-        var entry = entries[i]
-        if entry {
-            do_put(new_entries, (@entry).key, (@entry).value)
-            
-            if (@entry).next {
-                var entry2 = entry
-                while (@entry2).next {
-                    var entry3 = entry2
-                    entry2 = (@entry2).next
+    let new_map = {
+        entries = zero_allocate(type *Entry, allocated * 2)
+    } !Map
 
-                    do_put(new_entries, (@entry2).key, (@entry2).value)
-                    free(entry3)
-                }
-            } else {
-                free(entry)
-            }            
-        }
+    var entry = map.head
+    while entry != null {
+        do_put(*new_map, entry.key, entry.value)
+        let next = entry.l_next
+        entry = next
     }
-
-    free(entries)
-    (@map).entries = new_entries
+    free(map.entries)
+    
+    assert new_map.size == map.size
+    @map = new_map
 }
 
 export def make_size(size: size_t) -> *Map {
     var map = allocate(Map)
-    (@map).entries = zero_allocate(type *Entry, size)
-    (@map).size = 0
+    @map = {
+        entries = zero_allocate(type *Entry, size),
+        size = 0
+    } !Map
     return map
 }
 
@@ -90,74 +86,91 @@ export def contains(map: *Map, key: string) -> bool {
 }
 
 // Returns true when a new entry was created, otherwise false
-def do_put(entries: [*Entry], key: string, value: *) -> bool {
+def do_put(map: *Map, key: string, value: *) {
+    let entries = map.entries
     let h = hash(key)
     let index = h % entries.size
     var entry = entries[index]
 
     if entry {
-        if (@entry).key == key {
-            (@entry).value = value
-            return false
+        while entry.next and entry.key != key {
+            entry = entry.next
         }
-        while (@entry).next {
-            entry = (@entry).next
-            if (@entry).key == key {
-                (@entry).value = value
-                return false
-            }
-        }
-        var entry2 = allocate(Entry)
-        (@entry2).key = key
-        (@entry2).value = value
-        (@entry2).next = null
+        
+        if entry.key == key {
+            entry.value = value
+            if map.tail == entry { return }
+        
+            if entry.l_prev { entry.l_prev.l_next = entry.l_next }
+            else { map.head = entry.l_next }
+            if entry.l_next { entry.l_next.l_prev = entry.l_prev }
+            if map.tail { map.tail.l_next = entry }
+            entry.l_prev = map.tail
+            entry.l_next = null
+            map.tail = entry
 
-        (@entry).next = entry2
+            return
+        }
+
+        var entry2 = allocate(Entry)
+        @entry2 = {
+            key = key,
+            value = value,
+            l_prev = map.tail
+        }
+        if map.tail { map.tail.l_next = entry2 }
+        map.tail = entry2
+        entry.next = entry2
     } else {
         entry = allocate(Entry)
-        (@entry).key = key
-        (@entry).value = value
-        (@entry).next = null
-
+        @entry = {
+            key = key,
+            value = value,
+            l_prev = map.tail
+        }
+        if not map.head { map.head = entry }
+        if map.tail { map.tail.l_next = entry }
+        map.tail = entry
         entries[index] = entry
     }
-    return true
+    map.size += 1
 }
 
 export def put(map: *Map, key: string, value: *) {
     maybe_rehash(map)
-    if do_put((@map).entries, key, value) {
-        (@map).size += 1
-    }
+    do_put(map, key, value)
 }
 
 export def remove(map: *Map, key: string) {
     let h = hash(key)
-    let index = h % (@map).entries.size
-    var entry = (@map).entries[index]
+    let index = h % map.entries.size
+    var entry = map.entries[index]
     if entry {
-        if (@entry).key == key {
-            (@map).size -= 1
-            if (@entry).next {
-                (@map).entries[index] = (@entry).next
-            } else {
-                (@map).entries[index] = null
-            }
+        if entry.key == key {
+            map.size -= 1
+            map.entries[index] = entry.next
+
+            // TODO Once we have nested functions this needs to go
+            if entry.l_prev { entry.l_prev.l_next = entry.l_next }
+            if entry.l_next { entry.l_next.l_prev = entry.l_prev }
+            if map.head == entry { map.head = entry.l_next }
+            if map.tail == entry { map.tail = entry.l_prev }
         } else {
-            var entry2 = (@entry).next
+            var entry2 = entry.next
             while entry2 {
-                if (@entry2).key == key {
-                    (@map).size -= 1
-                    if (@entry2).next {
-                        (@entry).next = (@entry2).next
-                    } else {
-                        (@entry).next = null
-                    }
+                if entry2.key == key {
+                    map.size -= 1
+                    entry.next = entry2.next
+
+                    if entry2.l_prev { entry2.l_prev.l_next = entry2.l_next }
+                    if entry2.l_next { entry2.l_next.l_prev = entry2.l_prev }
+                    if map.head == entry2 { map.head = entry2.l_next }
+                    if map.tail == entry2 { map.tail = entry2.l_prev }
                 }
                 
                 let entry3 = entry
                 entry = entry2
-                entry2 = (@entry3).next
+                entry2 = entry3.next
             }
         }
     }
@@ -170,17 +183,23 @@ export def size(map: *Map) -> size_t {
 export def keys(map: *Map) -> [string] {
     let keys = allocate(string, size(map))
     var index = 0
-    for var i in 0..(@map).entries.size {
-        var entry = (@map).entries[i]
-        if entry {
-            keys[index] = (@entry).key
-            index += 1
-            while (@entry).next {
-                keys[index] = (@(@entry).next).key
-                index += 1
-                entry = (@entry).next
-            }
-        }
+    var entry = map.head
+    while entry != null {
+        keys[index] = entry.key
+        entry = entry.l_next
+        index += 1
+    }
+    return keys
+}
+
+export def reverse_keys(map: *Map) -> [string] {
+    let keys = allocate(string, size(map))
+    var index = 0
+    var entry = map.tail
+    while entry != null {
+        keys[index] = entry.key
+        entry = entry.l_prev
+        index += 1
     }
     return keys
 }
@@ -189,5 +208,7 @@ export def clear(map: *Map) {
     if map.size == 0 { return }
     map.size = 0
     free(map.entries.value)
+    map.head = null 
+    map.tail = null
     map.entries = zero_allocate(type *Entry, INITIAL_SIZE)
 }
