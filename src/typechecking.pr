@@ -126,6 +126,7 @@ export type NamedParameter = struct {
 }
 
 export type Function = struct {
+    is_global: bool
     tpe: *Type
     locals: *map::Map
     has_defer: bool
@@ -139,6 +140,7 @@ export type State = struct {
     function_stack: *vector::Vector
     // Used by consteval
     is_static: bool
+    in_defer: bool
 }
 
 export def current_function(state: *State) -> *Function {
@@ -1781,6 +1783,7 @@ export def walk_VarDecl(node: *parser::Node, state: *State, set_constant: bool =
     let left = node.value.var_decl.left
     let right = node.value.var_decl.right
     let extern = node.value.var_decl.extern
+    let parent = node.parent
 
     if kw == parser::VarDecl::CONST and not set_constant {
         for var i in 0..vector::length(left) {
@@ -1793,7 +1796,8 @@ export def walk_VarDecl(node: *parser::Node, state: *State, set_constant: bool =
         return 
     }
 
-    if current_function(state) {
+    let function = current_function(state)
+    if not function.is_global {
         if share != parser::ShareMarker::NONE {
             errors::errorn(node, "Can't share non top level variable")
         }
@@ -1827,8 +1831,6 @@ export def walk_VarDecl(node: *parser::Node, state: *State, set_constant: bool =
         errors::errorn(node, "Unbalanced assignment")
         balanced = false
     }
-
-    let function = current_function(state)
 
     for var i in 0..vector::length(left) {
         var ltpe = vector::get(ltypes, i) !*Type
@@ -1870,8 +1872,8 @@ export def walk_VarDecl(node: *parser::Node, state: *State, set_constant: bool =
             } else {
                 ident.svalue = scope::create_variable(state.scope, ident, share, kw, ltpe, extern, null)
             }
-            
-            if function {
+
+            if parent.kind != parser::NodeKind::PROGRAM {
                 map::put(function.locals, ident.svalue.assembly_name, ltpe)
             }
         } else {
@@ -2085,7 +2087,7 @@ def walk_Cast(node: *parser::Node, state: *State) {
 }
 
 def walk_Import(node: *parser::Node, state: *State) {
-    if current_function(state) != null {
+    if not current_function(state).is_global {
         errors::errorn(node, "Can only import at top level")
         return
     }
@@ -2177,7 +2179,7 @@ export def walk_Def(node: *parser::Node, state: *State) {
 
     if not name or not params or not returns { return }
 
-    if current_function(state) {
+    if not current_function(state).is_global {
         if share != parser::ShareMarker::NONE {
             errors::errorn(node, "Can't share non top level function")
         }
@@ -2204,7 +2206,7 @@ export def walk_Def(node: *parser::Node, state: *State) {
         }
     }
 
-    if current_function(state) {
+    if not current_function(state).is_global {
         // This is so that we don't create overloaded functions
         // inside of a function
         // TODO what about forward declarations?
@@ -2280,7 +2282,7 @@ def walk_TypeDecl(node: *parser::Node, state: *State) {
 def walk_Return(node: *parser::Node, state: *State) {
     let current_fun = current_function(state)
     let body = node.value.body
-    if not current_fun {
+    if current_fun.is_global {
         // TODO This is actually allowed, I just need to infer the types
         // and assign to some sort of internal variable
         errors::errorn(node, "return outside of a function")
@@ -2621,11 +2623,8 @@ def walk_For(node: *parser::Node, state: *State) {
             tpe, null
         )
         let svalue = scope::get(node.inner_scope, ident)
-        let function = current_function(state)
-        if function {
-            map::put(function.locals, svalue.assembly_name, tpe)
-        }
-    
+        
+        map::put(current_function(state).locals, svalue.assembly_name, tpe)
     } else {
         walk(node, iddecl, state)
         if not equals(tpe, (@iddecl).tpe) {
@@ -2961,17 +2960,18 @@ def walk_PSub(node: *parser::Node, state: *State) {
 
 def walk_Defer(node: *parser::Node, state: *State) {
     let function = current_function(state)
-    if not function {
-        // TODO allow defer outside of functions
-        errors::errorn(node, "Can't use defer outside of a function")
-        return
-    }
     function.has_defer = true
 
+    if state.in_defer { 
+        errors::errorn(node, "Can't nest defers!")
+    }
+
+    state.in_defer = true
     for var i in 0..vector::length(node.value.body) {
         let n = vector::get(node.value.body, i) !*parser::Node
         walk(node, n, state)
     }
+    state.in_defer = false
 }
 
 def walk_Assert(node: *parser::Node, state: *State) {
@@ -3221,13 +3221,26 @@ export def typecheck(state: *State) {
         toolchain::typecheck_module(parser::make_identifier(["preload"]))
     }
 
-    for var i in 0..vector::length(node.value.body) {
-        let n = vector::get(node.value.body, i) !*parser::Node
+    let function = allocate(Function)
+    @function = {
+        is_global = true,
+        locals = map::make()
+    } !Function
+
+    push_function(state, function)
+    for var i in 0..vector::length(node.body) {
+        let n = vector::get(node.body, i) !*parser::Node
         switch n.kind !int {
             case parser::NodeKind::TYPE_DECL, parser::NodeKind::DEF, parser::NodeKind::VAR_DECL:
             case: walk(node, n, state)
         }
     }
+    pop_function(state)
+
+    node.value.program = {
+        has_defer = function.has_defer,
+        locals = function.locals
+    } !parser::NodeProgram
 
     let keys = map::keys(node.scope.fields)
     for var i in 0..keys.size {
