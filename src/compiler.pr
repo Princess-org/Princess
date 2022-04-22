@@ -1150,6 +1150,18 @@ def do_create_type(tpe: *typechecking::Type, module: *toolchain::Module) -> Valu
     return { kind = ValueKind::NULL, tpe = typechecking::pointer(builtins::Type_) } !Value
 }
 
+def is_captured(node: *parser::Node) -> bool {
+    while node.body == null {
+        if node.kind == parser::NodeKind::ASSIGN or
+            node.kind == parser::NodeKind::FUNC_CALL or
+            node.kind == parser::NodeKind::VAR_DECL {
+            return true
+        }
+        node = node.parent
+    }
+    return false
+}
+
 export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Type, state: *State) -> Value {
     if not value.tpe or not tpe { return value }
     let loc = make_location(node, state)
@@ -1192,6 +1204,8 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
         typechecking::is_assignable(tpe, typechecking::reference(value.tpe), state.module) or 
         tpe.tpe == null or value.tpe.kind == typechecking::TypeKind::NULL) {
 
+        let is_captured = is_captured(node)
+
         map::put(state.module.imported, "malloc", map::sentinel)
 
         var is_null = false
@@ -1228,7 +1242,7 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
             let store1 = make_insn_dbg(InsnKind::STORE, loc)
             store1.value.store = {
                 loc = refcount,
-                value = { kind = ValueKind::INT, tpe = builtins::int64_, i = 0 } !Value
+                value = { kind = ValueKind::INT, tpe = builtins::int64_, i = 0 if is_captured else 1 } !Value
             } !InsnStore
             push_insn(store1, state)
         }
@@ -1314,6 +1328,13 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
             index = index3
         }
         push_insn(insert3, state)
+
+        if not is_null and not is_captured {
+            // Destroy the value
+            let ptr = state.alloca(tpe, loc)
+            state.store(ptr, ret_insert3)
+            insert_destructor(ptr, state.scope, loc, state)
+        }
 
         return ret_insert3
     } else if tpe.kind == typechecking::TypeKind::ARRAY {
@@ -2209,6 +2230,8 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
         args = zero_allocate(Value, total_args)
     }
 
+    let varargs_loc = vector::make()
+
     for var i in 0..vector::length(call_args) {
         let n = vector::get(call_args, i) !*parser::Node
         if i == len - 1 and pass_array_as_varargs {
@@ -2229,6 +2252,18 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
                     insert_copy_constructor(ret, expr, loc, state)
                     expr = state.load(expr.tpe, ret, loc)
                 }
+                if typechecking::is_ref(last_np.tpe) {
+                    // We need to increase the ref count and add the destructor call
+                    // because the called function recieves an array 
+                    let ptr = state.alloca(last_np.tpe, loc)
+                    state.store(ptr, expr)
+                    increase_ref_count(ptr, loc, state)
+
+                    let p = allocate(Value)
+                    @p = ptr
+                    vector::push(varargs_loc, p)
+                }
+
                 varargs[i - len + 1] = expr
                 continue
             } else {
@@ -2373,6 +2408,11 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
     } !InsnCall
 
     push_insn(insn, state)
+
+    for var i in 0..vector::length(varargs_loc) {
+        let ptr = @(vector::get(varargs_loc, i) !*Value)
+        insert_destructor(ptr, state.scope, loc, state)
+    }
 
     if ret {
         let store = make_insn_dbg(InsnKind::STORE, loc)
@@ -5879,6 +5919,7 @@ def create_destructor(tpe: *typechecking::Type, value: Value, state: *State) {
     }
 
     var to_end = make_insn(InsnKind::BR_UNC)
+    var null_br2: *Insn = null
     if typechecking::is_ref(tpe.tpe) and (not tpe.tpe.tpe or typechecking::is_interface(tpe.tpe.tpe)) {
         // TODO This is almost exactly what generate_vtable_function does
         // We need to call the right destructor based on the ref type
@@ -5889,6 +5930,18 @@ def create_destructor(tpe: *typechecking::Type, value: Value, state: *State) {
         map::put(state.module.imported, equals.tpe.type_name, map::sentinel)
 
         // Extract type
+        
+        let ref_count = state.extract_value(pointer(builtins::int64_), ref, [0])
+        let ref_count_value = state.ptr_to_int(ref_count)
+        let cond = state.icmp(CompareInt::eq, ref_count_value, { kind = ValueKind::INT, tpe = builtins::int64_, i = 0 } !Value)
+        null_br2 = make_insn(InsnKind::BR)
+        null_br2.value.br = { cond = cond } !InsnBr
+        push_insn(null_br2, state)
+
+        let if_false = state.make_label()
+        push_label(if_false, state)
+        null_br2.value.br.if_false = if_false
+        
         let ref_tpe = state.extract_value(pointer(builtins::Type_), ref, [2])
         let ref_tpe_deref = state.load(builtins::Type_, ref_tpe)
         let tpe_value = state.extract_value(pointer(builtins::Type_), ref_tpe_deref, [4])
@@ -5932,6 +5985,43 @@ def create_destructor(tpe: *typechecking::Type, value: Value, state: *State) {
                 push_label(if_false, state)
             }
         }
+        if not tpe.tpe.tpe {
+            // TODO Fix duplicate code
+            // We need to decrease the ref count
+            let ref = state.load(tpe.tpe, value)
+            let ref_count_ptr = state.extract_value(pointer(builtins::int64_), ref, [0])
+            let ref_count_value = state.ptr_to_int(ref_count_ptr)
+
+            let ref_count = state.load(builtins::int64_, ref_count_ptr)
+            let decr_ref_count = state.sub(builtins::int64_, ref_count, { kind = ValueKind::INT, tpe = builtins::int64_, i = 1 } !Value)
+            state.store(ref_count_ptr, decr_ref_count)
+            let cond = state.icmp(CompareInt::sle, decr_ref_count, { kind = ValueKind::INT, tpe = builtins::int64_, i = 0 } !Value)
+            
+            let br = make_insn(InsnKind::BR)
+            br.value.br = { cond = cond } !InsnBr
+            push_insn(br, state)
+
+            let if_true = make_label(state)
+            br.value.br.if_true = if_true
+            push_label(if_true, state)
+
+            let ref_count_i8_ptr = state.bitcast(pointer(builtins::int8_), ref_count_ptr)
+            state.call("free", null, [ref_count_i8_ptr])
+
+            value = state.extract_value(pointer(tpe.tpe.tpe), ref, [1])
+            let obj_i8_ptr = state.bitcast(pointer(builtins::int8_), value)
+            state.call("free", null, [obj_i8_ptr])
+
+            state.ret(NO_VALUE)
+
+            let end_label = make_label(state)
+            br.value.br.if_false = end_label
+            to_end.value.br_unc.label_ = end_label
+            null_br2.value.br.if_true = end_label
+            push_label(end_label, state)
+
+            return
+        }
     } else if structure_type and structure_type.module {
         let args = vector::make()
         let np = allocate(typechecking::NamedParameter)
@@ -5959,6 +6049,10 @@ def create_destructor(tpe: *typechecking::Type, value: Value, state: *State) {
     let end_label = state.make_label()
     to_end.value.br_unc.label_ = end_label
     push_label(end_label, state)
+
+    if null_br2 {
+        null_br2.value.br.if_true = end_label
+    }
 
     if structure_type and structure_type.kind == typechecking::TypeKind::STRUCT {
         for var i in 0..structure_type.fields.size {
