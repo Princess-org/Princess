@@ -1284,6 +1284,21 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
             } !InsnConvert
             push_insn(bitcast2, state)
 
+            if value.tpe.kind == typechecking::TypeKind::ARRAY {
+                map::put(state.module.imported, "memcpy", map::sentinel)
+
+                // We need to copy the array
+                let size = state.extract_value(builtins::int64_, value, [0], loc)
+                let ptr = state.extract_value(pointer(value.tpe.tpe), value, [1], loc)
+                let ptr_i8 = state.bitcast(pointer(builtins::int8_), ptr, loc)
+                let new_ptr_i8 = state.call("malloc", pointer(builtins::int8_), [size], loc)
+                state.call("memcpy", pointer(builtins::int8_), [new_ptr_i8, ptr_i8, size])
+                let new_ptr = state.bitcast(pointer(value.tpe.tpe), new_ptr_i8, loc)
+                value = { kind = ValueKind::UNDEF, tpe = value.tpe } !Value
+                value = state.insert_value(value.tpe, value, size, [0], loc)
+                value = state.insert_value(value.tpe, value, new_ptr, [1], loc)
+            }
+
             let store2 = make_insn_dbg(InsnKind::STORE, loc)
             store2.value.store = {
                 loc = heapval,
@@ -2262,11 +2277,13 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
                     insert_copy_constructor(ret, expr, loc, state)
                     expr = state.load(expr.tpe, ret, loc)
                 }
-                if typechecking::is_ref(last_np.tpe) {
+                if typechecking::is_ref(last_np.tpe) and not typechecking::is_ref(n.tpe) {
                     // We need to increase the ref count and add the destructor call
-                    // because the called function recieves an array 
-                    let ptr = state.alloca(last_np.tpe, loc)
-                    state.store(ptr, expr)
+                    // because the called function recieves an array
+                    
+                    let converted = convert_ref_to_ref(reference(n.tpe), expr, loc, state)
+                    let ptr = state.alloca(reference(n.tpe), loc)
+                    state.store(ptr, converted)
                     increase_ref_count(ptr, loc, state)
 
                     let p = allocate(Value)
@@ -2698,11 +2715,13 @@ def increase_ref_count(value: Value, loc: *Value, state: *State) {
     increase_pointer_by_one(load1_ret, loc, state)
 }
 
-def assign_ref(value: Value, addr: Value, loc: *Value, is_initializer: bool, state: *State) {
+def assign_ref(value: Value, addr: Value, loc: *Value, inc_ref_count: bool, is_initializer: bool, state: *State) {
     if not value.addr { return }
 
     // First increase the ref count of the assigned value
-    increase_ref_count(@value.addr, loc, state)
+    if inc_ref_count {
+        increase_ref_count(@value.addr, loc, state)
+    }
 
     // Now decrease the ref count of the stored value
     if not is_initializer {
@@ -2836,6 +2855,16 @@ def assign_ref(value: Value, addr: Value, loc: *Value, is_initializer: bool, sta
     push_insn(store4, state)
 }
 
+// Because function returns increase the ref count
+def do_increase_ref_cout(n: *parser::Node) -> bool {
+    if n.kind == parser::NodeKind::FUNC_CALL {
+        return false
+    } else if n.kind == parser::NodeKind::CAST {
+        return do_increase_ref_cout(n.value.bin_op.left)
+    }
+    return true
+}
+
 def walk_Assign(node: *parser::Node, state: *State) -> Value {
     // TODO Make this possible: a, b = c, d = e, f
     // Right now we can only return one value
@@ -2912,8 +2941,9 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
                 
                 ret = convert_to(n, ret, (@l).tpe, state)
 
+                let inc_ref_count = do_increase_ref_cout(n)
                 if typechecking::is_ref(l.tpe) and typechecking::is_ref(ret.tpe) {
-                    assign_ref(ret, @addr, loc, l.is_initializer, state)
+                    assign_ref(ret, @addr, loc, inc_ref_count, l.is_initializer, state)
                 } else {
                     if not l.is_initializer {
                         insert_destructor(@addr, state.scope, loc, state)
@@ -2931,7 +2961,7 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
 
                     push_insn(store, state)
 
-                    if typechecking::is_ref(l.tpe) {
+                    if typechecking::is_ref(l.tpe) and inc_ref_count {
                         increase_ref_count(@addr, loc, state)
                     }
                 }
@@ -2962,8 +2992,9 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
 
             value = convert_to(n, value, (@l).tpe, state)
 
+            let inc_ref_count = do_increase_ref_cout(n)
             if typechecking::is_ref(l.tpe) and value.addr and typechecking::is_ref(value.addr.tpe) {
-                assign_ref(@value.addr, @addr, loc, l.is_initializer, state)
+                assign_ref(@value.addr, @addr, loc, inc_ref_count, l.is_initializer, state)
             } else {
                 if not l.is_initializer {
                     insert_destructor(@addr, state.scope, loc, state)
@@ -2985,7 +3016,7 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
                     push_insn(store, state)
                 }
 
-                if typechecking::is_ref(l.tpe) {
+                if typechecking::is_ref(l.tpe) and inc_ref_count {
                     increase_ref_count(@addr, loc, state)
                 }
             }
@@ -4116,6 +4147,9 @@ def walk_Return(node: *parser::Node, state: *State) {
             let tpe = (@(@current_function).ret).fields[i].tpe
             var expr = convert_to(n, walk_and_load_expression(n, state), tpe, state)
 
+            if is_ref(expr.tpe) {
+                increase_ref_count_of_value(expr, loc, state)
+            }
             if is_copied(n) and typechecking::has_copy_constructor(expr.tpe) {
                 let ret = state.alloca(expr.tpe, loc)
                 insert_copy_constructor(ret, expr, loc, state)
@@ -4136,6 +4170,10 @@ def walk_Return(node: *parser::Node, state: *State) {
         if tpe {
             let arg = vector::peek((@node).value.body) !*parser::Node
             value = convert_to(arg, walk_and_load_expression(arg, state), tpe, state)
+            
+            if is_ref(value.tpe) {
+                increase_ref_count_of_value(value, loc, state)
+            }
             if is_copied(arg) and typechecking::has_copy_constructor(value.tpe) {
                 let ret = state.alloca(value.tpe, loc)
                 insert_copy_constructor(ret, value, loc, state)
@@ -6004,8 +6042,8 @@ def create_destructor(tpe: *typechecking::Type, value: Value, state: *State) {
         let keys = map::keys(typechecking::types_map)
         for var i in 0..keys.size {
             let type_entry = map::get(typechecking::types_map, keys[i]) !*typechecking::TypeEntry
-            if is_ref(type_entry.tpe) and type_entry.tpe.tpe and type_entry.tpe.tpe.module and
-                (not tpe.tpe.tpe or typechecking::implements(type_entry.tpe, tpe.tpe.tpe, state.module)) {
+            if is_ref(type_entry.tpe) and (not tpe.tpe.tpe or typechecking::implements(type_entry.tpe, tpe.tpe.tpe, state.module)) and
+                not typechecking::equals(tpe.tpe.tpe, type_entry.tpe.tpe) {
                 
                 let args = vector::make()
                 let np = allocate(typechecking::NamedParameter)
@@ -6015,7 +6053,7 @@ def create_destructor(tpe: *typechecking::Type, value: Value, state: *State) {
                 }
                 vector::push(args, np)
                 
-                let destructor = scope::get_function(type_entry.tpe.tpe.module.scope, parser::make_identifier(["__destruct__"]), args)
+                let destructor = scope::get_function(state.scope, parser::make_identifier(["__destruct__"]), args)
                 if not destructor { continue }
 
                 let cond = state.call(equals.tpe.type_name, builtins::bool_, [
@@ -6111,7 +6149,7 @@ def create_destructor(tpe: *typechecking::Type, value: Value, state: *State) {
 
     if structure_type and structure_type.kind == typechecking::TypeKind::STRUCT {
         var obj: Value
-        if typechecking::is_ref(tpe.tpe) {
+        if typechecking::is_ref(value.tpe.tpe) {
             let ref = state.load(tpe.tpe, value)
             obj = state.extract_value(pointer(structure_type), ref, [1])
         } else {
@@ -6135,6 +6173,14 @@ def create_destructor(tpe: *typechecking::Type, value: Value, state: *State) {
         state.call("free", null, [ref_count_i8_ptr])
 
         value = state.extract_value(pointer(tpe.tpe.tpe), ref, [1])
+
+        if tpe.tpe.tpe.kind == typechecking::TypeKind::ARRAY {
+            let array = state.load(tpe.tpe.tpe, value)
+            let array_ptr = state.extract_value(pointer(tpe.tpe.tpe.tpe), array, [1])
+            let array_ptr_i8 = state.bitcast(pointer(builtins::int8_), array_ptr)
+            state.call("free", null, [array_ptr_i8])
+        }
+
         let obj_i8_ptr = state.bitcast(pointer(builtins::int8_), value)
         state.call("free", null, [obj_i8_ptr])
 
