@@ -1916,7 +1916,17 @@ def walk_BNot(node: *parser::Node, state: *State) {
     walk(node, node.value.expr, state)
     let tpe = (@node.value.expr).tpe
     if not tpe { return }
-    if not is_integer(tpe) {
+
+    let args = vector::make()
+    let np = allocate(NamedParameter)
+    @np = {
+        name = "",
+        tpe = tpe
+    } !NamedParameter
+    vector::push(args, np)
+    convert_to_call(node, "__invert__", args, state)
+
+    if node.kind != parser::NodeKind::FUNC_CALL and not is_integer(tpe) {
         errors::errorn(node, "Incompatible type ", debug::type_to_str(tpe), ", must be integer type")
     }
     node.tpe = tpe
@@ -1926,7 +1936,17 @@ def walk_UAdd(node: *parser::Node, state: *State) {
     walk(node, node.value.expr, state)
     let tpe = (@node.value.expr).tpe
     if not tpe { return }
-    if not is_arithmetic(tpe) {
+
+    let args = vector::make()
+    let np = allocate(NamedParameter)
+    @np = {
+        name = "",
+        tpe = tpe
+    } !NamedParameter
+    vector::push(args, np)
+    convert_to_call(node, "__pos__", args, state)
+
+    if node.kind != parser::NodeKind::FUNC_CALL and not is_arithmetic(tpe) {
         errors::errorn(node, "Incompatible type ", debug::type_to_str(tpe), ", must be arithmetic type")
     }
     node.tpe = tpe
@@ -1936,10 +1956,66 @@ def walk_USub(node: *parser::Node, state: *State) {
     walk(node, node.value.expr, state)
     let tpe = (@node.value.expr).tpe
     if not tpe { return }
-    if not is_arithmetic(tpe) {
+
+    let args = vector::make()
+    let np = allocate(NamedParameter)
+    @np = {
+        name = "",
+        tpe = tpe
+    } !NamedParameter
+    vector::push(args, np)
+    convert_to_call(node, "__neg__", args, state)
+
+    if node.kind != parser::NodeKind::FUNC_CALL and not is_arithmetic(tpe) {
         errors::errorn(node, "Incompatible type ", debug::type_to_str(tpe), ", must be arithmetic type")
     }
     node.tpe = tpe
+}
+
+def make_function_call(node: *parser::Node, ident: *parser::Node) -> *parser::Node {
+    let args = vector::make()
+    vector::push(args, node.value.bin_op.left)
+    vector::push(args, node.value.bin_op.right)
+
+    let function = allocate(parser::Node)
+    @function = {
+        kind = parser::NodeKind::FUNC_CALL,
+        loc = node.loc
+    } !parser::Node
+    function.value.func_call = {
+        left = ident,
+        args = args,
+        kwargs = vector::make()
+    } !parser::NodeFuncCall
+    function.parent = node.parent
+
+    return function
+}
+
+def convert_to_call(node: *parser::Node, name: string, args: *vector::Vector, state: *State) {
+    let ident = parser::make_identifier([name])
+    let fun = scope::get_function(state.scope, ident, args)
+    if fun { 
+        @node = @make_function_call(node, ident) 
+        walk_Call(node, state)
+    }
+}
+
+def create_args(left: *parser::Node, right: *parser::Node) -> *vector::Vector {
+    let args = vector::make()
+    let np1 = allocate(NamedParameter)
+    @np1 = {
+        name = "",
+        tpe = left.tpe
+    } !NamedParameter
+    let np2 = allocate(NamedParameter)
+    @np2 = {
+        name = "",
+        tpe = right.tpe
+    } !NamedParameter
+    vector::push(args, np1)
+    vector::push(args, np2)
+    return args
 }
 
 def walk_ArithmeticOp(node: *parser::Node, state: *State) {
@@ -1952,7 +2028,27 @@ def walk_ArithmeticOp(node: *parser::Node, state: *State) {
 
     if not (@left).tpe or not (@right).tpe { return }
     node.tpe = common_type((@left).tpe, (@right).tpe)
+
+    let args = create_args(left, right)
+    switch node.kind {
+        case parser::NodeKind::ADD:
+            convert_to_call(node, "__add__", args, state)
+        case parser::NodeKind::SUB:
+            convert_to_call(node, "__sub__", args, state)
+        case parser::NodeKind::MUL:
+            convert_to_call(node, "__mul__", args, state)
+        case parser::NodeKind::DIV:
+            convert_to_call(node, "__div__", args, state)
+        case parser::NodeKind::MOD:
+            convert_to_call(node, "__mod__", args, state)
+    }
+
+    if not node.tpe {
+        // TODO better error message
+        errors::errorn(node, "Invalid operation")
+    }
 }
+    
 
 def walk_BitwiseOp(node: *parser::Node, state: *State) {
     let left = node.value.bin_op.left
@@ -1963,11 +2059,27 @@ def walk_BitwiseOp(node: *parser::Node, state: *State) {
     walk(node, right, state)
 
     if not (@left).tpe or not (@right).tpe { return }
-    if not is_integer((@left).tpe) or not is_integer((@right).tpe) {
-        errors::errorn(node, "Invalid operands of type ", debug::type_to_str((@left).tpe), " and ", debug::type_to_str((@right).tpe), " to bitwise operator")
+    node.tpe = common_type((@left).tpe, (@right).tpe)
+
+    let args = create_args(left, right)
+    switch node.kind {
+        case parser::NodeKind::BAND:
+            convert_to_call(node, "__and__", args, state)
+        case parser::NodeKind::BOR:
+            convert_to_call(node, "__or__", args, state)
+        case parser::NodeKind::BXOR:
+            convert_to_call(node, "__xor__", args, state)
+        case parser::NodeKind::SHR:
+            convert_to_call(node, "__rshift__", args, state)
+        case parser::NodeKind::SHL:
+            convert_to_call(node, "__lshift__", args, state)
     }
 
-    node.tpe = common_type((@left).tpe, (@right).tpe)
+    if node.kind != parser::NodeKind::FUNC_CALL {
+        if not is_integer((@left).tpe) or not is_integer((@right).tpe) {
+            errors::errorn(node, "Invalid operands of type ", debug::type_to_str((@left).tpe), " and ", debug::type_to_str((@right).tpe), " to bitwise operator")
+        }
+    }
 }
 
 def walk_BooleanOp(node: *parser::Node, state: *State) {
@@ -1999,14 +2111,30 @@ def walk_AssignEqArithmetic(node: *parser::Node, state: *State) {
     }
 
     if not (@left).tpe or not (@right).tpe { return }
-    if not is_arithmetic((@right).tpe) {
-        errors::errorn(right, "Incompatible type, expected arithmetic type, got ", debug::type_to_str((@right).tpe))
-    }
-    if not is_arithmetic((@left).tpe) {
-        errors::errorn(right, "Incompatible type, expected arithmetic type, got ", debug::type_to_str((@left).tpe))
-    }
 
-    node.tpe = (@left).tpe
+    let args = create_args(left, right)
+    switch node.kind {
+        case parser::NodeKind::ADD_EQ:
+            convert_to_call(node, "__iadd__", args, state)
+        case parser::NodeKind::SUB_EQ:
+            convert_to_call(node, "__isub__", args, state)
+        case parser::NodeKind::MUL_EQ:
+            convert_to_call(node, "__imul__", args, state)
+        case parser::NodeKind::DIV_EQ:
+            convert_to_call(node, "__idiv__", args, state)
+        case parser::NodeKind::MOD_EQ:
+            convert_to_call(node, "__imod__", args, state)
+    } 
+
+    if node.kind != parser::NodeKind::FUNC_CALL {
+        if not is_arithmetic((@right).tpe) {
+            errors::errorn(right, "Incompatible type, expected arithmetic type, got ", debug::type_to_str((@right).tpe))
+        }
+        if not is_arithmetic((@left).tpe) {
+            errors::errorn(right, "Incompatible type, expected arithmetic type, got ", debug::type_to_str((@left).tpe))
+        }
+        node.tpe = (@left).tpe
+    }
 }
 
 def walk_AssignEqBitwise(node: *parser::Node, state: *State) {
@@ -2021,14 +2149,31 @@ def walk_AssignEqBitwise(node: *parser::Node, state: *State) {
     }
 
     if not (@left).tpe or not (@right).tpe { return }
-    if not is_integer((@right).tpe) {
-        errors::errorn(right, "Incompatible type, expected integer type, got ", debug::type_to_str((@right).tpe))
-    }
-    if not is_integer((@left).tpe) {
-        errors::errorn(right, "Incompatible type, expected integer type, got ", debug::type_to_str((@left).tpe))
-    }
 
-    node.tpe = (@left).tpe
+    let args = create_args(left, right)
+    switch node.kind {
+        case parser::NodeKind::AND_EQ:
+            convert_to_call(node, "__iand__", args, state)
+        case parser::NodeKind::OR_EQ:
+            convert_to_call(node, "__ior__", args, state)
+        case parser::NodeKind::XOR_EQ:
+            convert_to_call(node, "__ixor__", args, state)
+        case parser::NodeKind::SHL_EQ:
+            convert_to_call(node, "__ilshift__", args, state)
+        case parser::NodeKind::SHR_EQ:
+            convert_to_call(node, "__irshift__", args, state)
+    } 
+
+    if node.kind != parser::NodeKind::FUNC_CALL {
+        if not is_integer((@right).tpe) {
+            errors::errorn(right, "Incompatible type, expected integer type, got ", debug::type_to_str((@right).tpe))
+        }
+        if not is_integer((@left).tpe) {
+            errors::errorn(right, "Incompatible type, expected integer type, got ", debug::type_to_str((@left).tpe))
+        }
+
+        node.tpe = (@left).tpe
+    }
 }
 
 def walk_AssignEqPtr(node: *parser::Node, state: *State) {
@@ -2932,19 +3077,40 @@ def walk_AlignOf(node: *parser::Node, state: *State) {
     node.tpe = builtins::size_t_
 }
 
+// TODO the operator overloading breaks a > b > c chains
+// Do the conversion inside of the parser
 def walk_ComparisionOp(node: *parser::Node, state: *State) {
     let left = node.value.bin_op.left
     let right = node.value.bin_op.right
     walk(node, left, state)
     walk(node, right, state)
 
-    if builtins::Type_ and equals(left.tpe, pointer(builtins::Type_)) {
-        let equals = scope::get(toolchain::runtime.scope, parser::make_identifier(["equals"]))
-        consteval::compile_function(equals.node, equals.state)
+    let args = create_args(left, right)
+
+    switch node.kind {
+        case parser::NodeKind::EQ:
+            convert_to_call(node, "__eq__", args, state)
+        case parser::NodeKind::NEQ:
+            convert_to_call(node, "__ne__", args, state)
+        case parser::NodeKind::GT:
+            convert_to_call(node, "__gt__", args, state)
+        case parser::NodeKind::LT:
+            convert_to_call(node, "__lt__", args, state)
+        case parser::NodeKind::GEQ:
+            convert_to_call(node, "__ge__", args, state)
+        case parser::NodeKind::LEQ:
+            convert_to_call(node, "__le__", args, state)
     }
 
-    // TODO We can compare almost everything
-    node.tpe = builtins::bool_
+    if node.kind != parser::NodeKind::FUNC_CALL {
+        if builtins::Type_ and equals(left.tpe, pointer(builtins::Type_)) {
+            let equals = scope::get(toolchain::runtime.scope, parser::make_identifier(["equals"]))
+            consteval::compile_function(equals.node, equals.state)
+        }
+
+        // TODO We can compare almost everything
+        node.tpe = builtins::bool_
+    }
 }
 
 def walk_PAdd(node: *parser::Node, state: *State) {
