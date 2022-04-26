@@ -2424,9 +2424,14 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
         push_alloca(alloca, state)
         
         addr.tpe = typechecking::pointer(ret)
-        let addrp = allocate(Value)
-        (@addrp) = addr
-        value = make_local_value(ret, addrp, state)
+
+        if node.parent and node.parent.kind != parser::NodeKind::ASSIGN {
+            let addrp = allocate(Value)
+            (@addrp) = addr
+            value = make_local_value(ret, addrp, state)
+        } else {
+            value = make_local_value(ret, null, state)
+        }
     }
 
     let insn = make_insn_dbg(InsnKind::CALL, loc)
@@ -2868,6 +2873,42 @@ def do_increase_ref_cout(n: *parser::Node) -> bool {
     return true
 }
 
+def call_set_item(n: *parser::Node, l: *parser::Node, value: *Value, loc: *Value, state: *State) -> bool {
+    if not l or l.kind != parser::NodeKind::ARRAY_SUBSCRIPT { return false }
+
+    let args = vector::make()
+    let np1 = allocate(typechecking::NamedParameter)
+    @np1 = { name = "", tpe = l.value.bin_op.left.tpe }
+    let np2 = allocate(typechecking::NamedParameter)
+    @np2 = { name = "", tpe = l.value.bin_op.right.tpe }
+    let np3 = allocate(typechecking::NamedParameter)
+    @np3 = { name = "", tpe = value.tpe }
+    vector::push(args, np1)
+    vector::push(args, np2)
+    vector::push(args, np3)
+
+    let set_item = scope::get_function(state.scope, parser::make_identifier(["set_item"]), args)
+    if set_item {
+        let array_v = walk_and_load_expression(l.value.bin_op.left, state)
+        let index_v = walk_and_load_expression(l.value.bin_op.right, state)
+
+        let left = (vector::get(set_item.tpe.parameter_t, 0) !*typechecking::NamedParameter).tpe
+        let right = (vector::get(set_item.tpe.parameter_t, 1) !*typechecking::NamedParameter).tpe
+        let tpe = (vector::get(set_item.tpe.parameter_t, 2) !*typechecking::NamedParameter).tpe
+
+        let v0 = convert_to(n, array_v, left, state)
+        let v1 = convert_to(n, index_v, right, state)
+        let v2 = convert_to(n, @value, tpe, state)
+
+        predeclare_function(set_item.tpe, state.module)
+        map::put(state.module.imported, set_item.tpe.type_name, map::sentinel)
+        @value = state.call(set_item.tpe.type_name, vector::get(set_item.tpe.return_t, 0) !*Type, [v0, v1, v2], loc)
+
+        return true
+    }
+    return false
+}
+
 def walk_Assign(node: *parser::Node, state: *State) -> Value {
     // TODO Make this possible: a, b = c, d = e, f
     // Right now we can only return one value
@@ -2895,12 +2936,6 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
                 let t = vector::get(tpe.return_t, k) !*typechecking::Type
                 if j >= vector::length(left) { return NO_VALUE }
                 let l = vector::get(left, j) !*parser::Node
-
-                let addr = walk_expression(l, state).addr
-                if not addr {
-                    errors::errorn(l, "Can't assign, expression has no address")
-                    return NO_VALUE
-                }
 
                 if l.svalue and l.svalue.name == "_" {
                     let alloca = make_insn_dbg(InsnKind::ALLOCA, loc)
@@ -2941,31 +2976,39 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
 
                     push_insn(load, state)
                 }
-                
-                ret = convert_to(n, ret, (@l).tpe, state)
 
-                let inc_ref_count = do_increase_ref_cout(n)
-                if typechecking::is_ref(l.tpe) and typechecking::is_ref(ret.tpe) {
-                    assign_ref(ret, @addr, loc, inc_ref_count, l.is_initializer, state)
-                } else {
-                    if not l.is_initializer {
-                        insert_destructor(@addr, state.scope, loc, state)
-                    } else if l.svalue and l.svalue.previous_underscore {
-                        let pu = l.svalue.previous_underscore
-                        let addr = { kind = ValueKind::LOCAL, name = pu.assembly_name, tpe = pointer(pu.tpe) } !Value
-                        insert_destructor(addr, state.scope, loc, state)
+                if not call_set_item(n, l, *ret, loc, state) {
+                    let addr = walk_expression(l, state).addr
+                    if not addr {
+                        errors::errorn(l, "Can't assign, expression has no address")
+                        return NO_VALUE
                     }
 
-                    let store = make_insn_dbg(InsnKind::STORE, loc)
-                    (@store).value.store = {
-                        value = ret,
-                        loc = @addr
-                    } !InsnStore
+                    ret = convert_to(n, ret, (@l).tpe, state)
 
-                    push_insn(store, state)
+                    let inc_ref_count = do_increase_ref_cout(n)
+                    if typechecking::is_ref(l.tpe) and typechecking::is_ref(ret.tpe) {
+                        assign_ref(ret, @addr, loc, inc_ref_count, l.is_initializer, state)
+                    } else {
+                        if not l.is_initializer {
+                            insert_destructor(@addr, state.scope, loc, state)
+                        } else if l.svalue and l.svalue.previous_underscore {
+                            let pu = l.svalue.previous_underscore
+                            let addr = { kind = ValueKind::LOCAL, name = pu.assembly_name, tpe = pointer(pu.tpe) } !Value
+                            insert_destructor(addr, state.scope, loc, state)
+                        }
 
-                    if typechecking::is_ref(l.tpe) and inc_ref_count {
-                        increase_ref_count(@addr, loc, state)
+                        let store = make_insn_dbg(InsnKind::STORE, loc)
+                        (@store).value.store = {
+                            value = ret,
+                            loc = @addr
+                        } !InsnStore
+
+                        push_insn(store, state)
+
+                        if typechecking::is_ref(l.tpe) and inc_ref_count {
+                            increase_ref_count(@addr, loc, state)
+                        }
                     }
                 }
                 
@@ -2979,12 +3022,6 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
                 errors::errorn(n, "Undef used outside of initializer")
             }
 
-            let addr = walk_expression(l, state).addr
-            if not addr { 
-                errors::errorn(l, "Can't assign, expression has no address")
-                return NO_VALUE 
-            }
-
             if l.svalue and l.svalue.name == "_" {
                 let alloca = make_insn_dbg(InsnKind::ALLOCA, loc)
                 alloca.value.alloca = {
@@ -2993,34 +3030,42 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
                 push_alloca(alloca, state)
             }
 
-            value = convert_to(n, value, (@l).tpe, state)
-
-            let inc_ref_count = do_increase_ref_cout(n)
-            if typechecking::is_ref(l.tpe) and value.addr and typechecking::is_ref(value.addr.tpe) {
-                assign_ref(@value.addr, @addr, loc, inc_ref_count, l.is_initializer, state)
-            } else {
-                if not l.is_initializer {
-                    insert_destructor(@addr, state.scope, loc, state)
-                } else if l.svalue and l.svalue.previous_underscore {
-                    let pu = l.svalue.previous_underscore
-                    let addr = { kind = ValueKind::LOCAL, name = pu.assembly_name, tpe = pointer(pu.tpe) } !Value
-                    insert_destructor(addr, state.scope, loc, state)
+            if not call_set_item(n, l, *value, loc, state) {
+                let addr = walk_expression(l, state).addr
+                if not addr { 
+                    errors::errorn(l, "Can't assign, expression has no address")
+                    return NO_VALUE 
                 }
+                
+                value = convert_to(n, value, (@l).tpe, state)
 
-                if is_copied(n) and typechecking::has_copy_constructor(l.tpe) {
-                    insert_copy_constructor(@addr, value, loc, state)
-                } else if not is_undef {
-                    let store = make_insn_dbg(InsnKind::STORE, loc)
-                    (@store).value.store = {
-                        value = value,
-                        loc = @addr
-                    } !InsnStore
+                let inc_ref_count = do_increase_ref_cout(n)
+                if typechecking::is_ref(l.tpe) and value.addr and typechecking::is_ref(value.addr.tpe) {
+                    assign_ref(@value.addr, @addr, loc, inc_ref_count, l.is_initializer, state)
+                } else {
+                    if not l.is_initializer {
+                        insert_destructor(@addr, state.scope, loc, state)
+                    } else if l.svalue and l.svalue.previous_underscore {
+                        let pu = l.svalue.previous_underscore
+                        let addr = { kind = ValueKind::LOCAL, name = pu.assembly_name, tpe = pointer(pu.tpe) } !Value
+                        insert_destructor(addr, state.scope, loc, state)
+                    }
 
-                    push_insn(store, state)
-                }
+                    if is_copied(n) and typechecking::has_copy_constructor(l.tpe) {
+                        insert_copy_constructor(@addr, value, loc, state)
+                    } else if not is_undef {
+                        let store = make_insn_dbg(InsnKind::STORE, loc)
+                        (@store).value.store = {
+                            value = value,
+                            loc = @addr
+                        } !InsnStore
 
-                if typechecking::is_ref(l.tpe) and inc_ref_count {
-                    increase_ref_count(@addr, loc, state)
+                        push_insn(store, state)
+                    }
+
+                    if typechecking::is_ref(l.tpe) and inc_ref_count {
+                        increase_ref_count(@addr, loc, state)
+                    }
                 }
             }
             
@@ -3300,9 +3345,20 @@ def walk_ArraySubscript(node: *parser::Node, state: *State) -> Value {
     let left = (@node).value.bin_op.left
     let right = (@node).value.bin_op.right
     
-    let array_tpe = (@left).tpe
+    var array_tpe = (@left).tpe
     var left_value = walk_expression(left, state)
     let right_value = walk_and_load_expression(right, state)
+
+    if is_ref(array_tpe) {
+        let array_ref = state.load(array_tpe, @left_value.addr, loc)
+        let array = state.extract_value(pointer(array_tpe.tpe), array_ref, [1], loc)
+        let array_val = state.load(array_tpe.tpe, array, loc)
+
+        array_val.addr = allocate(Value)
+        @array_val.addr = array
+        left_value = array_val
+        array_tpe = array_tpe.tpe
+    }
 
     if (@array_tpe).kind == typechecking::TypeKind::ARRAY {
         let index1 = allocate(Value, 2)
