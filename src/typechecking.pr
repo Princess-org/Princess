@@ -46,6 +46,10 @@ export type TypeKind = enum {
     UNDEF
     CHAR
     STRUCTURAL
+    // This is a type with arguments
+    TYPE_CONSTRUCTOR
+    // This is used as a function parameter that is generic
+    GENERIC
 }
 
 export type TypeMember = struct {
@@ -114,6 +118,16 @@ export type Type = struct {
     // Vector of StructuralTypeMember
     members: *vector::Vector
     share: parser::ShareMarker
+    // Type constructors save a template of a type
+    node: *parser::Node
+    // Cache of specialized type constructor
+    cache: *map::Map
+    // Type constructor instances have a name and arguments
+    tc_name: string
+    // Vector of Type, also used by GENERIC
+    tc_args: *vector::Vector
+    // True if some parameters weren't set yet
+    tc_incomplete: bool
 }
 
 export type NamedParameter = struct {
@@ -414,6 +428,7 @@ export type TypeEntry = struct {
 }
 
 export type TypeEntryMember = struct {
+    key: string
     function: *Type
     exported: bool
     module: *toolchain::Module
@@ -444,8 +459,16 @@ export def create_type_entry(tpe: *Type, exported: bool, entry: *Type, module: *
         map::clear(type_entry.cached)
     }
 
+    // TODO Use a set for this
+    let key = debug::type_to_str(entry, full_name = true)
+    for var i in 0..vector::length(type_entry.functions) {
+        let fun = vector::get(type_entry.functions, i) !*TypeEntryMember
+        if fun.key == key { return }
+    }
+
     let member_function = allocate(TypeEntryMember)
     @member_function = {
+        key = key,
         function = entry,
         exported = exported,
         module = module
@@ -472,6 +495,17 @@ export def copy(a: *Type) -> *Type {
             @np2 = @np
             np2.tpe = copy(np.tpe)
             vector::push(t.parameter_t, np2)
+        }
+    } else if a.kind == TypeKind::POINTER or
+        a.kind == TypeKind::REFERENCE or
+        a.kind == TypeKind::STATIC_ARRAY or
+        a.kind == TypeKind::POINTER {
+        t.tpe = copy(a.tpe)
+    } else if a.kind == TypeKind::GENERIC {
+        t.tc_args = vector::make()
+        for var i in 0..vector::length(a.tc_args) {
+            let arg = vector::get(a.tc_args, i) !*Type
+            vector::push(t.tc_args, copy(arg))
         }
     }
 
@@ -502,7 +536,8 @@ export def equals(a: *Type, b: *Type) -> bool {
         kind == TypeKind::STRUCT or
         kind == TypeKind::UNION or
         kind == TypeKind::STUB or
-        kind == TypeKind::STRUCTURAL {
+        kind == TypeKind::STRUCTURAL or
+        kind == TypeKind::TYPE_CONSTRUCTOR {
         
         return (@a).type_name == (@b).type_name
     }
@@ -536,6 +571,15 @@ export def equals(a: *Type, b: *Type) -> bool {
     }
     if kind == TypeKind::TYPE_DEF {
         return equals(a.tpe, b.tpe)
+    }
+    if kind == TypeKind::GENERIC {
+        if vector::length(a.tc_args) != vector::length(b.tc_args) { return false }
+        for var i in 0..vector::length(a.tc_args) {
+            let arg_a = vector::get(a.tc_args, i) !*Type
+            let arg_b = vector::get(b.tc_args, i) !*Type
+            if not equals(arg_a, arg_b) { return false }
+        }
+        return true
     }
 
     assert(false)
@@ -706,6 +750,16 @@ def convert_type_score(a: *Type, b: *Type, module: *toolchain::Module, is_type: 
         
         return 1
     }
+    if a.kind == TypeKind::POINTER and b.kind == TypeKind::POINTER or
+        a.kind == TypeKind::REFERENCE and b.kind == TypeKind::REFERENCE or
+        a.kind == TypeKind::ARRAY and b.kind == TypeKind::ARRAY or
+        a.kind == TypeKind::STATIC_ARRAY and b.kind == TypeKind::STATIC_ARRAY {
+
+        if a.tpe and a.tpe.kind == TypeKind::GENERIC {
+            return convert_type_score(a.tpe, b.tpe, module, is_type)
+        }
+    } 
+
     if a.kind == TypeKind::STATIC_ARRAY and b.kind == TypeKind::STATIC_ARRAY {
         if equals(a.tpe, b.tpe) and 
             (a.length == b.length or a.length !uint64 == util::MAX_UINT64) {
@@ -720,6 +774,21 @@ def convert_type_score(a: *Type, b: *Type, module: *toolchain::Module, is_type: 
             return 1
         }
     }
+    if a.kind == TypeKind::GENERIC or b.kind == TypeKind::GENERIC and a.kind != b.kind {
+        if a.kind != TypeKind::GENERIC {
+            let c = a; a = b; b = c
+        }
+        if not b.tc_args { return -1 }
+        if vector::length(a.tc_args) != vector::length(b.tc_args) { return -1 }
+        for var i in 0..vector::length(a.tc_args) {
+            let arg_a = vector::get(a.tc_args, i) !*Type
+            let arg_b = vector::get(b.tc_args, i) !*Type
+            if arg_a.kind == TypeKind::TYPE_DEF { continue }
+            if not equals(arg_a, arg_b) { return -1 }
+        }
+        return 1
+    }
+
     if is_type { 
         if a.kind == TypeKind::ARRAY {
             if (b.kind == TypeKind::ARRAY or b.kind == TypeKind::STATIC_ARRAY) {
@@ -743,9 +812,10 @@ def convert_type_score(a: *Type, b: *Type, module: *toolchain::Module, is_type: 
 
 export def is_polymorph(tpe: *Type) -> bool {
     if not tpe { return false }
-    if tpe.kind == TypeKind::TYPE_DEF or 
-        tpe.kind == TypeKind::STRUCTURAL {
-            return true 
+    else if tpe.kind == TypeKind::TYPE_DEF or 
+        tpe.kind == TypeKind::STRUCTURAL or
+        tpe.kind == TypeKind::GENERIC {    
+        return true 
     } else if tpe.kind == TypeKind::TYPE {
         return tpe.tpe == null
     } else if tpe.kind == TypeKind::POINTER or
@@ -828,6 +898,17 @@ def find_type_defs(left: *Type, right: *Type, types: *map::Map, replace: bool, i
             let l = vector::get(left.parameter_t, i) !*NamedParameter
             let r = vector::get(right.parameter_t, i) !*NamedParameter
             find_type_defs(l.tpe, r.tpe, types, replace, is_type)
+        }
+    } else if left.kind == TypeKind::GENERIC {
+        if right.tc_args {
+            for var i in 0..vector::length(left.tc_args) {
+                let l = vector::get(left.tc_args, i) !*Type
+                let r = vector::get(right.tc_args, i) !*Type
+                find_type_defs(l, r, types, replace, true)
+            }
+            if replace {
+                @left = @right
+            }
         }
     }
     if is_type {
@@ -1028,7 +1109,7 @@ export def overload_score(param_a: *vector::Vector, return_t: *vector::Vector, p
                 } else {
                     score = 1
                 }
-            } else if right.tpe.kind == TypeKind::TYPE and left.value and right.value and equals(left.value.value_tpe, right.value.value_tpe) {
+            } else if is_type(right.tpe) and left.value and right.value and equals(left.value.value_tpe, right.value.value_tpe) {
                 score = 0
             }
         } else {
@@ -1170,6 +1251,27 @@ export def make_struct_type(fields: [StructMember], current_type: *Type = null) 
     struct_tpe.field_types = field_types
 
     return struct_tpe
+}
+
+def lookup_type_constructor(tc: *parser::Node, node: *parser::Node, state: *State) -> *Type {
+    if not node { return null }
+    let name = tc.value.type_constructor.name
+    let tpe = make_type(TypeKind::TYPE_CONSTRUCTOR, name)
+    tpe.parameter_t = vector::make()
+
+    let args = tc.value.type_constructor.args
+    for var i in 0..vector::length(args) {
+        let arg = vector::get(args, i) !*parser::Node
+        assert arg.kind == parser::NodeKind::PARAMETER
+
+        let np = allocate(NamedParameter)
+        @np = { name = parser::identifier_to_str(arg.value.param.name), tpe = builtins::type_ } !NamedParameter
+        vector::push(tpe.parameter_t, np)
+    }
+    tpe.node = node
+    tpe.node.module = state.module
+    tpe.cache = map::make()
+    return tpe
 }
 
 export def type_lookup(node: *parser::Node, state: *State, current_type: *Type = null, lookup_default: bool = false, parameter_types: *map::Map = null) -> *Type {
@@ -1472,6 +1574,126 @@ export def type_lookup(node: *parser::Node, state: *State, current_type: *Type =
         tpe.members = members
         tpe.module = state.module
 
+        return tpe
+    } else if node.kind == parser::NodeKind::TYPE_CONSTRUCTOR {
+        if current_type and not current_type.tc_incomplete { 
+            return current_type 
+        }
+
+        var tpe = current_type
+        let name = node.value.type_constructor.name
+        let value = scope::get(state.scope, name, true)
+        if not value {
+            if not lookup_default {
+                errors::errorn(node, "Unknown identifier `", parser::identifier_to_str(name), "`") 
+            }
+            return null
+        }
+        let type_constructor = value.value.value_tpe
+        if type_constructor.kind == TypeKind::STUB { return null }
+        if type_constructor.kind != TypeKind::TYPE_CONSTRUCTOR {
+            errors::errorn(node, "Not a type constructor")
+            return null
+        }
+        if vector::length(type_constructor.parameter_t) != vector::length(node.value.type_constructor.args) {
+            errors::errorn(node, 
+                "Wrong amount of arguments to type constructor, expected ", 
+                util::int_to_str(vector::length(type_constructor.parameter_t)),
+                " got ",
+                util::int_to_str(vector::length(node.value.type_constructor.args)))
+            return null
+        }
+
+        let tc_args = vector::make()
+        let buf_name = *buffer::make_buffer()
+        let buf_type_name = *buffer::make_buffer()
+        buffer::append_str(buf_type_name, type_constructor.type_name)
+        buffer::append_str(buf_name, type_constructor.name)
+        buffer::append_char(buf_type_name, '(')
+        buffer::append_char(buf_name, '(')
+
+        var is_complete = true
+        var is_generic = false
+
+        state.scope = scope::enter_scope(state.scope)
+        for var i in 0..vector::length(type_constructor.parameter_t) {
+            let np = vector::get(type_constructor.parameter_t, i) !*NamedParameter
+            let arg = vector::get(node.value.type_constructor.args, i) !*parser::Node
+            let argtpe = type_lookup(arg, state, null, lookup_default, parameter_types)
+            if argtpe {
+                if argtpe.kind == TypeKind::TYPE_DEF { is_generic = true }
+                else {
+                    scope::create_type(state.scope, parser::make_identifier([np.name]), parser::ShareMarker::NONE, argtpe)
+                }
+            } else { is_complete = false }
+            vector::push(tc_args, argtpe)
+
+            buf_name.append_str(debug::type_to_str(argtpe))
+            buf_type_name.append_str(debug::type_to_str(argtpe, full_name = true))
+            if i < vector::length(type_constructor.parameter_t) - 1 {
+                buf_name.append_str(", ")
+                buf_type_name.append_str(", ")
+            }
+        }
+
+        if is_generic {
+            tpe = make_type_raw(TypeKind::GENERIC)
+            tpe.tpe = type_constructor
+            tpe.tc_args = tc_args
+            tpe.name = type_constructor.name
+            tpe.type_name = tpe.tc_name = type_constructor.type_name
+            tpe.module = state.module
+            
+            state.scope = scope::exit_scope(state.scope)
+            return tpe
+        }
+
+        buffer::append_char(buf_type_name, ')')
+        buffer::append_char(buf_name, ')')
+
+        let type_name = buf_type_name.to_string()
+        var cache_type = false
+        if is_complete {
+            tpe = map::get(type_constructor.cache, type_name) !*Type
+            cache_type = tpe == null
+        }
+        if not tpe or not is_complete {
+            tpe = type_lookup(type_constructor.node, state, tpe, lookup_default, parameter_types)
+            tpe.type_name = type_name
+            tpe.name = buf_name.to_string()
+            tpe.tc_name = type_constructor.type_name
+            tpe.tc_args = tc_args
+            tpe.tc_incomplete = not is_complete
+            tpe.module = state.module
+            map::put(type_constructor.cache, type_name, tpe)
+        }
+
+        if cache_type {
+            let keys = map::keys(type_constructor.cache)
+            for var i in 0..keys.size {
+                let functions = get_member_functions(type_constructor)
+                for var j in 0..vector::length(functions) {
+                    let function = vector::get(functions, j) !*TypeEntryMember
+                    let ftpe = copy(function.function)
+                    let np = allocate(NamedParameter)
+                    @np = { name = "", tpe = tpe } !NamedParameter
+                    vector::set(ftpe.parameter_t, 0, np)
+                    create_type_entry(tpe, function.exported, ftpe, function.module)
+                }
+            }
+
+            if is_complete {
+                // We need to generate the destructor here
+                let args = vector::make()
+                let np = allocate(NamedParameter)
+                @np = { name = "", tpe = pointer(tpe) }
+                vector::push(args, np)
+                
+                scope::get_function(type_constructor.node.module.scope, parser::make_identifier(["destruct"]), args)
+            }
+        }
+        
+        state.scope = scope::exit_scope(state.scope)
         return tpe
     }
 
@@ -2405,7 +2627,12 @@ def walk_TypeDecl(node: *parser::Node, state: *State) {
     }
 
     for var i in 0..vector::length(left) {
-        let name = vector::get(left, i) !*parser::Node
+        let left = vector::get(left, i) !*parser::Node
+        var name = left
+        if left.kind == parser::NodeKind::TYPE_CONSTRUCTOR {
+            name = left.value.type_constructor.name
+        }
+
         var value: *parser::Node = null
         if i < vector::length(right) {
             value = vector::get(right, i) !*parser::Node
@@ -2418,10 +2645,14 @@ def walk_TypeDecl(node: *parser::Node, state: *State) {
                 continue
             }
 
-            tpe = copy(type_lookup(value, state))
+            if left.kind == parser::NodeKind::TYPE_CONSTRUCTOR {
+                tpe = lookup_type_constructor(left, value, state)
+            } else {
+                tpe = copy(type_lookup(value, state))
+            }
             if not tpe { continue }
-            (@tpe).name = parser::identifier_to_str(name)
-            (@tpe).type_name = append_module((@tpe).name, node.loc.module)
+            tpe.name = parser::identifier_to_str(name)
+            tpe.type_name = append_module(tpe.name, node.loc.module)
             tpe = scope::create_type(state.scope, name, share, tpe, scope::Phase::COMPILED, null, null)
         }
         name.tpe = tpe

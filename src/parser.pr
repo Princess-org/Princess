@@ -111,6 +111,7 @@ export type NodeKind = enum {
     TYPE_OF_T
     STRUCTURAL_T
     STRUCTURAL_T_MEMBER
+    TYPE_CONSTRUCTOR
 }
 
 export type ShareMarker = enum {
@@ -205,6 +206,11 @@ export type NodeVarDecl = struct {
     kw: VarDecl
     left: *vector::Vector
     right: *vector::Vector
+}
+
+export type NodeTypeConstructor = struct {
+    name: *Node
+    args: *vector::Vector
 }
 
 export type NodeTypeDecl = struct {
@@ -332,6 +338,7 @@ export type NodeValue = struct #union {
     identifier: NodeIdentifier
     assert_: NodeAssert
     program: NodeProgram
+    type_constructor: NodeTypeConstructor
 
     body: *vector::Vector
     expr: *Node
@@ -542,6 +549,9 @@ export def deep_copy_node(node: *Node) -> *Node {
             // Binary op
             copy.value.bin_op.left = deep_copy_node(node.value.bin_op.left)
             copy.value.bin_op.right = deep_copy_node(node.value.bin_op.right)
+        case NodeKind::TYPE_CONSTRUCTOR:
+            copy.value.type_constructor.name = deep_copy_node(node.value.type_constructor.name)
+            copy.value.type_constructor.args = deep_copy_vector_of_nodes(node.value.type_constructor.args)
         case NodeKind::INTEGER, NodeKind::CHAR, NodeKind::FLOAT,
             NodeKind::BOOLEAN, NodeKind::NULL, NodeKind::UNDEF, NodeKind::BREAK, NodeKind::CONTINUE,
             NodeKind::WORD_T:
@@ -853,7 +863,7 @@ def expect_array(parse_state: *ParseState) -> *Node {
     return node
 }
 
-def expect_ptr_ref(parse_state: *ParseState, ref: bool) -> *Node {
+def expect_ptr_ref(parse_state: *ParseState, ref: bool, inline_types: bool) -> *Node {
     var kind: NodeKind
     var tok: lexer::Token
     if ref {
@@ -876,7 +886,7 @@ def expect_ptr_ref(parse_state: *ParseState, ref: bool) -> *Node {
     }
 
     var tokens = @(@parse_state).tokens
-    var tpe = parse_type(parse_state)
+    var tpe = parse_type(parse_state, inline_types)
     if not tpe {
         @(@parse_state).tokens = tokens
     }
@@ -1170,6 +1180,48 @@ def expect_structural_type(parse_state: *ParseState) -> *Node {
     return node
 }
 
+def parse_type_identifier(parse_state: *ParseState, inline_types: bool) -> *Node {
+    var token = peek(parse_state)
+    let line = token.line
+    let column = token.column
+    var name = expect_identifier(parse_state)
+    
+    token = peek(parse_state)
+    if token.tpe == lexer::TokenType::O_PAREN {
+        pop(parse_state)
+        token = peek(parse_state)
+        if token.tpe == lexer::TokenType::C_PAREN {
+            pop(parse_state)
+            return name
+        } else {
+            let args = vector::make()
+            while token.tpe != lexer::TokenType::C_PAREN and 
+                token.tpe != lexer::TokenType::EOF {
+                let tpe = expect_type(parse_state, inline_types)
+                vector::push(args, tpe)
+
+                token = peek(parse_state)
+                if token.tpe == lexer::TokenType::COMMA {
+                    skip_newline(parse_state)
+                    pop(parse_state)
+                    continue
+                } else {
+                    expect(parse_state, lexer::TokenType::C_PAREN, "Expected ')'")
+                    break
+                }
+            }
+            let node = make_node(NodeKind::TYPE_CONSTRUCTOR, line, column, parse_state)
+            node.value.type_constructor = {
+                name = name,
+                args = args
+            }
+            return node
+        }
+    }
+
+    return name
+}
+
 def parse_type2(parse_state: *ParseState, inline_types: bool) -> *Node {
     var tok = pop(parse_state)
 
@@ -1211,12 +1263,11 @@ def parse_type2(parse_state: *ParseState, inline_types: bool) -> *Node {
     } else if tok.tpe == lexer::TokenType::OP_MUL or
         tok.tpe == lexer::TokenType::OP_BAND {
         unget_token(parse_state, tok)
-        return expect_ptr_ref(parse_state, tok.tpe == lexer::TokenType::OP_BAND)
+        return expect_ptr_ref(parse_state, tok.tpe == lexer::TokenType::OP_BAND, inline_types)
     } else if tok.tpe == lexer::TokenType::DOUBLE_COLON or
         tok.tpe == lexer::TokenType::IDENTIFIER {
         unget_token(parse_state, tok)
-        var node = expect_identifier(parse_state)
-        return node
+        return parse_type_identifier(parse_state, inline_types)
     } else if tok.tpe == lexer::TokenType::K_STRUCT {
         unget_token(parse_state, tok)
         return expect_struct(parse_state)
@@ -1268,7 +1319,7 @@ def parse_type_list(parse_state: *ParseState, sw: bool, inline_types: bool) -> *
 }
 
 // TODO Allow things like (A, B) -> (C, D) -> (E, F)
-def parse_type(parse_state: *ParseState, inline_types: bool) -> *Node {
+def parse_type(parse_state: *ParseState, inline_types: bool = true) -> *Node {
     let args = parse_type_list(parse_state, false, inline_types)
     var token = peek(parse_state)
     if token.tpe == lexer::TokenType::ARROW {
@@ -1290,22 +1341,14 @@ def parse_type(parse_state: *ParseState, inline_types: bool) -> *Node {
     }
 }
 
-def parse_type(parse_state: *ParseState) -> *Node {
-    return parse_type(parse_state, true)
-}
-
 // inline_types is a flag to wrap type expressions in Type
-def expect_type(parse_state: *ParseState, inline_types: bool) -> *Node {
+def expect_type(parse_state: *ParseState, inline_types: bool = true) -> *Node {
     let token = peek(parse_state)
     let node = parse_type(parse_state, inline_types)
     if not node {
         errors::errort(token, parse_state, "Expected type") 
     }
     return node
-}
-
-def expect_type(parse_state: *ParseState) -> *Node {
-    return expect_type(parse_state, true)
 }
 
 def expect_array_lit(parse_state: *ParseState) -> *Node {
@@ -2321,10 +2364,54 @@ def parse_typedecl(parse_state: *ParseState, share: ShareMarker) -> *Node {
     }
     var vec_left = vector::make()
     loop {
+        let line = token.line
+        let column = token.column
         var ident = expect_identifier(parse_state)
-        vector::push(vec_left, ident)
-
+    
         token = pop(parse_state)
+        if token.tpe == lexer::TokenType::O_PAREN {
+            token = peek(parse_state)
+            if token.tpe == lexer::TokenType::C_PAREN {
+                token = pop(parse_state)
+                vector::push(vec_left, ident)
+            } else {
+                let args = vector::make()
+                while token.tpe != lexer::TokenType::C_PAREN and
+                        token.tpe != lexer::TokenType::EOF {
+                    
+                    // TODO We want to take regular values too not just types
+                    expect(parse_state, lexer::TokenType::K_TYPE, "Expected 'type'")
+                    token = peek(parse_state)
+                    let name = expect_identifier(parse_state)
+                    let param = make_node(NodeKind::PARAMETER, token.line, token.column, parse_state)
+                    param.value.param = {
+                        name = name
+                    }
+                    vector::push(args, param)
+                    
+                    token = peek(parse_state)
+                    if token.tpe == lexer::TokenType::COMMA {
+                        skip_newline(parse_state)
+                        pop(parse_state)
+                        continue
+                    } else {
+                        expect(parse_state, lexer::TokenType::C_PAREN, "Expected ')'")
+                        token = pop(parse_state)
+                        break
+                    }
+                }
+
+                let typec = make_node(NodeKind::TYPE_CONSTRUCTOR, line, column, parse_state)
+                typec.value.type_constructor = {
+                    name = ident,
+                    args = args
+                } !NodeTypeConstructor
+                vector::push(vec_left, typec)
+            }
+        } else {
+            vector::push(vec_left, ident)
+        }
+
         if token.tpe == lexer::TokenType::COMMA {
             skip_newline(parse_state)
             continue
@@ -2335,7 +2422,7 @@ def parse_typedecl(parse_state: *ParseState, share: ShareMarker) -> *Node {
             break
         }
     }
-    
+
     var vec_right = vector::make()
     if token.tpe == lexer::TokenType::OP_ASSIGN {
         pop(parse_state)
