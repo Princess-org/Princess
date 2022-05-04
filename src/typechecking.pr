@@ -50,6 +50,10 @@ export type TypeKind = enum {
     TYPE_CONSTRUCTOR
     // This is used as a function parameter that is generic
     GENERIC
+    // This is used to express types that may by resolved to multiple types
+    // Right now this is only used for looking up functions in generic interfaces
+    // but it could be turned into actual union types
+    VARIANT
 }
 
 export type TypeMember = struct {
@@ -122,12 +126,17 @@ export type Type = struct {
     node: *parser::Node
     // Cache of specialized type constructor
     cache: *map::Map
-    // Type constructor instances have a name and arguments
-    tc_name: string
+    // Type constructor instances have a type and arguments
+    tc_tpe: *Type
     // Vector of Type, also used by GENERIC
     tc_args: *vector::Vector
     // True if some parameters weren't set yet
     tc_incomplete: bool
+    // null means any, Vector of Type
+    variants: *vector::Vector
+    // This is the original polymorphic type that gets replaced by overload resolution
+    // TODO Use this to give better error messages
+    poly: *Type
 }
 
 export type NamedParameter = struct {
@@ -410,6 +419,16 @@ def make_unique_name(name: string, state: *State) -> string {
 // Map of TypeEntry
 export let types_map = map::make()
 
+// The repl needs to invalidate the cache
+export def clear_type_cache {
+    let keys = map::keys(types_map)
+    for var i in 0..keys.size {
+        let key = keys[i]
+        let type_entry = map::get(types_map, key) !*TypeEntry
+        map::clear(type_entry.cached)
+    }
+}
+
 export def get_member_functions(tpe: *Type) -> *vector::Vector {
     let name = debug::type_to_str(tpe, full_name = true)
     let type_entry = map::get(types_map, name) !*TypeEntry
@@ -454,9 +473,6 @@ export def create_type_entry(tpe: *Type, exported: bool, entry: *Type, module: *
     var type_entry = map::get(types_map, name) !*TypeEntry
     if not type_entry {
         type_entry = create_type_entry(tpe)
-    } else {
-        // Clear the cache for REPL
-        map::clear(type_entry.cached)
     }
 
     // TODO Use a set for this
@@ -520,6 +536,16 @@ export def equals(a: *Type, b: *Type) -> bool {
 
     if a.kind == TypeKind::STUB or b.kind == TypeKind::STUB {
         return a.type_name == b.type_name
+    }
+    if a.kind == TypeKind::VARIANT or b.kind == TypeKind::VARIANT and a.kind != b.kind {
+        if b.kind == TypeKind::VARIANT {
+            let c = a; a = b; b = c;
+        }
+        if not a.variants { return true }
+        for var i in 0..vector::length(a.variants) {
+            if equals(vector::get(a.variants, i) !*Type, b) { return true }
+        }
+        return false
     }
 
     if (@a).kind != (@b).kind { return false }
@@ -694,6 +720,113 @@ export def is_assignable(a: *Type, b: *Type, module: *toolchain::Module) -> bool
     return convert_type_score(a, b, module) >= 0
 }
 
+// TODO This needs caching
+def infer_interface_types(a: *Type, b: *Type, module: *toolchain::Module) -> *Type {
+    assert a.kind == TypeKind::GENERIC
+    // TODO We might want to pass a state instead
+    let node = a.tpe.node
+    if not node or node.kind != parser::NodeKind::STRUCTURAL_T {
+        return null
+    }
+
+    let state = make_state(module)
+
+    let variants = map::make()
+    state.scope = scope::enter_scope(state.scope)
+    for var i in 0..vector::length(a.tpe.parameter_t) {
+        let par = vector::get(a.tpe.parameter_t, i) !*NamedParameter
+        let variant_tpe = make_type_raw(TypeKind::VARIANT)
+        variant_tpe.name = par.name
+        map::put(variants, variant_tpe.name, variant_tpe)
+        scope::create_type(state.scope, parser::make_identifier([par.name]), parser::ShareMarker::NONE, variant_tpe)
+    }
+
+    var found_all = true
+    for var i in 0..vector::length(node.value.body) {
+        let member = vector::get(node.value.body, i) !*parser::Node
+        let function = make_function_type()
+        function.parameter_t = vector::make()
+        function.return_t = vector::make()
+        function.type_name = function.name = parser::identifier_to_str(member.value.structural_member.name)
+
+        let first_arg = allocate(NamedParameter)
+        @first_arg = { name = "", tpe = b }
+        vector::push(function.parameter_t, first_arg)
+
+        for var j in 0..vector::length(member.value.structural_member.params) {
+            let param = vector::get(member.value.structural_member.params, j) !*parser::Node
+            let np = allocate(NamedParameter)
+            @np = {
+                name = parser::identifier_to_str(param.value.param.name),
+                tpe = type_lookup(param.value.param.tpe, *state)
+            }
+            vector::push(function.parameter_t, np)
+        }
+        for var j in 0..vector::length(member.value.structural_member.returns) {
+            let ret = vector::get(member.value.structural_member.returns, j) !*parser::Node
+            let tpe = type_lookup(ret, *state)
+            vector::push(function.return_t, tpe)
+        }
+
+        let functions, result = scope::find_functions(state.scope, member.value.structural_member.name, function)
+        if vector::length(functions) == 0 {
+            return null
+        }
+        let keys = map::keys(result)
+        for var i in 0..keys.size {
+            let key = keys[i]
+            let variant_tpe = map::get(variants, key) !*Type
+            let variants2 = map::get(result, key) !*vector::Vector
+            if variant_tpe.variants {
+                let new_variants = vector::make()
+                for var i in 0..vector::length(variant_tpe.variants) {
+                    let a = vector::get(variant_tpe.variants, i) !*Type
+                    var contains_both = false
+                    for var j in 0..vector::length(variants2) {
+                        let b = vector::get(variants2, j) !*Type
+                        if equals(a, b) {
+                            contains_both = true
+                            break
+                        }
+                    }
+                    if contains_both {
+                        vector::push(new_variants, a)
+                    }
+                }
+                if vector::length(new_variants) == 0 {
+                    return null
+                } else {
+                    variant_tpe.variants = new_variants
+                }
+            } else {
+                variant_tpe.variants = variants2
+            }
+        }
+    }
+
+    if found_all {
+        let keys = map::keys(variants) 
+        for var i in 0..keys.size {
+            let key = keys[i]
+            let variant = map::get(variants, key) !*Type
+            if not variant.variants or vector::length(variant.variants) > 1  {
+                return null
+            }
+        }
+    }
+
+    let tpe = copy(b)
+    tpe.tc_args = vector::make()
+    let keys = map::keys(variants)
+    for var i in 0..keys.size {
+        let key = keys[i]
+        let variant = map::get(variants, key) !*Type
+        vector::push(tpe.tc_args, vector::get(variant.variants, 0))
+    }
+
+    return tpe
+}
+
 // Tries to convert type b to type a
 // The return value is -1 if b can't be converted to a
 // if the types are equal, 0 is returned.
@@ -774,19 +907,19 @@ def convert_type_score(a: *Type, b: *Type, module: *toolchain::Module, is_type: 
             return 1
         }
     }
-    if a.kind == TypeKind::GENERIC or b.kind == TypeKind::GENERIC and a.kind != b.kind {
-        if a.kind != TypeKind::GENERIC {
-            let c = a; a = b; b = c
+    if a.kind == TypeKind::GENERIC and a.kind != b.kind {
+        if b.tc_args and equals(a.tpe, b.tc_tpe) {
+            if vector::length(a.tc_args) != vector::length(b.tc_args) { return -1 }
+            for var i in 0..vector::length(a.tc_args) {
+                let arg_a = vector::get(a.tc_args, i) !*Type
+                let arg_b = vector::get(b.tc_args, i) !*Type
+                if arg_a.kind == TypeKind::TYPE_DEF { continue }
+                if not equals(arg_a, arg_b) { return -1 }
+            }
+            return 1
+        } else {
+            return 1 if infer_interface_types(a, b, module) != null else -1
         }
-        if not b.tc_args { return -1 }
-        if vector::length(a.tc_args) != vector::length(b.tc_args) { return -1 }
-        for var i in 0..vector::length(a.tc_args) {
-            let arg_a = vector::get(a.tc_args, i) !*Type
-            let arg_b = vector::get(b.tc_args, i) !*Type
-            if arg_a.kind == TypeKind::TYPE_DEF { continue }
-            if not equals(arg_a, arg_b) { return -1 }
-        }
-        return 1
     }
 
     if is_type { 
@@ -876,11 +1009,11 @@ export def has_copy_constructor(tpe: *Type) -> bool {
     return false
 }
 
-def find_type_defs(left: *Type, right: *Type, types: *map::Map, replace: bool, is_type: bool = false) {
+def find_type_defs(module: *toolchain::Module, left: *Type, right: *Type, types: *map::Map, replace: bool, is_type: bool = false) {
     if not left or not right { return }
 
     if left.kind == TypeKind::TYPE_DEF {
-        find_type_defs(left.tpe, right, types, replace, true)
+        find_type_defs(module, left.tpe, right, types, replace, true)
         if replace {
             if left.tpe.kind == TypeKind::ARRAY and right.kind == TypeKind::STATIC_ARRAY {
                 // Turn static array into a dynamic array
@@ -892,23 +1025,31 @@ def find_type_defs(left: *Type, right: *Type, types: *map::Map, replace: bool, i
         }
     } else if left.kind == TypeKind::POINTER or left.kind == TypeKind::REFERENCE or 
         left.kind == TypeKind::STATIC_ARRAY or left.kind == TypeKind::ARRAY {
-        find_type_defs(left.tpe, right.tpe, types, replace, is_type)
+        find_type_defs(module, left.tpe, right.tpe, types, replace, is_type)
     } else if left.kind == TypeKind::FUNCTION or left.kind == TypeKind::TUPLE {
         for var i in 0..vector::length(left.parameter_t) {
             let l = vector::get(left.parameter_t, i) !*NamedParameter
             let r = vector::get(right.parameter_t, i) !*NamedParameter
-            find_type_defs(l.tpe, r.tpe, types, replace, is_type)
+            find_type_defs(module, l.tpe, r.tpe, types, replace, is_type)
         }
     } else if left.kind == TypeKind::GENERIC {
         if right.tc_args {
             for var i in 0..vector::length(left.tc_args) {
                 let l = vector::get(left.tc_args, i) !*Type
                 let r = vector::get(right.tc_args, i) !*Type
-                find_type_defs(l, r, types, replace, true)
+                find_type_defs(module, l, r, types, replace, true)
             }
             if replace {
                 @left = @right
             }
+        } else if replace {
+            right = infer_interface_types(left, right, module)
+            for var i in 0..vector::length(left.tc_args) {
+                let l = vector::get(left.tc_args, i) !*Type
+                let r = vector::get(right.tc_args, i) !*Type
+                find_type_defs(module, l, r, types, replace, true)
+            }
+            @left = @right
         }
     }
     if is_type {
@@ -1017,7 +1158,7 @@ def replace_type_defs(param_a: *vector::Vector, return_t: *vector::Vector, param
                 ltpe.tpe = right.value.value_tpe
             }
         } else {
-            find_type_defs(ltpe, rtpe, types, replace)
+            find_type_defs(module, ltpe, rtpe, types, replace)
         }
 
         for var j in (i + 1)..vector::length(param_a) {
@@ -1193,6 +1334,7 @@ def check_is_identifier_assignable(node: *parser::Node, state: *State) -> bool {
     }
     return true
 }
+
 
 export def make_struct_type(fields: [StructMember], current_type: *Type = null) -> *Type {
     let struct_tpe = make_type_raw(TypeKind::STRUCT) if not current_type else current_type
@@ -1628,28 +1770,33 @@ export def type_lookup(node: *parser::Node, state: *State, current_type: *Type =
             } else { is_complete = false }
             vector::push(tc_args, argtpe)
 
-            buf_name.append_str(debug::type_to_str(argtpe))
-            buf_type_name.append_str(debug::type_to_str(argtpe, full_name = true))
+            if argtpe.kind == TypeKind::TYPE_DEF {
+                buf_name.append_str("type")
+                buf_type_name.append_str("type")
+            } else {
+                buf_name.append_str(debug::type_to_str(argtpe))
+                buf_type_name.append_str(debug::type_to_str(argtpe, full_name = true))
+            }
             if i < vector::length(type_constructor.parameter_t) - 1 {
                 buf_name.append_str(", ")
                 buf_type_name.append_str(", ")
             }
         }
 
+        buffer::append_char(buf_type_name, ')')
+        buffer::append_char(buf_name, ')')
+
         if is_generic {
             tpe = make_type_raw(TypeKind::GENERIC)
             tpe.tpe = type_constructor
             tpe.tc_args = tc_args
-            tpe.name = type_constructor.name
-            tpe.type_name = tpe.tc_name = type_constructor.type_name
+            tpe.name = buf_name.to_string()
+            tpe.type_name = buf_type_name.to_string()
             tpe.module = state.module
             
             state.scope = scope::exit_scope(state.scope)
             return tpe
         }
-
-        buffer::append_char(buf_type_name, ')')
-        buffer::append_char(buf_name, ')')
 
         let type_name = buf_type_name.to_string()
         var cache_type = false
@@ -1661,7 +1808,7 @@ export def type_lookup(node: *parser::Node, state: *State, current_type: *Type =
             tpe = type_lookup(type_constructor.node, state, tpe, lookup_default, parameter_types)
             tpe.type_name = type_name
             tpe.name = buf_name.to_string()
-            tpe.tc_name = type_constructor.type_name
+            tpe.tc_tpe = type_constructor
             tpe.tc_args = tc_args
             tpe.tc_incomplete = not is_complete
             tpe.module = state.module
@@ -1896,7 +2043,7 @@ def walk_Identifier(node: *parser::Node, state: *State) {
     }
 }
 
-def implicit_conversion(node: *parser::Node, tpe: *Type) {
+def implicit_conversion(node: *parser::Node, tpe: *Type, state: *State) {
     if not tpe { return }
     // TODO For integers we need to check the boundaries
     // TODO What about stuff like --10? I mean its kinda useless but for completeness
@@ -1948,7 +2095,7 @@ def collapse_types(node: *parser::Node, ltypes: *vector::Vector, right: *vector:
                 k += 1
             }
         } else {
-            implicit_conversion(value, ltpe)
+            implicit_conversion(value, ltpe, state)
             if rtpe {
                 vector::push(rtypes, (@value).tpe)
             }
@@ -2427,10 +2574,38 @@ def walk_Cast(node: *parser::Node, state: *State) {
     let left = node.value.bin_op.left
     let right = node.value.bin_op.right
     if not left or not right { return }
-
+    
     let tpe = type_lookup(right, state)
     if not tpe { return }
     node.tpe = tpe
+
+    if left.kind != parser::NodeKind::STRUCT_LIT and 
+        left.kind != parser::NodeKind::ARRAY_LIT {
+
+        walk(node, left, state)
+        
+        var rtpe = tpe
+        var initial_ltpe = copy(left.tpe)
+        var ltpe = initial_ltpe
+
+        while ltpe and rtpe and ltpe.kind == rtpe.kind and 
+            (ltpe.kind == TypeKind::POINTER or 
+            ltpe.kind == TypeKind::REFERENCE or 
+            ltpe.kind == TypeKind::ARRAY or 
+            ltpe.kind == TypeKind::STATIC_ARRAY) {
+            
+            ltpe = ltpe.tpe
+            rtpe = rtpe.tpe
+        }
+
+        if ltpe and rtpe and rtpe.tc_args {
+            node.tpe = initial_ltpe
+            ltpe.tc_args = rtpe.tc_args
+            ltpe.tc_tpe = rtpe.tc_tpe
+        }
+        return
+    }
+
 
     if (@left).kind == parser::NodeKind::STRUCT_LIT {
         if (@tpe).kind != TypeKind::STRUCT and
@@ -2449,6 +2624,7 @@ def walk_Cast(node: *parser::Node, state: *State) {
             return
         }
     }
+
     /*if left.kind == parser::NodeKind::PTR and left.value.expr and 
         left.value.expr.kind == parser::NodeKind::IDENTIFIER {
         if is_function_pointer(tpe) {
@@ -2848,7 +3024,7 @@ export def walk_Call(node: *parser::Node, dry_run: bool, state: *State) -> bool 
             rhstpe = (@np).tpe
         }
 
-        implicit_conversion(n, rhstpe)
+        implicit_conversion(n, rhstpe, state)
     }
     for var i in 0..vector::length(node.value.func_call.kwargs) {
         let n = vector::get(node.value.func_call.kwargs, i) !*parser::Node
@@ -2864,7 +3040,7 @@ export def walk_Call(node: *parser::Node, dry_run: bool, state: *State) -> bool 
             }
         }
 
-        implicit_conversion(arg, rhstpe)
+        implicit_conversion(arg, rhstpe, state)
     }
 
     node.tpe = flatten_return_type(node, tpe.return_t)
@@ -3268,7 +3444,7 @@ def walk_StructLit(node: *parser::Node, state: *State) {
         }
 
         walk(node, n, state)
-        implicit_conversion(n, ntpe)
+        implicit_conversion(n, ntpe, state)
 
         if not ntpe or not (@n).tpe { continue }
         if not is_assignable(ntpe, (@n).tpe, state.module) {
@@ -3289,7 +3465,7 @@ def walk_StructLit(node: *parser::Node, state: *State) {
                 found = true
 
                 var ntpe = field.tpe
-                implicit_conversion(n, ntpe)
+                implicit_conversion(n, ntpe, state)
 
                 if not ntpe or not (@n).tpe { continue }
                 if not is_assignable(ntpe, (@n).tpe, state.module) {
@@ -3609,6 +3785,11 @@ export def walk_Def_with_type_argument(node: *parser::Node, parameter_t: *vector
 
     let types_map = map::make()
     replace_type_defs(tpe.parameter_t, tpe.return_t, parameter_t, true, types_map, state.module, node.inner_scope)
+    for var i in 0..vector::length(tpe.parameter_t) {
+        let old = vector::get(old_node.tpe.parameter_t, i) !*NamedParameter
+        let new = vector::get(tpe.parameter_t, i) !*NamedParameter
+        new.tpe.poly = old.tpe
+    }
 
     let keys = map::keys(types_map)
     for var i in 0..keys.size {
