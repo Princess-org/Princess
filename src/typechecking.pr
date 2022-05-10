@@ -525,6 +525,25 @@ export def create_type_entry(tpe: *Type, exported: bool, entry: *Type, module: *
     return true
 }
 
+export def copy_parameter_t(parameter_t: *vector::Vector) -> *vector::Vector {
+    let new = vector::make()
+    for var i in 0..vector::length(parameter_t) {
+        let np = vector::get(parameter_t, i) ! *NamedParameter
+        let np2 = allocate(NamedParameter)
+        @np2 = @np
+        np2.tpe = copy(np.tpe)
+        vector::push(new, np2)
+    }
+    return new
+}
+
+export def copy_return_t(return_t: *vector::Vector) -> *vector::Vector {
+    let new = vector::make()
+    for var i in 0..vector::length(return_t) {
+        vector::push(new, copy(vector::get(return_t, i) !*Type))
+    }
+    return new
+}
 
 // TODO Not a deep copy
 export def copy(a: *Type) -> *Type {
@@ -533,22 +552,14 @@ export def copy(a: *Type) -> *Type {
     @t = @a
 
     if a.kind == TypeKind::FUNCTION {
-        t.return_t = vector::make()
-        for var i in 0..vector::length(a.return_t) {
-            vector::push(t.return_t, copy(vector::get(a.return_t, i) !*Type))
-        }
-        t.parameter_t = vector::make()
-        for var i in 0..vector::length(a.parameter_t) {
-            let np = vector::get(a.parameter_t, i) ! *NamedParameter
-            let np2 = allocate(NamedParameter)
-            @np2 = @np
-            np2.tpe = copy(np.tpe)
-            vector::push(t.parameter_t, np2)
-        }
+        t.return_t = copy_return_t(a.return_t)
+        t.parameter_t = copy_parameter_t(a.parameter_t)
     } else if a.kind == TypeKind::POINTER or
         a.kind == TypeKind::REFERENCE or
         a.kind == TypeKind::STATIC_ARRAY or
-        a.kind == TypeKind::POINTER {
+        a.kind == TypeKind::POINTER or
+        a.kind == TypeKind::TYPE_DEF or
+        a.kind == TypeKind::TYPE {
         t.tpe = copy(a.tpe)
     } else if a.kind == TypeKind::GENERIC {
         t.tc_args = vector::make()
@@ -1084,17 +1095,20 @@ export def has_copy_constructor(tpe: *Type) -> bool {
     return false
 }
 
-def find_type_defs(module: *toolchain::Module, left: *Type, right: *Type, types: *map::Map, replace: bool, is_type: bool = false) {
+def find_type_defs(module: *toolchain::Module, left: *Type, right: *Type, types: *map::Map, replace: bool = true, is_type: bool = false) {
     if not left or not right { return }
 
-    if left.kind == TypeKind::TYPE_DEF {
+    if left.kind == TypeKind::TYPE_DEF and right.kind != TypeKind::TYPE_DEF {
         find_type_defs(module, left.tpe, right, types, replace, true)
         if replace {
             if left.tpe.kind == TypeKind::ARRAY and right.kind == TypeKind::STATIC_ARRAY {
                 // Turn static array into a dynamic array
                 @left = @right
                 left.kind = TypeKind::ARRAY
-            } else {
+            } else if left.tpe.kind == TypeKind::STUB or 
+                left.tpe.kind == TypeKind::STRUCT or 
+                left.tpe.kind == right.kind {
+                
                 @left = @right
             }
         }
@@ -1144,7 +1158,12 @@ def find_type_defs(module: *toolchain::Module, left: *Type, right: *Type, types:
 
 def replace_parameter(tpe: *Type, types: *map::Map) -> *Type {
     if not tpe { return null }
-    if tpe.kind == TypeKind::POINTER or tpe.kind == TypeKind::REFERENCE or 
+    if tpe.tc_args {
+        for var i in 0..vector::length(tpe.tc_args) {
+            let arg = vector::get(tpe.tc_args, i) !*Type
+            vector::set(tpe.tc_args, i, replace_parameter(arg, types))
+        }
+    } else if tpe.kind == TypeKind::POINTER or tpe.kind == TypeKind::REFERENCE or 
         tpe.kind == TypeKind::STATIC_ARRAY or tpe.kind == TypeKind::ARRAY {
         if tpe.tpe {
             tpe.tpe = replace_parameter(tpe.tpe, types)
@@ -1154,7 +1173,7 @@ def replace_parameter(tpe: *Type, types: *map::Map) -> *Type {
             let np = vector::get(tpe.parameter_t, i) !*NamedParameter
             np.tpe = replace_parameter(np.tpe, types)
         }
-    } else if length(tpe.name) > 0 {
+    } else if tpe.kind != TypeKind::TYPE_DEF and length(tpe.name) > 0 {
         let ntpe = map::get(types, tpe.name) !*Type
         if ntpe { return ntpe }
     }
@@ -1197,8 +1216,11 @@ def insert_structural_members(stpe: *Type, tpe: *Type, scpe: *scope::Scope) {
     }
 }
 
-export def replace_type_defs(param_a: *vector::Vector, return_t: *vector::Vector, param_b: *vector::Vector, replace: bool, 
-    types_map: *map::Map, module: *toolchain::Module, scpe: *scope::Scope) {
+// NOTE: This function mutates param_a and return_t, watch out!
+export def replace_type_defs(param_a: *vector::Vector, return_t: *vector::Vector, param_b: *vector::Vector, types_map: *map::Map, module: *toolchain::Module, replace: bool = true) {
+    if not types_map {
+        types_map = map::make()
+    }
 
     for var i in 0..vector::length(param_a) {
         let left = vector::get(param_a, i) !*NamedParameter
@@ -1231,47 +1253,33 @@ export def replace_type_defs(param_a: *vector::Vector, return_t: *vector::Vector
 
         let intf = get_interface(ltpe)
         if intf and replace {
-            if scpe { insert_structural_members(intf, rtpe, scpe) }
             @ltpe = @rtpe
             continue
         }
 
-        let types = map::make()
         if ltpe.kind == TypeKind::TYPE {
             if length(ltpe.name) > 0 and right and right.value {
-                map::put(types, ltpe.name, right.value.value_tpe)
+                map::put(types_map, ltpe.name, right.value.value_tpe)
                 ltpe.tpe = right.value.value_tpe
             }
         } else {
-            find_type_defs(module, ltpe, rtpe, types, replace)
+            find_type_defs(module, ltpe, rtpe, types_map, replace)
         }
 
         for var j in (i + 1)..vector::length(param_a) {
             let np = vector::get(param_a, j) !*NamedParameter
             if np.tpe {
-                np.tpe = replace_parameter(np.tpe, types)
+                np.tpe = replace_parameter(np.tpe, types_map)
             }
         }
         for var j in 0..vector::length(return_t) {
             let rtpe = vector::get(return_t, j) !*Type
-            vector::set(return_t, j, replace_parameter(rtpe, types))
+            vector::set(return_t, j, replace_parameter(rtpe, types_map))
         }
-
-        if types_map {
-            let keys = map::keys(types)
-            for var i in 0..keys.size {
-                let key = keys[i]
-                map::put(types_map, key, map::get(types, key))
-            }
-        }
-
-        free(types.entries.value)
-        free(types)
     }
 }
 
 export def overload_score(a: *Type, param_b: *vector::Vector, module: *toolchain::Module, positional: bool) -> int {
-    a = copy(a)
     return overload_score(a.parameter_t, a.return_t, param_b, module, positional)
 }
 
@@ -1280,6 +1288,9 @@ export def overload_score(a: *Type, param_b: *vector::Vector, module: *toolchain
 // -1 is returned if the argument types don't match.
 
 export def overload_score(param_a: *vector::Vector, return_t: *vector::Vector, param_b: *vector::Vector, module: *toolchain::Module, positional: bool) -> int {
+    param_a = copy_parameter_t(param_a)
+    return_t = copy_return_t(return_t)
+    
     if vector::length(param_a) > vector::length(param_b) {
         let not_default_param = (vector::get(param_a, vector::length(param_b)) !*NamedParameter).value == null
         if vector::length(param_a) == vector::length(param_b) + 1 {
@@ -1291,7 +1302,7 @@ export def overload_score(param_a: *vector::Vector, return_t: *vector::Vector, p
         }
     }
 
-    replace_type_defs(param_a, return_t, param_b, false, null, module, null)
+    replace_type_defs(param_a, return_t, param_b, null, module, false)
 
     var sum = 0
     for var i in 0..vector::length(param_b) {
@@ -1501,6 +1512,7 @@ def lookup_type_constructor(tc: *parser::Node, node: *parser::Node, state: *Stat
     return tpe
 }
 
+// This generates concrete functons when refering to type constructors
 export def generate_concrete_functions(type_constructor: *Type, tpe: *Type, state: *State) {
     let keys = map::keys(type_constructor.cache)
     for var i in 0..keys.size {
@@ -1515,7 +1527,7 @@ export def generate_concrete_functions(type_constructor: *Type, tpe: *Type, stat
             @np = { name = "", tpe = tpe } !NamedParameter
             vector::push(pars, np)
             
-            replace_type_defs(ftpe.parameter_t, ftpe.return_t, pars, true, null, state.module, state.scope)
+            replace_type_defs(ftpe.parameter_t, ftpe.return_t, pars, null, state.module)
             ftpe.type_name = mangle_function_name(append_module(ftpe.name, ftpe.module.module), ftpe.parameter_t)
             let new_entry = create_type_entry(tpe, function.exported, ftpe, function.module)
             if not is_polymorph(ftpe) and new_entry {
@@ -1543,28 +1555,37 @@ export def type_lookup(node: *parser::Node, state: *State, current_type: *Type =
     if tpe == current_type { return current_type }
     
     let type_constructor = get_type_constructor(tpe)
-    if tpe and type_constructor {
+    if tpe and type_constructor and type_constructor.kind != TypeKind::STUB {
         let type_name = debug::type_to_str(tpe, full_name = true)
 
-        if tpe.name != "<anonymous>" and not map::contains(type_constructor.cache, type_name) {
+        if not map::contains(type_constructor.cache, type_name) {
             generate_concrete_functions(type_constructor, tpe, state)
             map::put(type_constructor.cache, type_name, tpe)
-        }
 
-        let tpe2 = get_generic(tpe)
-        if tpe.name != "<anonymous>" and tpe.kind != TypeKind::GENERIC and tpe2 and not tpe2.tc_incomplete {
-            // We need to generate the destructor here
-            let args = vector::make()
-            let np = allocate(NamedParameter)
-            @np = { name = "", tpe = pointer(tpe) }
-            vector::push(args, np)
-            
-            scope::get_function(type_constructor.node.module.scope, parser::make_identifier(["destruct"]), args)
+            let tpe2 = get_generic(tpe)
+            if tpe.kind != TypeKind::GENERIC and tpe2 and not tpe2.tc_incomplete {
+                // We need to generate the destructor and copy constructor here
+                let args = vector::make()
+                let np = allocate(NamedParameter)
+                @np = { name = "", tpe = pointer(tpe) }
+                vector::push(args, np)
+                
+                scope::get_function(type_constructor.node.module.scope, parser::make_identifier(["destruct"]), args)
+
+                let args2 = vector::make()
+                let np2 = allocate(NamedParameter)
+                @np2 = { name = "", tpe = pointer(tpe) }
+                vector::push(args2, np2)
+                vector::push(args2, np2)
+
+                scope::get_function(type_constructor.node.module.scope, parser::make_identifier(["construct"]), args2)
+            }
         }
     }
     return tpe
 }
 
+// TODO current_type is basically a hack, there's really no reason why you should already have a type and then look it up again
 export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Type = null, lookup_default: bool = false, parameter_types: *map::Map = null) -> *Type {
     if not node { return null }
     if node.kind == parser::NodeKind::IDENTIFIER {
@@ -1625,7 +1646,7 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
             var bit_size = 0 !size_t
 
             var field_type: *Type = null
-            if current_type { field_type = current_type.fields[i].tpe }
+            if current_type and current_type.kind != TypeKind::STUB { field_type = current_type.fields[i].tpe }
 
             if (@field).kind == parser::NodeKind::ID_DECL_STRUCT {
                 let ident = (@field).value.id_decl_struct.ident
@@ -1797,6 +1818,9 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
         if current_type { return current_type }
         let wrapped = type_lookup(node.value.expr, state, current_type, lookup_default, parameter_types)
         let tpe = make_type_raw(TypeKind::TYPE_DEF)
+        if node.value.expr.kind == parser::NodeKind::IDENTIFIER {
+            tpe.name = parser::identifier_to_str(node.value.expr)
+        }
         tpe.line = node.loc.line
         tpe.tpe = wrapped
         tpe.module = state.module
@@ -1867,47 +1891,51 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
 
         return tpe
     } else if node.kind == parser::NodeKind::TYPE_CONSTRUCTOR {
-        if current_type and not current_type.tc_incomplete { 
+        if current_type and current_type.kind != TypeKind::STUB and not current_type.tc_incomplete and 
+            (not current_type.tc_tpe or current_type.tc_tpe.kind != TypeKind::STUB) { 
             return current_type 
         }
 
         var tpe = current_type
         let name = node.value.type_constructor.name
-        let value = scope::get(state.scope, name, true)
-        if not value {
-            if not lookup_default {
-                errors::errorn(node, "Unknown identifier `", parser::identifier_to_str(name), "`") 
-            }
-            return null
-        }
-        let type_constructor = value.value.value_tpe
-        if type_constructor.kind == TypeKind::STUB { return null }
-        if type_constructor.kind != TypeKind::TYPE_CONSTRUCTOR {
-            errors::errorn(node, "Not a type constructor")
-            return null
-        }
-        if vector::length(type_constructor.parameter_t) != vector::length(node.value.type_constructor.args) {
-            errors::errorn(node, 
-                "Wrong amount of arguments to type constructor, expected ", 
-                util::int_to_str(vector::length(type_constructor.parameter_t)),
-                " got ",
-                util::int_to_str(vector::length(node.value.type_constructor.args)))
-            return null
-        }
 
+        let type_constructor = type_lookup(name, state, null, lookup_default)
+
+        if type_constructor.kind != TypeKind::STUB {
+            if type_constructor.kind != TypeKind::TYPE_CONSTRUCTOR {
+                errors::errorn(node, "Not a type constructor")
+                return null
+            }
+            if vector::length(type_constructor.parameter_t) != vector::length(node.value.type_constructor.args) {
+                errors::errorn(node, "Wrong amount of arguments to type constructor, expected ",
+                    util::int_to_str(vector::length(type_constructor.parameter_t)),
+                    " got ",
+                    util::int_to_str(vector::length(node.value.type_constructor.args)))
+                return null
+            }
+        }
+       
         let tc_args = vector::make()
         var is_complete = true
         var is_generic = false
 
         state.scope = scope::enter_scope(state.scope)
-        for var i in 0..vector::length(type_constructor.parameter_t) {
-            let np = vector::get(type_constructor.parameter_t, i) !*NamedParameter
+        for var i in 0..vector::length(node.value.type_constructor.args) {
             let arg = vector::get(node.value.type_constructor.args, i) !*parser::Node
-            let argtpe = type_lookup(arg, state, null, lookup_default, parameter_types)
+            var np: *NamedParameter = null
+            if type_constructor.kind != TypeKind::STUB {
+                np = vector::get(type_constructor.parameter_t, i) !*NamedParameter
+            }
+
+            var previous: *Type = null
+            if current_type {
+                previous = vector::get(current_type.tc_args, i) !*Type
+            }
+            let argtpe = type_lookup(arg, state, previous, lookup_default, parameter_types)
             if argtpe {
                 if argtpe.kind == TypeKind::TYPE_DEF { is_generic = true }
                 else if argtpe.kind == TypeKind::STUB { is_complete = false }
-                else {
+                else if np {
                     scope::create_type(state.scope, parser::make_identifier([np.name]), parser::ShareMarker::NONE, argtpe)
                 }
             } else { is_complete = false }
@@ -1924,8 +1952,11 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
             state.scope = scope::exit_scope(state.scope)
             return tpe
         }
-        
-        tpe = type_lookup(type_constructor.node, state, tpe, lookup_default, parameter_types)
+        if type_constructor.kind != TypeKind::STUB {
+            tpe = type_lookup(type_constructor.node, state, null, lookup_default, parameter_types)
+        } else {
+            tpe = make_type_raw(TypeKind::STUB)
+        }
         tpe.tc_tpe = type_constructor
         tpe.tc_args = tc_args
         tpe.tc_incomplete = not is_complete
@@ -3878,7 +3909,7 @@ export def walk_Def_with_type_argument(node: *parser::Node, parameter_t: *vector
     }
 
     let types_map = map::make()
-    replace_type_defs(tpe.parameter_t, tpe.return_t, parameter_t, true, types_map, state.module, node.inner_scope)
+    replace_type_defs(tpe.parameter_t, tpe.return_t, parameter_t, types_map, state.module)
     for var i in 0..vector::length(tpe.parameter_t) {
         let old = vector::get(old_node.tpe.parameter_t, i) !*NamedParameter
         let new = vector::get(tpe.parameter_t, i) !*NamedParameter
