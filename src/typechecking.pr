@@ -504,23 +504,27 @@ export def create_type_entry(tpe: *Type) -> *TypeEntry {
     return type_entry
 }
 
-export def create_type_entry(tpe: *Type, exported: bool, entry: *Type, module: *toolchain::Module) -> bool {
-    var type_entry = create_type_entry(tpe)
+export def create_type_entry(tpe: *Type, exported: bool, entry: *Type, module: *toolchain::Module, overwrite: bool = false) -> bool {
+    let type_entry = create_type_entry(tpe)
 
-    // TODO Use a set for this
     let key = debug::type_to_str(entry, full_name = true)
-    for var i in 0..vector::length(type_entry.functions) {
-        let fun = vector::get(type_entry.functions, i) !*TypeEntryMember
-        if fun.key == key { return false }
-    }
-
     let member_function = allocate(TypeEntryMember)
     @member_function = {
         key = key,
-        function = entry,
+        function = shallow_copy(entry),
         exported = exported,
         module = module
     } !TypeEntryMember
+
+    // TODO Use a set for this
+    for var i in 0..vector::length(type_entry.functions) {
+        let fun = vector::get(type_entry.functions, i) !*TypeEntryMember
+        if fun.key == key {
+            if overwrite { vector::set(type_entry.functions, i, member_function) }
+            return false 
+        }
+    }
+
     vector::push(type_entry.functions, member_function)
     return true
 }
@@ -572,6 +576,22 @@ export def copy(a: *Type) -> *Type {
     }
 
     return t
+}
+
+export def shallow_copy(tpe: *Type) -> *Type {
+    var ret = allocate(Type)
+    @ret = @tpe
+    if tpe.kind == TypeKind::FUNCTION {
+        ret.return_t = vector::copy(tpe.return_t)
+        ret.parameter_t = vector::make()
+        for var i in 0..vector::length(tpe.parameter_t) {
+            let np = vector::get(tpe.parameter_t, i) !*NamedParameter
+            let np2 = allocate(NamedParameter)
+            @np2 = @np
+            vector::push(ret.parameter_t, np2)
+        }
+    }
+    return ret
 }
 
 export def equals(a: *Type, b: *Type) -> bool {
@@ -2765,14 +2785,31 @@ def walk_Import(node: *parser::Node, state: *State) {
     }
 }
 
+def put_type_defs(tpe: *Type, parameter_types: *map::Map) {
+    if not tpe { return }
+    if tpe.kind == TypeKind::TYPE_DEF or tpe.kind == TypeKind::TYPE {
+        map::put(parameter_types, tpe.name, map::sentinel)
+    } else if tpe.kind == TypeKind::POINTER or
+        tpe.kind == TypeKind::REFERENCE or
+        tpe.kind == TypeKind::STATIC_ARRAY or
+        tpe.kind == TypeKind::ARRAY {
+        put_type_defs(tpe.tpe, parameter_types)
+    } else if tpe.kind == TypeKind::GENERIC {
+        for var i in 0..vector::length(tpe.tc_args) {
+            let arg = vector::get(tpe.tc_args, i) !*Type
+            put_type_defs(arg, parameter_types)
+        }
+    }
+}
+
 // Redefine function parameters to get rid of the stub types
-export def lookup_parameters(node: *parser::Node, state: *State, skip_type_parameters: bool = true) {
+export def lookup_parameters(node: *parser::Node, state: *State, skip_type_parameters: bool = true) -> *Type {
     let share = node.value.def_.share
     let params = node.value.def_.params
     let returns = node.value.def_.returns
-    let tpe = node.tpe
+    let tpe = copy(node.tpe)
 
-    if node.value.def_.has_lookup { return }
+    if node.value.def_.has_lookup { return tpe }
     node.value.def_.has_lookup = true
 
     let parameter_types = map::make()
@@ -2781,9 +2818,9 @@ export def lookup_parameters(node: *parser::Node, state: *State, skip_type_param
         let named = vector::get(tpe.parameter_t, i) !*NamedParameter
         if not named.tpe or named.tpe.kind != TypeKind::TYPE {
             named.tpe = type_lookup(param.value.param.tpe, state, named.tpe, false, parameter_types)            
-        } else if skip_type_parameters {
-            let name = scope::last_path_element(param.value.param.name)
-            map::put(parameter_types, name, map::sentinel)
+        }
+        if skip_type_parameters {
+            put_type_defs(named.tpe, parameter_types)
         }
     }
     for var i in 0..vector::length(returns) {
@@ -2794,6 +2831,8 @@ export def lookup_parameters(node: *parser::Node, state: *State, skip_type_param
 
     free(parameter_types.entries.value)
     free(parameter_types)
+
+    return tpe
 }
 
 def check_is_valid_function(ident: *parser::Node, par: *vector::Vector, state: *State) {
@@ -2844,11 +2883,12 @@ export def walk_Def(node: *parser::Node, state: *State) {
 
     if not name or not params or not returns { return }
 
-    if not current_function(state).is_global {
+    // TODO
+    /*if not current_function(state).is_global {
         if share != parser::ShareMarker::NONE {
             errors::errorn(node, "Can't share non top level function")
         }
-    }
+    }*/
     
     if not node.tpe { return }
     let tpe = make_function_type_n(name, node.tpe.parameter_t, node.tpe.return_t, state.module, extern, imported, dllimport)
@@ -2872,14 +2912,14 @@ export def walk_Def(node: *parser::Node, state: *State) {
         }
     }
 
-    if not current_function(state).is_global {
+    //if not current_function(state).is_global {
         // This is so that we don't create overloaded functions
         // inside of a function
         // TODO what about forward declarations?
-        scope::create_variable(outer_scope, name, share, parser::VarDecl::CONST, tpe, null)
-    } else {
+    //    scope::create_variable(outer_scope, name, share, parser::VarDecl::CONST, tpe, null)
+    //} else {
         scope::create_function(outer_scope, name, share, tpe, phase, node, state)
-    }
+    //}
     
     if body {
         let function = allocate(Function)
@@ -3902,6 +3942,8 @@ export def walk_Def_with_type_argument(node: *parser::Node, parameter_t: *vector
 
     let types_map = map::make()
     replace_type_defs(tpe.parameter_t, tpe.return_t, parameter_t, types_map, state.module)
+    tpe.type_name = mangle_function_name(append_module(tpe.name, tpe.module.module), tpe.parameter_t)
+
     for var i in 0..vector::length(tpe.parameter_t) {
         let old = vector::get(old_node.tpe.parameter_t, i) !*NamedParameter
         let new = vector::get(tpe.parameter_t, i) !*NamedParameter
@@ -3915,14 +3957,14 @@ export def walk_Def_with_type_argument(node: *parser::Node, parameter_t: *vector
         scope::create_type(node.inner_scope, parser::make_identifier([key]), parser::ShareMarker::NONE, tpe2)
     }
 
-    if vector::length(tpe.parameter_t) > 0 {
-        let first_param = vector::get(tpe.parameter_t, 0) !*NamedParameter
-        create_type_entry(first_param.tpe, (share !int & parser::ShareMarker::EXPORT !int) != 0, tpe, state.module)
-    }
-
     state.scope = node.inner_scope
     node.value.def_.has_lookup = false
-    lookup_parameters(node, state, false)
+    node.tpe = lookup_parameters(node, state, false)
+
+    if vector::length(tpe.parameter_t) > 0 {
+        let first_param = vector::get(tpe.parameter_t, 0) !*NamedParameter
+        create_type_entry(first_param.tpe, (share !int & parser::ShareMarker::EXPORT !int) != 0, tpe, state.module, true)
+    }
 
     state.scope = node.scope
     walk_Def(node, state)
