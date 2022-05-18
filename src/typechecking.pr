@@ -266,7 +266,8 @@ export def is_stub(tpe: *Type) -> bool {
 }
 
 export def is_interface(tpe: *Type) -> bool {
-    return get_interface(tpe) != null
+    if not tpe { return false }
+    return tpe.kind == TypeKind::STRUCTURAL
 }
 
 export def get_interface(tpe: *Type) -> *Type {
@@ -1524,7 +1525,7 @@ export def generate_concrete_functions(type_constructor: *Type, tpe: *Type, stat
 }
 
 export def type_lookup(node: *parser::Node, state: *State, current_type: *Type = null, lookup_default: bool = false, parameter_types: *map::Map = null) -> *Type {
-    let tpe = do_type_lookup(node, state, current_type, lookup_default, parameter_types)
+    var tpe = do_type_lookup(node, state, current_type, lookup_default, parameter_types)
     if tpe == current_type { return current_type }
     
     let type_constructor = get_type_constructor(tpe)
@@ -1555,8 +1556,21 @@ export def type_lookup(node: *parser::Node, state: *State, current_type: *Type =
             }
         }
     }
+    if tpe and (tpe.kind == TypeKind::STRUCT or tpe.kind == TypeKind::UNION) {
+        if check_is_recursive(tpe) {
+            if not tpe.node.is_recursive_type { 
+                errors::errorn(tpe.node, "Recursive type declaration!")
+            }
+            tpe.node.is_recursive_type = true
+            tpe = make_type_raw(TypeKind::STUB)
+        }
+    }
+
     return tpe
 }
+
+// This contains cached instances of generic types
+var cached = map::make()
 
 // TODO current_type is basically a hack, there's really no reason why you should already have a type and then look it up again
 export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Type = null, lookup_default: bool = false, parameter_types: *map::Map = null) -> *Type {
@@ -1648,6 +1662,7 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
         tpe.name = "<anonymous>"
         tpe.line = node.loc.line
         tpe.module = state.module
+        tpe.node = node
 
         return tpe
     } else if node.kind == parser::NodeKind::UNION_T {
@@ -1713,6 +1728,7 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
         tpe.fields = fields
         tpe.field_types = field_types
         tpe.module = state.module
+        tpe.node = node
 
         return tpe
     } else if node.kind == parser::NodeKind::ENUM_T {
@@ -1888,13 +1904,18 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
                 return null
             }
         }
+
+        let name_buf = *buffer::make_buffer()
+        name_buf.append_str(type_constructor.type_name)
+        name_buf.append_char('(')
        
         let tc_args = vector::make()
         var is_complete = true
         var is_generic = false
 
+        let len = vector::length(node.value.type_constructor.args)
         state.scope = scope::enter_scope(state.scope)
-        for var i in 0..vector::length(node.value.type_constructor.args) {
+        for var i in 0..len {
             let arg = vector::get(node.value.type_constructor.args, i) !*parser::Node
             var np: *NamedParameter = null
             if type_constructor.kind != TypeKind::STUB {
@@ -1914,7 +1935,12 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
                 }
             } else { is_complete = false }
             vector::push(tc_args, argtpe)
+            name_buf.append_str(debug::type_to_str(argtpe, full_name = true))
+            if i < len -1 {
+                name_buf.append_str(", ")
+            }
         }
+        name_buf.append_char(')')
 
         if is_generic {
             tpe = make_type_raw(TypeKind::GENERIC)
@@ -1926,21 +1952,31 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
             state.scope = scope::exit_scope(state.scope)
             return tpe
         }
+        let type_name = name_buf.to_string()
+        var cached_type = map::get(cached, type_name) !*Type
+        if cached_type != null {
+            state.scope = scope::exit_scope(state.scope)
+            return cached_type
+        }
+        cached_type = make_type_raw(TypeKind::STUB)
+        map::put(cached, type_name, cached_type)
         if type_constructor.kind != TypeKind::STUB {
             tpe = type_lookup(type_constructor.node, state, null, lookup_default, parameter_types)
         } else {
             tpe = make_type_raw(TypeKind::STUB)
         }
+
         tpe.tc_tpe = type_constructor
         tpe.tc_args = tc_args
         tpe.tc_incomplete = not is_complete
         tpe.module = state.module 
         // TODO use type_to_string by default
-        tpe.type_name = debug::type_to_str(tpe, full_name = true)
+        tpe.type_name = type_name
         tpe.name = debug::type_to_str(tpe)
 
         state.scope = scope::exit_scope(state.scope)
-        return tpe
+        @cached_type = @tpe
+        return cached_type
     }
 
     return null
@@ -2910,6 +2946,28 @@ export def walk_Def(node: *parser::Node, state: *State) {
     }
 
     node.tpe = tpe
+}
+
+def check_is_recursive(tpe: *Type, types: *map::Map = null) -> bool {
+    if not types { types = map::make() }
+    if tpe.kind == TypeKind::STATIC_ARRAY {
+        return check_is_recursive(tpe.tpe, types)
+    }
+    if tpe.kind == TypeKind::STRUCT or tpe.kind == TypeKind::UNION {
+        if tpe.name != "<anonymous>" {
+            if map::contains(types, tpe.type_name) { return true }
+            map::put(types, tpe.type_name, map::sentinel)
+        }
+        for var i in 0..tpe.fields.size {
+            let new_types = map::make()
+            let keys = map::keys(types)
+            for var j in 0..keys.size {
+                map::put(new_types, keys[j], map::get(types, keys[j]))
+            }
+            if check_is_recursive(tpe.fields[i].tpe, new_types) { return true }
+        }
+    }
+    return false
 }
 
 def walk_TypeDecl(node: *parser::Node, state: *State) {
