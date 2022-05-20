@@ -425,6 +425,9 @@ export type Function = struct {
     has_defer: bool
     defers: *typechecking::Type
     env: *typechecking::Type
+    
+    // This is a map of local variables that are defined at that point
+    function_locals: *map::Map
 
     is_compiled: bool
     is_main: bool
@@ -2611,6 +2614,7 @@ def insert_destructors(scpe: *scope::Scope, loc: *Value, state: *State) {
         if value.global {
             kind = ValueKind::GLOBAL
         }
+        if state.current_function and not map::contains(state.current_function.function_locals, name) { continue }
         insert_destructor({ kind = kind, tpe = pointer(value.tpe), name = name } !Value, scpe, loc, state)
     }
     if scpe.is_function and scpe.underscore {
@@ -3501,6 +3505,11 @@ def walk_AlignOf(node: *parser::Node, state: *State) -> Value {
     return value
 }
 
+def convert_ref_to_int(node: *parser::Node, value: Value, loc: *Value, state: *State) -> Value {
+    let gep_ret = state.extract_value(pointer(value.tpe.tpe), value, [1], loc)
+    return state.ptr_to_int(gep_ret, loc)
+}
+
 def compare(node: *parser::Node, left: Value, right: Value, state: *State) -> Value {
     if not left.tpe or not right.tpe { return NO_VALUE }
     let loc = make_location(node, state)
@@ -3604,6 +3613,12 @@ def compare(node: *parser::Node, left: Value, right: Value, state: *State) -> Va
     }
     if typechecking::is_pointer(right.tpe) {
         right = convert_to(node, right, builtins::size_t_, state)
+    }
+    if typechecking::is_ref(left.tpe) {
+        left = convert_ref_to_int(node, left, loc, state)
+    }
+    if typechecking::is_ref(right.tpe) {
+        right = convert_ref_to_int(node, right, loc, state)
     }
     if (@left.tpe).kind == typechecking::TypeKind::NULL {
         left = make_int_value(0)
@@ -3979,7 +3994,7 @@ def walk_If(node: *parser::Node, state: *State) {
             walk(stmt, state)
             last_node = stmt
         }
-        insert_destructors(node.inner_scope, make_location(last_node, state), state)
+        insert_destructors(else_.inner_scope, make_location(last_node, state), state)
         pop_scope(state)
         push_insn(exit, state)
     }
@@ -4543,6 +4558,9 @@ export def walk_VarDecl(node: *parser::Node, state: *State, set_constant: bool =
                     name = value.assembly_name,
                     tpe = tpe
                 } !Value
+                if state.current_function {
+                    map::put(state.current_function.function_locals, value.assembly_name, map::sentinel)
+                }
 
                 let insn = make_insn_dbg(InsnKind::ALLOCA, loc)
                 (@insn).value.alloca = {
@@ -4730,8 +4748,9 @@ def walk_Defer(node: *parser::Node, state: *State) {
         args = parameter_t,
         allocas = vector::make(),
         block = block,
-        module = state.module
-    }
+        module = state.module,
+        function_locals = map::make()
+    } !Function
 
     let scope = vector::pop(state.discope)
     create_debug_info(node, function, tpe, state)
@@ -5549,7 +5568,8 @@ export def predeclare_function(tpe: *typechecking::Type, module: *toolchain::Mod
         allocas = vector::make(),
         imported = tpe.imported,
         module = module,
-        dllimport = tpe.dllimport
+        dllimport = tpe.dllimport,
+        function_locals = map::make()
     } !Function
 
     if vector::length(tpe.parameter_t) > 0 {
@@ -5815,7 +5835,8 @@ def walk_TypeDecl(node: *parser::Node, state: *State) {
                 unmangled = "to_string",
                 args = parameter_t,
                 ret = builtins::string_,
-                module = state.module
+                module = state.module,
+                function_locals = map::make()
             } !Function
 
             let block = make_block()
@@ -6863,7 +6884,8 @@ def do_create_type(tpe: *Type, svalue: *scope::Value, module: *toolchain::Module
         unmangled = "__main__",
         forward_declare = true,
         allocas = vector::make(),
-        block = new_block
+        block = new_block,
+        function_locals = map::make()
     } !Function
     consteval::compiler_state.current_function = function
     consteval::compiler_state.current_block = new_block
