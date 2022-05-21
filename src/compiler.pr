@@ -293,30 +293,29 @@ export type InsnArithmetic = struct {
     right: Value
 }
 
-export def sub(state: *State, ret: *typechecking::Type, left: Value, right: Value, loc: *Value = null) -> Value {
-    let sub_ret = make_local_value(ret, null, state)
-    let sub = make_insn_dbg(InsnKind::SUB, loc)
-    sub.value.arith = {
-        ret = sub_ret,
+def arithmetic(state: *State, kind: InsnKind, ret: *typechecking::Type, left: Value, right: Value, loc: *Value) -> Value {
+    let retv = make_local_value(ret, null, state)
+    let arith = make_insn_dbg(kind, loc)
+    arith.value.arith = {
+        ret = retv,
         left = left,
         right = right
     } !InsnArithmetic
-    push_insn(sub, state)
+    push_insn(arith, state)
     
-    return sub_ret
+    return retv
+}
+
+export def sub(state: *State, ret: *typechecking::Type, left: Value, right: Value, loc: *Value = null) -> Value {
+    return arithmetic(state, InsnKind::SUB, ret, left, right, loc)
 }
 
 export def add(state: *State, ret: *typechecking::Type, left: Value, right: Value, loc: *Value = null) -> Value {
-    let add_ret = make_local_value(ret, null, state)
-    let add = make_insn_dbg(InsnKind::ADD, loc)
-    add.value.arith = {
-        ret = add_ret,
-        left = left,
-        right = right
-    } !InsnArithmetic
-    push_insn(add, state)
-    
-    return add_ret
+    return arithmetic(state, InsnKind::ADD, ret, left, right, loc)
+}
+
+export def mul(state: *State, ret: *typechecking::Type, left: Value, right: Value, loc: *Value = null) -> Value {
+    return arithmetic(state, InsnKind::MUL, ret, left, right, loc)
 }
 
 export type InsnAlloca = struct {
@@ -1299,10 +1298,11 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
 
                 // We need to copy the array
                 let size = state.extract_value(builtins::int64_, value, [0], loc)
+                let size_in_bytes = state.mul(builtins::int64_, size, { kind = ValueKind::INT, tpe = builtins::int64_, i = value.tpe.tpe.size } !Value, loc)
                 let ptr = state.extract_value(pointer(value.tpe.tpe), value, [1], loc)
                 let ptr_i8 = state.bitcast(pointer(builtins::int8_), ptr, loc)
-                let new_ptr_i8 = state.call("malloc", pointer(builtins::int8_), [size], loc)
-                state.call("memcpy", pointer(builtins::int8_), [new_ptr_i8, ptr_i8, size])
+                let new_ptr_i8 = state.call("malloc", pointer(builtins::int8_), [size_in_bytes], loc)
+                state.call("memcpy", pointer(builtins::int8_), [new_ptr_i8, ptr_i8, size_in_bytes])
                 let new_ptr = state.bitcast(pointer(value.tpe.tpe), new_ptr_i8, loc)
                 value = { kind = ValueKind::UNDEF, tpe = value.tpe } !Value
                 value = state.insert_value(value.tpe, value, size, [0], loc)
@@ -6233,9 +6233,20 @@ def create_destructor(tpe: *typechecking::Type, value: Value, state: *State) {
         }
         vector::push(args, np)
 
+        let ident = parser::make_identifier(["destruct"])
+
         // There can only be one destructor for this type
-        let destructor = scope::get_function(structure_type.module.scope, parser::make_identifier(["destruct"]), args)
+        var destructor = scope::get_function(structure_type.module.scope, ident, args, false, false, false)
         if destructor {
+            if destructor.phase == scope::Phase::DEFINED {
+                // We need to generate the function because this is done too late
+                // TODO make a function that does this
+                destructor = scope::typecheck_function(destructor, ident, structure_type.module.scope, true, args)
+                let node = destructor.node
+                predeclare_function(node.tpe, destructor.state.module)
+                create_function(node, node.tpe, node.value.def_.body, node.inner_scope,
+                         null, node.value.def_.locals, node.value.def_.has_defer, destructor.state.module.compiler_state)
+            }
             predeclare_function(destructor.tpe, state.module)
             map::put(state.module.imported, destructor.tpe.type_name, map::sentinel)
 
@@ -7168,8 +7179,7 @@ def generate_vtable_function(function: *Function, tpe: *typechecking::Type, stat
 export var time_spent: int64 = 0
 
 export def compile(module: *toolchain::Module) {
-    let state = make_state(module)
-    compile(*state, module.module == "main")
+    compile(module.compiler_state, module.module == "main")
 }
 
 export def compile(state: *State, is_main: bool, no_cleanup: bool = false) {
