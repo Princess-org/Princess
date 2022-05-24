@@ -1537,6 +1537,7 @@ export def type_lookup(node: *parser::Node, state: *State, current_type: *Type =
             let tpe2 = get_generic(tpe)
             if tpe.kind != TypeKind::GENERIC and tpe2 and not tpe2.tc_incomplete {
                 // We need to generate the destructor and copy constructor here
+                // TODO This is probably not needed anymore, see compiler::create_destructor
                 let args = vector::make()
                 let np = allocate(NamedParameter)
                 @np = { name = "", tpe = pointer(tpe) }
@@ -1887,7 +1888,7 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
         var tpe = current_type
         let name = node.value.type_constructor.name
 
-        let type_constructor = type_lookup(name, state, null, lookup_default)
+        var type_constructor = type_lookup(name, state, null, lookup_default)
 
         if type_constructor.kind != TypeKind::STUB {
             if type_constructor.kind != TypeKind::TYPE_CONSTRUCTOR {
@@ -1907,7 +1908,7 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
         name_buf.append_str(type_constructor.type_name)
         name_buf.append_char('(')
        
-        let tc_args = vector::make()
+        var tc_args = vector::make()
         var is_complete = true
         var is_generic = false
 
@@ -1950,7 +1951,7 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
             state.scope = scope::exit_scope(state.scope)
             return tpe
         }
-        let type_name = name_buf.to_string()
+        var type_name = name_buf.to_string()
         var cached_type = map::get(cached, type_name) !*Type
         if cached_type != null {
             state.scope = scope::exit_scope(state.scope)
@@ -1960,6 +1961,11 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
         map::put(cached, type_name, cached_type)
         if type_constructor.kind != TypeKind::STUB {
             tpe = type_lookup(type_constructor.node, state, null, lookup_default, parameter_types)
+            if type_constructor.node.kind == parser::NodeKind::TYPE_CONSTRUCTOR {
+                type_name = tpe.type_name
+                tc_args = tpe.tc_args
+                type_constructor = tpe.tc_tpe
+            }
         } else {
             tpe = make_type_raw(TypeKind::STUB)
         }
@@ -2334,6 +2340,7 @@ export def walk_VarDecl(node: *parser::Node, state: *State, set_constant: bool =
                     errors::errorn(node, "Incompatible types ", debug::type_to_str(rtpe), " and ", debug::type_to_str(ltpe))
                 } else if ltpe and ltpe.kind == TypeKind::STATIC_ARRAY and ltpe.length == util::MAX_UINT64 {
                     ltpe.length = rtpe.length
+                    ltpe.size = rtpe.size
                 }
             }
 
@@ -2815,10 +2822,11 @@ def check_is_valid_function(ident: *parser::Node, par: &Vector(NamedParameter), 
             errors::errorn(ident, "Destructor takes exactly one parameter of a pointer type")
             return
         }
-        if not first.tpe or first.tpe.module != state.module {
+        // TODO This is a useful restriction but its problematic with polymorphic types
+        /*if not first.tpe or first.tpe.module != state.module {
             errors::errorn(ident, "Argument type needs to be defined in the same file as the destructor")
             return
-        }
+        }*/
     } else if name == "construct" {
         if vector::length(par) != 2 {
             errors::errorn(ident, "Copy constructor takes exactly two parameters of the same pointer type")
@@ -2830,10 +2838,10 @@ def check_is_valid_function(ident: *parser::Node, par: &Vector(NamedParameter), 
             errors::errorn(ident, "Copy constructor takes two parameters of the same pointer type")
             return
         }
-        if not first.tpe or first.tpe.module != state.module {
+        /*if not first.tpe or first.tpe.module != state.module {
             errors::errorn(ident, "Argument types need to be defined in the same file as the copy constructor")
             return
-        }
+        }*/
     }
 }
 
@@ -2894,7 +2902,7 @@ export def walk_Def(node: *parser::Node, state: *State) {
         @function = {
             tpe = tpe,
             locals = map::make()
-        }
+        } !Function
 
         state.scope = inner_scope
         push_function(state, function)
@@ -3521,30 +3529,34 @@ def walk_ArraySubscript(node: *parser::Node, state: *State) {
     let tpe = (@left).tpe
     if not tpe { return }
 
-    if not (node.parent.kind == parser::NodeKind::ASSIGN and vector::index_of(node.parent.value.assign.left, node) != -1) {
-        let args = create_args(left, right)
-        convert_to_call(node, "get_item", args, state)
-    } else {
-        // TODO This is done twice
-        let value = node.parent.value.bin_op.right
-        walk(node.parent, value, state)
+    if node.parent.kind == parser::NodeKind::ASSIGN {
+        let index = vector::index_of(node.parent.value.assign.left, node)
+        if vector::index_of(node.parent.value.assign.left, node) == -1 {
+            let args = create_args(left, right)
+            convert_to_call(node, "get_item", args, state)
+        } else if index < vector::length(node.parent.value.assign.right) {
+            // TODO This is done twice
+            let value = vector::get(node.parent.value.assign.right, index) !*parser::Node
+            walk(node.parent, value, state)
 
-        let args = vector::make()
-        let np1 = allocate(NamedParameter)
-        @np1 = { name = "", tpe = left.tpe }
-        let np2 = allocate(NamedParameter)
-        @np2 = { name = "", tpe = right.tpe }
-        let np3 = allocate(NamedParameter)
-        @np3 = { name = "", tpe = value.tpe }
-        vector::push(args, np1)
-        vector::push(args, np2)
-        vector::push(args, np3)
+            let args = vector::make()
+            let np1 = allocate(NamedParameter)
+            @np1 = { name = "", tpe = left.tpe }
+            let np2 = allocate(NamedParameter)
+            @np2 = { name = "", tpe = right.tpe }
+            let np3 = allocate(NamedParameter)
+            @np3 = { name = "", tpe = value.tpe }
+            vector::push(args, np1)
+            vector::push(args, np2)
+            vector::push(args, np3)
 
-        let set_item = scope::get_function(state.scope, parser::make_identifier(["set_item"]), args)
-        if set_item {
-            return
-        } 
+            let set_item = scope::get_function(state.scope, parser::make_identifier(["set_item"]), args)
+            if set_item {
+                return
+            } 
+        }
     }
+    
     
     if node.kind != parser::NodeKind::FUNC_CALL {
         if is_pointer(tpe) or (@tpe).kind == TypeKind::ARRAY or

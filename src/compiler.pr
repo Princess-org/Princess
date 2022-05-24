@@ -11,6 +11,7 @@ import typechecking
 import consteval
 import errors
 import eval
+import md5
 
 export type Label = struct {
     name: string
@@ -292,30 +293,29 @@ export type InsnArithmetic = struct {
     right: Value
 }
 
-export def sub(state: *State, ret: *typechecking::Type, left: Value, right: Value, loc: *Value = null) -> Value {
-    let sub_ret = make_local_value(ret, null, state)
-    let sub = make_insn_dbg(InsnKind::SUB, loc)
-    sub.value.arith = {
-        ret = sub_ret,
+def arithmetic(state: *State, kind: InsnKind, ret: *typechecking::Type, left: Value, right: Value, loc: *Value) -> Value {
+    let retv = make_local_value(ret, null, state)
+    let arith = make_insn_dbg(kind, loc)
+    arith.value.arith = {
+        ret = retv,
         left = left,
         right = right
     } !InsnArithmetic
-    push_insn(sub, state)
+    push_insn(arith, state)
     
-    return sub_ret
+    return retv
+}
+
+export def sub(state: *State, ret: *typechecking::Type, left: Value, right: Value, loc: *Value = null) -> Value {
+    return arithmetic(state, InsnKind::SUB, ret, left, right, loc)
 }
 
 export def add(state: *State, ret: *typechecking::Type, left: Value, right: Value, loc: *Value = null) -> Value {
-    let add_ret = make_local_value(ret, null, state)
-    let add = make_insn_dbg(InsnKind::ADD, loc)
-    add.value.arith = {
-        ret = add_ret,
-        left = left,
-        right = right
-    } !InsnArithmetic
-    push_insn(add, state)
-    
-    return add_ret
+    return arithmetic(state, InsnKind::ADD, ret, left, right, loc)
+}
+
+export def mul(state: *State, ret: *typechecking::Type, left: Value, right: Value, loc: *Value = null) -> Value {
+    return arithmetic(state, InsnKind::MUL, ret, left, right, loc)
 }
 
 export type InsnAlloca = struct {
@@ -424,6 +424,9 @@ export type Function = struct {
     has_defer: bool
     defers: *typechecking::Type
     env: *typechecking::Type
+    
+    // This is a map of local variables that are defined at that point
+    function_locals: *map::Map
 
     is_compiled: bool
     is_main: bool
@@ -1153,6 +1156,8 @@ def do_create_type(tpe: *typechecking::Type, module: *toolchain::Module) -> Valu
     return { kind = ValueKind::NULL, tpe = typechecking::pointer(builtins::Type_) } !Value
 }
 
+// TODO This shouldn't be used. Instead initialize the ref count to 0 and increase it when its captured
+// See array literal
 def is_captured(node: *parser::Node) -> bool {
     while node and node.body == null {
         if node.kind == parser::NodeKind::ASSIGN or
@@ -1166,6 +1171,7 @@ def is_captured(node: *parser::Node) -> bool {
     return false
 }
 
+// TODO This has over 500 lines, refactor this monstrosity please
 export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Type, state: *State) -> Value {
     if not value.tpe or not tpe { return value }
     let loc = make_location(node, state)
@@ -1207,6 +1213,10 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
     } else if typechecking::is_ref(tpe) and (typechecking::is_assignable(tpe.tpe, value.tpe, state.module) or 
         typechecking::is_assignable(tpe, typechecking::reference(value.tpe), state.module) or 
         tpe.tpe == null or value.tpe.kind == typechecking::TypeKind::NULL) {
+
+        if tpe.tpe and value.tpe.kind != tpe.tpe.kind {
+            value = convert_to(node, value, tpe.tpe, state)
+        }
 
         let is_captured = is_captured(node)
 
@@ -1290,19 +1300,74 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
                 let ret = state.alloca(value.tpe, loc)
                 insert_copy_constructor(ret, value, loc, state)
                 value = state.load(value.tpe, ret, loc)
-            } else if value.tpe.kind == typechecking::TypeKind::ARRAY {
+            } else if is_array(value.tpe) {
                 map::put(state.module.imported, "memcpy", map::sentinel)
 
-                // We need to copy the array
-                let size = state.extract_value(builtins::int64_, value, [0], loc)
-                let ptr = state.extract_value(pointer(value.tpe.tpe), value, [1], loc)
-                let ptr_i8 = state.bitcast(pointer(builtins::int8_), ptr, loc)
-                let new_ptr_i8 = state.call("malloc", pointer(builtins::int8_), [size], loc)
-                state.call("memcpy", pointer(builtins::int8_), [new_ptr_i8, ptr_i8, size])
-                let new_ptr = state.bitcast(pointer(value.tpe.tpe), new_ptr_i8, loc)
-                value = { kind = ValueKind::UNDEF, tpe = value.tpe } !Value
-                value = state.insert_value(value.tpe, value, size, [0], loc)
-                value = state.insert_value(value.tpe, value, new_ptr, [1], loc)
+                var size = NO_VALUE
+                var data = NO_VALUE
+                if value.tpe.kind == typechecking::TypeKind::ARRAY {
+                    // We need to copy the array
+                    size = state.extract_value(builtins::int64_, value, [0], loc)
+                    let size_in_bytes = state.mul(builtins::int64_, size, { kind = ValueKind::INT, tpe = builtins::int64_, i = value.tpe.tpe.size } !Value, loc)
+                    data = state.extract_value(pointer(value.tpe.tpe), value, [1], loc)
+                    let ptr_i8 = state.bitcast(pointer(builtins::int8_), data, loc)
+                    let new_ptr_i8 = state.call("malloc", pointer(builtins::int8_), [size_in_bytes], loc)
+                    state.call("memcpy", pointer(builtins::int8_), [new_ptr_i8, ptr_i8, size_in_bytes])
+                    let new_ptr = state.bitcast(pointer(value.tpe.tpe), new_ptr_i8, loc)
+                    value = { kind = ValueKind::UNDEF, tpe = value.tpe } !Value
+                    value = state.insert_value(value.tpe, value, size, [0], loc)
+                    value = state.insert_value(value.tpe, value, new_ptr, [1], loc)
+                } else {
+                    data = @value.addr
+                    size = { kind = ValueKind::INT, tpe = builtins::int64_, i = value.tpe.length } !Value
+                    let size_in_bytes = { kind = ValueKind::INT, tpe = builtins::int64_, i = value.tpe.size } !Value
+                    let ptr_i8 = state.bitcast(pointer(builtins::int8_), @value.addr, loc)
+                    state.call("memcpy", pointer(builtins::int8_), [call2_ret, ptr_i8, size_in_bytes])
+                    let new_ptr = state.bitcast(pointer(value.tpe), call2_ret, loc)
+                    value = state.load(value.tpe, new_ptr, loc)
+                }
+
+                if is_ref(value.tpe.tpe) {
+                    // TODO The looping bit should be extracted into its own function, let's see what we can do once we have closures
+                    let counter_ptr = state.alloca(builtins::size_t_)
+                    state.store(counter_ptr, { kind = ValueKind::INT, tpe = builtins::size_t_, i = 0 } !Value)
+                    
+                    let br_to_start = make_insn_dbg(InsnKind::BR_UNC, loc)
+                    push_insn(br_to_start, state)
+
+                    let loop_start = make_label(state)
+                    push_label(loop_start, state)
+                    br_to_start.value.br_unc.label_ = loop_start
+                    
+                    let counter_value = state.load(builtins::size_t_, counter_ptr)
+                    let cond = state.icmp(CompareInt::eq, counter_value, size)
+                    let br = make_insn_dbg(InsnKind::BR, loc)
+                    br.value.br = { cond = cond } !InsnBr
+                    push_insn(br, state)
+
+                    let loop_inner = make_label(state)
+                    push_label(loop_inner, state)
+                    br.value.br.if_false = loop_inner
+
+                    let ptpe = pointer(value.tpe.tpe)
+                    var array_val = NO_VALUE
+                    if value.tpe.kind == typechecking::TypeKind::ARRAY {
+                        array_val = state.gep(ptpe, value.tpe.tpe, data, [counter_value], loc)
+                    } else {
+                        array_val = state.gep(ptpe, value.tpe, data, [make_int_value(0), counter_value], loc)
+                    }
+
+                    increase_ref_count(array_val, loc, state)
+
+                    let counter_inc = state.add(builtins::size_t_, counter_value, { kind = ValueKind::INT, tpe = builtins::size_t_, i = 1 } !Value, loc)
+                    state.store(counter_ptr, counter_inc)
+
+                    push_insn(br_to_start, state)
+
+                    let loop_end = make_label(state)
+                    push_label(loop_end, state)
+                    br.value.br.if_true = loop_end
+                }
             }
 
             let store2 = make_insn_dbg(InsnKind::STORE, loc)
@@ -1880,7 +1945,11 @@ def walk_ArrayLit(node: *parser::Node, state: *State) -> Value {
     let values = allocate(Value, len)
     for var i in 0..len {
         let v = vector::get((@node).value.body, i) !*parser::Node
-        values[i] = walk_and_load_expression(v, state)
+        var element = walk_and_load_expression(v, state)
+        if is_ref(element.tpe) {
+            increase_ref_count_of_value(element, loc, state)
+        }
+        values[i] = element
     }
 
     return push_array_lit(tpe, loc, values, state)
@@ -2610,6 +2679,7 @@ def insert_destructors(scpe: *scope::Scope, loc: *Value, state: *State) {
         if value.global {
             kind = ValueKind::GLOBAL
         }
+        if state.current_function and not map::contains(state.current_function.function_locals, name) { continue }
         insert_destructor({ kind = kind, tpe = pointer(value.tpe), name = name } !Value, scpe, loc, state)
     }
     if scpe.is_function and scpe.underscore {
@@ -2930,6 +3000,86 @@ def call_set_item(n: *parser::Node, l: *parser::Node, value: *Value, loc: *Value
     return false
 }
 
+def assign_post(n: *parser::Node, l: *parser::Node, ret: *Value, loc: *Value, state: *State) -> bool {
+    if not call_set_item(n, l, ret, loc, state) {
+        let addr = walk_expression(l, state).addr
+        if not addr {
+            errors::errorn(l, "Can't assign, expression has no address")
+            return false
+        }
+
+        if (l.tpe.kind == typechecking::TypeKind::ARRAY or 
+            (l.tpe.kind == typechecking::TypeKind::REFERENCE and 
+            l.tpe.tpe and l.tpe.tpe.kind == typechecking::TypeKind::ARRAY)) and 
+            ret.tpe.kind == typechecking::TypeKind::STATIC_ARRAY and
+            n.kind == parser::NodeKind::ARRAY_LIT {
+
+            // We need to store the array so we can destruct it
+            
+            var name = ret.addr.name
+            let is_global = scope::is_global(state.scope)
+            if is_global {
+                let buf = *buffer::make_buffer()
+                buf.append_str("__array.")
+                buf.append_str(util::int_to_str(state.global_counter))
+                state.global_counter += 1
+                name = buf.to_string()
+            }
+
+            let variable = scope::create_variable(
+                state.scope, 
+                parser::make_identifier([name]),
+                parser::ShareMarker::NONE,
+                parser::VarDecl::LET,
+                ret.tpe, true, null // extern so that we don't change the variable name
+            )
+
+            if is_global {
+                let global = allocate(Global)
+                @global = {
+                    name = name,
+                    tpe = ret.tpe
+                } !Global
+                
+                map::put(state.module.result.globals, (@global).name, global)
+                map::put(state.module.imported, global.name, map::sentinel)
+                
+                state.store({ kind = ValueKind::GLOBAL, tpe = pointer(ret.tpe), name = name } !Value, @ret, loc)
+            } else {
+                map::put(state.current_function.function_locals, name, map::sentinel)
+            }
+        }
+        
+        @ret = convert_to(n, @ret, (@l).tpe, state)
+
+        let inc_ref_count = do_increase_ref_cout(n)
+        if typechecking::is_ref(l.tpe) and ret.addr and typechecking::is_ref(ret.addr.tpe) {
+            assign_ref(@ret.addr, @addr, loc, inc_ref_count, l.is_initializer, state)
+        } else {
+            if not l.is_initializer {
+                insert_destructor(@addr, state.scope, loc, state)
+            } else if l.svalue and l.svalue.previous_underscore {
+                let pu = l.svalue.previous_underscore
+                let addr = { kind = ValueKind::LOCAL, name = pu.assembly_name, tpe = pointer(pu.tpe) } !Value
+                insert_destructor(addr, state.scope, loc, state)
+            }
+            
+            let store = make_insn_dbg(InsnKind::STORE, loc)
+            (@store).value.store = {
+                value = @ret,
+                loc = @addr
+            } !InsnStore
+
+            push_insn(store, state)
+
+            if typechecking::is_ref(l.tpe) and inc_ref_count {
+                increase_ref_count(@addr, loc, state)
+            }
+        }
+    }
+    return true
+}
+
 def walk_Assign(node: *parser::Node, state: *State) -> Value {
     // TODO Make this possible: a, b = c, d = e, f
     // Right now we can only return one value
@@ -2998,40 +3148,7 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
                     push_insn(load, state)
                 }
 
-                if not call_set_item(n, l, *ret, loc, state) {
-                    let addr = walk_expression(l, state).addr
-                    if not addr {
-                        errors::errorn(l, "Can't assign, expression has no address")
-                        return NO_VALUE
-                    }
-
-                    ret = convert_to(n, ret, (@l).tpe, state)
-
-                    let inc_ref_count = do_increase_ref_cout(n)
-                    if typechecking::is_ref(l.tpe) and typechecking::is_ref(ret.tpe) {
-                        assign_ref(ret, @addr, loc, inc_ref_count, l.is_initializer, state)
-                    } else {
-                        if not l.is_initializer {
-                            insert_destructor(@addr, state.scope, loc, state)
-                        } else if l.svalue and l.svalue.previous_underscore {
-                            let pu = l.svalue.previous_underscore
-                            let addr = { kind = ValueKind::LOCAL, name = pu.assembly_name, tpe = pointer(pu.tpe) } !Value
-                            insert_destructor(addr, state.scope, loc, state)
-                        }
-
-                        let store = make_insn_dbg(InsnKind::STORE, loc)
-                        (@store).value.store = {
-                            value = ret,
-                            loc = @addr
-                        } !InsnStore
-
-                        push_insn(store, state)
-
-                        if typechecking::is_ref(l.tpe) and inc_ref_count {
-                            increase_ref_count(@addr, loc, state)
-                        }
-                    }
-                }
+                if not assign_post(n, l, *ret, loc, state) { return NO_VALUE }
                 
                 last_value = ret
                 j += 1
@@ -3051,44 +3168,7 @@ def walk_Assign(node: *parser::Node, state: *State) -> Value {
                 push_alloca(alloca, state)
             }
 
-            if not call_set_item(n, l, *value, loc, state) {
-                let addr = walk_expression(l, state).addr
-                if not addr { 
-                    errors::errorn(l, "Can't assign, expression has no address")
-                    return NO_VALUE 
-                }
-                
-                value = convert_to(n, value, (@l).tpe, state)
-
-                let inc_ref_count = do_increase_ref_cout(n)
-                if typechecking::is_ref(l.tpe) and value.addr and typechecking::is_ref(value.addr.tpe) {
-                    assign_ref(@value.addr, @addr, loc, inc_ref_count, l.is_initializer, state)
-                } else {
-                    if not l.is_initializer {
-                        insert_destructor(@addr, state.scope, loc, state)
-                    } else if l.svalue and l.svalue.previous_underscore {
-                        let pu = l.svalue.previous_underscore
-                        let addr = { kind = ValueKind::LOCAL, name = pu.assembly_name, tpe = pointer(pu.tpe) } !Value
-                        insert_destructor(addr, state.scope, loc, state)
-                    }
-
-                    if is_copied(n) and typechecking::has_copy_constructor(l.tpe) {
-                        insert_copy_constructor(@addr, value, loc, state)
-                    } else if not is_undef {
-                        let store = make_insn_dbg(InsnKind::STORE, loc)
-                        (@store).value.store = {
-                            value = value,
-                            loc = @addr
-                        } !InsnStore
-
-                        push_insn(store, state)
-                    }
-
-                    if typechecking::is_ref(l.tpe) and inc_ref_count {
-                        increase_ref_count(@addr, loc, state)
-                    }
-                }
-            }
+            if not assign_post(n, l, *value, loc, state) { return NO_VALUE }
             
             last_value = value
             j += 1
@@ -3500,6 +3580,11 @@ def walk_AlignOf(node: *parser::Node, state: *State) -> Value {
     return value
 }
 
+def convert_ref_to_int(node: *parser::Node, value: Value, loc: *Value, state: *State) -> Value {
+    let gep_ret = state.extract_value(pointer(value.tpe.tpe), value, [1], loc)
+    return state.ptr_to_int(gep_ret, loc)
+}
+
 def compare(node: *parser::Node, left: Value, right: Value, state: *State) -> Value {
     if not left.tpe or not right.tpe { return NO_VALUE }
     let loc = make_location(node, state)
@@ -3603,6 +3688,12 @@ def compare(node: *parser::Node, left: Value, right: Value, state: *State) -> Va
     }
     if typechecking::is_pointer(right.tpe) {
         right = convert_to(node, right, builtins::size_t_, state)
+    }
+    if typechecking::is_ref(left.tpe) {
+        left = convert_ref_to_int(node, left, loc, state)
+    }
+    if typechecking::is_ref(right.tpe) {
+        right = convert_ref_to_int(node, right, loc, state)
     }
     if (@left.tpe).kind == typechecking::TypeKind::NULL {
         left = make_int_value(0)
@@ -3978,7 +4069,7 @@ def walk_If(node: *parser::Node, state: *State) {
             walk(stmt, state)
             last_node = stmt
         }
-        insert_destructors(node.inner_scope, make_location(last_node, state), state)
+        insert_destructors(else_.inner_scope, make_location(last_node, state), state)
         pop_scope(state)
         push_insn(exit, state)
     }
@@ -4542,6 +4633,9 @@ export def walk_VarDecl(node: *parser::Node, state: *State, set_constant: bool =
                     name = value.assembly_name,
                     tpe = tpe
                 } !Value
+                if state.current_function {
+                    map::put(state.current_function.function_locals, value.assembly_name, map::sentinel)
+                }
 
                 let insn = make_insn_dbg(InsnKind::ALLOCA, loc)
                 (@insn).value.alloca = {
@@ -4729,8 +4823,9 @@ def walk_Defer(node: *parser::Node, state: *State) {
         args = parameter_t,
         allocas = vector::make(),
         block = block,
-        module = state.module
-    }
+        module = state.module,
+        function_locals = map::make()
+    } !Function
 
     let scope = vector::pop(state.discope)
     create_debug_info(node, function, tpe, state)
@@ -5548,7 +5643,8 @@ export def predeclare_function(tpe: *typechecking::Type, module: *toolchain::Mod
         allocas = vector::make(),
         imported = tpe.imported,
         module = module,
-        dllimport = tpe.dllimport
+        dllimport = tpe.dllimport,
+        function_locals = map::make()
     } !Function
 
     if vector::length(tpe.parameter_t) > 0 {
@@ -5680,6 +5776,10 @@ export def create_function(
             buffer::append_str(*buf, ".value")
             let new_name = buffer::to_string(*buf)
             // Insert alloca and store instructions
+
+            if state.current_function {
+                map::put(state.current_function.function_locals, name, map::sentinel)
+            }
 
             let ret = {
                 kind = ValueKind::LOCAL,
@@ -5814,7 +5914,8 @@ def walk_TypeDecl(node: *parser::Node, state: *State) {
                 unmangled = "to_string",
                 args = parameter_t,
                 ret = builtins::string_,
-                module = state.module
+                module = state.module,
+                function_locals = map::make()
             } !Function
 
             let block = make_block()
@@ -5917,6 +6018,10 @@ export def walk_top_VarDecl(node: *parser::Node, state: *State, set_constant: bo
             map::put(state.module.result.globals, (@global).name, global)
             map::put(state.module.imported, global.name, map::sentinel)
 
+            if state.current_function {
+                map::put(state.current_function.function_locals, value.assembly_name, map::sentinel)
+            }
+        
             v.is_initializer = true
             vector::push(left, v)
         } else {
@@ -6048,12 +6153,15 @@ export def create_destructors() {
             state.current_function = function
             let block = make_block()
             state.current_function.block = block
+            state.current_function.allocas = vector::make()
             state.current_block = block
 
             let first_arg = (vector::get(tpe.parameter_t, 0) !*typechecking::NamedParameter).tpe
             create_destructor(first_arg, { kind = ValueKind::LOCAL, tpe = first_arg, name = "__ptr.value" } !Value, state)
 
             state.ret(NO_VALUE)
+            vector::insert(block.insn, 0, state.current_function.allocas)
+
             new_destructors += 1
             map::put(done, key, map::sentinel)
         }
@@ -6096,10 +6204,85 @@ def create_destructor(tpe: *typechecking::Type, value: Value, state: *State) {
         push_label(if_true, state)
 
         structure_type = tpe.tpe.tpe
+
+        // Free arrays
+        if is_array(structure_type) and has_destructor(structure_type.tpe) {
+            var size = NO_VALUE
+            var data = NO_VALUE
+            if structure_type.kind == typechecking::TypeKind::ARRAY {
+                let array_ptr = state.extract_value(pointer(structure_type), ref, [1])
+                let array = state.load(structure_type, array_ptr)
+                size = state.extract_value(builtins::size_t_, array, [0])
+                data = state.extract_value(pointer(structure_type.tpe), array, [1])
+            } else if structure_type.kind == typechecking::TypeKind::STATIC_ARRAY {
+                size = { kind = ValueKind::INT, tpe = builtins::size_t_, i = structure_type.length } !Value
+                data = state.extract_value(pointer(structure_type), ref, [1])
+            }
+
+            let counter_ptr = state.alloca(builtins::size_t_)
+            state.store(counter_ptr, { kind = ValueKind::INT, tpe = builtins::size_t_, i = 0 } !Value)
+            
+            let br_to_start = make_insn(InsnKind::BR_UNC)
+            push_insn(br_to_start, state)
+
+            let loop_start = make_label(state)
+            push_label(loop_start, state)
+            br_to_start.value.br_unc.label_ = loop_start
+            
+            let counter_value = state.load(builtins::size_t_, counter_ptr)
+            let cond = state.icmp(CompareInt::eq, counter_value, size)
+            let br = make_insn(InsnKind::BR)
+            br.value.br = { cond = cond } !InsnBr
+            push_insn(br, state)
+
+            let loop_inner = make_label(state)
+            push_label(loop_inner, state)
+            br.value.br.if_false = loop_inner
+
+            let ptpe = pointer(structure_type.tpe)
+            var array_val = NO_VALUE
+            if structure_type.kind == typechecking::TypeKind::ARRAY {
+                array_val = state.gep(ptpe, structure_type.tpe, data, [counter_value])
+            } else {
+                array_val = state.gep(ptpe, structure_type, data, [make_int_value(0), counter_value])
+            }
+
+            let name = debug::type_to_str(ptpe, full_name = true)
+            let destructor = map::get(destructors, name) !*typechecking::Type
+
+            if destructor {
+                state.call(destructor.type_name, null, [array_val])
+            } else {
+                let args = vector::make()
+                let first_param = allocate(typechecking::NamedParameter)
+                @first_param = {
+                    name = "__ptr",
+                    tpe = ptpe
+                } !typechecking::NamedParameter
+                vector::push(args, first_param)
+
+                let name_node = parser::make_identifier(["__destruct__"])
+                let ftpe = typechecking::make_function_type_n(name_node, args, vector::make())
+                predeclare_function(ftpe, state.module)
+                map::put(destructors, name, ftpe) 
+
+                create_destructor(ptpe, array_val, state)
+            }
+
+            let counter_inc = state.add(builtins::size_t_, counter_value, { kind = ValueKind::INT, tpe = builtins::size_t_, i = 1 } !Value)
+            state.store(counter_ptr, counter_inc)
+
+            push_insn(br_to_start, state)
+
+            let loop_end = make_label(state)
+            push_label(loop_end, state)
+            br.value.br.if_true = loop_end
+        }
     }
 
     var to_end = make_insn(InsnKind::BR_UNC)
     var null_br2: *Insn = null
+    var swtch: *Insn = null
     if typechecking::is_ref(tpe.tpe) and (not tpe.tpe.tpe or typechecking::is_interface(tpe.tpe.tpe)) {
         // TODO This is almost exactly what generate_vtable_function does
         // We need to call the right destructor based on the ref type
@@ -6110,7 +6293,6 @@ def create_destructor(tpe: *typechecking::Type, value: Value, state: *State) {
         map::put(state.module.imported, equals.tpe.type_name, map::sentinel)
 
         // Extract type
-        
         let ref_count = state.extract_value(pointer(builtins::int64_), ref, [0])
         let ref_count_value = state.ptr_to_int(ref_count)
         let cond = state.icmp(CompareInt::eq, ref_count_value, { kind = ValueKind::INT, tpe = builtins::int64_, i = 0 } !Value)
@@ -6124,14 +6306,17 @@ def create_destructor(tpe: *typechecking::Type, value: Value, state: *State) {
         
         let ref_tpe = state.extract_value(pointer(builtins::Type_), ref, [2])
         let ref_tpe_deref = state.load(builtins::Type_, ref_tpe)
-        let tpe_value = state.extract_value(pointer(builtins::Type_), ref_tpe_deref, [4])
+        let tpe_id = state.extract_value(builtins::int64_, ref_tpe_deref, [15])
 
         let keys = map::keys(typechecking::types_map)
+        let filtered = map::make()
         for var i in 0..keys.size {
-            let type_entry = map::get(typechecking::types_map, keys[i]) !*typechecking::TypeEntry
+            let key = keys[i]
+            let type_entry = map::get(typechecking::types_map, key) !*typechecking::TypeEntry
+
             if is_ref(type_entry.tpe) and (not tpe.tpe.tpe or typechecking::implements(type_entry.tpe, tpe.tpe.tpe, state.module)) and
                 not typechecking::equals(tpe.tpe.tpe, type_entry.tpe.tpe) {
-                
+
                 let args = vector::make()
                 let np = allocate(typechecking::NamedParameter)
                 @np = {
@@ -6142,29 +6327,42 @@ def create_destructor(tpe: *typechecking::Type, value: Value, state: *State) {
                 
                 let destructor = scope::get_function(state.scope, parser::make_identifier(["__destruct__"]), args)
                 if not destructor { continue }
+                map::put(filtered, key, destructor)
+            }
+        }
+        let keys2 = map::keys(filtered)
 
-                let cond = state.call(equals.tpe.type_name, builtins::bool_, [
-                    tpe_value,
-                    do_create_type(type_entry.tpe.tpe, state.module)
-                ])
+        if keys2.size > 0 {
+            let switch_values = vector::make()
+            swtch = make_insn(InsnKind::SWITCH)
+            (@swtch).value.switch_ = {
+                value = tpe_id,
+                switch_values = switch_values
+            } !InsnSwitch
+            push_insn(swtch, state)
 
-                let br = make_insn(InsnKind::BR)
-                br.value.br = { cond = cond } !InsnBr
-                push_insn(br, state)
+            for var i in 0..keys2.size {
+                let type_entry = map::get(typechecking::types_map, keys2[i]) !*typechecking::TypeEntry
+                let destructor = map::get(filtered, keys2[i]) !*scope::Value
 
                 let if_true = make_label(state)
-                br.value.br.if_true = if_true
                 push_label(if_true, state)
+
+                let hash = md5::high(md5::md5(debug::type_to_str(type_entry.tpe, full_name = true)))
+
+                let svalue = allocate(SwitchValue)
+                svalue.label_ = if_true
+                svalue.value = { kind = ValueKind::INT, i = hash, tpe = builtins::int64_ } !Value
+                vector::push(switch_values, svalue)
 
                 let casted_ref = state.bitcast(pointer(type_entry.tpe), value)
                 state.call(destructor.tpe.type_name, null, [casted_ref])
-                push_insn(to_end, state)
-
-                let if_false = make_label(state)
-                br.value.br.if_false = if_false
-                push_label(if_false, state)
+                if i < keys2.size - 1 {
+                    push_insn(to_end, state)
+                }
             }
         }
+
         if not tpe.tpe.tpe {
             // TODO Fix duplicate code
             // We need to decrease the ref count
@@ -6199,8 +6397,6 @@ def create_destructor(tpe: *typechecking::Type, value: Value, state: *State) {
             to_end.value.br_unc.label_ = end_label
             null_br2.value.br.if_true = end_label
             push_label(end_label, state)
-
-            return
         }
     } else if structure_type and structure_type.module {
         let args = vector::make()
@@ -6211,9 +6407,20 @@ def create_destructor(tpe: *typechecking::Type, value: Value, state: *State) {
         }
         vector::push(args, np)
 
+        let ident = parser::make_identifier(["destruct"])
+
         // There can only be one destructor for this type
-        let destructor = scope::get_function(structure_type.module.scope, parser::make_identifier(["destruct"]), args)
+        var destructor = scope::get_function(structure_type.module.scope, ident, args, false, false, false)
         if destructor {
+            if destructor.phase == scope::Phase::DEFINED {
+                // We need to generate the function because this is done too late
+                // TODO make a function that does this
+                destructor = scope::typecheck_function(destructor, ident, structure_type.module.scope, true, args)
+                let node = destructor.node
+                predeclare_function(node.tpe, destructor.state.module)
+                create_function(node, node.tpe, node.value.def_.body, node.inner_scope,
+                         null, node.value.def_.locals, node.value.def_.has_defer, destructor.state.module.compiler_state)
+            }
             predeclare_function(destructor.tpe, state.module)
             map::put(state.module.imported, destructor.tpe.type_name, map::sentinel)
 
@@ -6233,6 +6440,9 @@ def create_destructor(tpe: *typechecking::Type, value: Value, state: *State) {
     if null_br2 {
         null_br2.value.br.if_true = end_label
     }
+    if swtch {
+        swtch.value.switch_.otherwise = end_label
+    }
 
     if structure_type and structure_type.kind == typechecking::TypeKind::STRUCT {
         var obj: Value
@@ -6245,9 +6455,9 @@ def create_destructor(tpe: *typechecking::Type, value: Value, state: *State) {
         
         for var i in 0..structure_type.fields.size {
             let field = structure_type.fields[i]
-            let field_value = state.gep(pointer(field.tpe), structure_type, obj, [make_int_value(0), make_int_value(i)])
             let ptpe = pointer(field.tpe)
-            let name = debug::type_to_str(pointer(field.tpe), full_name = true)
+            let field_value = state.gep(ptpe, structure_type, obj, [make_int_value(0), make_int_value(i)])
+            let name = debug::type_to_str(ptpe, full_name = true)
             let destructor = map::get(destructors, name) !*typechecking::Type
 
             if destructor {
@@ -6544,12 +6754,12 @@ def push_type_member(
     module_values[1] = { kind = ValueKind::UNDEF, tpe = pointer(builtins::int8_) } !Value
 
     let parameter_t_values = allocate(Value, 2)
-    parameter_t_values[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = vector::length(pars) }
-    parameter_t_values[1] = { kind = ValueKind::UNDEF, tpe = pointer(pointer(builtins::Type_)) }
+    parameter_t_values[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = vector::length(pars) } !Value
+    parameter_t_values[1] = { kind = ValueKind::UNDEF, tpe = pointer(pointer(builtins::Type_)) } !Value
 
     let return_t_values = allocate(Value, 2)
-    return_t_values[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = vector::length(rets) }
-    return_t_values[1] = { kind = ValueKind::UNDEF, tpe = pointer(pointer(builtins::Type_)) }
+    return_t_values[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = vector::length(rets) } !Value
+    return_t_values[1] = { kind = ValueKind::UNDEF, tpe = pointer(pointer(builtins::Type_)) } !Value
 
     let member_values = allocate(Value, 5)
     member_values[0] = { kind = ValueKind::STRUCT, tpe = builtins::string_, values = name_values } !Value
@@ -6720,7 +6930,7 @@ def do_create_type(tpe: *Type, svalue: *scope::Value, module: *toolchain::Module
     type_names[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = 0 } !Value
     type_names[1] = { kind = ValueKind::UNDEF, tpe = pointer(builtins::Function_) } !Value
 
-    value.values = zero_allocate(Value, 15)
+    value.values = zero_allocate(Value, 16)
     value.values[1] = { kind = ValueKind::STRUCT, tpe = builtins::string_, values = name_values } !Value
     value.values[2] = { kind = ValueKind::INT, tpe = builtins::bool_, i = tpe.unsig !int64 } !Value
     value.values[3] = { kind = ValueKind::UNDEF, tpe = builtins::size_t_ } !Value
@@ -6735,6 +6945,7 @@ def do_create_type(tpe: *Type, svalue: *scope::Value, module: *toolchain::Module
     value.values[12] = { kind = ValueKind::UNDEF, tpe = array(builtins::Function_) } !Value
     value.values[13] = { kind = ValueKind::STRUCT, tpe = array(builtins::Function_), values = type_names } !Value
     value.values[14] = { kind = ValueKind::UNDEF, tpe = pointer(builtins::Type_) } !Value
+    value.values[15] = { kind = ValueKind::INT, tpe = builtins::int64_, i = md5::high(md5::md5(name_str)) } !Value
 
     let index = allocate(Value, 3)
     index[0] = make_int_value(0)
@@ -6869,7 +7080,8 @@ def do_create_type(tpe: *Type, svalue: *scope::Value, module: *toolchain::Module
         unmangled = "__main__",
         forward_declare = true,
         allocas = vector::make(),
-        block = new_block
+        block = new_block,
+        function_locals = map::make()
     } !Function
     consteval::compiler_state.current_function = function
     consteval::compiler_state.current_block = new_block
@@ -7060,10 +7272,6 @@ def generate_vtable_function(function: *Function, tpe: *typechecking::Type, stat
         ret_tpe = vector::peek(tpe.return_t) !*typechecking::Type
     }
 
-    let equals = scope::get(toolchain::runtime.scope, parser::make_identifier(["equals"]))
-    predeclare_function(equals.tpe, state.module)
-    map::put(state.module.imported, equals.tpe.type_name, map::sentinel)
-
     // Extract type
     let ref_tpe = state.extract_value(
         typechecking::pointer(builtins::Type_), 
@@ -7076,6 +7284,16 @@ def generate_vtable_function(function: *Function, tpe: *typechecking::Type, stat
         ref_tpe_deref,
         [4]
     )
+    let tpe_deref = state.load(builtins::Type_, tpe_value)
+    let tpe_id = state.extract_value(builtins::int64_, tpe_deref, [15])
+
+    let switch_values = vector::make()
+    let swtch = make_insn(InsnKind::SWITCH)
+    swtch.value.switch_ = {
+        value = tpe_id,
+        switch_values = switch_values
+    } !InsnSwitch
+    push_insn(swtch, state)
 
     let keys = map::keys(typechecking::types_map)
     for var i in 0..keys.size {
@@ -7108,18 +7326,14 @@ def generate_vtable_function(function: *Function, tpe: *typechecking::Type, stat
             predeclare_function(function, state.module)
             map::put(state.module.imported, function.type_name, map::sentinel)
 
-            let cond = state.call(equals.tpe.type_name, builtins::bool_, [
-                tpe_value,
-                do_create_type(type_entry.tpe.tpe, state.module)
-            ])
-
-            let br = make_insn(InsnKind::BR)
-            br.value.br = { cond = cond } !InsnBr
-            push_insn(br, state)
-            
             let if_true = make_label(state)
-            br.value.br.if_true = if_true
             push_label(if_true, state)
+
+            let hash = md5::high(md5::md5(debug::type_to_str(type_entry.tpe.tpe, full_name = true)))
+            let svalue = allocate(SwitchValue)
+            svalue.label_ = if_true
+            svalue.value = { kind = ValueKind::INT, i = hash, tpe = builtins::int64_ } !Value
+            vector::push(switch_values, svalue)
 
             let reference = convert_ref_to_ref(type_entry.tpe, { kind = ValueKind::LOCAL, tpe = first_param, name = "__ref.value"} !Value, null, state)
 
@@ -7134,12 +7348,12 @@ def generate_vtable_function(function: *Function, tpe: *typechecking::Type, stat
             }
             let r = state.call(function.type_name, ret_tpe, args)
             state.ret(r)
-
-            let if_false = make_label(state)
-            br.value.br.if_false = if_false
-            push_label(if_false, state)
         }
     }
+
+    let end_label = make_label(state)
+    push_label(end_label, state)
+    swtch.value.switch_.otherwise = end_label
 
     map::put(state.module.imported, "abort", map::sentinel)
     state.call("abort", null, [] ![Value])
@@ -7152,8 +7366,7 @@ def generate_vtable_function(function: *Function, tpe: *typechecking::Type, stat
 export var time_spent: int64 = 0
 
 export def compile(module: *toolchain::Module) {
-    let state = make_state(module)
-    compile(*state, module.module == "main")
+    compile(module.compiler_state, module.module == "main")
 }
 
 export def compile(state: *State, is_main: bool, no_cleanup: bool = false) {
@@ -7368,7 +7581,7 @@ export def compile(state: *State, is_main: bool, no_cleanup: bool = false) {
         generate_vtable_function(function, tpe, state)
     }
 
-    predeclare_function(main_tpe, state.module)
+    let main_function = predeclare_function(main_tpe, state.module)
 
     for var i in 0..vector::length(node.body) {
         let n = vector::get(node.body, i) !*parser::Node
@@ -7379,6 +7592,7 @@ export def compile(state: *State, is_main: bool, no_cleanup: bool = false) {
 
     state.scope = state.module.scope
     state.current_block = state.module.code
+    state.current_function = main_function
     
     for var i in 0..vector::length(node.body) {
         let n = vector::get(node.body, i) !*parser::Node
@@ -7464,39 +7678,27 @@ export def compile(state: *State, is_main: bool, no_cleanup: bool = false) {
     }
 
 
+    let old_block = state.current_block
+    state.current_function = state.finalizer
+    state.current_block = state.finalizer.block
+
     // Insert destructors for global values
-    for var i in 0..vector::length(node.body) {
-        let node = vector::get(node.body, i) !*parser::Node
-        if node.kind == parser::NodeKind::VAR_DECL {
-            let kw = node.value.var_decl.kw
-            if kw != parser::VarDecl::CONST {
-
-                for var i in 0..vector::length((@node).value.var_decl.left) {
-                    let n = vector::get((@node).value.var_decl.left, i) !*parser::Node
-                    if (@n).kind == parser::NodeKind::ID_DECL {
-                        let v = (@n).value.id_decl.value
-                        
-                        let value = scope::get((@node).scope, v)
-                        if not value { continue }
-
-                        // Create destructor
-                        let old_block = state.current_block
-                        state.current_block = state.finalizer.block
-                        insert_destructor({ kind = ValueKind::GLOBAL, tpe = pointer(value.tpe), name = value.assembly_name } !Value, state.scope, null, state)
-
-                        state.current_block = old_block
-                    }
-                }
-            }
+    let keys = map::reverse_keys(node.scope.fields)
+    for var i in 0..keys.size {            
+        let value = map::get(node.scope.fields, keys[i]) !*scope::Value
+        if value.modifier == parser::VarDecl::TYPE or 
+            value.modifier == parser::VarDecl::CONST {
+            continue
         }
+
+        // Create destructor
+        insert_destructor({ kind = ValueKind::GLOBAL, tpe = pointer(value.tpe), name = value.assembly_name } !Value, state.scope, null, state)
     }
 
-    let old_block = state.current_block
-    state.current_block = state.finalizer.block
     state.ret(NO_VALUE)
     state.current_block = old_block
-
     state.finalizer.block = finalizer_start_block
+    vector::insert(finalizer_start_block.insn, 0, state.current_function.allocas)
 
     if no_cleanup {
         // In the repl we clear out the finalizer
