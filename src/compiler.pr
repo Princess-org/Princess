@@ -11,7 +11,7 @@ import typechecking
 import consteval
 import errors
 import eval
-//import md5
+import md5
 
 export type Label = struct {
     name: string
@@ -6283,6 +6283,7 @@ def create_destructor(tpe: *typechecking::Type, value: Value, state: *State) {
 
     var to_end = make_insn(InsnKind::BR_UNC)
     var null_br2: *Insn = null
+    var swtch: *Insn = null
     if typechecking::is_ref(tpe.tpe) and (not tpe.tpe.tpe or typechecking::is_interface(tpe.tpe.tpe)) {
         // TODO This is almost exactly what generate_vtable_function does
         // We need to call the right destructor based on the ref type
@@ -6293,7 +6294,6 @@ def create_destructor(tpe: *typechecking::Type, value: Value, state: *State) {
         map::put(state.module.imported, equals.tpe.type_name, map::sentinel)
 
         // Extract type
-        
         let ref_count = state.extract_value(pointer(builtins::int64_), ref, [0])
         let ref_count_value = state.ptr_to_int(ref_count)
         let cond = state.icmp(CompareInt::eq, ref_count_value, { kind = ValueKind::INT, tpe = builtins::int64_, i = 0 } !Value)
@@ -6307,14 +6307,17 @@ def create_destructor(tpe: *typechecking::Type, value: Value, state: *State) {
         
         let ref_tpe = state.extract_value(pointer(builtins::Type_), ref, [2])
         let ref_tpe_deref = state.load(builtins::Type_, ref_tpe)
-        let tpe_value = state.extract_value(pointer(builtins::Type_), ref_tpe_deref, [4])
+        let tpe_id = state.extract_value(builtins::int64_, ref_tpe_deref, [15])
 
         let keys = map::keys(typechecking::types_map)
+        let filtered = map::make()
         for var i in 0..keys.size {
-            let type_entry = map::get(typechecking::types_map, keys[i]) !*typechecking::TypeEntry
+            let key = keys[i]
+            let type_entry = map::get(typechecking::types_map, key) !*typechecking::TypeEntry
+
             if is_ref(type_entry.tpe) and (not tpe.tpe.tpe or typechecking::implements(type_entry.tpe, tpe.tpe.tpe, state.module)) and
                 not typechecking::equals(tpe.tpe.tpe, type_entry.tpe.tpe) {
-                
+
                 let args = vector::make()
                 let np = allocate(typechecking::NamedParameter)
                 @np = {
@@ -6325,29 +6328,42 @@ def create_destructor(tpe: *typechecking::Type, value: Value, state: *State) {
                 
                 let destructor = scope::get_function(state.scope, parser::make_identifier(["__destruct__"]), args)
                 if not destructor { continue }
+                map::put(filtered, key, destructor)
+            }
+        }
+        let keys2 = map::keys(filtered)
 
-                let cond = state.call(equals.tpe.type_name, builtins::bool_, [
-                    tpe_value,
-                    do_create_type(type_entry.tpe.tpe, state.module)
-                ])
+        if keys2.size > 0 {
+            let switch_values = vector::make()
+            swtch = make_insn(InsnKind::SWITCH)
+            (@swtch).value.switch_ = {
+                value = tpe_id,
+                switch_values = switch_values
+            } !InsnSwitch
+            push_insn(swtch, state)
 
-                let br = make_insn(InsnKind::BR)
-                br.value.br = { cond = cond } !InsnBr
-                push_insn(br, state)
+            for var i in 0..keys2.size {
+                let type_entry = map::get(typechecking::types_map, keys2[i]) !*typechecking::TypeEntry
+                let destructor = map::get(filtered, keys2[i]) !*scope::Value
 
                 let if_true = make_label(state)
-                br.value.br.if_true = if_true
                 push_label(if_true, state)
+
+                let hash = md5::high(md5::md5(debug::type_to_str(type_entry.tpe, full_name = true)))
+
+                let svalue = allocate(SwitchValue)
+                svalue.label_ = if_true
+                svalue.value = { kind = ValueKind::INT, i = hash, tpe = builtins::int64_ } !Value
+                vector::push(switch_values, svalue)
 
                 let casted_ref = state.bitcast(pointer(type_entry.tpe), value)
                 state.call(destructor.tpe.type_name, null, [casted_ref])
-                push_insn(to_end, state)
-
-                let if_false = make_label(state)
-                br.value.br.if_false = if_false
-                push_label(if_false, state)
+                if i < keys2.size - 1 {
+                    push_insn(to_end, state)
+                }
             }
         }
+
         if not tpe.tpe.tpe {
             // TODO Fix duplicate code
             // We need to decrease the ref count
@@ -6382,8 +6398,6 @@ def create_destructor(tpe: *typechecking::Type, value: Value, state: *State) {
             to_end.value.br_unc.label_ = end_label
             null_br2.value.br.if_true = end_label
             push_label(end_label, state)
-
-            return
         }
     } else if structure_type and structure_type.module {
         let args = vector::make()
@@ -6426,6 +6440,9 @@ def create_destructor(tpe: *typechecking::Type, value: Value, state: *State) {
 
     if null_br2 {
         null_br2.value.br.if_true = end_label
+    }
+    if swtch {
+        swtch.value.switch_.otherwise = end_label
     }
 
     if structure_type and structure_type.kind == typechecking::TypeKind::STRUCT {
@@ -6922,7 +6939,7 @@ def do_create_type(tpe: *Type, svalue: *scope::Value, module: *toolchain::Module
     value.values[12] = { kind = ValueKind::UNDEF, tpe = array(builtins::Function_) } !Value
     value.values[13] = { kind = ValueKind::STRUCT, tpe = array(builtins::Function_), values = type_names } !Value
     value.values[14] = { kind = ValueKind::UNDEF, tpe = pointer(builtins::Type_) } !Value
-    value.values[15] = { kind = ValueKind::INT, tpe = builtins::int64_, i = 0 /*md5::high(md5::md5(name_str))*/ } !Value
+    value.values[15] = { kind = ValueKind::INT, tpe = builtins::int64_, i = md5::high(md5::md5(name_str)) } !Value
 
     let index = allocate(Value, 3)
     index[0] = make_int_value(0)
@@ -7249,10 +7266,6 @@ def generate_vtable_function(function: *Function, tpe: *typechecking::Type, stat
         ret_tpe = vector::peek(tpe.return_t) !*typechecking::Type
     }
 
-    let equals = scope::get(toolchain::runtime.scope, parser::make_identifier(["equals"]))
-    predeclare_function(equals.tpe, state.module)
-    map::put(state.module.imported, equals.tpe.type_name, map::sentinel)
-
     // Extract type
     let ref_tpe = state.extract_value(
         typechecking::pointer(builtins::Type_), 
@@ -7265,6 +7278,16 @@ def generate_vtable_function(function: *Function, tpe: *typechecking::Type, stat
         ref_tpe_deref,
         [4]
     )
+    let tpe_deref = state.load(builtins::Type_, tpe_value)
+    let tpe_id = state.extract_value(builtins::int64_, tpe_deref, [15])
+
+    let switch_values = vector::make()
+    let swtch = make_insn(InsnKind::SWITCH)
+    swtch.value.switch_ = {
+        value = tpe_id,
+        switch_values = switch_values
+    } !InsnSwitch
+    push_insn(swtch, state)
 
     let keys = map::keys(typechecking::types_map)
     for var i in 0..keys.size {
@@ -7297,18 +7320,14 @@ def generate_vtable_function(function: *Function, tpe: *typechecking::Type, stat
             predeclare_function(function, state.module)
             map::put(state.module.imported, function.type_name, map::sentinel)
 
-            let cond = state.call(equals.tpe.type_name, builtins::bool_, [
-                tpe_value,
-                do_create_type(type_entry.tpe.tpe, state.module)
-            ])
-
-            let br = make_insn(InsnKind::BR)
-            br.value.br = { cond = cond } !InsnBr
-            push_insn(br, state)
-            
             let if_true = make_label(state)
-            br.value.br.if_true = if_true
             push_label(if_true, state)
+
+            let hash = md5::high(md5::md5(debug::type_to_str(type_entry.tpe.tpe, full_name = true)))
+            let svalue = allocate(SwitchValue)
+            svalue.label_ = if_true
+            svalue.value = { kind = ValueKind::INT, i = hash, tpe = builtins::int64_ } !Value
+            vector::push(switch_values, svalue)
 
             let reference = convert_ref_to_ref(type_entry.tpe, { kind = ValueKind::LOCAL, tpe = first_param, name = "__ref.value"} !Value, null, state)
 
@@ -7323,12 +7342,12 @@ def generate_vtable_function(function: *Function, tpe: *typechecking::Type, stat
             }
             let r = state.call(function.type_name, ret_tpe, args)
             state.ret(r)
-
-            let if_false = make_label(state)
-            br.value.br.if_false = if_false
-            push_label(if_false, state)
         }
     }
+
+    let end_label = make_label(state)
+    push_label(end_label, state)
+    swtch.value.switch_.otherwise = end_label
 
     map::put(state.module.imported, "abort", map::sentinel)
     state.call("abort", null, [] ![Value])
