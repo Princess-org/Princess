@@ -1157,21 +1157,6 @@ def do_create_type(tpe: *typechecking::Type, module: *toolchain::Module) -> Valu
     return { kind = ValueKind::NULL, tpe = typechecking::pointer(builtins::Type_) } !Value
 }
 
-// TODO This shouldn't be used. Instead initialize the ref count to 0 and increase it when its captured
-// See array literal
-def is_captured(node: *parser::Node) -> bool {
-    while node and node.body == null {
-        if node.kind == parser::NodeKind::ASSIGN or
-            node.kind == parser::NodeKind::FUNC_CALL or
-            node.kind == parser::NodeKind::VAR_DECL or
-            node.kind == parser::NodeKind::RETURN {
-            return true
-        }
-        node = node.parent
-    }
-    return false
-}
-
 // TODO This has over 500 lines, refactor this monstrosity please
 export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Type, state: *State) -> Value {
     if not value.tpe or not tpe { return value }
@@ -1219,8 +1204,6 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
             value = convert_to(node, value, tpe.tpe, state)
         }
 
-        let is_captured = is_captured(node)
-
         map::put(state.module.imported, "malloc", map::sentinel)
 
         var is_null = false
@@ -1257,7 +1240,7 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
             let store1 = make_insn_dbg(InsnKind::STORE, loc)
             store1.value.store = {
                 loc = refcount,
-                value = { kind = ValueKind::INT, tpe = builtins::int64_, i = 0 if is_captured else 1 } !Value
+                value = { kind = ValueKind::INT, tpe = builtins::int64_, i = 0 } !Value
             } !InsnStore
             push_insn(store1, state)
         }
@@ -1297,7 +1280,7 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
             } !InsnConvert
             push_insn(bitcast2, state)
             
-            if is_copied(node) and has_copy_constructor(value.tpe) {
+            if has_copy_constructor(value.tpe) {
                 let ret = state.alloca(value.tpe, loc)
                 insert_copy_constructor(ret, value, loc, state)
                 value = state.load(value.tpe, ret, loc)
@@ -1418,12 +1401,12 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
         }
         push_insn(insert3, state)
 
-        if not is_null and not is_captured {
+        /*if not is_null and not is_captured {
             // Destroy the value
             let ptr = state.alloca(tpe, loc)
             state.store(ptr, ret_insert3)
             insert_destructor(ptr, state.scope, loc, state)
-        }
+        }*/
 
         return ret_insert3
     } else if tpe.kind == typechecking::TypeKind::ARRAY {
@@ -2351,7 +2334,7 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
             if last_np.tpe {
                 var expr = walk_and_load_expression(n, state)
                 expr = convert_to(n, expr, last_np.tpe, state)
-                if is_copied(n) and typechecking::has_copy_constructor(expr.tpe) {
+                if typechecking::has_copy_constructor(expr.tpe) {
                     let ret = state.alloca(expr.tpe, loc)
                     insert_copy_constructor(ret, expr, loc, state)
                     expr = state.load(expr.tpe, ret, loc)
@@ -2380,7 +2363,7 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
         }
         let old = args[i]
         // TODO Factor this out into a function
-        if is_copied(n) and typechecking::has_copy_constructor(old.tpe) {
+        if typechecking::has_copy_constructor(old.tpe) {
             let ret = state.alloca(old.tpe, loc)
             insert_copy_constructor(ret, old, loc, state)
             args[i] = state.load(old.tpe, ret, loc)
@@ -2398,7 +2381,7 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
                 var expr = walk_and_load_expression(value, state)
                 expr = convert_to(n, expr, (@p).tpe, state)
 
-                if is_copied(value) and typechecking::has_copy_constructor(expr.tpe) {
+                if typechecking::has_copy_constructor(expr.tpe) {
                     let ret = state.alloca(expr.tpe, loc)
                     insert_copy_constructor(ret, expr, loc, state)
                     expr = state.load(expr.tpe, ret, loc)
@@ -2471,7 +2454,6 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
     } else {    
         var name = tpe.type_name
         let function = map::get(state.module.result.functions, name) !*Function
-        //print(name, " ", function, "\n")
         if not function { return NO_VALUE }
         ret = function.ret
         multiple_returns = function.multiple_returns
@@ -2541,17 +2523,14 @@ def walk_Call(node: *parser::Node, state: *State) -> Value {
         } !InsnStore
         push_insn(store, state)
 
-        // This is a way of checking if the function is called inside of a block
-        if node.parent.body {
-            if multiple_returns {
-                for var i in 0..ret.fields.size {
-                    let field = ret.fields[i]
-                    let ret = state.gep(pointer(field.tpe), ret, addr, [make_int_value(0), make_int_value(i)])
-                    insert_destructor(ret, state.scope, loc, state)
-                }
-            } else {
-                insert_destructor(addr, state.scope, loc, state)
+        if multiple_returns {
+            for var i in 0..ret.fields.size {
+                let field = ret.fields[i]
+                let ret2 = state.gep(pointer(field.tpe), ret, addr, [make_int_value(0), make_int_value(i)])
+                create_temporary(ret2, state.load(field.tpe, ret2, loc), loc, state)
             }
+        } else {
+            create_temporary(addr, value, loc, state)
         }
     }
 
@@ -2601,12 +2580,6 @@ def walk_Identifier(node: *parser::Node, state: *State) -> Value {
         } !Value
         return value
     }
-}
-
-def is_copied(node: *parser::Node) -> bool {
-    if not node { return false }
-    return node.kind == parser::NodeKind::DEREF or 
-        node.kind == parser::NodeKind::IDENTIFIER
 }
 
 // This function assumes that value.tpe has a copy constructor
@@ -2810,13 +2783,39 @@ def increase_ref_count(value: Value, loc: *Value, state: *State) {
     increase_pointer_by_one(load1_ret, loc, state)
 }
 
-def assign_ref(value: Value, addr: Value, loc: *Value, inc_ref_count: bool, is_initializer: bool, state: *State) {
+// Leaving this in because it might be useful
+def copy_reference(value: Value, loc: *Value, state: *State) -> Value {
+    assert is_ref(value.tpe)
+    map::put(state.module.imported, "memcpy", map::sentinel)
+    map::put(state.module.imported, "malloc", map::sentinel)
+
+    let size = { kind = ValueKind::INT, tpe = builtins::int64_, i = value.tpe.tpe.size } !Value
+    let size_int64 = { kind = ValueKind::INT, tpe = builtins::int64_, i = builtins::int64_.size } !Value
+
+    let ref_count_ptr_i8 = state.call("malloc", pointer(builtins::int8_), [size_int64], loc)
+    let ref_count_ptr = state.bitcast(pointer(builtins::int64_), ref_count_ptr_i8)
+    state.store(ref_count_ptr, { kind = ValueKind::INT, tpe = builtins::int64_, i = 0 } !Value)
+    let value_ptr = state.extract_value(pointer(value.tpe.tpe), value, [1], loc)
+    let type_ptr = state.extract_value(pointer(builtins::Type_), value, [2], loc)
+    
+    let value_ptr_i8 = state.bitcast(pointer(builtins::int8_), value_ptr, loc)
+    let copy_ptr_i8 = state.call("malloc", pointer(builtins::int8_), [size], loc)
+    state.call("memcpy", pointer(builtins::int8_), [copy_ptr_i8, value_ptr_i8, size], loc)
+    let copy_ptr = state.bitcast(pointer(value.tpe.tpe), copy_ptr_i8, loc)
+
+    var ret = { kind = ValueKind::UNDEF, tpe = value.tpe } !Value
+    ret = state.insert_value(value.tpe, ret, ref_count_ptr, [0], loc)
+    ret = state.insert_value(value.tpe, ret, copy_ptr, [1], loc)
+    ret = state.insert_value(value.tpe, ret, type_ptr, [2], loc)
+
+    return ret
+}
+
+def assign_ref(value: Value, addr: Value, loc: *Value, is_initializer: bool, state: *State) {
     if not value.addr { return }
 
     // First increase the ref count of the assigned value
-    if inc_ref_count {
-        increase_ref_count(@value.addr, loc, state)
-    }
+    increase_ref_count(@value.addr, loc, state)
 
     // Now decrease the ref count of the stored value
     if not is_initializer {
@@ -2950,16 +2949,6 @@ def assign_ref(value: Value, addr: Value, loc: *Value, inc_ref_count: bool, is_i
     push_insn(store4, state)
 }
 
-// Because function returns increase the ref count
-def do_increase_ref_cout(n: *parser::Node) -> bool {
-    if n.kind == parser::NodeKind::FUNC_CALL {
-        return false
-    } else if n.kind == parser::NodeKind::CAST {
-        return do_increase_ref_cout(n.value.bin_op.left)
-    }
-    return true
-}
-
 def call_set_item(n: *parser::Node, l: *parser::Node, value: *Value, loc: *Value, state: *State) -> bool {
     if not l or l.kind != parser::NodeKind::ARRAY_SUBSCRIPT { return false }
 
@@ -2978,7 +2967,7 @@ def call_set_item(n: *parser::Node, l: *parser::Node, value: *Value, loc: *Value
     if set_item {
 
         var array_v = walk_and_load_expression(l.value.bin_op.left, state)
-        if is_copied(l.value.bin_op.left) and typechecking::has_copy_constructor(array_v.tpe) {
+        if typechecking::has_copy_constructor(array_v.tpe) {
             let ret = state.alloca(array_v.tpe, loc)
             insert_copy_constructor(ret, array_v, loc, state)
             array_v = state.load(array_v.tpe, ret, loc)
@@ -3003,6 +2992,46 @@ def call_set_item(n: *parser::Node, l: *parser::Node, value: *Value, loc: *Value
     return false
 }
 
+def create_temporary(addr: Value, ret: Value, loc: *Value, state: *State) {
+    var name = addr.name
+    let is_global = scope::is_global(state.scope)
+    if is_global {
+        let buf = *buffer::make_buffer()
+        buf.append_str(state.module.module)
+        buf.append_str(".__tmp.")
+        buf.append_str(util::int_to_str(state.global_counter))
+        state.global_counter += 1
+        name = buf.to_string()
+    }
+
+    let ident = parser::make_identifier([name])
+    if not scope::get(state.scope, ident) {
+        scope::create_variable(
+            state.scope, 
+            ident,
+            parser::ShareMarker::NONE,
+            parser::VarDecl::LET,
+            ret.tpe, true, null // extern so that we don't change the variable name
+        )
+    }
+
+    if is_global {
+        let global = allocate(Global)
+        @global = {
+            name = name,
+            tpe = ret.tpe,
+            private = true
+        } !Global
+        
+        map::put(state.module.result.globals, (@global).name, global)
+        map::put(state.module.imported, global.name, map::sentinel)
+        
+        state.store({ kind = ValueKind::GLOBAL, tpe = pointer(ret.tpe), name = name } !Value, ret, loc)
+    } else {
+        map::put(state.current_function.function_locals, name, map::sentinel)
+    }
+}
+
 def assign_post(n: *parser::Node, l: *parser::Node, ret: *Value, loc: *Value, state: *State) -> bool {
     if not call_set_item(n, l, ret, loc, state) {
         let addr = walk_expression(l, state).addr
@@ -3018,39 +3047,7 @@ def assign_post(n: *parser::Node, l: *parser::Node, ret: *Value, loc: *Value, st
             n.kind == parser::NodeKind::ARRAY_LIT {
 
             // We need to store the array so we can destruct it
-            
-            var name = ret.addr.name
-            let is_global = scope::is_global(state.scope)
-            if is_global {
-                let buf = *buffer::make_buffer()
-                buf.append_str("__array.")
-                buf.append_str(util::int_to_str(state.global_counter))
-                state.global_counter += 1
-                name = buf.to_string()
-            }
-
-            let variable = scope::create_variable(
-                state.scope, 
-                parser::make_identifier([name]),
-                parser::ShareMarker::NONE,
-                parser::VarDecl::LET,
-                ret.tpe, true, null // extern so that we don't change the variable name
-            )
-
-            if is_global {
-                let global = allocate(Global)
-                @global = {
-                    name = name,
-                    tpe = ret.tpe
-                } !Global
-                
-                map::put(state.module.result.globals, (@global).name, global)
-                map::put(state.module.imported, global.name, map::sentinel)
-                
-                state.store({ kind = ValueKind::GLOBAL, tpe = pointer(ret.tpe), name = name } !Value, @ret, loc)
-            } else {
-                map::put(state.current_function.function_locals, name, map::sentinel)
-            }
+            create_temporary(@ret.addr, @ret, loc, state)
         }
         
         @ret = convert_to(n, @ret, (@l).tpe, state)
@@ -3061,9 +3058,8 @@ def assign_post(n: *parser::Node, l: *parser::Node, ret: *Value, loc: *Value, st
             @ret = state.load(ret.tpe, tmp, loc)
         }
 
-        let inc_ref_count = do_increase_ref_cout(n)
         if typechecking::is_ref(l.tpe) and ret.addr and typechecking::is_ref(ret.addr.tpe) {
-            assign_ref(@ret.addr, @addr, loc, inc_ref_count, l.is_initializer, state)
+            assign_ref(@ret.addr, @addr, loc, l.is_initializer, state)
         } else {
             if not l.is_initializer {
                 insert_destructor(@addr, state.scope, loc, state)
@@ -3081,7 +3077,7 @@ def assign_post(n: *parser::Node, l: *parser::Node, ret: *Value, loc: *Value, st
 
             push_insn(store, state)
 
-            if typechecking::is_ref(l.tpe) and inc_ref_count {
+            if typechecking::is_ref(l.tpe) {
                 increase_ref_count(@addr, loc, state)
             }
         }
@@ -3917,98 +3913,113 @@ def walk_TypeOfT(node: *parser::Node, state: *State) -> Value {
 }
 
 export def walk_expression(node: *parser::Node, state: *State) -> Value {
+    var expr: Value
     if not node { return NO_VALUE }
     switch (@node).kind !int {
         case parser::NodeKind::NULL:
-            return walk_Null(node, state)
+            expr = walk_Null(node, state)
         case parser::NodeKind::UNDEF:
             errors::errorn(node, "Undef used outside of initializer")
-            return NO_VALUE
+            expr = NO_VALUE
         case parser::NodeKind::IDENTIFIER:
-            return walk_Identifier(node, state)
+            expr = walk_Identifier(node, state)
         case parser::NodeKind::INTEGER:
-            return walk_Integer(node, state)
+            expr = walk_Integer(node, state)
         case parser::NodeKind::FLOAT:
-            return walk_Float(node, state)
+            expr = walk_Float(node, state)
         case parser::NodeKind::BOOLEAN:
-            return walk_Boolean(node, state)
+            expr = walk_Boolean(node, state)
         case parser::NodeKind::CHAR:
-            return walk_Char(node, state)
+            expr = walk_Char(node, state)
         case parser::NodeKind::STRING:
-            return walk_String(node, state)
+            expr = walk_String(node, state)
         case parser::NodeKind::SIZE_OF:
-            return walk_SizeOf(node, state)
+            expr = walk_SizeOf(node, state)
         case parser::NodeKind::ALIGN_OF:
-            return walk_AlignOf(node, state)
+            expr = walk_AlignOf(node, state)
         case parser::NodeKind::CAST:
-            return walk_Cast(node, state)
+            expr = walk_Cast(node, state)
         case parser::NodeKind::USUB:
-            return walk_USub(node, state)
+            expr = walk_USub(node, state)
         case parser::NodeKind::UADD:
-            return walk_UAdd(node, state)
+            expr = walk_UAdd(node, state)
         case parser::NodeKind::NOT:
-            return walk_Not(node, state)
+            expr = walk_Not(node, state)
         case parser::NodeKind::AND:
-            return walk_And(node, state)
+            expr = walk_And(node, state)
         case parser::NodeKind::OR:
-            return walk_Or(node, state)
+            expr = walk_Or(node, state)
         case parser::NodeKind::ADD:
-            return walk_Add(node, state)
+            expr = walk_Add(node, state)
         case parser::NodeKind::SUB:
-            return walk_Sub(node, state)
+            expr = walk_Sub(node, state)
         case parser::NodeKind::MUL:
-            return walk_Mul(node, state)
+            expr = walk_Mul(node, state)
         case parser::NodeKind::MOD:
-            return walk_Mod(node, state)
+            expr = walk_Mod(node, state)
         case parser::NodeKind::DIV:
-            return walk_Div(node, state)
+            expr = walk_Div(node, state)
         case parser::NodeKind::SHL:
-            return walk_Shl(node, state)
+            expr = walk_Shl(node, state)
         case parser::NodeKind::SHR:
-            return walk_Shr(node, state)
+            expr = walk_Shr(node, state)
         case parser::NodeKind::BAND:
-            return walk_BAnd(node, state)
+            expr = walk_BAnd(node, state)
         case parser::NodeKind::BOR:
-            return walk_BOr(node, state)
+            expr = walk_BOr(node, state)
         case parser::NodeKind::BXOR:
-            return walk_BXor(node, state)
+            expr = walk_BXor(node, state)
         case parser::NodeKind::BNOT:
-            return walk_BNot(node, state)
+            expr = walk_BNot(node, state)
         case parser::NodeKind::PADD:
-            return walk_PointerOp(node, InsnKind::ADD, state)
+            expr = walk_PointerOp(node, InsnKind::ADD, state)
         case parser::NodeKind::PSUB:
-            return walk_PointerOp(node, InsnKind::SUB, state)
+            expr = walk_PointerOp(node, InsnKind::SUB, state)
         case parser::NodeKind::EQ..=parser::NodeKind::LEQ:
-            return walk_ComparisionOp(node, state)
+            expr = walk_ComparisionOp(node, state)
         case parser::NodeKind::FUNC_CALL:
-            return walk_Call(node, state)
+            expr = walk_Call(node, state)
         case parser::NodeKind::ASSIGN:
-            return walk_Assign(node, state)
+            expr = walk_Assign(node, state)
         case parser::NodeKind::PADD_EQ..=parser::NodeKind::SHR_EQ:
-            return walk_AssignEq(node, state)
+            expr = walk_AssignEq(node, state)
         case parser::NodeKind::DEREF:
-            return walk_Deref(node, state)
+            expr = walk_Deref(node, state)
         case parser::NodeKind::PTR:
-            return walk_Ptr(node, state)
+            expr = walk_Ptr(node, state)
         case parser::NodeKind::MEMBER_ACCESS:
-            return walk_MemberAccess(node, state)
+            expr = walk_MemberAccess(node, state)
         case parser::NodeKind::ARRAY_SUBSCRIPT:
-            return walk_ArraySubscript(node, state)
+            expr = walk_ArraySubscript(node, state)
         case parser::NodeKind::STRUCT_LIT:
-            return walk_StructLit(node, state)
+            expr = walk_StructLit(node, state)
         case parser::NodeKind::ARRAY_LIT:
-            return walk_ArrayLit(node, state)
+            expr = walk_ArrayLit(node, state)
         case parser::NodeKind::ARRAY_STATIC_T, parser::NodeKind::PTR_T,
             parser::NodeKind::REF_T, parser::NodeKind::ARRAY_T, parser::NodeKind::FUNCTION_T:
-            return walk_Type(node, state)
+            expr = walk_Type(node, state)
         case parser::NodeKind::TYPE_OF_T:
-            return walk_TypeOfT(node, state)
+            expr = walk_TypeOfT(node, state)
         case parser::NodeKind::IF_EXPR:
-            return walk_IfExpr(node, state)
+            expr = walk_IfExpr(node, state)
         case:
             error((@node).kind, "\n")
             assert(false)
     }
+    
+    if node.parent and node.parent.body and node.kind != parser::NodeKind::FUNC_CALL and node.kind != parser::NodeKind::ASSIGN and
+        expr.kind != ValueKind::NULL and expr.kind != ValueKind::ADDRESS and expr.tpe.kind != typechecking::TypeKind::POINTER {
+
+        let loc = make_location(node, state)
+        let addr = state.alloca(expr.tpe, loc)
+        state.store(addr, expr, loc)
+        if is_ref(expr.tpe) {
+            increase_ref_count(addr, loc, state)
+        }
+        insert_destructor(addr, state.scope, loc, state)
+    }
+
+    return expr
 }
 
 def walk_If(node: *parser::Node, state: *State) {
@@ -4314,6 +4325,18 @@ def walk_Switch(node: *parser::Node, state: *State) {
     (@end).value.br_unc.label_ = end_label
 }
 
+def return_post(expr: Value, loc: *Value, state: *State) -> Value {
+    if is_ref(expr.tpe) {
+        increase_ref_count_of_value(expr, loc, state)
+    }
+    if typechecking::has_copy_constructor(expr.tpe) {
+        let ret = state.alloca(expr.tpe, loc)
+        insert_copy_constructor(ret, expr, loc, state)
+        expr = state.load(expr.tpe, ret, loc)
+    }
+    return expr
+}
+
 def walk_Return(node: *parser::Node, state: *State) {
     let loc = make_location(node, state)
     let current_function = (@state).current_function
@@ -4326,17 +4349,7 @@ def walk_Return(node: *parser::Node, state: *State) {
             let n = vector::get((@node).value.body, i) !*parser::Node
             let tpe = (@(@current_function).ret).fields[i].tpe
             var expr = convert_to(n, walk_and_load_expression(n, state), tpe, state)
-
-            if is_ref(expr.tpe) {
-                increase_ref_count_of_value(expr, loc, state)
-            }
-            if is_copied(n) and typechecking::has_copy_constructor(expr.tpe) {
-                let ret = state.alloca(expr.tpe, loc)
-                insert_copy_constructor(ret, expr, loc, state)
-                expr = state.load(expr.tpe, ret, loc)
-            }
-
-            ret_args[i] = expr
+            ret_args[i] = return_post(expr, loc, state)
         }
         value = {
             kind = ValueKind::STRUCT,
@@ -4350,15 +4363,7 @@ def walk_Return(node: *parser::Node, state: *State) {
         if tpe {
             let arg = vector::peek((@node).value.body) !*parser::Node
             value = convert_to(arg, walk_and_load_expression(arg, state), tpe, state)
-            
-            if is_ref(value.tpe) {
-                increase_ref_count_of_value(value, loc, state)
-            }
-            if is_copied(arg) and typechecking::has_copy_constructor(value.tpe) {
-                let ret = state.alloca(value.tpe, loc)
-                insert_copy_constructor(ret, value, loc, state)
-                value = state.load(value.tpe, ret, loc)
-            }
+            value = return_post(value, loc, state)
         }
     }
 
@@ -5029,15 +5034,25 @@ export def walk(node: *parser::Node, state: *State) {
         case parser::NodeKind::CONTINUE:
             walk_Continue(node, state)
         case parser::NodeKind::IF:
+            state.scope = node.inner_scope
             walk_If(node, state)
+            state.scope = node.scope
         case parser::NodeKind::SWITCH:
+            state.scope = node.inner_scope
             walk_Switch(node, state)
+            state.scope = node.scope
         case parser::NodeKind::LOOP:
+            state.scope = node.inner_scope
             walk_Loop(node, state)
+            state.scope = node.scope
         case parser::NodeKind::WHILE:
+            state.scope = node.inner_scope
             walk_While(node, state)
+            state.scope = node.scope
         case parser::NodeKind::FOR:
+            state.scope = node.inner_scope
             walk_For(node, state)
+            state.scope = node.scope
         case parser::NodeKind::DEFER:
             walk_Defer(node, state)
         case parser::NodeKind::ASSERT:
