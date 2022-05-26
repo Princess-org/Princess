@@ -1503,6 +1503,7 @@ def lookup_type_constructor(tc: *parser::Node, node: *parser::Node, state: *Stat
     }
     tpe.node = node
     tpe.node.module = state.module
+    tpe.module = state.module
     tpe.cache = map::make()
     return tpe
 }
@@ -1523,9 +1524,15 @@ export def generate_concrete_functions(type_constructor: *Type, tpe: *Type, stat
         ftpe.type_name = mangle_function_name(append_module(ftpe.name, ftpe.module.module), ftpe.parameter_t)
         let new_entry = create_type_entry(tpe, function.exported, ftpe, function.module)
         if not is_polymorph(tpe) and not is_polymorph(ftpe) and new_entry {
-            if not scope::has_function(state.module.scope, ftpe) {
+            let scpe = state.scope
+            let module = state.module
+            state.scope = ftpe.node.module.scope
+            state.module = ftpe.node.module
+            if not scope::has_function(state.scope, ftpe) {
                 walk_Def_with_type_argument(ftpe.node, pars, state)
             }
+            state.scope = scpe
+            state.module = module
         }
     }
 }
@@ -1921,7 +1928,9 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
         var is_generic = false
 
         let len = vector::length(node.value.type_constructor.args)
-        state.scope = scope::enter_scope(state.scope)
+        let scpe = state.scope
+        if type_constructor.module { state.scope = type_constructor.module.scope }
+        let inner_scope = scope::enter_scope(state.scope)        
         for var i in 0..len {
             let arg = vector::get(node.value.type_constructor.args, i) !*parser::Node
             var np: *NamedParameter = null
@@ -1933,12 +1942,14 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
             if current_type {
                 previous = vector::get(current_type.tc_args, i) !*Type
             }
+            state.scope = scpe
             let argtpe = type_lookup(arg, state, previous, lookup_default, parameter_types)
+            state.scope = inner_scope
             if argtpe {
                 if argtpe.kind == TypeKind::TYPE_DEF { is_generic = true }
                 else if argtpe.kind == TypeKind::STUB { is_complete = false }
                 if np {
-                    scope::create_type(state.scope, parser::make_identifier([np.name]), parser::ShareMarker::NONE, argtpe)
+                    scope::create_type(inner_scope, parser::make_identifier([np.name]), parser::ShareMarker::NONE, argtpe)
                 }
             } else { is_complete = false }
             vector::push(tc_args, argtpe)
@@ -1948,6 +1959,7 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
             }
         }
         name_buf.append_char(')')
+        state.scope = inner_scope
 
         if is_generic {
             if type_constructor.node and type_constructor.node.kind == parser::NodeKind::TYPE_CONSTRUCTOR {
@@ -1960,13 +1972,13 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
                 tpe.module = state.module
             }
 
-            state.scope = scope::exit_scope(state.scope)
+            state.scope = scpe
             return tpe
         }
         var type_name = name_buf.to_string()
         var cached_type = map::get(cached, type_name) !*Type
         if cached_type != null {
-            state.scope = scope::exit_scope(state.scope)
+            state.scope = scpe
             return cached_type
         }
         cached_type = make_type_raw(TypeKind::STUB)
@@ -1990,7 +2002,7 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
         tpe.type_name = type_name
         tpe.name = debug::type_to_str(tpe)
 
-        state.scope = scope::exit_scope(state.scope)
+        state.scope = scpe
         @cached_type = @tpe
         return cached_type
     }
@@ -3164,7 +3176,7 @@ export def walk_Call(node: *parser::Node, dry_run: bool, state: *State) -> bool 
         vector::insert(args, 0, np)
 
         let ident = parser::make_identifier(["apply"])
-        let fun = scope::get_function(state.scope, ident, args)
+        let fun = scope::get_function(state.scope, ident, args, true)
         if fun { 
             @node = @make_function_call(node, ident) 
             walk_Call(node, state)
@@ -3175,6 +3187,9 @@ export def walk_Call(node: *parser::Node, dry_run: bool, state: *State) -> bool 
                 left.svalue = function
 
                 if not function and dry_run { return false }
+                if function {
+                    print(parser::identifier_to_str(left), " ", function.tpe.type_name, "\n")
+                }
 
                 if left.value.identifier.types {
                     if not function {
