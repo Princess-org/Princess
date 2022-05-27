@@ -65,6 +65,7 @@ export type TypeMember = struct {
 export type StructMember = struct {
     // Source line
     line: int
+    node: *parser::Node
     name: string
     tpe: *Type
     // index into the field_types vector
@@ -1472,8 +1473,14 @@ export def make_struct_type(fields: [StructMember], current_type: *Type = null) 
             }
         }
 
-        offset = (ceil(offset / tpe.align !double) * tpe.align) !int
-        align = util::lcm(align !int, tpe.align !int)
+        if field.tpe.kind == TypeKind::TYPE_CONSTRUCTOR {
+            errors::errorn(field.node, "Can't use type constructor as field type")
+            continue
+        }
+        if tpe.align > 0 {
+            offset = (ceil(offset / tpe.align !double) * tpe.align) !int
+            align = util::lcm(align !int, tpe.align !int)
+        }
 
         let type_member = allocate(TypeMember)
         @type_member = {
@@ -1516,6 +1523,7 @@ def lookup_type_constructor(tc: *parser::Node, node: *parser::Node, state: *Stat
     }
     tpe.node = node
     tpe.node.module = state.module
+    tpe.module = state.module
     tpe.cache = map::make()
     return tpe
 }
@@ -1536,9 +1544,15 @@ export def generate_concrete_functions(type_constructor: *Type, tpe: *Type, stat
         ftpe.type_name = mangle_function_name(append_module(ftpe.name, ftpe.module.module), ftpe.parameter_t)
         let new_entry = create_type_entry(tpe, function.exported, ftpe, function.module)
         if not is_polymorph(tpe) and not is_polymorph(ftpe) and new_entry {
-            if not scope::has_function(state.module.scope, ftpe) {
+            let scpe = state.scope
+            let module = state.module
+            state.scope = ftpe.node.module.scope
+            state.module = ftpe.node.module
+            if not scope::has_function(state.scope, ftpe) {
                 walk_Def_with_type_argument(ftpe.node, pars, state)
             }
+            state.scope = scpe
+            state.module = module
         }
     }
 }
@@ -1669,6 +1683,7 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
             }
             
             fields[i] = { 
+                node = field,
                 line = line, 
                 name = name, 
                 tpe = field_tpe,
@@ -1722,8 +1737,9 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
                 field_tpe = type_lookup(field, state, field_type, lookup_default, parameter_types)
             }
 
-            fields[i] = { 
-                line = line, 
+            fields[i] = {
+                line = line,
+                node = field, 
                 name = name, 
                 tpe = field_tpe,
                 is_bitfield = is_bitfield, 
@@ -1733,6 +1749,9 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
             if field_tpe and field_tpe.size > size {
                 size = field_tpe.size
                 biggest_type = field_tpe
+            }
+            if field_tpe and field_tpe.kind == TypeKind::TYPE_CONSTRUCTOR {
+                errors::errorn(field, "Can't use type constructor as field type")
             }
             // TODO Alignment of bit fields on Windows is strange
             align = max(field_tpe.align, align) !size_t
@@ -1910,6 +1929,7 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
         let name = node.value.type_constructor.name
 
         var type_constructor = type_lookup(name, state, null, lookup_default)
+        if not type_constructor { return current_type }
 
         if type_constructor.kind != TypeKind::STUB {
             if type_constructor.kind != TypeKind::TYPE_CONSTRUCTOR {
@@ -1934,7 +1954,9 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
         var is_generic = false
 
         let len = vector::length(node.value.type_constructor.args)
-        state.scope = scope::enter_scope(state.scope)
+        let scpe = state.scope
+        if type_constructor.module { state.scope = type_constructor.module.scope }
+        let inner_scope = scope::enter_scope(state.scope)        
         for var i in 0..len {
             let arg = vector::get(node.value.type_constructor.args, i) !*parser::Node
             var np: *NamedParameter = null
@@ -1946,12 +1968,14 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
             if current_type {
                 previous = vector::get(current_type.tc_args, i) !*Type
             }
+            state.scope = scpe
             let argtpe = type_lookup(arg, state, previous, lookup_default, parameter_types)
+            state.scope = inner_scope
             if argtpe {
                 if argtpe.kind == TypeKind::TYPE_DEF { is_generic = true }
                 else if argtpe.kind == TypeKind::STUB { is_complete = false }
                 if np {
-                    scope::create_type(state.scope, parser::make_identifier([np.name]), parser::ShareMarker::NONE, argtpe)
+                    scope::create_type(inner_scope, parser::make_identifier([np.name]), parser::ShareMarker::NONE, argtpe)
                 }
             } else { is_complete = false }
             vector::push(tc_args, argtpe)
@@ -1961,6 +1985,7 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
             }
         }
         name_buf.append_char(')')
+        state.scope = inner_scope
 
         if is_generic {
             if type_constructor.node and type_constructor.node.kind == parser::NodeKind::TYPE_CONSTRUCTOR {
@@ -1973,13 +1998,13 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
                 tpe.module = state.module
             }
 
-            state.scope = scope::exit_scope(state.scope)
+            state.scope = scpe
             return tpe
         }
         var type_name = name_buf.to_string()
         var cached_type = map::get(cached, type_name) !*Type
         if cached_type != null {
-            state.scope = scope::exit_scope(state.scope)
+            state.scope = scpe
             return cached_type
         }
         cached_type = make_type_raw(TypeKind::STUB)
@@ -2003,7 +2028,7 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
         tpe.type_name = type_name
         tpe.name = debug::type_to_str(tpe)
 
-        state.scope = scope::exit_scope(state.scope)
+        state.scope = scpe
         @cached_type = @tpe
         return cached_type
     }
@@ -2366,6 +2391,10 @@ export def walk_VarDecl(node: *parser::Node, state: *State, set_constant: bool =
                 } else if ltpe and ltpe.kind == TypeKind::STATIC_ARRAY and ltpe.length == util::MAX_UINT64 {
                     ltpe.length = rtpe.length
                     ltpe.size = rtpe.size
+                }
+                if rtpe and rtpe.kind == TypeKind::TYPE_CONSTRUCTOR {
+                    errors::errorn(node, "Can't use type constructor as variable type")
+                    ltpe = null
                 }
             }
 
@@ -2739,7 +2768,11 @@ def walk_Cast(node: *parser::Node, state: *State) {
     
     let tpe = type_lookup(right, state)
     if not tpe { return }
-    node.tpe = tpe
+    if tpe.kind == TypeKind::TYPE_CONSTRUCTOR {
+        errors::errorn(right, "Can't cast to type constructor")
+    } else {
+        node.tpe = tpe
+    }
 
     if left.kind != parser::NodeKind::STRUCT_LIT and 
         left.kind != parser::NodeKind::ARRAY_LIT {
@@ -2936,7 +2969,13 @@ export def walk_Def(node: *parser::Node, state: *State) {
         for var i in 0..vector::length(tpe.parameter_t) {
             let np = vector::get(tpe.parameter_t, i) !*NamedParameter 
             var tpe2 = np.tpe
-            if tpe2 and tpe2.kind == TypeKind::TYPE { continue }
+            if tpe2 {
+                if tpe2.kind == TypeKind::TYPE { continue }
+                if tpe2.kind == TypeKind::TYPE_CONSTRUCTOR {
+                    errors::errorn(np.node, "Can't use type constructor as function argument")
+                    np.tpe = null
+                }
+            }
             if np.varargs {
                 if np.tpe {
                     scope::create_variable(inner_scope, np.node, parser::ShareMarker::NONE, parser::VarDecl::VAR, array(np.tpe), null)
@@ -3177,7 +3216,7 @@ export def walk_Call(node: *parser::Node, dry_run: bool, state: *State) -> bool 
         vector::insert(args, 0, np)
 
         let ident = parser::make_identifier(["apply"])
-        let fun = scope::get_function(state.scope, ident, args)
+        let fun = scope::get_function(state.scope, ident, args, true)
         if fun { 
             @node = @make_function_call(node, ident) 
             walk_Call(node, state)
