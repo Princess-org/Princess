@@ -202,10 +202,10 @@ export def find_functions(scope: *Scope, node: *parser::Node, template: *typeche
     return result, resolved
 }
 
-def find_function(scope: *Scope, node: *parser::Node, v: *Value, parameter_t: &Vector(&typechecking::Type), score: *int, dry_run: bool) -> *Value {
+def find_function(scope: *Scope, node: *parser::Node, v: *Value, parameter_t: &Vector(&typechecking::Type), score: *int, dry_run: bool) -> bool, *Value {
     for var i in 0..vector::length(parameter_t) {
         let np = vector::get(parameter_t, i) !*typechecking::NamedParameter
-        if not np.tpe { return null }
+        if not np.tpe { return false, null }
     }
     
     var generated = false
@@ -213,17 +213,18 @@ def find_function(scope: *Scope, node: *parser::Node, v: *Value, parameter_t: &V
         // We disregard the parameters and only look at the identifier
         // The calling function must check the overload score manually
         if not v {
-            return generate_function(scope, node, node.value.identifier.types, true)
+            let generated = generate_function(scope, node, node.value.identifier.types, true)
+            return generated != null, generated
         }
 
-        if not is_function(v.tpe) { return null }
+        if not is_function(v.tpe) { return false, null }
 
         loop {
             if not v { break }
             let s = typechecking::overload_score(v.tpe, node.value.identifier.types, scope.module, true)
             if s == 0 {
                 @score = 0
-                return v
+                return true, v
             }
             v = v.next
             if not v {
@@ -237,14 +238,15 @@ def find_function(scope: *Scope, node: *parser::Node, v: *Value, parameter_t: &V
                 }
             }
         }
-        return null
+        return false, null
     }
 
     if not v {
-        return generate_function(scope, node, parameter_t, dry_run)
+        let generated = generate_function(scope, node, parameter_t, dry_run)
+        return generated != null, generated
     }
 
-    if not is_function(v.tpe) { return null }
+    if not is_function(v.tpe) { return false, null }
     
     var found: *Value = null
     var d = false
@@ -277,9 +279,9 @@ def find_function(scope: *Scope, node: *parser::Node, v: *Value, parameter_t: &V
     }
     if d {
         if not dry_run { errors::errorn(node, "Ambiguous reference") }
-        return null
+        return true, null
     }
-    return found
+    return found != null, found
 }
 
 export def has_function(scope: *Scope, ftpe: *typechecking::Type) -> bool {
@@ -452,17 +454,18 @@ export def typecheck(value: *Value) {
     }
 }
 
-export def get_function(scope: *Scope, id: *parser::Node, parameter_t: &Vector(typechecking::NamedParameter), check_export: bool, dry_run: bool, force_compile: bool = true) -> *Value {
-    if not scope { return null }
+export def get_function_check(scope: *Scope, id: *parser::Node, parameter_t: &Vector(typechecking::NamedParameter), check_export: bool, dry_run: bool, force_compile: bool = true) -> bool, *Value {
+    if not scope { return false, null }
     
     assert((@id).kind == parser::NodeKind::IDENTIFIER)
     if vector::length((@id).value.identifier.path) == 1 {
         let name = @(vector::get((@id).value.identifier.path, 0) !*string)
         var score = util::MAX_INT32 !int
+        var code = false
 
         // We need to store this to check later that there's no entry by that name
         let first_value = map::get((@scope).fields, name) !*Value
-        let first_function = find_function(scope, id, first_value, parameter_t, *score, dry_run)
+        let (code), first_function = find_function(scope, id, first_value, parameter_t, *score, dry_run)
         let first_score = score
         var value = first_function
         var d = false
@@ -471,7 +474,8 @@ export def get_function(scope: *Scope, id: *parser::Node, parameter_t: &Vector(t
                 let module = vector::get((@scope).imports, i) !*toolchain::Module
                 let scope2 = (@module).scope
                 var new_score = util::MAX_INT32 !int
-                let new_value = find_function(scope, id, map::get((@scope2).fields, name) !*Value, parameter_t, *new_score, dry_run)
+                let code2, new_value = find_function(scope, id, map::get((@scope2).fields, name) !*Value, parameter_t, *new_score, dry_run)
+                if code2 { code = true }
                 if new_value and (@new_value).share !int & parser::ShareMarker::EXPORT !int {
                     if score == new_score {
                         d = true 
@@ -488,21 +492,22 @@ export def get_function(scope: *Scope, id: *parser::Node, parameter_t: &Vector(t
                 value = first_function
             } else if d {
                 if not dry_run { errors::errorn(id, "Ambiguous reference") }
-                return null
+                return true, null
             }
         }
         if value and check_export and value.share !int & parser::ShareMarker::EXPORT !int == 0 {
             value = null
         }
         if not value and (@scope).parent and not first_value {
-            value = get_function((@scope).parent, id, parameter_t, check_export, dry_run)
+            code, value = get_function_check((@scope).parent, id, parameter_t, check_export, dry_run, force_compile)
         }
         if not value and vector::length(parameter_t) > 0 {
             let first_param = vector::get(parameter_t, 0) !*typechecking::NamedParameter
             if first_param.tpe and first_param.tpe.module and first_param.tpe.module != scope.module {
                 let scope = first_param.tpe.module.scope
                 var new_score = util::MAX_INT32 !int
-                let new_value = find_function(scope, id, map::get(scope.fields, name) !*Value, parameter_t, *new_score, dry_run)
+                let code2, new_value = find_function(scope, id, map::get(scope.fields, name) !*Value, parameter_t, *new_score, dry_run)
+                if code2 { code = true }
                 if new_value and new_value.share !int & parser::ShareMarker::EXPORT !int {
                     value = new_value
                 }
@@ -511,7 +516,7 @@ export def get_function(scope: *Scope, id: *parser::Node, parameter_t: &Vector(t
         if value and value.phase == Phase::DEFINED and force_compile {
             value = typecheck_function(value, id, scope, dry_run, parameter_t)
         }
-        return value
+        return code, value
     } else {
         let head = vector::head_vec((@id).value.identifier.path)
         let tail = vector::tail((@id).value.identifier.path)
@@ -525,12 +530,18 @@ export def get_function(scope: *Scope, id: *parser::Node, parameter_t: &Vector(t
         if s {
             if not (@s).scope {
                 if not dry_run { errors::errorn(id, "Use of :: on non namespace") }
-                return null
+                return false, null
             }
-            return get_function((@s).scope, id_tail, parameter_t, s.imported, dry_run)
+            // TODO this should be able to go on one line
+            let code, value = get_function_check((@s).scope, id_tail, parameter_t, s.imported, dry_run, force_compile)
+            return code, value
         }
-        return null
+        return false, null
     }
+}
+export def get_function(scope: *Scope, id: *parser::Node, parameter_t: *vector::Vector, check_export: bool, dry_run: bool, force_compile: bool = true) -> *Value {
+    let _, value = get_function_check(scope, id, parameter_t, check_export, dry_run, force_compile)
+    return value
 }
 
 export def get_function(scope: *Scope, id: *parser::Node, parameter_t: &Vector(typechecking::NamedParameter), dry_run: bool) -> *Value {
@@ -553,7 +564,7 @@ export def get(scope: *Scope, id: *parser::Node, force_compile: bool = true, che
         if value { 
             if id.value.identifier.types {
                 var score = 0
-                value = find_function(scope, id, value, id.value.identifier.types, *score, true)
+                let _, (value) = find_function(scope, id, value, id.value.identifier.types, *score, true)
 
                 if value and force_compile and value.phase == Phase::DEFINED {
                     value = typecheck_function(value, id, scope, false, id.value.identifier.types)
@@ -584,7 +595,7 @@ export def get(scope: *Scope, id: *parser::Node, force_compile: bool = true, che
 
                     if id.value.identifier.types {
                         var score = 0
-                        value2 = find_function(scope, id, value2, id.value.identifier.types, *score, true)
+                        let _, (value2) = find_function(scope, id, value2, id.value.identifier.types, *score, true)
                         if value2 and force_compile and value2.phase == Phase::DEFINED {
                             value2 = typecheck_function(value2, id, scope, false, id.value.identifier.types)
                         }
