@@ -1,4 +1,3 @@
-import buffer
 import vector
 import map
 import util
@@ -37,7 +36,7 @@ export type FunctionPtr = struct {
 }
 
 export def push_stack_frame(stack_frame: *StackFrame, state: *State) {
-    vector::push(state.stack, stack_frame)
+    state.stack.push(stack_frame)
 }
 
 export def pop_stack_frame(state: *State) {
@@ -62,7 +61,7 @@ export def get_stack_frame(state: *State) -> *StackFrame {
 
 def print_stack_trace(state: *State) {
     for var i in 0..vector::length(state.stack) {
-        let frame = vector::get(state.stack, vector::length(state.stack) - 1 - i) !*StackFrame
+        let frame = state.stack[vector::length(state.stack) - 1 - i]
         print(frame.function_name, ":", frame.line, "\n")
     }
 }
@@ -77,7 +76,7 @@ export def make_stack_frame(block: *compiler::Block, name: string, line: int) ->
     } !StackFrame
 
     while block {
-        map::put(stack_frame.jump_table, block.label_, block)
+        stack_frame.jump_table[block.label_] = block
         block = block.next
     }
 
@@ -124,13 +123,13 @@ export def get(mem: *, tpe: *typechecking::Type) -> compiler::Value {
             return { kind = compiler::ValueKind::STRUCT, tpe = tpe, values = values } !compiler::Value
         case typechecking::TypeKind::UNION:
             let values = allocate(compiler::Value, 1)
-            values[0] = get(mem, (vector::get(tpe.field_types, 0) !*typechecking::TypeMember).tpe)
+            values[0] = get(mem, (tpe.field_types[0]).tpe)
             return { kind = compiler::ValueKind::STRUCT, tpe = tpe, values = values } !compiler::Value
         case typechecking::TypeKind::STRUCT:
             let len = vector::length(tpe.field_types)
             let values = allocate(compiler::Value, len)
             for var i in 0..len {
-                let type_member = vector::get(tpe.field_types, i) !*typechecking::TypeMember
+                let type_member = tpe.field_types[i]
                 values[i] = get(mem ++ type_member.offset, type_member.tpe)
             }
             return { kind = compiler::ValueKind::STRUCT, tpe = tpe, values = values } !compiler::Value
@@ -201,7 +200,7 @@ export def get_address(loc: compiler::Value, state: *State) -> * {
             mem = allocate(loc.tpe.size)
             let value = { kind = compiler::ValueKind::POINTER, tpe = loc.tpe, i = ptr !int64 } !compiler::Value
             set(mem, loc.tpe, value)
-            map::put(state.cstate.globals, loc.name, mem)
+            state.cstate.globals[loc.name] = mem
         }
         return mem
     }
@@ -253,7 +252,7 @@ def set(mem: *, tpe: *typechecking::Type, value: compiler::Value) {
             (@(mem !*int8)) = value.i !int8
         case typechecking::TypeKind::STRUCT:
             for var i in 0..vector::length(tpe.field_types) {
-                let type_member = vector::get(tpe.field_types, i) !*typechecking::TypeMember
+                let type_member = tpe.field_types[i]
                 set(mem ++ type_member.offset, type_member.tpe, value.values[i])
             }
         case typechecking::TypeKind::UNION:
@@ -289,7 +288,7 @@ export def set_value(loc: compiler::Value, value: compiler::Value, state: *State
         if not mem {
             // TODO This shouldn't need to be initialized, we seem to have a bug elsewhere
             mem = zero_allocate(loc.tpe.size)
-            map::put(get_stack_frame(state).locals, loc.name, mem)
+            get_stack_frame(state).locals[loc.name] = mem
         }
         set(mem, loc.tpe, value)
     } else if loc.kind == compiler::ValueKind::GLOBAL {
@@ -297,7 +296,7 @@ export def set_value(loc: compiler::Value, value: compiler::Value, state: *State
         var ptr: * = null
         if not mem {
             mem = allocate(loc.tpe.size)
-            map::put(state.cstate.globals, loc.name, mem)
+            state.cstate.globals[loc.name] = mem
             ptr = allocate(loc.tpe.tpe.size)
             set(mem, loc.tpe, { kind = compiler::ValueKind::POINTER, tpe = loc.tpe, i = ptr !int64 } !compiler::Value)
         } else {
@@ -320,7 +319,7 @@ def unwrap_undef(value: compiler::Value) -> compiler::Value {
             value = { kind = compiler::ValueKind::STRUCT, tpe = value.tpe, values = values } !compiler::Value
         } else if value.tpe.kind == typechecking::TypeKind::UNION {
             let values = allocate(compiler::Value, 1)
-            let type_member = vector::get(value.tpe.field_types, 0) !*typechecking::TypeMember
+            let type_member = value.tpe.field_types[0]
             values[0] = unwrap_undef({ kind = compiler::ValueKind::UNDEF, tpe = type_member.tpe } !compiler::Value)
             value = { kind = compiler::ValueKind::STRUCT, tpe = value.tpe, values = values } !compiler::Value
         } else if value.tpe.kind == typechecking::TypeKind::ARRAY {
@@ -410,7 +409,7 @@ def eval_GetElementPtr(insn: *compiler::Insn, state: *State) {
         if tpe.kind == typechecking::TypeKind::STRUCT {
             let len = vector::length(tpe.field_types)
             assert(index < len)
-            let type_member = vector::get(tpe.field_types, index) !*typechecking::TypeMember
+            let type_member = tpe.field_types[index]
             addr = addr ++ type_member.offset
             tpe = type_member.tpe
         } else if tpe.kind == typechecking::TypeKind::UNION {
@@ -446,7 +445,7 @@ def eval_GetElementPtr(insn: *compiler::Insn, state: *State) {
     }
 
     //assert(ret.kind == compiler::ValueKind::LOCAL)
-    //map::put(get_stack_frame(state).locals, ret.name, addr)
+    //get_stack_frame(state).locals[ret.name] = addr
     set_value(ret, { kind = compiler::ValueKind::POINTER, tpe = typechecking::pointer(tpe), i = addr !int64 } !compiler::Value, state)
 }
 
@@ -480,7 +479,7 @@ def eval_Alloca(insn: *compiler::Insn, state: *State) {
     ret.tpe = typechecking::pointer(ret.tpe)
     let ptr = { kind = compiler::ValueKind::POINTER, tpe = ret.tpe, i = mem !int64 } !compiler::Value
     let addr = allocate(ret.tpe.size)
-    map::put(get_stack_frame(state).locals, ret.name, addr)
+    get_stack_frame(state).locals[ret.name] = addr
     set(addr, ret.tpe, ptr)
 }
 
@@ -823,7 +822,7 @@ def ffi_call(args: [compiler::Value], ret: compiler::Value, parameter_t: &Vector
         }
         rvalue = allocate(size)
         // TODO This will fail for function pointers
-        map::put(get_stack_frame(state).locals, ret.name, rvalue)
+        get_stack_frame(state).locals[ret.name] = rvalue
     }
     
     ffi::ffi_call(ffi_cif, ffi_function.ptr, rvalue, avalues)
@@ -883,7 +882,7 @@ def eval_Call(insn: *compiler::Insn, state: *State) {
         var varargs = false
         var ret_tpe: *typechecking::Type = null
         if vector::length(call.tpe.return_t) >= 1 {
-            ret_tpe = vector::get(call.tpe.return_t, 0) !*typechecking::Type
+            ret_tpe = call.tpe.return_t[0]
         }
         let last_arg = vector::peek(call.tpe.parameter_t) !*typechecking::NamedParameter
         if last_arg {
@@ -913,7 +912,7 @@ def eval_Call(insn: *compiler::Insn, state: *State) {
 
             for var i in 0..args.size {
                 let arg = args[i]
-                let np = vector::get(function.args, i) !*typechecking::NamedParameter
+                let np = function.args[i]
                 let arg_value = get_value(arg, state)
                 let mem = allocate(arg.tpe.size)
 
@@ -921,7 +920,7 @@ def eval_Call(insn: *compiler::Insn, state: *State) {
                 buffer::append_str(*buf, np.name)
                 buffer::append_str(*buf, ".value")
                 let name = buffer::to_string(*buf)
-                map::put(stack_frame.locals, name, mem)
+                stack_frame.locals[name] = mem
                 set(mem, arg.tpe, arg_value)
             }
 
@@ -978,7 +977,7 @@ def eval_Switch(insn: *compiler::Insn, state: *State) {
 
     let stack_frame = get_stack_frame(state)
     for var i in 0..vector::length(switch_values) {
-        let sw = vector::get(switch_values, i) !*SwitchValue
+        let sw = switch_values[i]
         if sw.value.i == value.i {
             stack_frame.next = map::get(stack_frame.jump_table, sw.label_.name) !*compiler::Block
             return
@@ -1120,7 +1119,7 @@ def eval_insn(insn: *compiler::Insn, state: *State) {
 
 export def print_block(block: *compiler::Block) {
     for var i in 0..vector::length(block.insn) {
-        let insn = vector::get(block.insn, i) !*compiler::Insn
+        let insn = block.insn[i]
         if insn.kind == compiler::InsnKind::LOAD {
             print(insn.kind, " ", insn.value.load.loc.name, "\n")
         } else if insn.kind == compiler::InsnKind::ALLOCA {
@@ -1138,7 +1137,7 @@ def eval_block(block: *compiler::Block, state: *State) {
     let stack_frame = get_stack_frame(state)
     stack_frame.next = block.next
     for var i in 0..vector::length(block.insn) {
-        let insn = vector::get(block.insn, i) !*compiler::Insn
+        let insn = block.insn[i]
         eval_insn(insn, state)
     }
 }
@@ -1166,7 +1165,7 @@ def serialize(is_constant: *bool, value: compiler::Value, global: *compiler::Glo
             let index_array = allocate(compiler::Value, vector::length(index) + 1)
             index_array[0] = compiler::make_int_value(0)
             for var i in 0..vector::length(index) {
-                index_array[i + 1] = @(vector::get(index, i) !*compiler::Value)
+                index_array[i + 1] = @(index[i])
             }
             gep.value.gep = {
                 ret = loc,
@@ -1186,7 +1185,7 @@ def serialize(is_constant: *bool, value: compiler::Value, global: *compiler::Glo
             tpe = value.tpe.tpe,
             line = -1
         } !compiler::Global
-        map::put(module.result.globals, new_global.name, new_global)
+        module.result.globals[new_global.name] = new_global
 
         let valuep = allocate(compiler::Value)
         @valuep = serialize(is_constant, get(value.i !*, value.tpe.tpe), new_global, vector::make(compiler::Value), module, cstate)
@@ -1221,13 +1220,13 @@ def serialize(is_constant: *bool, value: compiler::Value, global: *compiler::Glo
             tpe = tpe,
             line = -1
         } !compiler::Global
-        map::put(module.result.globals, new_global.name, new_global)
+        module.result.globals[new_global.name] = new_global
 
         for var i in 0..length {
             let new_index = vector::make(compiler::Value)
             let indexp = allocate(compiler::Value)
             @indexp = compiler::make_int_value(i)
-            vector::push(new_index, indexp)
+            new_index.push(indexp)
             values[i] = serialize(is_constant, get(ptr ++ value.tpe.tpe.size * i, value.tpe.tpe), new_global, new_index, module, cstate)
         }
 
@@ -1236,7 +1235,7 @@ def serialize(is_constant: *bool, value: compiler::Value, global: *compiler::Glo
         let index_array = allocate(compiler::Value, vector::length(index) + 2)
         index_array[0] = compiler::make_int_value(0)
         for var i in 0..vector::length(index) {
-            index_array[i + 1] = @(vector::get(index, i) !*compiler::Value)
+            index_array[i + 1] = @(index[i])
         }
         index_array[vector::length(index) + 1] = compiler::make_int_value(1)
         gep.value.gep = {
@@ -1280,7 +1279,7 @@ def serialize(is_constant: *bool, value: compiler::Value, global: *compiler::Glo
             let new_index = vector::copy(index)
             let indexp = allocate(compiler::Value)
             @indexp = compiler::make_int_value(i)
-            vector::push(new_index, indexp)
+            new_index.push(indexp)
             value.values[i] = serialize(is_constant, value.values[i], global, new_index, module, cstate)
         }
         return value
@@ -1300,7 +1299,7 @@ export def eval(cstate: *compiler::State) -> State {
         stack = vector::make(type &StackFrame)
     } !State
 
-    vector::push(state.stack, stack_frame)
+    state.stack.push(stack_frame)
 
     eval(block, *state)
 
@@ -1342,8 +1341,8 @@ export def serialize_value(key: string, module: *toolchain::Module, cstate: *com
         value = valuep,
         line = -1
     } !compiler::Global
-    map::put(module.result.globals, new_global.name, new_global)
-    map::put(module.imported, new_global.name, map::sentinel)
+    module.result.globals[new_global.name] = new_global
+    module.imported.add(new_global.name)
 
     return global 
 }
