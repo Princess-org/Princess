@@ -16,7 +16,7 @@ export type StackFrame = struct {
     next: *compiler::Block
     jump_table: &SMap(&compiler::Block)
     locals: &SMap(*)
-    function_name: string
+    function_name: &string
     line: int
     ret: compiler::Value
 }
@@ -66,7 +66,7 @@ def print_stack_trace(state: *State) {
     }
 }
 
-export def make_stack_frame(block: *compiler::Block, name: string, line: int) -> *StackFrame {
+export def make_stack_frame(block: *compiler::Block, name: &string, line: int) -> *StackFrame {
     let stack_frame = allocate(StackFrame)
     @stack_frame = {
         locals = map::make(type &typechecking::Type),
@@ -163,30 +163,30 @@ export def get(mem: *, tpe: &typechecking::Type) -> compiler::Value {
 
 export def get_address(loc: compiler::Value, state: *State) -> * {
     if loc.kind == compiler::ValueKind::LOCAL {
-        let mem = map::get(get_stack_frame(state).locals, loc.name)
+        let mem = get_stack_frame(state).locals.get_or_default(loc.name, null)
         return mem
     } else if loc.kind == compiler::ValueKind::GLOBAL {
         assert(typechecking::is_pointer(loc.tpe))
-        var mem = map::get(state.cstate.globals, loc.name)
+        var mem = state.cstate.globals.get_or_default(loc.name, null)
         if not mem {
             var ptr: *
 
-            var function = map::get(state.cstate.module.result.functions, loc.name) !*compiler::Function
+            var function = state.cstate.module.result.functions.get_or_default(loc.name, null)
             if not function {
-                function = map::get(consteval::const_module.result.functions, loc.name) !*compiler::Function
+                function = consteval::const_module.result.functions.get_or_default(loc.name, null)
             }
             if function {
                 ptr = zero_allocate(FunctionPtr)
                 (ptr !*FunctionPtr).function = function
                 //set(ptr, loc.tpe.tpe, { kind = compiler::ValueKind::FUNCTION, tpe = loc.tpe.tpe, function = (ptr !*FunctionPtr) } !compiler::Value)
             } else {
-                let ffi_global = map::get(preload::FFI_GLOBALS, loc.name) !*preload::FfiGlobal
+                let ffi_global = preload::FFI_GLOBALS.get_or_default(loc.name, null)
                 if ffi_global {
                     ptr = ffi_global.ptr
                 } else {
-                    var global = map::get(state.cstate.module.result.globals, loc.name) !*compiler::Global
+                    var global = state.cstate.module.result.globals.get_or_default(loc.name, null)
                     if not global {
-                        global = map::get(consteval::const_module.result.globals, loc.name) !*compiler::Global
+                        global = consteval::const_module.result.globals.get_or_default(loc.name, null)
                     }
                     if not global {
                         errors::errorv("Global by the name of `", loc.name, "` not found")
@@ -287,7 +287,7 @@ def set(mem: *, tpe: &typechecking::Type, value: compiler::Value) {
 
 export def set_value(loc: compiler::Value, value: compiler::Value, state: *State) {
     if loc.kind == compiler::ValueKind::LOCAL {
-        var mem = map::get(get_stack_frame(state).locals, loc.name)
+        var mem = get_stack_frame(state).locals.get_or_default(loc.name, null)
         if not mem {
             // TODO This shouldn't need to be initialized, we seem to have a bug elsewhere
             mem = zero_allocate(loc.tpe.size)
@@ -295,7 +295,7 @@ export def set_value(loc: compiler::Value, value: compiler::Value, state: *State
         }
         set(mem, loc.tpe, value)
     } else if loc.kind == compiler::ValueKind::GLOBAL {
-        var mem = map::get(state.cstate.globals, loc.name)
+        var mem = state.cstate.globals.get_or_default(loc.name, null)
         var ptr: * = null
         if not mem {
             mem = allocate(loc.tpe.size)
@@ -850,9 +850,9 @@ def eval_Call(insn: *compiler::Insn, state: *State) {
         fp = value.function
     } else if call.kind == compiler::ValueKind::GLOBAL {
         if starts_with(name, "llvm.") { return }
-        var function = map::get(state.cstate.module.result.functions, name) !*compiler::Function
+        var function = state.cstate.module.result.functions.get_or_default(name, null)
         if not function {
-            function = map::get(consteval::const_module.result.functions, name) !*compiler::Function
+            function = consteval::const_module.result.functions.get_or_default(name, null)
         }
         if function {
             let functionptr = { is_fp = false } !FunctionPtr
@@ -895,7 +895,7 @@ def eval_Call(insn: *compiler::Insn, state: *State) {
     } else {
         let function = fp.function
         if function.imported {
-            let ffi_function = map::get(preload::FFI_FUNCTIONS, name) !*preload::FfiFunction
+            let ffi_function = preload::FFI_FUNCTIONS[name]
             
             ffi_call(args, ret, function.args, function.ret, ffi_function, function.varargs, state)
         } else {
@@ -905,7 +905,7 @@ def eval_Call(insn: *compiler::Insn, state: *State) {
             var line = 1
             if insn.debug {
                 // TODO This points to another file
-                let debug_value = map::get(function.module.result.metadata, insn.debug.name) !*compiler::Value
+                let debug_value = function.module.result.metadata.get_or_default(insn.debug.name, null)
                 if debug_value and debug_value.debug_values.value {
                     line = debug_value.debug_values[0].value.i !int 
                 }
@@ -952,7 +952,7 @@ def eval_Ret(insn: *compiler::Insn, state: *State) {
 def eval_BrUnc(insn: *compiler::Insn, state: *State) {
     let label_ = insn.value.br_unc.label_
     let stack_frame = get_stack_frame(state)
-    stack_frame.next = map::get(stack_frame.jump_table, label_.name) !*compiler::Block
+    stack_frame.next = stack_frame.jump_table[label_.name]
 }
 
 def eval_Br(insn: *compiler::Insn, state: *State) {
@@ -964,9 +964,9 @@ def eval_Br(insn: *compiler::Insn, state: *State) {
     
     let stack_frame = get_stack_frame(state)
     if cond.i {
-        stack_frame.next = map::get(stack_frame.jump_table, if_true.name) !*compiler::Block
+        stack_frame.next = stack_frame.jump_table[if_true.name]
     } else {
-        stack_frame.next = map::get(stack_frame.jump_table, if_false.name) !*compiler::Block
+        stack_frame.next = stack_frame.jump_table[if_false.name]
     }
 }
 
@@ -979,12 +979,12 @@ def eval_Switch(insn: *compiler::Insn, state: *State) {
     for var i in 0..vector::length(switch_values) {
         let sw = switch_values[i]
         if sw.value.i == value.i {
-            stack_frame.next = map::get(stack_frame.jump_table, sw.label_.name) !*compiler::Block
+            stack_frame.next = stack_frame.jump_table[sw.label_.name] 
             return
         }
     }
 
-    stack_frame.next = map::get(stack_frame.jump_table, otherwise.name) !*compiler::Block
+    stack_frame.next = stack_frame.jump_table[otherwise.name]
 }
 
 def eval_Fptoui(insn: *compiler::Insn, state: *State) {
@@ -1306,11 +1306,11 @@ export def eval(cstate: *compiler::State) -> State {
     return state
 }
 
-export def serialize_value(key: string, module: *toolchain::Module, cstate: *compiler::State) -> *compiler::Global {
+export def serialize_value(key: &string, module: *toolchain::Module, cstate: *compiler::State) -> *compiler::Global {
     cstate.current_block = module.code
 
-    let mem = map::get(cstate.globals, key)
-    let global = map::get(cstate.module.result.globals, key) !*compiler::Global
+    let mem = cstate.globals[key]
+    let global = cstate.module.result.globals.get_or_default(key, null)
     if not global { return null } // Probably a constant
     if typechecking::is_stub(global.tpe) { return null } // Didn't reference
 
