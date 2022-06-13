@@ -705,7 +705,7 @@ export def make_local_value(tpe: &typechecking::Type, addr: &Value, state: &Stat
 }
 
 export def make_named_local(tpe: &typechecking::Type, addr: &Value, state: &State) -> Value {
-    let name = "tmp." + state.local_counter
+    let name = "__tmp." + state.local_counter
     state.local_counter += 1
 
     return {
@@ -2395,6 +2395,10 @@ def walk_Call(node: &parser::Node, state: &State) -> Value {
 
             args[i] = ret
         } else {
+            arg.value.tpe = arg.tpe // This is because consteval may not know about the type beforehand
+            if arg.value.tpe.kind == typechecking::TypeKind::REFERENCE {
+                arg.value.values[1].tpe = pointer(arg.tpe.tpe)
+            }
             args[i] = @arg.value
         }
     }
@@ -3090,19 +3094,15 @@ def walk_Assign(node: &parser::Node, state: &State) -> Value {
 
                 push_insn(gep, state)
                 
-                var ret = gep_ret
+                let ret = make_local_value(t, gep_ret, state)
 
-                if not typechecking::is_ref(l.tpe) {
-                    ret = make_local_value(t, gep_ret, state)
+                let load = make_insn_dbg(InsnKind::LOAD, loc)
+                (@load).value.load = {
+                    value = ret,
+                    loc = gep_ret
+                } !InsnLoad
 
-                    let load = make_insn_dbg(InsnKind::LOAD, loc)
-                    (@load).value.load = {
-                        value = ret,
-                        loc = gep_ret
-                    } !InsnLoad
-
-                    push_insn(load, state)
-                }
+                push_insn(load, state)
 
                 if not assign_post(n, l, ret, loc, state) { return NO_VALUE }
                 
@@ -5665,10 +5665,11 @@ export def create_function(
     no_cleanup: bool = false,
     is_main: bool = false
 ) {
-    state.scope = scpe
-    
     let function = state.module.result.functions.get_or_default(tpe.type_name, null)
     if not function { return }
+
+    state.local_counter = 0
+    state.scope = scpe
 
     function.forward_declare = false
     function.locals = locals
@@ -6724,7 +6725,9 @@ def push_type_member(
             let tpe = rets[i]
             let gep_ret = state.gep(pointer(pointer(builtins::Type_)), return_t_s_array, return_t, [make_int_value(0), make_int_value(i)])
             let tpe2 = create_type(tpe, module)
-            state.store(gep_ret, @tpe2 if tpe2 else NO_VALUE)
+            if tpe2 {
+                state.store(gep_ret, @tpe2)
+            }
         }
     }
     
@@ -6748,7 +6751,7 @@ def push_type_members(tpe: &typechecking::Type, value: &Value, global: Value, mo
     let member_functions = typechecking::create_type_entry(tpe).functions
     if vector::length(member_functions) == 0 { return }
 
-    let members_sarray = make_static_array(builtins::Function_, vector::length(member_functions))
+    let members_sarray = make_static_array(builtins::Function_, 0)
     let members = make_global_value(members_sarray, "type_members", null, state)
 
     var j = 0
@@ -6778,7 +6781,9 @@ def push_type_members(tpe: &typechecking::Type, value: &Value, global: Value, mo
         j += 1
     }
     
+    // FIXME I think these are off by one, my runtime can't deal with 0 sized arrays
     value.values[13].values[0].i = j + 1
+    @members_sarray = @make_static_array(builtins::Function_, j + 1)
 
     let gep_ret = state.gep(pointer(builtins::Function_), members_sarray, members, [make_int_value(0), make_int_value(0)])
     let gep2_ret = state.gep(pointer(pointer(builtins::Function_)), builtins::Type_, global, [make_int_value(0), make_int_value(13), make_int_value(1)])
