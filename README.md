@@ -1,5 +1,5 @@
 # Princess 
-[![Build Status](https://github.com/Princess-org/Princess/actions/workflows/build-and-test.yml/badge.svg)
+![Build Status](https://github.com/Princess-org/Princess/actions/workflows/build-and-test.yml/badge.svg)
 
 ## Goals
 - The language should be at least as fast to compile as C, it should be possible to have a compiler for it run on an embedded device
