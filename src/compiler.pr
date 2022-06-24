@@ -1144,13 +1144,13 @@ export def convert_to(node: &parser::Node, value: Value, tpe: &typechecking::Typ
     }
 
     var kind: InsnKind
-    if typechecking::is_ref(tpe) and typechecking::is_ref(value.tpe) {
+    if typechecking::is_ref_or_weak(tpe) and typechecking::is_ref_or_weak(value.tpe) {
         return convert_ref_to_ref(tpe, value, loc, state)
-    } else if typechecking::is_ref(tpe) and typechecking::equals(value.tpe, builtins::Ref_) {
+    } else if typechecking::is_ref_or_weak(tpe) and typechecking::equals(value.tpe, builtins::Ref_) {
         return convert_ref_to_ref(tpe, value, loc, state)
-    } else if typechecking::equals(tpe, builtins::Ref_) and typechecking::is_ref(value.tpe) {
+    } else if typechecking::equals(tpe, builtins::Ref_) and typechecking::is_ref_or_weak(value.tpe) {
         return convert_ref_to_ref(tpe, value, loc, state)
-    } else if typechecking::is_pointer(tpe) and typechecking::is_ref(value.tpe) {
+    } else if typechecking::is_pointer(tpe) and typechecking::is_ref_or_weak(value.tpe) {
 
         let index = allocate(int, 1)
         index[0] = 1
@@ -1813,6 +1813,10 @@ def walk_StructLit(node: &parser::Node, state: &State) -> Value {
             values[i] = convert_to(arg, value, arg_tpe, state)
             if typechecking::is_ref(arg_tpe) {
                 increase_ref_count_of_value(values[i], loc, state)
+            } else if typechecking::has_copy_constructor(arg_tpe) {
+                let ret = state.alloca(values[i].tpe, loc)
+                insert_copy_constructor(ret, values[i], loc, state)
+                values[i] = state.load(values[i].tpe, ret, loc)
             }
         }
         for var i in 0..vector::length(kwargs) {
@@ -1826,6 +1830,10 @@ def walk_StructLit(node: &parser::Node, state: &State) -> Value {
                     values[j] = convert_to(kwarg, value, field.tpe, state)
                     if typechecking::is_ref(field.tpe) {
                         increase_ref_count_of_value(values[j], loc, state)
+                    } else if typechecking::has_copy_constructor(field.tpe) {
+                        let ret = state.alloca(values[j].tpe, loc)
+                        insert_copy_constructor(ret, values[j], loc, state)
+                        values[j] = state.load(values[j].tpe, ret, loc)
                     }
                     break
                 }
@@ -2603,7 +2611,13 @@ def insert_copy_constructor(addr: Value, value: Value, loc: &Value, state: &Stat
         let args = vector::make(typechecking::NamedParameter)
         args.push({ tpe = addr.tpe } !typechecking::NamedParameter)
         args.push({ tpe = addr.tpe } !typechecking::NamedParameter)
-        let ctor = scope::get_function(scpe, parser::make_identifier("construct"), args)
+
+        var ctor: &scope::Value = null
+        if typechecking::has_user_defined_copy_constructor(value.tpe) {
+            ctor = scope::get_function(scpe, parser::make_identifier(["construct"]), args)
+        } else {
+            ctor = scope::get_function(scpe, parser::make_identifier(["__construct__"]), args)
+        }
         predeclare_function(ctor.tpe, state.module)
         state.module.imported.add(ctor.tpe.type_name)
 
@@ -2989,8 +3003,7 @@ def create_temporary(addr: Value, ret: Value, loc: &Value, state: &State) {
 
 def assign_post(n: &parser::Node, l: &parser::Node, ret: &Value, loc: &Value, state: &State) -> bool {
     // Just look at this madness
-    if not n or not l or 
-        not l.tpe or not n.tpe or 
+    if not n or not l or not n.tpe or 
         not ret or not ret.tpe { 
         return false 
     }
@@ -3002,6 +3015,7 @@ def assign_post(n: &parser::Node, l: &parser::Node, ret: &Value, loc: &Value, st
             return false
         }
 
+        if not l.tpe { return false }
         if (l.tpe.kind == typechecking::TypeKind::ARRAY or 
             (l.tpe.kind == typechecking::TypeKind::REFERENCE and 
             l.tpe.tpe and l.tpe.tpe.kind == typechecking::TypeKind::ARRAY)) and 
@@ -5260,14 +5274,14 @@ def di_array_type(value: &Value, tpe: &typechecking::Type, state: &State) -> &Va
     return di_composite_type(value, typechecking::make_struct_type(fields), "<array>", "DW_TAG_structure_type", state)
 }
 
-def di_ref_type(value: &Value, tpe: &typechecking::Type, state: &State) -> &Value {
+def di_ref_type(value: &Value, tpe: &typechecking::Type, is_weak: bool, state: &State) -> *Value {
     let fields = allocate(StructMember, 3)
     fields[0] = { name = "ref_count", tpe = typechecking::pointer(builtins::int64_) } !StructMember
     fields[1] = { name = "value", tpe = typechecking::pointer(tpe.tpe) } !StructMember
     fields[2] = { name = "tpe", tpe = typechecking::pointer(builtins::Type_) } !StructMember
     let ref = typechecking::make_struct_type(fields)
  
-    return di_composite_type(value, ref, "<ref>", "DW_TAG_structure_type", state)
+    return di_composite_type(value, ref, "<weak_ref>" if is_weak else "<ref>", "DW_TAG_structure_type", state)
 }
 
 def di_type(tpe: &typechecking::Type, state: &State) -> &Value {
@@ -5323,8 +5337,8 @@ def di_type(tpe: &typechecking::Type, state: &State) -> &Value {
             @ditpe = @di_function_type(tpe, state)
         case typechecking::TypeKind::POINTER:
             @ditpe = @di_pointer_type(tpe, state)
-        case typechecking::TypeKind::REFERENCE:
-            @ditpe = @di_ref_type(ditpep, tpe, state)
+        case typechecking::TypeKind::REFERENCE, typechecking::TypeKind::WEAK_REF:
+            @ditpe = @di_ref_type(ditpep, tpe, tpe.kind == typechecking::TypeKind::WEAK_REF, state)
         case typechecking::TypeKind::STATIC_ARRAY:
             @ditpe = @di_static_array_type(tpe, state)
         case typechecking::TypeKind::ARRAY:
@@ -6057,8 +6071,136 @@ def walk_top_Import(node: &parser::Node, body: &Vector(&parser::Node), state: &S
     }
 }
 
+export def create_builtin_functions {
+    create_destructors()
+    create_constructors()
+}
+
+export let constructors = map::make(type &typechecking::Type)
+def create_constructors {
+    let state = toolchain::types_state
+
+    var done = set::make()
+    loop {
+        var new_constructors = 0
+        var keys = map::keys(constructors)
+        for var i in 0..keys.size {
+            let key = keys[i]
+            if done.contains(key) { continue }
+            let tpe = constructors[key]
+
+            if typechecking::is_polymorph(tpe) { continue }
+            
+            let function = predeclare_function(tpe, state.module)
+            function.forward_declare = false
+            state.module.imported.add(tpe.type_name)
+            import_structures(tpe, state.module)
+            
+            state.current_function = function
+            let block = make_block()
+            state.current_function.block = block
+            state.current_function.allocas = vector::make()
+            state.current_block = block
+
+            let first_arg = tpe.parameter_t[0]
+            let copy = { kind = ValueKind::LOCAL, tpe = first_arg, name = "__copy.value" } !Value
+            let this = { kind = ValueKind::LOCAL, tpe = first_arg, name = "__this.value" } !Value
+            state.store(copy, state.load(this.tpe.tpe, this))
+            create_constructor(copy, this, state)
+
+            state.ret(NO_VALUE)
+            vector::insert(block.insn, 0, state.current_function.allocas)
+
+            new_constructors += 1
+            done.add(key)
+        }
+        if new_constructors == 0 { break }
+    }
+}
+
+def create_constructor(copy: Value, this: Value, state: *State) {
+    if this.tpe.tpe.kind == typechecking::TypeKind::STATIC_ARRAY {
+        let counter_ptr = state.alloca(builtins::size_t_)
+        state.store(counter_ptr, { kind = ValueKind::INT, tpe = builtins::size_t_, i = 0 } !Value)
+        
+        let br_to_start = make_insn(InsnKind::BR_UNC)
+        push_insn(br_to_start, state)
+
+        let loop_start = make_label(state)
+        push_label(loop_start, state)
+        br_to_start.value.br_unc.label_ = loop_start
+        
+        let counter_value = state.load(builtins::size_t_, counter_ptr)
+        let cond = state.icmp(CompareInt::eq, counter_value, { kind = ValueKind::INT, tpe = builtins::size_t_, i = this.tpe.tpe.length } !Value)
+        let br = make_insn(InsnKind::BR)
+        br.value.br = { cond = cond } !InsnBr
+        push_insn(br, state)
+
+        let loop_inner = make_label(state)
+        push_label(loop_inner, state)
+        br.value.br.if_false = loop_inner
+
+        let copy_ptr = state.gep(pointer(copy.tpe.tpe.tpe), copy.tpe.tpe, copy, [make_int_value(0), counter_value])
+        if typechecking::has_copy_constructor(this.tpe.tpe.tpe) {
+            let this_ptr = state.gep(pointer(this.tpe.tpe.tpe), this.tpe.tpe, this, [make_int_value(0), counter_value])
+            if typechecking::has_user_defined_copy_constructor(this.tpe.tpe) {
+                insert_copy_constructor(copy_ptr, state.load(this.tpe.tpe.tpe, this_ptr), null, state)
+            } else {
+                create_constructor(copy_ptr, this_ptr, state)
+            }
+        } else {
+            increase_ref_count(copy_ptr, null, state)
+        }
+        
+        let counter_inc = state.add(builtins::size_t_, counter_value, { kind = ValueKind::INT, tpe = builtins::size_t_, i = 1 } !Value)
+        state.store(counter_ptr, counter_inc)
+
+        push_insn(br_to_start, state)
+
+        let loop_end = make_label(state)
+        push_label(loop_end, state)
+        br.value.br.if_true = loop_end
+    } else {
+        let stpe = this.tpe.tpe
+        assert stpe.kind == typechecking::TypeKind::STRUCT
+
+        for var i in 0..vector::length(stpe.field_types) {
+            let member = vector::get(stpe.field_types, i) !*typechecking::TypeMember
+
+            if typechecking::has_copy_constructor(member.tpe) {
+                let this_ptr = state.gep(pointer(member.tpe), this.tpe.tpe, this, [make_int_value(0), make_int_value(i)])
+                let copy_ptr = state.gep(pointer(member.tpe), copy.tpe.tpe, copy, [make_int_value(0), make_int_value(i)])
+
+                if typechecking::has_user_defined_copy_constructor(member.tpe) {
+                    insert_copy_constructor(copy_ptr, state.load(member.tpe, this_ptr), null, state)
+                } else {
+                    let scpe = member.tpe.module.scope
+                    let args = vector::make()
+                    let np = allocate(typechecking::NamedParameter)
+                    @np = {
+                        name = "",
+                        tpe = pointer(member.tpe)
+                    }
+                    vector::push(args, np)
+                    vector::push(args, np)
+
+                    let ctor = scope::get_function(scpe, parser::make_identifier(["__construct__"]), args)
+                    predeclare_function(ctor.tpe, state.module)
+                    map::put(state.module.imported, ctor.tpe.type_name, map::sentinel)
+
+                    state.call(ctor.tpe.type_name, null, [copy_ptr, this_ptr])
+                }
+            } else if typechecking::is_ref(member.tpe) {
+                let copy_ptr = state.gep(pointer(member.tpe), copy.tpe.tpe, copy, [make_int_value(0), make_int_value(i)])
+                increase_ref_count(copy_ptr, null, state)
+            }
+        }
+    }
+}
+
+// Vector of (function) Type
 export let destructors = map::make(type &typechecking::Type)
-export def create_destructors() {
+def create_destructors {
     // Need to import the free function because the types module doesn't import cstd
     let state = toolchain::types_state
     let cstd_module = toolchain::modules["cstd"] !*toolchain::Module
@@ -6290,42 +6432,6 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
                     push_insn(to_end, state)
                 }
             }
-        }
-
-        if not tpe.tpe.tpe {
-            // TODO Fix duplicate code
-            // We need to decrease the ref count
-            let ref = state.load(tpe.tpe, value)
-            let ref_count_ptr = state.extract_value(pointer(builtins::int64_), ref, [0])
-            let ref_count_value = state.ptr_to_int(ref_count_ptr)
-
-            let ref_count = state.load(builtins::int64_, ref_count_ptr)
-            let decr_ref_count = state.sub(builtins::int64_, ref_count, { kind = ValueKind::INT, tpe = builtins::int64_, i = 1 } !Value)
-            state.store(ref_count_ptr, decr_ref_count)
-            let cond = state.icmp(CompareInt::sle, decr_ref_count, { kind = ValueKind::INT, tpe = builtins::int64_, i = 0 } !Value)
-            
-            let br = make_insn(InsnKind::BR)
-            br.value.br = { cond = cond } !InsnBr
-            push_insn(br, state)
-
-            let if_true = make_label(state)
-            br.value.br.if_true = if_true
-            push_label(if_true, state)
-
-            let ref_count_i8_ptr = state.bitcast(pointer(builtins::int8_), ref_count_ptr)
-            state.call("free", null, [ref_count_i8_ptr])
-
-            value = state.extract_value(pointer(tpe.tpe.tpe), ref, [1])
-            let obj_i8_ptr = state.bitcast(pointer(builtins::int8_), value)
-            state.call("free", null, [obj_i8_ptr])
-
-            push_insn(to_end, state)
-
-            let end_label = make_label(state)
-            br.value.br.if_false = end_label
-            to_end.value.br_unc.label_ = end_label
-            null_br2.value.br.if_true = end_label
-            push_label(end_label, state)
         }
     } else if structure_type and structure_type.module {
         let args = vector::make(typechecking::NamedParameter)
@@ -6786,13 +6892,14 @@ def push_type_members(tpe: &typechecking::Type, value: &Value, global: Value, mo
         j += 1
     }
     
-    // FIXME I think these are off by one, my runtime can't deal with 0 sized arrays
-    value.values[13].values[0].i = j + 1
-    @members_sarray = @make_static_array(builtins::Function_, j + 1)
+    value.values[13].values[0].i = j
+    @members_sarray = @make_static_array(builtins::Function_, j)
 
-    let gep_ret = state.gep(pointer(builtins::Function_), members_sarray, members, [make_int_value(0), make_int_value(0)])
-    let gep2_ret = state.gep(pointer(pointer(builtins::Function_)), builtins::Type_, global, [make_int_value(0), make_int_value(13), make_int_value(1)])
-    state.store(gep2_ret, gep_ret)
+    if j > 0 {
+        let gep_ret = state.gep(pointer(builtins::Function_), members_sarray, members, [make_int_value(0), make_int_value(0)])
+        let gep2_ret = state.gep(pointer(pointer(builtins::Function_)), builtins::Type_, global, [make_int_value(0), make_int_value(13), make_int_value(1)])
+        state.store(gep2_ret, gep_ret)
+    }
 }
 
 def push_structural_members(tpe: &typechecking::Type, global: Value, module: *toolchain::Module, state: &State) {
@@ -6961,6 +7068,10 @@ def do_create_type(tpe: &typechecking::Type, svalue: &scope::Value, module: *too
             push_tpe_tpe(tpe, global, module, state)
         case TypeKind::REFERENCE:
             value.values[0] = { kind = ValueKind::INT, tpe = builtins::int_, i = 8 } !Value
+            create_type(tpe.tpe, module)
+            push_tpe_tpe(tpe, global, module, state)
+        case TypeKind::WEAK_REF:
+            value.values[0] = { kind = ValueKind::INT, tpe = builtins::int_, i = 14 } !Value
             create_type(tpe.tpe, module)
             push_tpe_tpe(tpe, global, module, state)
         case TypeKind::FUNCTION:

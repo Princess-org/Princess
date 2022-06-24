@@ -29,6 +29,7 @@ export type TypeKind = enum {
     TUPLE
     POINTER
     REFERENCE
+    WEAK_REF
     ARRAY
     STATIC_ARRAY
     RANGE
@@ -236,6 +237,27 @@ export def is_ref(tpe: &Type) -> bool {
     return tpe.kind == TypeKind::REFERENCE
 }
 
+
+export def is_weak_ref(tpe: &Type) -> bool {
+    if not tpe { return false }
+    return tpe.kind == TypeKind::WEAK_REF
+}
+
+export def is_ref_or_weak(tpe: &Type) -> bool {
+    if not tpe { return false }
+    return tpe.kind == TypeKind::WEAK_REF or
+        tpe.kind == TypeKind::REFERENCE
+}
+
+export def is_box(tpe: &Type) -> bool {
+    if not tpe { return false }
+    return tpe.kind == TypeKind::POINTER or
+        tpe.kind == TypeKind::REFERENCE or
+        tpe.kind == TypeKind::WEAK_REF or
+        tpe.kind == TypeKind::STATIC_ARRAY or
+        tpe.kind == TypeKind::ARRAY
+}
+
 export def is_struct(tpe: &Type) -> bool {
     if not tpe { return false }
     return (@tpe).kind == TypeKind::STRUCT or
@@ -373,6 +395,19 @@ export def reference(tpe: &Type, kw: parser::VarDecl) -> &Type {
 
 export def reference(tpe: &Type) -> &Type {
     return reference(tpe, parser::VarDecl::VAR)
+}
+
+export def weak_reference(tpe: *Type, kw: parser::VarDecl) -> &Type {
+    var t = make_type_raw(TypeKind::WEAK_REF)
+    t.tpe = tpe
+    t.kw = kw
+    t.size = (size_of runtime::Ref)
+    t.align = (align_of runtime::Ref)
+    return t
+}
+
+export def weak_reference(tpe: *Type) -> *Type {
+    return weak_reference(tpe, parser::VarDecl::VAR)
 }
 
 export def array(tpe: &Type, kw: parser::VarDecl) -> &Type {
@@ -555,11 +590,7 @@ export def copy(a: &Type) -> &Type {
     if a.kind == TypeKind::FUNCTION {
         t.return_t = copy_return_t(a.return_t)
         t.parameter_t = copy_parameter_t(a.parameter_t)
-    } else if a.kind == TypeKind::POINTER or
-        a.kind == TypeKind::REFERENCE or
-        a.kind == TypeKind::ARRAY or
-        a.kind == TypeKind::STATIC_ARRAY or
-        a.kind == TypeKind::POINTER or
+    } else if is_box(a) or
         a.kind == TypeKind::TYPE_DEF or
         a.kind == TypeKind::TYPE {
         t.tpe = copy(a.tpe)
@@ -627,7 +658,8 @@ export def equals(a: &Type, b: &Type) -> bool {
     }
     if kind == TypeKind::ARRAY or
         kind == TypeKind::POINTER or
-        kind == TypeKind::REFERENCE {
+        kind == TypeKind::REFERENCE or
+        kind == TypeKind::WEAK_REF {
         
         return equals((@a).tpe, (@b).tpe)
     }
@@ -883,6 +915,7 @@ def infer_interface_types(a: &Type, b: &Type, module: *toolchain::Module) -> &Ty
     return tpe
 }
 
+// TODO This isn't very reliable. Especially when returning bigger numbers than 1, integer conversions can interfere with to reference
 // Tries to convert type b to type a
 // The return value is -1 if b can't be converted to a
 // if the types are equal, 0 is returned.
@@ -893,6 +926,13 @@ def convert_type_score(a: &Type, b: &Type, module: *toolchain::Module, is_type: 
         return 0
     }
     if a.kind == TypeKind::UNDEF or b.kind == TypeKind::UNDEF { return 0 }
+
+    if (a.kind == TypeKind::REFERENCE or a.kind == TypeKind::WEAK_REF) and 
+        (b.kind == TypeKind::REFERENCE or b.kind == TypeKind::WEAK_REF) and 
+        (equals(a.tpe, b.tpe) or not a.tpe) {
+
+        return 0 if a.kind == b.kind else 1
+    }
     
     let intfp = get_interface(a)
     if intfp {
@@ -909,14 +949,14 @@ def convert_type_score(a: &Type, b: &Type, module: *toolchain::Module, is_type: 
     if a.kind == TypeKind::TYPE and equals(b, pointer(builtins::Type_)) { 
         return 1 
     }
-    if ((@a).kind == TypeKind::POINTER or (@a).kind == TypeKind::REFERENCE) and (@b).kind == TypeKind::NULL {
+    if (a.kind == TypeKind::POINTER or a.kind == TypeKind::REFERENCE or a.kind == TypeKind::WEAK_REF) and (@b).kind == TypeKind::NULL {
         return 0
     }
     if a.kind == TypeKind::REFERENCE and (is_assignable(a.tpe, b, module) or a.tpe == null or equals(b, builtins::Ref_)) {
-        return 1
+        return 5
     }
     if equals(a, builtins::Ref_) and b.kind == TypeKind::REFERENCE {
-        return 1
+        return 5
     }
     if ((@a).kind == TypeKind::WORD or a.kind == TypeKind::CHAR) and 
         ((@b).kind == TypeKind::WORD or b.kind == TypeKind::CHAR) and
@@ -941,6 +981,7 @@ def convert_type_score(a: &Type, b: &Type, module: *toolchain::Module, is_type: 
     }
     if a.kind == TypeKind::POINTER and b.kind == TypeKind::POINTER or
         a.kind == TypeKind::REFERENCE and b.kind == TypeKind::REFERENCE or
+        a.kind == TypeKind::WEAK_REF and b.kind == TypeKind::WEAK_REF or
         a.kind == TypeKind::ARRAY and b.kind == TypeKind::ARRAY or
         a.kind == TypeKind::STATIC_ARRAY and b.kind == TypeKind::STATIC_ARRAY {
 
@@ -989,7 +1030,7 @@ def convert_type_score(a: &Type, b: &Type, module: *toolchain::Module, is_type: 
             }
             return -1
         }
-        if a.kind == TypeKind::POINTER or a.kind == TypeKind::REFERENCE or a.kind == TypeKind::STATIC_ARRAY {
+        if a.kind == TypeKind::POINTER or a.kind == TypeKind::REFERENCE or a.kind == TypeKind::WEAK_REF or a.kind == TypeKind::STATIC_ARRAY {
             if a.kind == b.kind {
                 return convert_type_score(a.tpe, b.tpe, module, true)
             }
@@ -1009,8 +1050,7 @@ export def get_type_constructor(tpe: &Type) -> &Type {
     if tpe.kind == TypeKind::GENERIC {
         return tpe.tpe
     }
-    if tpe.kind == TypeKind::POINTER or tpe.kind == TypeKind::REFERENCE or
-        tpe.kind == TypeKind::STATIC_ARRAY or tpe.kind == TypeKind::ARRAY {
+    if is_box(tpe) {
         return get_type_constructor(tpe.tpe)
     }
     return null
@@ -1019,8 +1059,7 @@ export def get_type_constructor(tpe: &Type) -> &Type {
 export def get_generic(tpe: &Type) -> &Type {
     if not tpe { return null }
     if tpe.tc_args { return tpe }
-    if tpe.kind == TypeKind::POINTER or tpe.kind == TypeKind::REFERENCE or
-        tpe.kind == TypeKind::STATIC_ARRAY or tpe.kind == TypeKind::ARRAY {
+    if is_box(tpe) {
         return get_generic(tpe.tpe)
     }
     return null
@@ -1089,12 +1128,12 @@ export def has_destructor(tpe: &Type) -> bool {
     return false
 }
 
-export def has_copy_constructor(tpe: &Type) -> bool {
+export def has_user_defined_copy_constructor(tpe: &Type) -> bool {
     if not tpe { return false }
     if tpe.has_copy_constructor != 0 {
         return tpe.has_copy_constructor == 1
     }
-    if tpe.kind == TypeKind::STATIC_ARRAY { return has_copy_constructor(tpe.tpe) }
+    if tpe.kind == TypeKind::STATIC_ARRAY { return has_user_defined_copy_constructor(tpe.tpe) }
     if tpe.module {
         let args = vector::make(NamedParameter)
         let arg = {
@@ -1109,6 +1148,26 @@ export def has_copy_constructor(tpe: &Type) -> bool {
         }
     }
     tpe.has_copy_constructor = -1
+    return false
+}
+
+
+// TODO also cache this maybe?
+export def has_copy_constructor(tpe: &Type) -> bool {
+    if not tpe { return false }
+    if has_user_defined_copy_constructor(tpe) { return true }
+    if tpe.kind == TypeKind::STRUCT {
+        for var i in 0..tpe.fields.size {
+            let field = tpe.fields[i]
+            if has_copy_constructor(field.tpe) { return true }
+            else if is_ref(field.tpe) { return true }
+        }
+    } else if tpe.kind == TypeKind::STATIC_ARRAY {
+        while tpe != null and tpe.kind == TypeKind::STATIC_ARRAY {
+            tpe = tpe.tpe
+        }
+        if is_ref(tpe) { return true }
+    }
     return false
 }
 
@@ -1129,8 +1188,7 @@ def find_type_defs(module: *toolchain::Module, left: &Type, right: &Type, types:
                 @left = @right
             }
         }
-    } else if left.kind == TypeKind::POINTER or left.kind == TypeKind::REFERENCE or 
-        left.kind == TypeKind::STATIC_ARRAY or left.kind == TypeKind::ARRAY {
+    } else if is_box(left) {
         find_type_defs(module, left.tpe, right.tpe, types, replace, is_type)
     } else if left.kind == TypeKind::FUNCTION or left.kind == TypeKind::TUPLE {
         for var i in 0..vector::length(left.parameter_t) {
@@ -1184,8 +1242,7 @@ def replace_parameter(tpe: &Type, types: &SMap(&Type)) -> &Type {
             let arg = tpe.tc_args[i]
             tpe.tc_args[i] = replace_parameter(arg, types)
         }
-    } else if tpe.kind == TypeKind::POINTER or tpe.kind == TypeKind::REFERENCE or 
-        tpe.kind == TypeKind::STATIC_ARRAY or tpe.kind == TypeKind::ARRAY {
+    } else if is_box(tpe) {
         if tpe.tpe {
             tpe.tpe = replace_parameter(tpe.tpe, types)
         }
@@ -1575,6 +1632,7 @@ export def type_lookup(node: &parser::Node, state: &State, current_type: &Type =
         }
     }
 
+    node.tpe = tpe
     return tpe
 }
 
@@ -1619,6 +1677,12 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
         if current_type { current_type = current_type.tpe }
         var tpe = type_lookup(node.value.t_parr.tpe, state, current_type, lookup_default, cache)
         tpe = reference(tpe, node.value.t_parr.kw)
+        tpe.module = state.module
+        return tpe
+    } else if node.kind == parser::NodeKind::WEAK_REF_T {
+        if current_type { current_type = current_type.tpe }
+        var tpe = type_lookup(node.value.t_parr.tpe, state, current_type, lookup_default, cache)
+        tpe = weak_reference(tpe, node.value.t_parr.kw)
         tpe.module = state.module
         return tpe
     } else if node.kind == parser::NodeKind::STRUCT_T {
@@ -2701,71 +2765,74 @@ def walk_Cast(node: &parser::Node, state: &State) {
     let right = node.value.bin_op.right
     if not left or not right { return }
     
-    let tpe = type_lookup(right, state)
-    if not tpe { return }
-    if tpe.kind == TypeKind::TYPE_CONSTRUCTOR {
+    var rtpe = type_lookup(right, state)
+    if not rtpe { return }
+    if rtpe.kind == TypeKind::TYPE_CONSTRUCTOR {
         errors::errorn(right, "Can't cast to type constructor")
-    } else {
-        node.tpe = tpe
-    }
-
-    if left.kind != parser::NodeKind::STRUCT_LIT and 
-        left.kind != parser::NodeKind::ARRAY_LIT {
-
-        walk(node, left, state)
-        if not left.tpe { 
-            node.tpe = null
-            return 
-        }
-        
-        var rtpe = tpe
-        var initial_ltpe = copy(left.tpe)
-        var ltpe = initial_ltpe
-
-        while ltpe and rtpe and ltpe.kind == rtpe.kind and 
-            (ltpe.kind == TypeKind::POINTER or 
-            ltpe.kind == TypeKind::REFERENCE or 
-            ltpe.kind == TypeKind::ARRAY or 
-            ltpe.kind == TypeKind::STATIC_ARRAY) {
-            
-            ltpe = ltpe.tpe
-            rtpe = rtpe.tpe
-        }
-
-        if ltpe and rtpe and rtpe.tc_args {
-            node.tpe = initial_ltpe
-            ltpe.tc_args = rtpe.tc_args
-            ltpe.tc_tpe = rtpe.tc_tpe
-        }
         return
     }
 
-
     if (@left).kind == parser::NodeKind::STRUCT_LIT {
-        if (@tpe).kind != TypeKind::STRUCT and
-            (@tpe).kind != TypeKind::UNION and 
-            not (tpe.kind == TypeKind::REFERENCE and tpe.tpe and 
-                (tpe.tpe.kind == TypeKind::STRUCT or tpe.tpe.kind == TypeKind::UNION)) {
+        if (@rtpe).kind != TypeKind::STRUCT and
+            (@rtpe).kind != TypeKind::UNION and 
+            not (rtpe.kind == TypeKind::REFERENCE and rtpe.tpe and 
+                (rtpe.tpe.kind == TypeKind::STRUCT or rtpe.tpe.kind == TypeKind::UNION)) {
             errors::errorn(left, "Invalid cast")
             return
         }
+        node.tpe = rtpe
         (@left).tpe = node.tpe
+        walk(node, left, state)
+        return
     }
     if (@left).kind == parser::NodeKind::ARRAY_LIT {
-        if (@tpe).kind != TypeKind::ARRAY and 
-            (@tpe).kind != TypeKind::STATIC_ARRAY {
+        if (@rtpe).kind != TypeKind::ARRAY and 
+            (@rtpe).kind != TypeKind::STATIC_ARRAY {
             errors::errorn(left, "Invalid cast")
+            return
+        }
+        walk(node, left, state)
+        node.tpe = rtpe
+        return
+    }
+
+    walk(node, left, state)
+    var ltpe = left.tpe
+    if not ltpe { return }
+
+    if equals(ltpe, rtpe) or (equals(ltpe, builtins::Ref_) and (is_ref(rtpe) or is_weak_ref(rtpe))) {
+    } else if equals(rtpe, builtins::Ref_) {
+        if not (is_ref(ltpe) or is_weak_ref(ltpe)) {
+            errors::errorn(left, "Invalid cast")
+            return
+        }   
+    } else if is_struct(ltpe) or is_struct(rtpe) {
+        if ltpe.kind != rtpe.kind and not is_ref(rtpe) { 
+            errors::errorn(left, "Invalid cast") 
+            return
+        }
+    } else if is_struct(ltpe) and is_struct(rtpe) {
+        if not equals(ltpe, rtpe) { 
+            errors::errorn(left, "Invalid cast") 
             return
         }
     }
 
-    /*if left.kind == parser::NodeKind::PTR and left.value.expr and 
-        left.value.expr.kind == parser::NodeKind::IDENTIFIER {
-        if is_function_pointer(tpe) {
-            left.value.expr.tpe = tpe 
-        }
-    }*/
-    walk(node, left, state)
+    node.tpe = rtpe
+
+    var initial_ltpe = copy(left.tpe)
+    ltpe = initial_ltpe
+
+    while ltpe and rtpe and ltpe.kind == rtpe.kind and is_box(ltpe) {            
+        ltpe = ltpe.tpe
+        rtpe = rtpe.tpe
+    }
+
+    if ltpe and rtpe and rtpe.tc_args {
+        node.tpe = initial_ltpe
+        ltpe.tc_args = rtpe.tc_args
+        ltpe.tc_tpe = rtpe.tc_tpe
+    } 
 }
 
 def walk_Import(node: &parser::Node, state: &State) {
@@ -3420,7 +3487,12 @@ def walk_Ptr(node: &parser::Node, state: &State) {
     walk(node, node.value.expr, state)
     let tpe = (@node.value.expr).tpe
     if not tpe { return }
-    node.tpe = pointer(tpe, tpe.kw)
+    // TODO We might want pointers to function pointers?
+    if tpe.kind != TypeKind::FUNCTION {
+        node.tpe = pointer(tpe, tpe.kw)
+    } else {
+        node.tpe = tpe
+    }
 }
 
 def walk_MemberAccess_ucs(node: &parser::Node, state: &State) -> bool {
