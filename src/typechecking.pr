@@ -840,7 +840,7 @@ def infer_interface_types(a: *Type, b: *Type, module: *toolchain::Module) -> *Ty
         return null
     }
 
-    let state = make_state(module)
+    let state = module.state
 
     let variants = map::make()
     state.scope = scope::enter_scope(state.scope)
@@ -869,13 +869,13 @@ def infer_interface_types(a: *Type, b: *Type, module: *toolchain::Module) -> *Ty
             let np = allocate(NamedParameter)
             @np = {
                 name = parser::identifier_to_str(param.value.param.name),
-                tpe = type_lookup(param.value.param.tpe, *state)
+                tpe = type_lookup(param.value.param.tpe, state)
             }
             vector::push(function.parameter_t, np)
         }
         for var j in 0..vector::length(member.value.structural_member.returns) {
             let ret = vector::get(member.value.structural_member.returns, j) !*parser::Node
-            let tpe = type_lookup(ret, *state)
+            let tpe = type_lookup(ret, state)
             vector::push(function.return_t, tpe)
         }
 
@@ -1661,8 +1661,42 @@ export def type_lookup(node: *parser::Node, state: *State, current_type: *Type =
         }
     }
 
+    if tpe { 
+        tpe.node = node 
+        tpe.module = state.module
+    }
     node.tpe = tpe
     return tpe
+}
+
+def lookup_field_type(node: *parser::Node, state: *State, current_type: *Type, cache: *map::Map) -> *Type {
+    if scope::is_global(state.scope) and node.kind == parser::NodeKind::PTR_T or
+        node.kind == parser::NodeKind::REF_T or
+        node.kind == parser::NodeKind::ARRAY_T or
+        node.kind == parser::NodeKind::WEAK_REF_T {
+        
+        var stub: *Type = null
+        if node.value.t_parr.tpe {
+            stub = make_type_raw(TypeKind::STUB)
+            stub.module = state.module
+            stub.node = node.value.t_parr.tpe
+        }
+
+        if node.kind == parser::NodeKind::PTR_T {
+            stub = pointer(stub, node.value.t_parr.kw)
+        } else if node.kind == parser::NodeKind::REF_T {
+            stub = reference(stub, node.value.t_parr.kw)
+        } else if node.kind == parser::NodeKind::ARRAY_T {
+            stub = array(stub, node.value.t_parr.kw)
+        } else if node.kind == parser::NodeKind::WEAK_REF_T {
+            stub = weak_reference(stub, node.value.t_parr.kw)
+        }
+        stub.module = state.module
+        stub.node = node
+        return stub
+    } else {
+        return type_lookup(node, state, current_type, false, cache)
+    }
 }
 
 // TODO current_type is basically a hack, there's really no reason why you should already have a type and then look it up again
@@ -1692,7 +1726,6 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
                     tpe.type_name = append_module(tpe.type_name, state.module.module)
                 }
                 tpe = scope::create_type(state.scope, node, parser::ShareMarker::NONE, tpe, scope::Phase::DECLARED, null, null)
-                tpe.module = state.module
             }
             return tpe
         }
@@ -1700,19 +1733,16 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
         if current_type { current_type = current_type.tpe }
         var tpe = type_lookup(node.value.t_parr.tpe, state, current_type, lookup_default, cache)
         tpe = pointer(tpe, node.value.t_parr.kw)
-        tpe.module = state.module
         return tpe
     } else if node.kind == parser::NodeKind::REF_T {
         if current_type { current_type = current_type.tpe }
         var tpe = type_lookup(node.value.t_parr.tpe, state, current_type, lookup_default, cache)
         tpe = reference(tpe, node.value.t_parr.kw)
-        tpe.module = state.module
         return tpe
     } else if node.kind == parser::NodeKind::WEAK_REF_T {
         if current_type { current_type = current_type.tpe }
         var tpe = type_lookup(node.value.t_parr.tpe, state, current_type, lookup_default, cache)
         tpe = weak_reference(tpe, node.value.t_parr.kw)
-        tpe.module = state.module
         return tpe
     } else if node.kind == parser::NodeKind::STRUCT_T {
         
@@ -1734,14 +1764,14 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
             if (@field).kind == parser::NodeKind::ID_DECL_STRUCT {
                 let ident = (@field).value.id_decl_struct.ident
                 name = last_ident_to_str(ident)
-                field_tpe = type_lookup((@field).value.id_decl_struct.tpe, state, field_type, lookup_default, cache)
+                field_tpe = lookup_field_type((@field).value.id_decl_struct.tpe, state, field_type, cache)
                 if field.value.id_decl_struct.is_bitfield {
                     is_bitfield = true
                     bit_size = field.value.id_decl_struct.bit_size
                 }
             } else if (@field).kind == parser::NodeKind::STRUCT_T or
                 (@field).kind == parser::NodeKind::UNION_T {
-                field_tpe = type_lookup(field, state, field_type, lookup_default, cache)
+                field_tpe = type_lookup(field, state, field_type, false, cache)
             }
             
             fields[i] = { 
@@ -1758,8 +1788,6 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
         tpe.type_name = make_unique_name("<anonymous>", state)
         tpe.name = "<anonymous>"
         tpe.line = node.loc.line
-        tpe.module = state.module
-        tpe.node = node
 
         return tpe
     } else if node.kind == parser::NodeKind::UNION_T {
@@ -1784,19 +1812,19 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
             var bit_size = 0 !size_t
 
             var field_type: *Type = null
-            if current_type { field_type = current_type.fields[i].tpe }
+            if current_type and current_type.kind != TypeKind::STUB { field_type = current_type.fields[i].tpe }
 
             if (@field).kind == parser::NodeKind::ID_DECL_STRUCT {
                 let ident = (@field).value.id_decl_struct.ident
                 name = last_ident_to_str(ident)
-                field_tpe = type_lookup((@field).value.id_decl_struct.tpe, state, field_type, lookup_default, cache)
+                field_tpe = lookup_field_type((@field).value.id_decl_struct.tpe, state, field_type, cache)
                 if field.value.id_decl_struct.is_bitfield {
                     is_bitfield = true
                     bit_size = field.value.id_decl_struct.bit_size
                 }
             } else if (@field).kind == parser::NodeKind::STRUCT_T or
                 (@field).kind == parser::NodeKind::UNION_T {
-                field_tpe = type_lookup(field, state, field_type, lookup_default, cache)
+                field_tpe = type_lookup(field, state, field_type, false, cache)
             }
 
             fields[i] = {
@@ -1808,13 +1836,16 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
                 bit_size = bit_size
             } !StructMember
 
-            if field_tpe and field_tpe.size > size {
-                size = field_tpe.size
-                biggest_type = field_tpe
+            if field_tpe {
+                if field_tpe.size > size {
+                    size = field_tpe.size
+                    biggest_type = field_tpe
+                }
+                if field_tpe.kind == TypeKind::TYPE_CONSTRUCTOR {
+                    errors::errorn(field, "Can't use type constructor as field type")
+                }
             }
-            if field_tpe and field_tpe.kind == TypeKind::TYPE_CONSTRUCTOR {
-                errors::errorn(field, "Can't use type constructor as field type")
-            }
+            
             // TODO Alignment of bit fields on Windows is strange
             align = max(field_tpe.align, align) !size_t
         }
@@ -1828,8 +1859,6 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
         tpe.align = align
         tpe.fields = fields
         tpe.field_types = field_types
-        tpe.module = state.module
-        tpe.node = node
 
         return tpe
     } else if node.kind == parser::NodeKind::ENUM_T {
@@ -1843,7 +1872,6 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
         (@tpe).tpe = enum_tpe
         (@tpe).size = (@enum_tpe).size
         (@tpe).align = (@enum_tpe).align
-        tpe.module = state.module
 
         return tpe
     } else if node.kind == parser::NodeKind::ARRAY_T {
@@ -1870,7 +1898,6 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
         }
 
         let tpe = make_static_array(array_tpe, n, node.value.t_arrs.kw)
-        tpe.module = state.module
         return tpe
     } else if node.kind == parser::NodeKind::FUNCTION_T {
         var tpe = make_function_type()
@@ -1902,7 +1929,6 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
         }
         tpe.module = state.module
         tpe = pointer(tpe)
-        tpe.module = state.module
         return tpe
     } else if node.kind == parser::NodeKind::TYPE_T {
         if current_type { return current_type }
@@ -1913,7 +1939,6 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
         }
         tpe.line = node.loc.line
         tpe.tpe = wrapped
-        tpe.module = state.module
         return tpe
     } else if node.kind == parser::NodeKind::UNSIGNED_T {
         let signed = copy(type_lookup(node.value.expr, state, current_type, lookup_default, cache)) if not current_type else current_type
@@ -1922,14 +1947,12 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
             return null
         }
         signed.unsig = true
-        signed.module = state.module
         return signed
     } else if node.kind == parser::NodeKind::WORD_T {
         let n = node.value.i / 8
         let tpe = make_type_raw(TypeKind::WORD)
         tpe.size = n
         tpe.align = n
-        tpe.module = state.module
         return tpe
     } else if node.kind == parser::NodeKind::TYPE_OF_T {
         if current_type { return current_type }
@@ -1978,7 +2001,6 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
             vector::push(members, structural_type_member)
         }
         tpe.members = members
-        tpe.module = state.module
 
         return tpe
     } else if node.kind == parser::NodeKind::TYPE_CONSTRUCTOR {
@@ -2055,7 +2077,6 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
                 tpe.tpe = type_constructor
                 tpe.tc_args = tc_args
                 tpe.tc_incomplete = true
-                tpe.module = state.module
             }
 
             state.scope = scpe
@@ -2071,7 +2092,7 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
         cached_type = make_type_raw(TypeKind::STUB)
         map::put(cache, type_name, cached_type)
 
-        if type_constructor.node {
+        if type_constructor.node and type_constructor.kind != TypeKind::STUB {
             tpe = type_lookup(type_constructor.node, state, null, lookup_default, cache)
             if type_constructor.node.kind == parser::NodeKind::TYPE_CONSTRUCTOR {
                 type_name = tpe.type_name
@@ -2086,7 +2107,6 @@ export def do_type_lookup(node: *parser::Node, state: *State, current_type: *Typ
         tpe.tc_tpe = type_constructor
         tpe.tc_args = tc_args
         tpe.tc_incomplete = is_incomplete
-        tpe.module = state.module 
         // TODO use type_to_string by default
         tpe.type_name = type_name
         tpe.name = debug::type_to_str(tpe)
@@ -3592,12 +3612,25 @@ def walk_MemberAccess_ucs(node: *parser::Node, state: *State) -> bool {
     return true
 }
 
+export def lookup_struct_member(member: StructMember) {
+    let tpe = member.tpe
+    if tpe.kind == TypeKind::POINTER or
+        tpe.kind == TypeKind::REFERENCE or
+        tpe.kind == TypeKind::WEAK_REF or
+        tpe.kind == TypeKind::ARRAY {
+        if tpe.tpe and tpe.tpe.kind == TypeKind::STUB {
+            @tpe.tpe = @type_lookup(tpe.tpe.node, tpe.tpe.module.state)
+        }
+    }
+}
+
 def resolve_member(fields: [StructMember], name: string) -> *Type {
     for var i in 0..fields.size {
         let member = fields[i]
         if length(member.name) > 0 {
             if member.name == name {
-                return member.tpe
+                lookup_struct_member(member)
+                return member.tpe   
             }
         } else {
             let member = resolve_member((@member.tpe).fields, name)
@@ -3753,6 +3786,10 @@ def walk_StructLit(node: *parser::Node, state: *State) {
     if not tpe {
         errors::errorn(node, "Need to specify a type for struct literal")
         return
+    }
+
+    for var i in 0..tpe.fields.size {
+        lookup_struct_member(tpe.fields[i])
     }
 
     for var i in 0..vector::length(node.value.struct_lit.args) {
@@ -4068,12 +4105,14 @@ export def walk(parent: *parser::Node, node: *parser::Node, state: *State) {
     state.scope = scpe
 }
 
-export def make_state(module: *toolchain::Module) -> State {
-    return {
+export def make_state(module: *toolchain::Module) -> *State {
+    let state = allocate(State)
+    @state = {
         module = module,
         scope = module.scope,
         function_stack = vector::make()
     } !State
+    return state
 }
 
 export def walk_Def_with_type_argument(node: *parser::Node, parameter_t: *vector::Vector, state: *State) {
@@ -4134,7 +4173,8 @@ export def walk_Def_with_type_argument(node: *parser::Node, parameter_t: *vector
 
 export def typecheck(module: *toolchain::Module) {
     let state = make_state(module)
-    typecheck(*state)
+    module.state = state
+    typecheck(state)
 }
 
 export var time_spent: int64 = 0
