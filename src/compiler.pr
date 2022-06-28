@@ -871,6 +871,7 @@ def import_structure(tpe: &typechecking::Type, module: &toolchain::Module) {
             module.result.structures[tpe.type_name] = tpe
             for var i in 0..size {
                 let field = tpe.fields[i]
+                typechecking::lookup_struct_member(field)
                 import_structures(field.tpe, module)
             }
         }
@@ -1856,7 +1857,7 @@ def walk_StructLit(node: &parser::Node, state: &State) -> Value {
     return @value
 }
 
-def push_array_lit(tpe: &typechecking::Type, loc: &Value, values: [Value], state: &State) -> Value {
+def push_array_lit(tpe: &typechecking::Type, loc: &Value, values: [Value], state: &State, temporary: bool = false) -> Value {
     var value = {
         kind = ValueKind::ARRAY,
         values = values,
@@ -1907,6 +1908,10 @@ def push_array_lit(tpe: &typechecking::Type, loc: &Value, values: [Value], state
     } !InsnStore
     push_insn(store, state)
 
+    if temporary {
+        create_temporary(ret, value, loc, state)
+    }
+
     return value
 }
 
@@ -1921,11 +1926,15 @@ def walk_ArrayLit(node: &parser::Node, state: &State) -> Value {
         var element = walk_and_load_expression(v, state)
         if is_ref(element.tpe) {
             increase_ref_count_of_value(element, loc, state)
+        } else if typechecking::has_copy_constructor(element.tpe) {
+            let ret = state.alloca(element.tpe, loc)
+            insert_copy_constructor(ret, element, loc, state)
+            element = state.load(element.tpe, ret, loc)
         }
         values[i] = element
     }
 
-    return push_array_lit(tpe, loc, values, state)
+    return push_array_lit(tpe, loc, values, state, true)
 }
 
 def walk_ArithmeticOp(node: &parser::Node, insn_kind: InsnKind, tpe: &typechecking::Type, state: &State) -> Value {
@@ -2616,6 +2625,7 @@ def insert_copy_constructor(addr: Value, value: Value, loc: &Value, state: &Stat
         var ctor: &scope::Value = null
         if typechecking::has_user_defined_copy_constructor(value.tpe) {
             ctor = scope::get_function(scpe, parser::make_identifier("construct"), args)
+            compile_function(ctor)
         } else {
             ctor = scope::get_function(scpe, parser::make_identifier("__construct__"), args)
         }
@@ -3017,7 +3027,7 @@ def assign_post(n: &parser::Node, l: &parser::Node, value_type: &typechecking::T
         }
 
         if not l.tpe { return false }
-        if (l.tpe.kind == typechecking::TypeKind::ARRAY or 
+        /*if (l.tpe.kind == typechecking::TypeKind::ARRAY or 
             (l.tpe.kind == typechecking::TypeKind::REFERENCE and 
             l.tpe.tpe and l.tpe.tpe.kind == typechecking::TypeKind::ARRAY)) and 
             ret.tpe.kind == typechecking::TypeKind::STATIC_ARRAY and
@@ -3025,7 +3035,7 @@ def assign_post(n: &parser::Node, l: &parser::Node, value_type: &typechecking::T
 
             // We need to store the array so we can destruct it
             create_temporary(@ret.addr, @ret, loc, state)
-        }
+        }*/
         
         @ret = convert_to(n, @ret, (@l).tpe, state)
 
@@ -3866,6 +3876,8 @@ def walk_TypeOfT(node: &parser::Node, state: &State) -> Value {
 export def walk_expression(node: &parser::Node, state: &State) -> Value {
     var expr: Value
     if not node { return NO_VALUE }
+    let scpe = state.scope
+    state.scope = node.scope
     switch (@node).kind !int {
         case parser::NodeKind::NULL:
             expr = walk_Null(node, state)
@@ -3970,6 +3982,7 @@ export def walk_expression(node: &parser::Node, state: &State) -> Value {
         insert_destructor(addr, state.scope, loc, state)
     }
 
+    state.scope = scpe
     return expr
 }
 
@@ -6073,6 +6086,22 @@ def walk_top_Import(node: &parser::Node, body: &Vector(&parser::Node), state: &S
     }
 }
 
+def compile_function(destructor: &scope::Value) {
+    if not destructor { return }
+    let cstate = destructor.state.module.compiler_state
+    let local_counter = cstate.local_counter
+    var function = cstate.module.result.functions.get_or_default(destructor.tpe.type_name, null)
+    if not function {
+        function = predeclare_function(destructor.tpe, cstate.module)
+    }
+    if not function.is_compiled {
+        let node = destructor.node
+        create_function(node, destructor.tpe, node.value.def_.body, node.inner_scope,
+            null, node.value.def_.locals, node.value.def_.has_defer, cstate)
+    }
+    cstate.local_counter = local_counter
+}
+
 export def create_builtin_functions {
     create_destructors()
     create_constructors()
@@ -6440,16 +6469,8 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
 
         // There can only be one destructor for this type
         var destructor = scope::get_function(structure_type.module.scope, ident, args, false, false, false)
+        compile_function(destructor)
         if destructor {
-            if destructor.phase == scope::Phase::DEFINED {
-                // We need to generate the function because this is done too late
-                // TODO make a function that does this
-                destructor = scope::typecheck_function(destructor, ident, structure_type.module.scope, true, args)
-                let node = destructor.node
-                predeclare_function(node.tpe, destructor.state.module)
-                create_function(node, node.tpe, node.value.def_.body, node.inner_scope,
-                         null, node.value.def_.locals, node.value.def_.has_defer, destructor.state.module.compiler_state)
-            }
             predeclare_function(destructor.tpe, state.module)
             state.module.imported.add(destructor.tpe.type_name)
 
@@ -6484,6 +6505,7 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
         
         for var i in 0..structure_type.fields.size {
             let field = structure_type.fields[i]
+            typechecking::lookup_struct_member(field)
             let ptpe = pointer(field.tpe)
             let field_value = state.gep(ptpe, structure_type, obj, [make_int_value(0), make_int_value(i)])
             let name = debug::type_to_str(ptpe, full_name = true)
@@ -6575,6 +6597,7 @@ def push_struct_members(tpe: &typechecking::Type, global: Value, module: &toolch
     let fields = make_global_value(fields_sarray, "fields", null, state)
     for var i in 0..tpe.fields.size {
         let field = tpe.fields[i]
+        typechecking::lookup_struct_member(field)
 
         let name_values = allocate(Value, 2)
         name_values[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = field.name.size } !Value
@@ -6601,7 +6624,7 @@ def push_struct_members(tpe: &typechecking::Type, global: Value, module: &toolch
             index = index1
         } !InsnInsertValue
         push_insn(insert_name, state)
-
+        
         let tpe2 = create_type(field.tpe, module)
         if not tpe2 { continue }
 
@@ -7609,6 +7632,17 @@ export def compile(state: &State, is_main: bool, no_cleanup: bool = false) {
         let n = node.body[i]
         if n.kind == parser::NodeKind::DEF and not typechecking::is_polymorph(n.tpe) {
             predeclare_function(n.tpe, state.module)
+        } else if n.kind == parser::NodeKind::TYPE_DECL {
+            let left = n.value.type_decl.left
+            for var i in 0..vector::length(left) {
+                let n2 = vector::get(left, i) !*parser::Node
+                let tpe = n2.tpe
+                if typechecking::is_struct(tpe) {
+                    for var i in 0..tpe.fields.size {
+                        typechecking::lookup_struct_member(tpe.fields[i])
+                    }
+                }
+            }
         }
     }
 
