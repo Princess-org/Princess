@@ -1294,6 +1294,7 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
 
                 var size = NO_VALUE
                 var data = NO_VALUE
+                var new_ptr = NO_VALUE
                 if value.tpe.kind == typechecking::TypeKind::ARRAY {
                     // We need to copy the array
                     size = state.extract_value(builtins::int64_, value, [0], loc)
@@ -1302,7 +1303,7 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
                     let ptr_i8 = state.bitcast(pointer(builtins::int8_), data, loc)
                     let new_ptr_i8 = state.call("malloc", pointer(builtins::int8_), [size_in_bytes], loc)
                     state.call("memcpy", pointer(builtins::int8_), [new_ptr_i8, ptr_i8, size_in_bytes])
-                    let new_ptr = state.bitcast(pointer(value.tpe.tpe), new_ptr_i8, loc)
+                    new_ptr = state.bitcast(pointer(value.tpe.tpe), new_ptr_i8, loc)
                     value = { kind = ValueKind::UNDEF, tpe = value.tpe } !Value
                     value = state.insert_value(value.tpe, value, size, [0], loc)
                     value = state.insert_value(value.tpe, value, new_ptr, [1], loc)
@@ -1312,11 +1313,11 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
                     let size_in_bytes = { kind = ValueKind::INT, tpe = builtins::int64_, i = value.tpe.size } !Value
                     let ptr_i8 = state.bitcast(pointer(builtins::int8_), @value.addr, loc)
                     state.call("memcpy", pointer(builtins::int8_), [call2_ret, ptr_i8, size_in_bytes])
-                    let new_ptr = state.bitcast(pointer(value.tpe), call2_ret, loc)
+                    new_ptr = state.bitcast(pointer(value.tpe), call2_ret, loc)
                     value = state.load(value.tpe, new_ptr, loc)
                 }
 
-                if is_ref(value.tpe.tpe) {
+                if is_ref(value.tpe.tpe) or has_copy_constructor(value.tpe.tpe) {
                     // TODO The looping bit should be extracted into its own function, let's see what we can do once we have closures
                     let counter_ptr = state.alloca(builtins::size_t_)
                     state.store(counter_ptr, { kind = ValueKind::INT, tpe = builtins::size_t_, i = 0 } !Value)
@@ -1346,7 +1347,13 @@ export def convert_to(node: *parser::Node, value: Value, tpe: *typechecking::Typ
                         array_val = state.gep(ptpe, value.tpe, data, [make_int_value(0), counter_value], loc)
                     }
 
-                    increase_ref_count(array_val, loc, state)
+                    if is_ref(value.tpe.tpe) {
+                        increase_ref_count(array_val, loc, state)
+                    } else if has_copy_constructor(value.tpe.tpe) {
+                        let val = state.load(value.tpe.tpe, array_val, loc)
+                        let addr = state.gep(ptpe, value.tpe.tpe, new_ptr, [counter_value], loc)
+                        insert_copy_constructor(addr, val, loc, state)
+                    }
 
                     let counter_inc = state.add(builtins::size_t_, counter_value, { kind = ValueKind::INT, tpe = builtins::size_t_, i = 1 } !Value, loc)
                     state.store(counter_ptr, counter_inc)
@@ -2633,10 +2640,14 @@ def insert_copy_constructor(addr: Value, value: Value, loc: *Value, state: *Stat
         push_label(loop_inner, state)
         br.value.br.if_false = loop_inner
 
-        let value_ptr = state.gep(pointer(value.tpe.tpe), value.tpe, array_loc, [make_int_value(0), counter_value])
         let array_ptr = state.gep(pointer(value.tpe.tpe), value.tpe, addr, [make_int_value(0), counter_value])
-        value = state.load(value.tpe.tpe, value_ptr)
-        insert_copy_constructor(array_ptr, value, loc, state)
+        if typechecking::is_ref(value.tpe.tpe) {
+            increase_ref_count(array_ptr, loc, state)
+        } else {
+            let value_ptr = state.gep(pointer(value.tpe.tpe), value.tpe, array_loc, [make_int_value(0), counter_value])
+            value = state.load(value.tpe.tpe, value_ptr)
+            insert_copy_constructor(array_ptr, value, loc, state)
+        }
 
         let counter_inc = state.add(builtins::size_t_, counter_value, { kind = ValueKind::INT, tpe = builtins::size_t_, i = 1 } !Value, loc)
         state.store(counter_ptr, counter_inc)
