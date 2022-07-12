@@ -55,6 +55,9 @@ export type TypeKind = enum {
     // Right now this is only used for looking up functions in generic interfaces
     // but it could be turned into actual union types
     VARIANT
+    // References to structs are using a weak reference, ie. Type::weak instead of Type::_tpe
+    // This is because references to structs can cause cycles
+    BOX
     VOID
 }
 
@@ -105,7 +108,8 @@ export type Type = struct {
     kw: parser::VarDecl
     // Type both used for array/pointer and enum
     // This is also used for type arguments to specify the actual type
-    tpe: &Type
+    _tpe: &Type
+    weak: weak_ref(Type)
     packed: bool
     // Fields for struct, array of StructMember
     fields: &[StructMember]
@@ -142,6 +146,33 @@ export type Type = struct {
     has_destructor: int8
     destructor: &scope::Value
     has_copy_constructor: int8
+}
+
+export def tpe(tpe: &Type) -> &Type {
+    if not tpe { return null }
+    if tpe._tpe and tpe._tpe.kind == TypeKind::BOX {
+        return tpe._tpe.weak
+    }
+    return tpe._tpe
+}
+
+def box(kind: TypeKind, tpe: &Type) -> &Type {
+    let initial = tpe
+    if tpe.kind == kind {
+        let box = make_type_raw(TypeKind::BOX)
+        box.weak = tpe
+        return box
+    }
+    if not is_box(tpe) { return initial }
+
+    while is_box(tpe.tpe) {
+        tpe = tpe.tpe
+    }
+    if tpe and tpe.kind == kind {
+        tpe.tpe = make_type_raw(TypeKind::BOX)
+        tpe.tpe.weak = tpe
+    }
+    return initial
 }
 
 export type NamedParameter = struct {
@@ -375,7 +406,7 @@ export def make_function_type_n(
 
 export def pointer(tpe: &Type, kw: parser::VarDecl) -> &Type {
     var t = make_type_raw(TypeKind::POINTER)
-    t.tpe = tpe
+    t._tpe = tpe
     t.kw = kw
     t.size = (size_of type *)
     t.align = (align_of type *)
@@ -389,7 +420,7 @@ export def pointer(tpe: &Type) -> &Type {
 
 export def reference(tpe: &Type, kw: parser::VarDecl) -> &Type {
     var t = make_type_raw(TypeKind::REFERENCE)
-    t.tpe = tpe
+    t._tpe = tpe
     t.kw = kw
     // TODO replace with correct size_of once this is implemented
     t.size = (size_of runtime::Ref)
@@ -403,7 +434,7 @@ export def reference(tpe: &Type) -> &Type {
 
 export def weak_reference(tpe: &Type, kw: parser::VarDecl) -> &Type {
     var t = make_type_raw(TypeKind::WEAK_REF)
-    t.tpe = tpe
+    t._tpe = tpe
     t.kw = kw
     t.size = (size_of runtime::Ref)
     t.align = (align_of runtime::Ref)
@@ -416,7 +447,7 @@ export def weak_reference(tpe: &Type) -> &Type {
 
 export def array(tpe: &Type, kw: parser::VarDecl) -> &Type {
     var t = make_type_raw(TypeKind::ARRAY)
-    (@t).tpe = tpe
+    (@t)._tpe = tpe
     // TODO This is really bad, sure string is an array but we can do better than this
     (@t).size = (size_of string)
     (@t).align = (align_of string)
@@ -430,7 +461,7 @@ export def array(tpe: &Type) -> &Type {
 
 export def make_static_array(array_tpe: &Type, size: size_t, kw: parser::VarDecl) -> &Type {
     let tpe = make_type_raw(TypeKind::STATIC_ARRAY)
-    (@tpe).tpe = array_tpe
+    (@tpe)._tpe = array_tpe
     (@tpe).length = size
     (@tpe).size = (@tpe).length * (@array_tpe).size
     (@tpe).align = (@array_tpe).align
@@ -597,7 +628,7 @@ export def copy(a: &Type) -> &Type {
     } else if is_box(a) or
         a.kind == TypeKind::TYPE_DEF or
         a.kind == TypeKind::TYPE {
-        t.tpe = copy(a.tpe)
+        t._tpe = copy(a._tpe)
     }
 
     return t
@@ -1246,8 +1277,8 @@ def replace_parameter(tpe: &Type, types: &SMap(&Type)) -> &Type {
             tpe.tc_args[i] = replace_parameter(arg, types)
         }
     } else if is_box(tpe) {
-        if tpe.tpe {
-            tpe.tpe = replace_parameter(tpe.tpe, types)
+        if tpe._tpe {
+            tpe._tpe = replace_parameter(tpe._tpe, types)
         }
     } else if tpe.kind == TypeKind::FUNCTION or tpe.kind == TypeKind::TUPLE {
         for var i in 0..vector::length(tpe.parameter_t) {
@@ -1261,6 +1292,7 @@ def replace_parameter(tpe: &Type, types: &SMap(&Type)) -> &Type {
     return tpe
 }
 
+import runtime
 // NOTE: This function mutates param_a and return_t, watch out!
 export def replace_type_defs(
     param_a: &Vector(NamedParameter), 
@@ -1299,7 +1331,7 @@ export def replace_type_defs(
         if not right and left.value {
             rtpe = left.value.tpe
         }
-        
+
         if not rtpe { return }
         if convert_type_score(ltpe, rtpe, module) < 0 { return }
 
@@ -1312,7 +1344,7 @@ export def replace_type_defs(
         if ltpe.kind == TypeKind::TYPE {
             if ltpe.name and right and right.value {
                 types_map[ltpe.name] = right.value.value_tpe
-                ltpe.tpe = right.value.value_tpe
+                ltpe._tpe = right.value.value_tpe
             }
         } else {
             find_type_defs(module, ltpe, rtpe, types_map, replace)
@@ -1342,7 +1374,7 @@ export def overload_score(a: &Type, param_b: &Vector(NamedParameter), module: &t
 export def overload_score(param_a: &Vector(NamedParameter), return_t: &Vector(&Type), param_b: &Vector(NamedParameter), module: &toolchain::Module, positional: bool) -> int {
     param_a = copy_parameter_t(param_a)
     return_t = copy_return_t(return_t)
-    
+
     if vector::length(param_a) > vector::length(param_b) {
         let not_default_param = (param_a[vector::length(param_b)]).value == null
         if vector::length(param_a) == vector::length(param_b) + 1 {
@@ -1596,6 +1628,7 @@ export def generate_concrete_functions(type_constructor: &Type, tpe: &Type, stat
 
 export def type_lookup(node: &parser::Node, state: &State, current_type: &Type = null, lookup_default: bool = false, cache: &SMap(&Type) = null) -> &Type {
     var tpe = do_type_lookup(node, state, current_type, lookup_default, cache)
+    if node { node.tpe = tpe }
     if tpe == current_type { return current_type }
     
     let type_constructor = get_type_constructor(tpe)
@@ -1621,7 +1654,6 @@ export def type_lookup(node: &parser::Node, state: &State, current_type: &Type =
         tpe.node = node 
         tpe.module = state.module
     }
-    node.tpe = tpe
     return tpe
 }
 
@@ -1632,12 +1664,17 @@ def lookup_field_type(node: &parser::Node, state: &State, current_type: &Type, c
         node.kind == parser::NodeKind::WEAK_REF_T {
         
         var stub: &Type = null
-        if node.value.t_parr.tpe {
-            stub = make_type_raw(TypeKind::STUB)
-            stub.state = consteval::copy_state(state)
-            stub.module = state.module
-            stub.node = node.value.t_parr.tpe
-            node.value.t_parr.tpe.tpe = stub
+        let parr = node.value.t_parr.tpe
+        if parr {
+            if parr.tpe {
+                stub = type_lookup(parr, state, null, false, cache)
+            } else {
+                stub = make_type_raw(TypeKind::STUB)
+                stub.state = consteval::copy_state(state)
+                stub.module = state.module
+                stub.node = parr
+            }
+            parr.tpe = stub
         }
 
         if node.kind == parser::NodeKind::PTR_T {
@@ -1829,7 +1866,7 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
         }
         let tpe = make_type_raw(TypeKind::ENUM)
         (@tpe).line = node.loc.line
-        (@tpe).tpe = enum_tpe
+        (@tpe)._tpe = enum_tpe
         (@tpe).size = (@enum_tpe).size
         (@tpe).align = (@enum_tpe).align
 
@@ -1897,7 +1934,7 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
             tpe.name = parser::identifier_to_str(node.value.expr)
         }
         tpe.line = node.loc.line
-        tpe.tpe = wrapped
+        tpe._tpe = wrapped
         return tpe
     } else if node.kind == parser::NodeKind::UNSIGNED_T {
         let signed = copy(type_lookup(node.value.expr, state, current_type, lookup_default, cache)) if not current_type else current_type
@@ -1937,16 +1974,19 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
             for var i in 0..vector::length(member.value.structural_member.params) {
                 let parameter_node = member.value.structural_member.params[i]
                 let current_parameter_type = (current_member.parameter_t[i]).tpe if current_member else null !&Type
+                var ntpe = box(TypeKind::STRUCTURAL, type_lookup(parameter_node.value.param.tpe, state, current_parameter_type, false, cache))
                 parameter_t.push({
                     name = parser::identifier_to_str(parameter_node.value.param.name),
-                    tpe = type_lookup(parameter_node.value.param.tpe, state, current_parameter_type, false, cache)
+                    tpe = ntpe
                 } !NamedParameter)
             }
 
             for var i in 0..vector::length(member.value.structural_member.returns) {
                 let return_node = member.value.structural_member.returns[i]
                 let current_return_type = current_member.return_t[i] if current_member else null !&Type
-                vector::push(return_t, type_lookup(return_node, state, current_return_type, false, cache))
+
+                var ntpe = box(TypeKind::STRUCTURAL, type_lookup(return_node, state, current_return_type, false, cache))
+                vector::push(return_t, ntpe)
             }
 
             let structural_type_member = {
@@ -2026,10 +2066,11 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
 
         if is_generic {
             if type_constructor.tc_node and type_constructor.tc_node.kind == parser::NodeKind::TYPE_CONSTRUCTOR {
-                tpe = type_lookup(type_constructor.tc_node, state, null, lookup_default, cache)
+                let tc_node = parser::copy_node(type_constructor.tc_node)
+                tpe = type_lookup(tc_node, state, null, lookup_default, cache)
             } else {
                 tpe = make_type_raw(TypeKind::GENERIC)
-                tpe.tpe = type_constructor
+                tpe._tpe = type_constructor
                 tpe.tc_args = tc_args
                 tpe.tc_incomplete = true
             }
@@ -2047,7 +2088,8 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
         cache[type_name] = cached_type
 
         if type_constructor.tc_node {
-            tpe = type_lookup(type_constructor.tc_node, state, null, lookup_default, cache)
+            let tc_node = parser::copy_node(type_constructor.tc_node)
+            tpe = type_lookup(tc_node, state, null, lookup_default, cache)
             if type_constructor.tc_node.kind == parser::NodeKind::TYPE_CONSTRUCTOR {
                 type_name = tpe.type_name
                 tc_args = tpe.tc_args
@@ -2127,7 +2169,7 @@ def walk_ArrayStaticT(node: &parser::Node, state: &State) {
 
     let tpe = expr.svalue.value.value_tpe
     let tpe2 = copy(builtins::Type_)
-    tpe2.tpe = type_lookup(node, state)
+    tpe2._tpe = type_lookup(node, state)
     node.tpe = tpe2
 }
 
@@ -2135,7 +2177,7 @@ def walk_TypeOfT(node: &parser::Node, state: &State) {
     let expr = node.value.expr
     walk(node, expr, state)
     let tpe = copy(builtins::Type_)
-    tpe.tpe = expr.tpe
+    tpe._tpe = expr.tpe
     node.tpe = pointer(tpe)
 }
 
@@ -2207,7 +2249,7 @@ def walk_Identifier(node: &parser::Node, state: &State) {
 
     if value.tpe and value.tpe.kind == TypeKind::TYPE {
         let tpe = copy(builtins::Type_)
-        tpe.tpe = value.value.value_tpe
+        tpe._tpe = value.value.value_tpe
         node.tpe = pointer(tpe)
     } else {
         node.tpe = value.tpe
@@ -2311,7 +2353,7 @@ def walk_Assign(node: &parser::Node, state: &State) {
         } else {
             walk(node, l, state)
         }
-        ltypes.push((@l).tpe)
+        ltypes.push(l.tpe)
     }
     let rtypes = collapse_types(node, ltypes, right, state)
 
@@ -2322,7 +2364,7 @@ def walk_Assign(node: &parser::Node, state: &State) {
 
     for var i in 0..vector::length(left) {
         let l = left[i]
-        var ltpe = (@l).tpe
+        var ltpe = l.tpe
         if not check_is_identifier_assignable(l, state) {
             continue
         }
@@ -2336,7 +2378,7 @@ def walk_Assign(node: &parser::Node, state: &State) {
 
         if not ltpe or not rtpe { continue }
         if not is_assignable(ltpe, rtpe, state.module) {
-            errors::errorn(l, "Incompatible types ", debug::type_to_str(rtpe), " and ", debug::type_to_str(ltpe))
+            errors::errorn(l, "Incompatible types, can't assign ", debug::type_to_str(rtpe), " to ", debug::type_to_str(ltpe))
         }
     }
     node.tpe = vector::peek(ltypes)
@@ -3555,10 +3597,7 @@ export def lookup_struct_member(member: StructMember) {
         tpe.kind == TypeKind::WEAK_REF or
         tpe.kind == TypeKind::ARRAY) {
         if tpe.tpe and tpe.tpe.kind == TypeKind::STUB and tpe.tpe.state {
-            let tpe2 = type_lookup(tpe.tpe.node, tpe.tpe.state)
-            if tpe2 {
-                tpe.tpe = tpe2
-            }
+            tpe._tpe = box(TypeKind::STRUCT, type_lookup(tpe.tpe.node, tpe.tpe.state))
         }
     }
 }
@@ -3802,11 +3841,11 @@ def walk_ArrayLit(node: &parser::Node, state: &State) {
     }
     
     let ret_tpe = make_type_raw(TypeKind::STATIC_ARRAY)
-    (@ret_tpe).line = node.loc.line
-    (@ret_tpe).length = len
-    (@ret_tpe).tpe = tpe
-    (@ret_tpe).size = len * (@tpe).size
-    (@ret_tpe).align = (@tpe).align
+    ret_tpe.line = node.loc.line
+    ret_tpe.length = len
+    ret_tpe._tpe = tpe
+    ret_tpe.size = len * (@tpe).size
+    ret_tpe.align = (@tpe).align
 
     node.tpe = ret_tpe
 }
@@ -4020,10 +4059,10 @@ export def walk(parent: &parser::Node, node: &parser::Node, state: &State) {
             walk_Defer(node, state)
         case parser::NodeKind::ASSERT:
             walk_Assert(node, state)
-        case parser::NodeKind::PTR_T, parser::NodeKind::REF_T, 
+        case parser::NodeKind::PTR_T, parser::NodeKind::REF_T, parser::NodeKind::WEAK_REF_T, 
             parser::NodeKind::ARRAY_T, parser::NodeKind::TYPE_CONSTRUCTOR:
             let tpe = copy(builtins::Type_)
-            tpe.tpe = type_lookup(node, state)
+            tpe._tpe = type_lookup(node, state)
             node.tpe = pointer(tpe)
         case parser::NodeKind::ARRAY_STATIC_T:
             walk_ArrayStaticT(node, state)
