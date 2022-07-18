@@ -463,6 +463,7 @@ export type Global = struct {
 type LoopState = struct {
     break_insn: *Insn
     continue_insn: *Insn
+    scope: *scope::Scope
 }
 
 export type State = struct {
@@ -526,14 +527,22 @@ def get_continue_insn(state: *State) -> *Insn {
     return null
 }
 
-def push_loop_state(state: *State) {
+def get_loop_state(state: *State) -> *LoopState {
+    if vector::length((@state).loops) > 0 {
+        return vector::peek((@state).loops) !*LoopState
+    }
+    return null
+}
+
+def push_loop_state(state: *State, scpe: *scope::Scope) {
     let loops = allocate(LoopState)
 
     let break_insn = make_insn(InsnKind::BR_UNC)
     let continue_insn = make_insn(InsnKind::BR_UNC)
 
-    (@loops).break_insn = break_insn
-    (@loops).continue_insn = continue_insn
+    loops.break_insn = break_insn
+    loops.continue_insn = continue_insn
+    loops.scope = scpe
     
     vector::push((@state).loops, loops)
 }
@@ -4465,27 +4474,45 @@ def walk_Return(node: *parser::Node, state: *State) {
 }
 
 def walk_Break(node: *parser::Node, state: *State) {
-    let break_insn = get_break_insn(state)
-    if not break_insn {
+    let loc = make_location(node, state)
+    let loop_state = get_loop_state(state)
+    if not loop_state {
         errors::errorn(node, "break used outside of a loop")
         return
     }
-    push_insn(break_insn, state)
+    
+    var scpe = state.scope
+    while scpe != loop_state.scope {
+        insert_destructors(scpe, loc, state)
+        scpe = scpe.parent
+    }
+    insert_destructors(scpe, loc, state)
+
+    push_insn(loop_state.break_insn, state)
     push_label(make_label(state), state)
 }
 
 def walk_Continue(node: *parser::Node, state: *State) {
-    let continue_insn = get_continue_insn(state)
-    if not continue_insn {
+    let loc = make_location(node, state)
+    let loop_state = get_loop_state(state)
+    if not loop_state {
         errors::errorn(node, "continue used outside of a loop")
         return
     }
-    push_insn(continue_insn, state)
+    
+    var scpe = state.scope
+    while scpe != loop_state.scope {
+        insert_destructors(scpe, loc, state)
+        scpe = scpe.parent
+    }
+    insert_destructors(scpe, loc, state)
+
+    push_insn(loop_state.continue_insn, state)
     push_label(make_label(state), state)
 }
 
 def walk_Loop(node: *parser::Node, state: *State) {
-    push_loop_state(state)
+    push_loop_state(state, node.inner_scope)
     let continue_insn = get_continue_insn(state)
     let break_insn = get_break_insn(state)
 
@@ -4512,7 +4539,7 @@ def walk_Loop(node: *parser::Node, state: *State) {
 
 def walk_While(node: *parser::Node, state: *State) {
     let loc = make_location(node, state)
-    push_loop_state(state)
+    push_loop_state(state, node.inner_scope)
     let continue_insn = get_continue_insn(state)
     let break_insn = get_break_insn(state)
 
@@ -4612,7 +4639,7 @@ def walk_For(node: *parser::Node, state: *State) {
 
     push_insn(store, state)
 
-    push_loop_state(state)
+    push_loop_state(state, node.inner_scope)
     let continue_insn = get_continue_insn(state)
     let break_insn = get_break_insn(state)
     let start_insn = make_insn_dbg(InsnKind::BR_UNC, loc)
