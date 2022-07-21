@@ -1,3 +1,5 @@
+// TODO Eval is slow, and it would be much faster if we didn't serialize value back and forth
+
 import vector
 import map
 import set as _set  // TODO Rename the function!
@@ -23,6 +25,7 @@ export type StackFrame = struct {
 }
 
 export type State = struct {
+    temp_counter: int
     cstate: &compiler::State
     // Vector of StackFrame
     stack: &Vector(&StackFrame)
@@ -41,7 +44,12 @@ export def push_stack_frame(stack_frame: &StackFrame, state: &State) {
 }
 
 export def pop_stack_frame(state: &State) {
-    vector::pop(state.stack)
+    let frame = vector::pop(state.stack)
+    // TODO We need faster iteration
+    let keys = frame.locals.keys
+    for var i in 0..keys.size {
+        free(frame.locals[keys[i]])
+    }
 }
 
 export def get_stack_frame(state: &State) -> &StackFrame {
@@ -187,6 +195,9 @@ export def get_address(loc: compiler::Value, state: &State) -> * {
                     }
                 }
             }
+
+            // TODO Use something like a linear allocator to store these
+            state.cstate.globals[compiler::make_global_name("__eval_tmp", state.cstate)] = ptr
 
             mem = allocate(loc.tpe.size)
             let value = { kind = compiler::ValueKind::POINTER, tpe = loc.tpe, i = ptr !int64 } !compiler::Value
@@ -467,12 +478,17 @@ def eval_Store(insn: &compiler::Insn, state: &State) {
 }
 
 def eval_Alloca(insn: &compiler::Insn, state: &State) {
+    let frame = get_stack_frame(state)
     let ret = insn.value.alloca.ret
+
     let mem = zero_allocate(ret.tpe.size) // TODO: We shouldn't have to initialize this
+    frame.locals["__eval_tmp::" + to_string(state.temp_counter)] = mem // TODO again use a linear allocator
+    state.temp_counter += 1
+
     ret.tpe = typechecking::pointer(ret.tpe)
     let ptr = { kind = compiler::ValueKind::POINTER, tpe = ret.tpe, i = mem !int64 } !compiler::Value
     let addr = allocate(ret.tpe.size)
-    get_stack_frame(state).locals[ret.name] = addr
+    frame.locals[ret.name] = addr
     set(addr, ret.tpe, ptr)
 }
 
@@ -1272,16 +1288,15 @@ export def eval(cstate: &compiler::State) -> &State {
     var block = cstate.current_function.block
     vector::insert(block.insn, 0, cstate.current_function.allocas)
 
-    let stack_frame = make_stack_frame(block, "<inline>", 1)
-
     let state = {
         cstate = cstate,
         stack = vector::make(type &StackFrame)
     } !&State
+    let stack_frame = make_stack_frame(block, "<inline>", 1)
 
-    state.stack.push(stack_frame)
-
+    push_stack_frame(stack_frame, state)
     eval(block, state)
+    pop_stack_frame(state)
 
     return state
 }
