@@ -148,6 +148,19 @@ export type Type = struct {
     has_copy_constructor: int8
 }
 
+/*export def construct(copy: *Type, this: *Type) {
+    __construct__(copy, this)
+    if this.members {
+        copy.members = @this.members
+    }
+    if this.fields {
+        copy.fields = allocate_ref(StructMember, this.fields.size)
+        for var i in 0..this.fields.size {
+            copy.fields[i] = this.fields[i]
+        }
+    }
+}*/
+
 export def tpe(tpe: &Type) -> &Type {
     if not tpe { return null }
     if tpe._tpe and tpe._tpe.kind == TypeKind::BOX {
@@ -1659,8 +1672,7 @@ def lookup_field_type(node: &parser::Node, state: &State, current_type: &Type, c
         let parr = node.value.t_parr.tpe
         if parr {
             if parr.tpe {
-                stub = type_lookup(parr, state, parr.tpe, false, cache)
-                stub = box(TypeKind::STRUCT, stub)
+                stub = parr.tpe
             } else {
                 stub = make_type_raw(TypeKind::STUB)
                 stub.state = consteval::copy_state(state)
@@ -1715,7 +1727,7 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
                 if vector::length(node.value.identifier.path) == 1 {
                     tpe.type_name = append_module(tpe.type_name, state.module.module)
                 }
-                tpe = scope::create_type(state.scope, node, parser::ShareMarker::NONE, tpe, scope::Phase::DECLARED, null, null)
+                scope::create_type(state.scope, node, parser::ShareMarker::NONE, tpe, scope::Phase::DECLARED, null, null)
             }
             return tpe
         }
@@ -2337,7 +2349,9 @@ def collapse_types(node: &parser::Node, ltypes: &Vector(&Type), right: &Vector(&
             infer_struct_type(value, ltpe)
         }
         
-        walk(node, value, state)
+        if not value.is_assign_right {
+            walk(node, value, state)
+        }
         let rtpe = (@value).tpe
         if rtpe and (@rtpe).kind == TypeKind::TUPLE {
             for var j in 0..vector::length((@rtpe).return_t) {
@@ -2490,7 +2504,7 @@ export def walk_VarDecl(node: &parser::Node, state: &State, set_constant: bool =
                 errors::errorn(node, "Array size indeterminate")
             }
 
-            //ident.scope = state.scope
+            ident.scope = state.scope
             ident.tpe = ltpe
 
             if is_underscore {
@@ -2836,6 +2850,7 @@ def walk_Cast(node: &parser::Node, state: &State) {
     
     right.parent = node
     var rtpe = type_lookup(right, state)
+
     if not rtpe { return }
     if rtpe.kind == TypeKind::TYPE_CONSTRUCTOR {
         errors::errorn(right, "Can't cast to type constructor")
@@ -2850,8 +2865,7 @@ def walk_Cast(node: &parser::Node, state: &State) {
             errors::errorn(left, "Invalid cast")
             return
         }
-        node.tpe = rtpe
-        (@left).tpe = node.tpe
+        node.tpe = left.tpe = rtpe
         walk(node, left, state)
         return
     }
@@ -2952,16 +2966,16 @@ export def lookup_parameters(node: &parser::Node, state: &State) -> &Type {
         let param = params[i]
         let named = tpe.parameter_t.get(i)
         if not named.tpe or named.tpe.kind != TypeKind::TYPE {
-            let new_type = type_lookup(param.value.param.tpe, state, named.tpe, false)
+            let new_type = type_lookup(param.value.param.tpe, state, copy(named.tpe), false)
             if new_type {
-                named.tpe = new_type
+                @named.tpe = @new_type
             }
         }
     }
     for var i in 0..vector::length(returns) {
         let n = returns[i]
         let current_return_type = tpe.return_t[i]
-        let new_type = type_lookup(n, state, current_return_type, false)
+        let new_type = type_lookup(n, state, copy(current_return_type), false)
         if new_type {
             @current_return_type = @new_type
         }
@@ -3138,30 +3152,26 @@ def walk_TypeDecl(node: &parser::Node, state: &State) {
         if i < vector::length(right) {
             value = right[i]
         }
-        
-        var tpe = make_type(TypeKind::STUB, name)
-        if value {
-            tpe = scope::create_type(state.scope, name, share, tpe, scope::Phase::COMPILED, null, null)
-            if not tpe {
-                continue
-            }
-            
-            if left.kind == parser::NodeKind::TYPE_CONSTRUCTOR {
-                tpe = lookup_type_constructor(left, value, state)
-            } else {
-                tpe = copy(type_lookup(value, state))
-            }
 
-            if not tpe { continue }
+        var tpe = value.tpe
+        if value {
+            var tpe2: &Type
+            if left.kind == parser::NodeKind::TYPE_CONSTRUCTOR {
+                tpe2 = lookup_type_constructor(left, value, state)
+            } else {
+                tpe2 = type_lookup(value, state)
+            }
+            @tpe = @tpe2
+            value.tpe = tpe
+
+            tpe.share = share
             tpe.name = parser::identifier_to_str(name)
             if value.kind != parser::NodeKind::TYPE_CONSTRUCTOR {
                 tpe.type_name = append_module(tpe.name, node.loc.module)
             }
-            tpe = scope::create_type(state.scope, name, share, tpe, scope::Phase::COMPILED, null, null)
-            value.tpe = tpe
+            
+            scope::create_type(state.scope, name, share, tpe, scope::Phase::COMPILED, null, null)
         }
-        name.tpe = tpe
-        name.tpe.share = share
     }
 }
 
@@ -3617,7 +3627,7 @@ export def lookup_struct_member(member: StructMember) {
         tpe.kind == TypeKind::REFERENCE or
         tpe.kind == TypeKind::WEAK_REF or
         tpe.kind == TypeKind::ARRAY) {
-        if tpe.tpe and tpe.tpe.kind == TypeKind::STUB and tpe.tpe.state {
+        if tpe._tpe and tpe._tpe.kind == TypeKind::STUB and tpe._tpe.state {
             tpe._tpe = box(TypeKind::STRUCT, type_lookup(tpe.tpe.node, tpe.tpe.state))
         }
     }
@@ -3730,6 +3740,7 @@ def walk_ArraySubscript(node: &parser::Node, state: &State) {
         } else if index < vector::length(node.parent.value.assign.right) {
             // TODO This is done twice
             let value = node.parent.value.assign.right[index]
+            value.is_assign_right = true
             walk(node.parent, value, state)
 
             let args = vector::make(NamedParameter)
@@ -4091,6 +4102,7 @@ export def walk(parent: &parser::Node, node: &parser::Node, state: &State) {
         // TODO Function types
         case parser::NodeKind::TYPE_OF_T:
             walk_TypeOfT(node, state)
+        case parser::NodeKind::STATIC_IF:
         case:
             error(node.kind, "\n")
             assert
@@ -4113,6 +4125,7 @@ export def make_state(module: &toolchain::Module) -> &State {
 export def walk_Def_with_type_argument(node: &parser::Node, parameter_t: &Vector(NamedParameter), state: &State) {
     let old_node = node
     node = parser::deep_copy_node(node)
+    node.tpe = lookup_parameters(node, state)
     node.inner_scope = scope::enter_function_scope(node.scope)
 
     let share = node.value.def_.share
