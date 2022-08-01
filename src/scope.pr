@@ -20,8 +20,8 @@ export type Value = struct {
     assembly_name: &string
     tpe: &typechecking::Type
     value: &compiler::Value
-    // TODO is this actually used anywhere?
-    scope: weak_ref(Scope)
+    _scope: &Scope
+    _module: weak_ref(Scope) // This is needed for modules referencing each other
     // In case multiple values share one name (overloaded functions)
     next: &Value
     phase: Phase
@@ -36,6 +36,13 @@ export type Value = struct {
     // For imported scopes, this checks if a value is exported before accessing it
     imported: bool
     previous_underscore: &Value
+}
+
+export def scope(value: &Value) -> &Scope {
+    if value._module {
+        return value._module
+    }
+    return value._scope
 }
 
 export type Scope = struct {
@@ -469,8 +476,8 @@ export def get_function_check(
     scope: &Scope, 
     id: &parser::Node, 
     parameter_t: &Vector(typechecking::NamedParameter), 
-    check_export: bool, 
-    dry_run: bool, 
+    check_export: bool = false, 
+    dry_run: bool = false, 
     force_compile: bool = true, 
     only_function: bool = false
 ) -> bool, &Value {
@@ -489,7 +496,7 @@ export def get_function_check(
         let first_score = score
         var value = first_function
         var d = false
-        if (@scope).imports {
+        if (@scope).imports and not check_export {
             for var i in 0..vector::length((@scope).imports) {
                 let module = (@scope).imports[i]
                 let scope2 = (@module).scope
@@ -515,9 +522,6 @@ export def get_function_check(
                 return true, null
             }
         }
-        if value and check_export and value.share !int & parser::ShareMarker::EXPORT !int == 0 {
-            value = null
-        }
         if not value and (@scope).parent and (not first_value or only_function) {
             code, value = get_function_check((@scope).parent, id, parameter_t, check_export, dry_run, force_compile, only_function)
         }
@@ -535,6 +539,9 @@ export def get_function_check(
         }
         if value and value.phase == Phase::DEFINED and force_compile {
             value = typecheck_function(value, id, scope, dry_run, parameter_t)
+        }
+        if value and check_export and (value.share !int & parser::ShareMarker::EXPORT !int) == 0 {
+            value = null
         }
         return code, value
     } else {
@@ -559,7 +566,15 @@ export def get_function_check(
         return false, null
     }
 }
-export def get_function(scope: &Scope, id: &parser::Node, parameter_t: &Vector(typechecking::NamedParameter), check_export: bool, dry_run: bool, force_compile: bool = true, only_function: bool = false) -> &Value {
+export def get_function(
+    scope: &Scope, 
+    id: &parser::Node, 
+    parameter_t: &Vector(typechecking::NamedParameter), 
+    check_export: bool, 
+    dry_run: bool, 
+    force_compile: bool = true, 
+    only_function: bool = false) -> &Value {
+
     let _, value = get_function_check(scope, id, parameter_t, check_export, dry_run, force_compile, only_function)
     return value
 }
@@ -599,7 +614,7 @@ export def get(scope: &Scope, id: &parser::Node, force_compile: bool = true, che
             if value and force_compile and value.phase == Phase::DEFINED {
                 typecheck(value)
             }
-        } else if scope.imports != null {
+        } else if scope.imports and not check_export and not value {
             for var i in 0..vector::length((@scope).imports) {
                 let module = (@scope).imports[i]
                 let scope2 = (@module).scope
@@ -632,8 +647,8 @@ export def get(scope: &Scope, id: &parser::Node, force_compile: bool = true, che
         if not value and (@scope).parent {
             value = get((@scope).parent, id, force_compile, check_export, dry_run)
         }
-        if value and (not check_export or value.share !int & parser::ShareMarker::EXPORT !int) {
-            return value
+        if value and check_export and (value.share !int & parser::ShareMarker::EXPORT !int) == 0 {
+            value = null
         }
         if not value and id.value.identifier.types {
             value = generate_function(scope, id, id.value.identifier.types, dry_run)
@@ -654,7 +669,7 @@ export def get(scope: &Scope, id: &parser::Node, force_compile: bool = true, che
                 errors::errorn(id, "Use of :: on non namespace")
                 return null
             }
-            return get((@s).scope, id_tail, force_compile, false, dry_run)
+            return get((@s).scope, id_tail, force_compile, s.imported, dry_run)
         }
         return null
     }
@@ -868,7 +883,7 @@ export def create_type(
         assembly_name = name,
         tpe = builtins::type_,
         value = value_tpe,
-        scope = (@tpe).scope,
+        _module = tpe.scope,
         global = is_global(scope),
         phase = phase,
         node = node,
@@ -886,6 +901,7 @@ export def create_type(
             return
         } 
         if phase != Phase::DECLARED {
+            @tpe2.value_tpe = @tpe
             v.value = tpe2
             scope.fields[name] = v
         }
@@ -913,7 +929,7 @@ export def enter_namespace(scope: &Scope, scope2: &Scope, node: &parser::Node) -
         name = name,
         assembly_name = name,
         tpe = tpe,
-        scope = scope2,
+        _scope = scope2,
         global = is_global(scope)
     } !&Value
 
@@ -944,6 +960,8 @@ export def insert_module(scope: &Scope, alias: &parser::Node, module: &toolchain
     // FIXME We don't copy the scope anymore so it's going to look up stuff from other modules
     let v = enter_namespace(scope, module.scope, alias)
     v.imported = true
+    v._module = module.scope
+    v._scope = null
 
     if not scope.imports {
         scope.imports = vector::make(type weak_ref(toolchain::Module))
