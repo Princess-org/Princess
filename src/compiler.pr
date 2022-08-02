@@ -506,6 +506,7 @@ export type State = struct {
     scope: weak_ref(scope::Scope)
     // Destructor function
     finalizer: &Function
+    consteval: bool
 }
 
 export def destruct(state: *State) {
@@ -5020,14 +5021,11 @@ def walk_Assert(node: &parser::Node, state: &State) {
 
         var msg: &string = ""
         var line = cond.loc.lines[cond.loc.line]
-        var str: string
-        str.value = line.value ++ cond.loc.column
         if cond.loc.end_line == cond.loc.line {
-            str.size = cond.loc.end_column - cond.loc.column + 1
+            msg += line.substring(cond.loc.column, min(line.length - 1, cond.loc.end_column) !size_t) // TODO This is kinda weird
         } else {
-            str.size = line.size - cond.loc.column - 1
+            msg += line.substring(cond.loc.column, line.length - 1)
         }
-        msg += str
 
         // TODO This doesn't work at all
         for var i in cond.loc.line..(cond.loc.end_line - 1) {
@@ -5035,9 +5033,7 @@ def walk_Assert(node: &parser::Node, state: &State) {
         }
         if cond.loc.end_line > cond.loc.line {
             line = cond.loc.lines[cond.loc.end_line]
-            str.value = line.value
-            str.size = cond.loc.end_column
-            msg += str
+            msg += line.substring(0, min(line.length - 1, cond.loc.end_column) !size_t)
         }
     	
         args[5] = charp(msg, state)
@@ -5981,10 +5977,10 @@ def make_string(str: &string, state: &State) -> Value {
 
 // TODO This is not going to work for nested type decls (we don't reset the state)
 def walk_TypeDecl(node: &parser::Node, state: &State) {
-    let left = (@node).value.type_decl.left
+    let left = node.value.type_decl.left
     for var i in 0..vector::length(left) {
         let n = left[i]
-        let tpe = (@n).tpe
+        let tpe = n.tpe
         if not tpe { continue }
         if typechecking::is_struct(tpe) {
             import_structures(tpe, state.module)
@@ -6683,7 +6679,9 @@ def push_tpe_tpe(tpe: &typechecking::Type, global: Value, module: &toolchain::Mo
 
     var value: Value
     if tpe.tpe {
-        value = @create_type(tpe.tpe, module)
+        let v = create_type(tpe.tpe, module)
+        if not v { return }
+        value = @v
     } else {
         value = { kind = ValueKind::NULL, tpe = pointer(builtins::Type_) } !Value
     }
@@ -6706,7 +6704,9 @@ def push_struct_members(tpe: &typechecking::Type, global: Value, module: &toolch
     let fields = make_global_value(fields_sarray, "fields", null, state)
     for var i in 0..tpe.fields.size {
         let field = tpe.fields[i]
-        typechecking::lookup_struct_member(field)
+        if not state.consteval {
+            typechecking::lookup_struct_member(field)
+        }
         let fname = field.name if field.name != null else to_string(i)
 
         let name_values = allocate_ref(Value, 2)
@@ -7244,43 +7244,45 @@ def do_create_type(tpe: &typechecking::Type, svalue: &scope::Value, module: &too
     value.kind = ValueKind::STRUCT
     value.tpe = builtins::Type_
 
-    let old_cstate_block = consteval::compiler_state.current_block
-    let old_cstate_function = consteval::compiler_state.current_function
-
-    let function = {
-        name = "__main__",
-        unmangled = "__main__",
-        forward_declare = true,
-        allocas = vector::make(type &Insn),
-        block = new_block,
-        function_locals = set::make()
-    } !&Function
-
-    consteval::compiler_state.current_function = function
-    consteval::compiler_state.current_block = new_block
-    
-    // Copy constants into the right module
-    // TODO This always copies the whole thing
-    let keys = map::keys(toolchain::types.result.globals)
-    for var i in 0..keys.size {
-        let key = keys[i]
-        let global = toolchain::types.result.globals[key]
-        consteval::const_module.result.globals[key] = global
-    }
-
-    let old_module = consteval::compiler_state.module
-    consteval::compiler_state.module = consteval::const_module 
-    eval::eval(consteval::compiler_state)
-    consteval::compiler_state.module = old_module
-
     old_block.counter = new_block.counter
     for var i in 0..vector::length(new_block.insn) {
         old_block.insn.push(new_block.insn[i])
     }
-    state.current_block = old_block
 
-    consteval::compiler_state.current_block = old_cstate_block
-    consteval::compiler_state.current_function = old_cstate_function
+    if state.consteval {
+        let old_cstate_block = consteval::compiler_state.current_block
+        let old_cstate_function = consteval::compiler_state.current_function
+
+        let function = {
+            name = "__main__",
+            unmangled = "__main__",
+            forward_declare = true,
+            allocas = vector::make(type &Insn),
+            block = new_block,
+            function_locals = set::make()
+        } !&Function
+
+        consteval::compiler_state.current_function = function
+        consteval::compiler_state.current_block = new_block
+        
+        // Copy constants into the right module
+        // TODO This always copies the whole thing
+        let keys = map::keys(toolchain::types.result.globals)
+        for var i in 0..keys.size {
+            let key = keys[i]
+            let global = toolchain::types.result.globals[key]
+            consteval::const_module.result.globals[key] = global
+        }
+
+        let old_module = consteval::compiler_state.module
+        consteval::compiler_state.module = consteval::const_module 
+        eval::eval(consteval::compiler_state)
+        consteval::compiler_state.module = old_module
+        consteval::compiler_state.current_block = old_cstate_block
+        consteval::compiler_state.current_function = old_cstate_function
+    }
+
+    state.current_block = old_block
 
     return value
 }
@@ -7305,8 +7307,7 @@ export def resolve_types {
         let ident = make_identifier(debug::type_to_str(tpe, true))
         ident.loc.module = "type"
         
-        let svalue = scope::get(toolchain::types.scope, ident)
-        svalue.value = do_create_type(tpe, svalue, to_resolve.module)
+        create_type(tpe, to_resolve.module)
     }
 }
 
@@ -7316,12 +7317,19 @@ export def create_type(tpe: &typechecking::Type, module: &toolchain::Module) -> 
     if generic and generic.tc_incomplete { return null }
     if tpe.kind == typechecking::TypeKind::TYPE_DEF { return null }
 
+    let name = debug::type_to_str(tpe, full_name = true)
     if tpe.kind == typechecking::TypeKind::STUB {
-        let to_resolve = { module, tpe } !ToResolve
-        types_to_resolve[debug::type_to_str(tpe, full_name = true)] = to_resolve
+        if name {
+            let to_resolve = { module, tpe } !ToResolve
+            types_to_resolve[name] = to_resolve
+        } else {
+            return null
+        }
     }
 
-    let ident = make_identifier(debug::type_to_str(tpe, true))
+    import_structure(builtins::Type_, toolchain::types)
+
+    let ident = make_identifier(name)
     ident.loc.module = "type"
 
     var svalue = scope::get(toolchain::types.scope, ident, false, false)
@@ -7336,11 +7344,14 @@ export def create_type(tpe: &typechecking::Type, module: &toolchain::Module) -> 
             ident, parser::ShareMarker::NONE, parser::VarDecl::CONST, 
             builtins::Type_, do_create_type(tpe, svalue, module))
     }
-    if not map::contains(module.result.globals, svalue.assembly_name) {
+
+    if not toolchain::types_state.consteval and 
+        not map::contains(module.result.globals, svalue.assembly_name) {
+            
         let global = {
             external = true,
             name = svalue.assembly_name,
-            tpe = svalue.tpe,
+            tpe = builtins::Type_,
             line = -1
         } !&Global
         module.result.globals[global.name] = global
@@ -7494,6 +7505,7 @@ def generate_vtable_function(function: &Function, tpe: &typechecking::Type, stat
                 }
             }
 
+            if not function { continue }
             predeclare_function(function, state.module)
             state.module.imported.add(function.type_name)
 
@@ -7733,7 +7745,7 @@ export def compile(state: &State, is_main: bool, no_cleanup: bool = false) {
     } !typechecking::NamedParameter)
 
     let main_tpe = typechecking::make_function_type_n(ident, args, vector::make(type &typechecking::Type), state.module)
-    //scope::create_function(node.scope, ident, parser::ShareMarker::EXPORT, main_tpe)
+    scope::create_function(node.scope, ident, parser::ShareMarker::EXPORT, main_tpe)
     
     for var i in 0..vector::length(state.module.dyn_dispatch) {
         let tpe = state.module.dyn_dispatch[i]

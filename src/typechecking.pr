@@ -1504,6 +1504,20 @@ def check_is_identifier_assignable(node: &parser::Node, state: &State) -> bool {
 }
 
 
+def make_stub_type(ident: &parser::Node, state: &State) -> &typechecking::Type {
+    assert ident.kind == parser::NodeKind::IDENTIFIER
+
+    let name = parser::identifier_to_str(ident)
+    let tpe = make_type_raw(TypeKind::STUB)
+    tpe.name = @(ident.value.identifier.path[vector::length(ident.value.identifier.path) - 1])
+    tpe.type_name = name
+    if vector::length(ident.value.identifier.path) == 1 {
+        tpe.type_name = append_module(tpe.type_name, state.module.module)
+    }
+    return tpe 
+}
+
+
 export def make_struct_type(fields: &[StructMember], current_type: &Type = null) -> &Type {
     let struct_tpe = make_type_raw(TypeKind::STRUCT) if not current_type else current_type
     let field_types = vector::make(TypeMember)
@@ -1661,7 +1675,11 @@ def lookup_field_type(node: &parser::Node, state: &State, current_type: &Type, c
             if parr.tpe {
                 stub = parr.tpe
             } else {
-                stub = make_type_raw(TypeKind::STUB)
+                if parr.kind == parser::NodeKind::IDENTIFIER {
+                    stub = make_stub_type(parr, state)
+                } else {
+                    stub = make_type_raw(TypeKind::STUB)
+                }
                 stub.state = consteval::copy_state(state)
                 stub.module = state.module
                 stub.node = parr
@@ -1691,7 +1709,6 @@ def lookup_field_type(node: &parser::Node, state: &State, current_type: &Type, c
 export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Type = null, lookup_default: bool = false, cache: &map::SMap(&Type) = null) -> &Type {
     if not node { return null }
     if node.kind == parser::NodeKind::IDENTIFIER {
-        let name = parser::identifier_to_str(node)
         if current_type and not lookup_default and current_type.kind != TypeKind::STUB {
             return current_type
         }
@@ -1708,12 +1725,9 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
                 }
                 tpe = value.value.value_tpe
             } else {
-                tpe = make_type_raw(TypeKind::STUB)
-                tpe.name = @(node.value.identifier.path[vector::length(node.value.identifier.path) - 1])
-                tpe.type_name = name
+                tpe = make_stub_type(node, state)
                 var share = parser::ShareMarker::EXPORT
                 if vector::length(node.value.identifier.path) == 1 {
-                    tpe.type_name = append_module(tpe.type_name, state.module.module)
                     share = parser::ShareMarker::NONE
                 }
                 scope::create_type(state.scope, node, share, tpe, scope::Phase::DECLARED, null, null)
@@ -1805,7 +1819,7 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
             var field_type: &Type = null
             if current_type and current_type.kind != TypeKind::STUB { 
                 field_type = current_type.fields[i].tpe 
-                }
+            }
 
             if (@field).kind == parser::NodeKind::ID_DECL_STRUCT {
                 let ident = (@field).value.id_decl_struct.ident
@@ -2070,8 +2084,10 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
                     tc_node.variants = null
                     tc_node.scope = state.scope
                     type_constructor.tc_node.variants[type_name] = tc_node
+                    tpe = type_lookup(tc_node, state, null, lookup_default, cache)
+                } else {
+                    tpe = tc_node.tpe
                 }
-                tpe = type_lookup(tc_node, state, null, lookup_default, cache)
             } else {
                 tpe = make_type_raw(TypeKind::GENERIC)
                 tpe._tpe = type_constructor
@@ -2101,8 +2117,10 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
                 tc_node.variants = null
                 tc_node.scope = state.scope
                 type_constructor.tc_node.variants[type_name] = tc_node
+                tpe = type_lookup(tc_node, state, null, lookup_default, cache)
+            } else {
+                tpe = tc_node.tpe
             }
-            tpe = type_lookup(tc_node, state, null, lookup_default, cache)
 
             if type_constructor.tc_node.kind == parser::NodeKind::TYPE_CONSTRUCTOR {
                 type_name = tpe.type_name
@@ -2957,7 +2975,8 @@ export def lookup_parameters(node: &parser::Node, state: &State) -> &Type {
         if not named.tpe or named.tpe.kind != TypeKind::TYPE {
             let new_type = type_lookup(param.value.param.tpe, state, named.tpe, false)
             if new_type {
-                named.tpe = new_type
+                @named.tpe = @new_type
+                param.value.param.tpe.tpe = named.tpe
             }
         }
     }
@@ -2966,7 +2985,8 @@ export def lookup_parameters(node: &parser::Node, state: &State) -> &Type {
         let current_return_type = tpe.return_t[i]
         let new_type = type_lookup(n, state, current_return_type, false)
         if new_type {
-            tpe.return_t[i] = new_type
+            @current_return_type = @new_type
+            n.tpe = current_return_type
         }
     }
 
@@ -3614,7 +3634,7 @@ export def lookup_struct_member(member: StructMember) {
         tpe.kind == TypeKind::WEAK_REF or
         tpe.kind == TypeKind::ARRAY) {
         if tpe._tpe and tpe._tpe.kind == TypeKind::STUB and tpe._tpe.state {
-            tpe._tpe = box(TypeKind::STRUCT, type_lookup(tpe.tpe.node, tpe.tpe.state))
+            tpe._tpe = box(TypeKind::STRUCT, type_lookup(tpe._tpe.node, tpe._tpe.state))
         }
     }
 }
@@ -4220,10 +4240,8 @@ export def typecheck(state: &State) {
     }
     pop_function(state)
 
-    node.value.program = {
-        has_defer = function.has_defer,
-        locals = function.locals
-    } !parser::NodeProgram
+    node.value.program.has_defer = function.has_defer
+    node.value.program.locals = function.locals
 
     let keys = map::keys(node.scope.fields)
     for var i in 0..keys.size {
