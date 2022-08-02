@@ -1,92 +1,118 @@
+import optional
+
 const INITIAL_SIZE = 16
-export let sentinel = 1 !*
 
-type Entry = struct {
-    key: string
-    value: *
-    next: *Entry
+export type Entry(type K, type V) = struct {
+    key: K
+    value: V
+    next: &Entry(K, V)
     // We maintain a linked list for ordering
-    l_prev: *Entry
-    l_next: *Entry
+    l_prev: weak_ref(Entry(K, V))
+    l_next: weak_ref(Entry(K, V))
 }
 
-export type Map = struct {
+export type Map(type K, type V) = struct {
     size: size_t
-    entries: [*Entry]
-    tail: *Entry
-    head: *Entry
+    entries: [&Entry(K, V)]
+    tail: weak_ref(Entry(K, V))
+    head: weak_ref(Entry(K, V))
 }
 
-def hash(str: string) -> uint32 {
+export type SMap(type V) = Map(&string, V)
+
+export def construct(copy: *Map(type K, type V), this: *Map(K, V)) {
+    assert this.size == 0
+    copy.entries = zero_allocate(type &Entry(K, V), this.entries.size)
+}
+
+export def destruct(map: *Map(type K, type V)) {
+    delete(map.entries)
+}
+
+def hash(str: &string) -> uint32 {
     var r: uint32 = 7
-    for var i in 0..length(str) {
+    for var i in 0..str.length {
         r = r * 31 + str[i]
     }
     return r
 }
 
-def maybe_rehash(map: *Map) {
-    let allocated = (@map).entries.size
-    if (@map).size / (allocated !double) < 0.7 {
+def maybe_rehash(map: &Map(type K, type V)) {
+    let allocated = map.entries.size
+    if map.size / (allocated !double) < 0.7 {
         return
     }
     
-    let new_map = {
-        entries = zero_allocate(type *Entry, allocated * 2)
-    } !Map
+    let old_head: &Entry(K, V) = map.head
+    let old_entries = map.entries
+    map.entries = zero_allocate(type &Entry(K, V), allocated * 2)
+    map.head = null
+    map.tail = null
+    map.size = 0
 
-    var entry = map.head
+    var entry = old_head
     while entry != null {
-        do_put(*new_map, entry.key, entry.value)
-        let next = entry.l_next
-        entry = next
+        do_put(map, (@entry).key, (@entry).value)
+        entry = (@entry).l_next
     }
-    free(map.entries)
-    
-    assert new_map.size == map.size
-    @map = new_map
+    delete(old_entries)
 }
 
-export def make_size(size: size_t) -> *Map {
-    var map = allocate(Map)
-    @map = {
-        entries = zero_allocate(type *Entry, size),
+export def make(type K, type V, size: size_t) -> &Map(K, V) {
+    return {
+        entries = zero_allocate(type &Entry(K, V), size),
         size = 0
-    } !Map
-    return map
+    } !Map(K, V)
 }
 
-export def make -> *Map {
-    return make_size(INITIAL_SIZE)
+export def make(type V, size: size_t) -> &SMap(V) {
+    return make(type &string, V, size)
 }
 
-export def get(map: *Map, key: string) -> * {
+export def make(type K, type V) -> &Map(K, V) {
+    return make(K, V, INITIAL_SIZE)
+}
+
+export def make(type V) -> &SMap(V) {
+    return make(V, INITIAL_SIZE)
+}
+
+export def get(map: &Map(type K, type V), key: K) -> Optional(V) {
     let h = hash(key)
-    let index = h % (@map).entries.size
-    var entry = (@map).entries[index]
+    let index = h % map.entries.size
+    var entry = map.entries[index]
     if entry {
-        if (@entry).key == key {
-            return (@entry).value
+        if entry.key == key {
+            return optional::some(entry.value)
         }
-        while (@entry).next {
-            entry = (@entry).next
-            if (@entry).key == key {
-                return (@entry).value
+        while entry.next {
+            entry = entry.next
+            if entry.key == key {
+                return optional::some(entry.value)
             }
         }
-        return null
-    } else {
-        return null
     }
+    return optional::none(V)
 }
 
-export def contains(map: *Map, key: string) -> bool {
+export def get_or_default(map: &Map(type K, type V), key: K, default: V) -> V {
+    let res = map.get(key)
+    if not res.exists { return default }
+    return res.value
+}
+
+export def get_item(map: &Map(type K, type V), key: K) -> V {
     let value = get(map, key)
-    return value != null
+    if value.exists { return value.value }
+    abort("Key " + key + " does not exist")
 }
 
-// Returns true when a new entry was created, otherwise false
-def do_put(map: *Map, key: string, value: *) {
+export def contains(map: &Map(type K, type V), key: K) -> bool {
+    let value = get(map, key)
+    return value.exists
+}
+
+def do_put(map: &Map(type K, type V), key: K, value: V) {
     let entries = map.entries
     let h = hash(key)
     let index = h % entries.size
@@ -100,7 +126,7 @@ def do_put(map: *Map, key: string, value: *) {
         if entry.key == key {
             entry.value = value
             if map.tail == entry { return }
-        
+            
             if entry.l_prev { entry.l_prev.l_next = entry.l_next }
             else { map.head = entry.l_next }
             if entry.l_next { entry.l_next.l_prev = entry.l_prev }
@@ -112,36 +138,38 @@ def do_put(map: *Map, key: string, value: *) {
             return
         }
 
-        var entry2 = allocate(Entry)
-        @entry2 = {
+        var entry2 = {
             key = key,
             value = value,
             l_prev = map.tail
-        }
-        if map.tail { map.tail.l_next = entry2 }
-        map.tail = entry2
+        } !&Entry(K, V)
+
+        let prev_tail = map.tail
         entry.next = entry2
+        map.tail = entry.next
+        if prev_tail { prev_tail.l_next = entry.next }
     } else {
-        entry = allocate(Entry)
-        @entry = {
+        entry = {
             key = key,
             value = value,
             l_prev = map.tail
-        }
-        if not map.head { map.head = entry }
-        if map.tail { map.tail.l_next = entry }
-        map.tail = entry
+        } !&Entry(K, V)
         entries[index] = entry
+
+        let prev_tail = map.tail
+        if not map.head { map.head = entry }
+        map.tail = entry
+        if prev_tail { prev_tail.l_next = entry }
     }
     map.size += 1
 }
 
-export def put(map: *Map, key: string, value: *) {
+export def set_item(map: &Map(type K, type V), key: K, value: V) {
     maybe_rehash(map)
     do_put(map, key, value)
 }
 
-export def remove(map: *Map, key: string) {
+export def remove(map: &Map(type K, type V), key: K) {
     let h = hash(key)
     let index = h % map.entries.size
     var entry = map.entries[index]
@@ -153,8 +181,8 @@ export def remove(map: *Map, key: string) {
             // TODO Once we have nested functions this needs to go
             if entry.l_prev { entry.l_prev.l_next = entry.l_next }
             if entry.l_next { entry.l_next.l_prev = entry.l_prev }
-            if map.head == entry { map.head = entry.l_next }
-            if map.tail == entry { map.tail = entry.l_prev }
+            if map.head == map.entries[index] { map.head = entry.l_next }
+            if map.tail == map.entries[index] { map.tail = entry.l_prev }
         } else {
             var entry2 = entry.next
             while entry2 {
@@ -176,39 +204,41 @@ export def remove(map: *Map, key: string) {
     }
 }
 
-export def size(map: *Map) -> size_t {
-    return (@map).size
+export def size(map: &Map(type K, type V)) -> size_t {
+    return map.size
 }
 
-export def keys(map: *Map) -> [string] {
-    let keys = allocate(string, size(map))
+export def keys(map: &Map(type K, type V)) -> &[K] {
+    let keys = zero_allocate(K, size(map))
+    defer delete(keys)
     var index = 0
     var entry = map.head
     while entry != null {
-        keys[index] = entry.key
-        entry = entry.l_next
+        keys[index] = (@entry).key
+        entry = (@entry).l_next
         index += 1
     }
     return keys
 }
 
-export def reverse_keys(map: *Map) -> [string] {
-    let keys = allocate(string, size(map))
+export def reverse_keys(map: &Map(type K, type V)) -> &[K] {
+    let keys = zero_allocate(K, size(map))
+    defer delete(keys)
     var index = 0
     var entry = map.tail
     while entry != null {
-        keys[index] = entry.key
-        entry = entry.l_prev
+        keys[index] = (@entry).key
+        entry = (@entry).l_prev
         index += 1
     }
     return keys
 }
 
-export def clear(map: *Map) {
+export def clear(map: &Map(type K, type V)) {
     if map.size == 0 { return }
     map.size = 0
-    free(map.entries.value)
+    delete(map.entries)
     map.head = null 
     map.tail = null
-    map.entries = zero_allocate(type *Entry, INITIAL_SIZE)
+    map.entries = zero_allocate(type &Entry(K, V), INITIAL_SIZE)
 }

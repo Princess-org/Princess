@@ -1,4 +1,3 @@
-import buffer
 import util
 import parser
 import vector
@@ -16,7 +15,9 @@ import test::test_ctfe
 import test::test_vector
 import test::test_expr_eval
 
-export var match_string = "*"
+export var match_string: &string = "*"
+export var fork_process: bool = true
+export var capture_stdout: bool = true
 
 def print_divider(c: char) {
     let termsize = util::get_terminal_size()
@@ -36,16 +37,20 @@ var asserts: *int
 
 export def tassert(cond: bool) {
     asserts[0] += 1
+    var stream = debug::stdout_orig
+    if not capture_stdout {
+        stream = std::stdout()
+    }
     if not cond {
-        cstd::fprintf(debug::stdout_orig, "x".value)
+        cstd::fprintf(stream, "x".value)
         asserts[1] += 1
     } else {
-        cstd::fprintf(debug::stdout_orig, ".".value)
+        cstd::fprintf(stream, ".".value)
     }
-    cstd::fflush(debug::stdout_orig)
+    cstd::fflush(stream)
 }
 
-export def run_test(desc: string, function: () -> (), expected_out: string, expected_err: string) {
+export def run_test(desc: &string, function: () -> (), expected_out: &string, expected_err: &string) {
     if not util::match(match_string, desc) {
         return
     }
@@ -55,39 +60,53 @@ export def run_test(desc: string, function: () -> (), expected_out: string, expe
     var num_printed = print(">", desc, " ")
     cstd::fflush(std::stdout())
 
-    debug::redirect_stdout_to_file(stdout_file)
-    debug::redirect_stderr_to_file(stderr_file)
-
+    if capture_stdout {
+        debug::redirect_stdout_to_file(stdout_file)
+        debug::redirect_stderr_to_file(stderr_file)
+    }
+    
     asserts = linux::mmap(null, (size_of int) * 2, 3 /*PROT_READ | PROT_WRITE*/, 33 /*MAP_SHARED | MAP_ANONYMOUS*/, -1, 0) !*int
     asserts[0] = asserts[1] = 0
 
-    let pid = linux::fork()
-    if pid == 0 {
-        function()
-        exit(0)
-    }
     var segfault = false
-    var status: int
-    linux::waitpid(pid, *status, 0)
-    if status & 0x7f == 11 /*SIGSEGV*/{
-        segfault = true
+    if fork_process {
+        let pid = linux::fork()
+        if pid == 0 {
+            function()
+            exit(0)
+        }
+        
+        var status: int
+        linux::waitpid(pid, *status, 0)
+        if status & 0x7f == 11 /*SIGSEGV*/{
+            segfault = true
+        }
+    } else {
+        function()
     }
     
-    debug::restore_stdout()
-    debug::restore_stderr()
-    
-    let stdout_fh = open(stdout_file, "rb")
-    let out = util::read_all(stdout_fh)
-    close(stdout_fh)
+    var out_ok = true
+    var err_ok = true
+    var err: &string
+    var out: &string
 
-    let stderr_fh = open(stderr_file, "rb")
-    let err = util::read_all(stderr_fh)
-    close(stderr_fh)
+    if capture_stdout {
+        debug::restore_stdout()
+        debug::restore_stderr()
+        
+        let stdout_fh = open(stdout_file, "rb")
+        out = util::read_all(stdout_fh)
+        close(stdout_fh)
 
-    let out_ok = out == expected_out
-    let err_ok = err == expected_err
-    tassert(out_ok)
-    tassert(err_ok)
+        let stderr_fh = open(stderr_file, "rb")
+        err = util::read_all(stderr_fh)
+        close(stderr_fh)
+
+        out_ok = out == expected_out
+        err_ok = err == expected_err
+        tassert(out_ok)
+        tassert(err_ok)
+    }
 
     let assert_count = asserts[0]
     let failed_assert_count = asserts[1]
@@ -118,22 +137,24 @@ export def run_test(desc: string, function: () -> (), expected_out: string, expe
         print("]\n")
     }
     
-    if not out_ok {
-        print_divider('-')
-        print("Expected standard out:\n")
-        print(expected_out, "\n")
-        print("Actual standard out:\n")
-        print(out, "\n")
-        print_divider('-')
-    }
+    if capture_stdout {
+        if not out_ok {
+            print_divider('-')
+            print("Expected standard out:\n")
+            print(expected_out, "\n")
+            print("Actual standard out:\n")
+            print(out, "\n")
+            print_divider('-')
+        }
 
-    if not err_ok {
-        print_divider('-')
-        print("Expected standard error:\n")
-        print(expected_err, "\n")
-        print("Actual standard error:\n")
-        print(err, "\n")
-        print_divider('-')
+        if not err_ok {
+            print_divider('-')
+            print("Expected standard error:\n")
+            print(expected_err, "\n")
+            print("Actual standard error:\n")
+            print(err, "\n")
+            print_divider('-')
+        }
     }
 
     if failed_assert_count > 0 or segfault {
@@ -145,58 +166,29 @@ export def run_test(desc: string, function: () -> ()) {
     run_test(desc, function, "", "")
 }
 
-def test_buffer {
-    var str = "this is a test"
-    var buf = buffer::make_buffer()
-    buffer::append_str(*buf, str)
-    var res = buffer::to_string(*buf)
-    tassert(res == str)
-    buffer::append_char(*buf, 't')
-    res = buffer::to_string(*buf)
-    tassert(res == "this is a testt")
-    buffer::insert(*buf, 10, "big ")
-    res = buffer::to_string(*buf)
-    tassert(res == "this is a big testt")
-
-    buf = buffer::make_buffer()
-    buffer::insert(*buf, 0, "this is a test")
-    res = buffer::to_string(*buf)
-    tassert(res == "this is a test")
-
-    res = buffer::to_string(*buf)
-    buffer::remove_char(*buf, 8)
-    tassert(res == "this is  test")
-}
-
 def test_vector {
-    var vec = vector::make()
-    let i1 = allocate(int); @i1 = 0
-    vector::push(vec, i1)
-    let i2 = allocate(int); @i2 = 1
-    vector::push(vec, i2)
-    let i3 = allocate(int); @i3 = 2
-    vector::push(vec, i3)
+    var vec = vector::make(int)
+    vec.push(0)
+    vec.push(1)
+    vec.push(2)
 
-    tassert(@(vector::get(vec, 0) !*int) == 0)
-    tassert(@(vector::get(vec, 1) !*int) == 1)
-    tassert(@(vector::get(vec, 2) !*int) == 2)
+    tassert(vec[0] == 0)
+    tassert(vec[1] == 1)
+    tassert(vec[2] == 2)
 
-    let i4 = allocate(int); @i4 = 3
-    vector::set(vec, 0, i4)
+    vec[0] = 3
 
-    tassert(@(vector::get(vec, 0) !*int) == 3)
+    tassert(vec[0] == 3)
 
-    vec = vector::make()
-    var vec2 = vector::make()
+    vec = vector::make(int)
+    var vec2 = vector::make(int)
 
     for var i in 0..5 {
-        let i1 = allocate(int); @i1 = i
-        vector::push(vec, i1)
-        vector::push(vec2, i1)
+        vec.push(i)
+        vec2.push(i)
     }
     
-    let i5 = allocate(int); @i5 = 10
-    vector::insert(vec, 2, i5)
+    vector::insert(vec, 2, 10)
     vector::insert(vec, 2, vec2)
 
     // TODO actually verify this
@@ -228,13 +220,6 @@ def test_split_lines {
     tassert(res[3] == "test")
 }
 
-def test_int_to_str {
-    tassert(util::int_to_str(0) == "0")
-    tassert(util::int_to_str(-55) == "-55")
-    tassert(util::int_to_str(125) == "125")
-    tassert(util::int_to_str(2147483647) == "2147483647")
-}
-
 def test_find_substr {
     var str = "foo%%bar%%baz"
     tassert(util::find_substr(str, "banana", 0) == -1)
@@ -253,69 +238,56 @@ def test_replace_all {
 def test_util {
     print("Running tests on Util...\n")
     run_test("test_split_lines", *test_split_lines)
-    run_test("test_int_to_str", *test_int_to_str)
+    //run_test("test_int_to_str", *test_int_to_str)
     run_test("test_find_substr", *test_find_substr)
     run_test("test_replace_all", *test_replace_all)
 }
 
-def allocate_int(a: int) -> *int {
-    var i = allocate(int)
-    @i = a
-    return i
-}
-
+// TODO these tests don't nearly cover all cases
 def test_map_simple {
-    let m = map::make()
-    map::put(m, "foo", allocate_int(20))
-    map::put(m, "bar", allocate_int(50))
+    let m = map::make(int)
+    m["foo"] = 20
+    m["bar"] = 50
 
     tassert(map::size(m) == 2)
-    var val = map::get(m, "foo") !*int
-    tassert(@val == 20)
-    val = map::get(m, "bar") !*int
-    tassert(@val == 50)
+    tassert(m["foo"] == 20)
+    tassert(m["bar"] == 50)
     
     map::remove(m, "foo")
     tassert(map::size(m) == 1)
-    tassert(map::get(m, "foo") == null)
+    tassert(not map::get(m, "foo").exists)
 }
 
 def test_map_collision {
-    let m = map::make()
-    map::put(m, "JUvEoj", allocate_int(20))
-    map::put(m, "JVVdoj", allocate_int(50))
+    let m = map::make(int)
+    m["JUvEoj"] = 20
+    m["JVVdoj"] = 50
 
     tassert(map::size(m) == 2)
-    var val = map::get(m, "JUvEoj") !*int
-    tassert(@val == 20)
-    val = map::get(m, "JVVdoj") !*int
-    tassert(@val == 50)
+    tassert(m["JUvEoj"] == 20)
+    tassert(m["JVVdoj"] == 50)
 
     map::remove(m, "JVVdoj")
     tassert(map::size(m) == 1)
-    tassert(map::get(m, "JVVdoj") == null)
+    tassert(not map::get(m, "JVVdoj").exists)
 }
 
 def test_map_resize {
-    let m = map::make_size(2)
-    map::put(m, "1", allocate_int(1))
-    map::put(m, "2", allocate_int(2))
-    map::put(m, "3", allocate_int(3))
-    map::put(m, "4", allocate_int(4))
+    let m = map::make(int, 2)
+    m["1"] = 1
+    m["2"] = 2
+    m["3"] = 3
+    m["4"] = 4
 
     tassert(map::size(m) == 4)
 
-    var val = map::get(m, "1") !*int
-    tassert(@val == 1)
-    val = map::get(m, "2") !*int
-    tassert(@val == 2)
-    val = map::get(m, "3") !*int
-    tassert(@val == 3)
-    val = map::get(m, "4") !*int
-    tassert(@val == 4)
+    tassert(m["1"] == 1)
+    tassert(m["2"] == 2)
+    tassert(m["3"] == 3)
+    tassert(m["4"] == 4)
 }
 
-def is_in(array: [string], key: string) -> bool {
+def is_in(array: &[&string], key: &string) -> bool {
     for var i in 0..array.size {
         let value = array[i]
         if value == key {
@@ -326,11 +298,11 @@ def is_in(array: [string], key: string) -> bool {
 }
 
 def test_map_keys {
-    let m = map::make()
-    map::put(m, "JUvEoj", allocate_int(20))
-    map::put(m, "JVVdoj", allocate_int(50))
-    map::put(m, "foo", allocate_int(0))
-    map::put(m, "bar", allocate_int(1))
+    let m = map::make(int)
+    m["JUvEoj"] = 20
+    m["JVVdoj"] = 50
+    m["foo"] = 0
+    m["bar"] = 1
 
     let keys = map::keys(m)
     tassert(keys.size == 4)
@@ -351,7 +323,7 @@ def test_map {
 export def run_test_suite {
     linux::mkdir("tmp".value, 0o777)
 
-    run_test("test_buffer", *test_buffer)
+    //run_test("test_buffer", *test_buffer) TODO Write a test for std
     run_test("test_vector", *test_vector)
 
     test_util()

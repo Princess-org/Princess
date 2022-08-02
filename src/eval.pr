@@ -1,6 +1,8 @@
-import buffer
+// TODO Eval is slow, and it would be much faster if we didn't serialize value back and forth
+
 import vector
 import map
+import set as _set  // TODO Rename the function!
 import util
 import compiler
 import typechecking
@@ -14,77 +16,72 @@ import preload
 import ffi
 
 export type StackFrame = struct {
-    next: *compiler::Block
-    jump_table: *map::Map
-    locals: *map::Map
-    function_name: string
+    next: &compiler::Block
+    jump_table: &SMap(&compiler::Block)
+    locals: &SMap(*)
+    function_name: &string
     line: int
     ret: compiler::Value
 }
 
+export def destruct(frame: *StackFrame) {
+    let keys = frame.locals.keys
+    for var i in 0..keys.size {
+        free(frame.locals[keys[i]])
+    }
+}
+
 export type State = struct {
-    cstate: *compiler::State
+    temp_counter: int
+    cstate: &compiler::State
     // Vector of StackFrame
-    stack: *vector::Vector
+    stack: &Vector(&StackFrame)
 }
 
 export type FunctionPtr = struct {
     is_fp: bool
     struct #union {
         fp: ->
-        function: *compiler::Function
+        function: &compiler::Function
     }
 }
 
-export def push_stack_frame(stack_frame: *StackFrame, state: *State) {
-    vector::push(state.stack, stack_frame)
+export def push_stack_frame(stack_frame: &StackFrame, state: &State) {
+    state.stack.push(stack_frame)
 }
 
-export def pop_stack_frame(state: *State) {
-    let stack_frame = vector::pop(state.stack) !*StackFrame
-    free(stack_frame.jump_table.entries.value)
-    free(stack_frame.jump_table)
-
-    let locals = stack_frame.locals
-    for var i in 0..locals.entries.size {
-        let entry = locals.entries[i]
-        if entry {
-            free(entry.value)
-        }
-    }
-    free(locals.entries.value)
-    free(locals)
+export def pop_stack_frame(state: &State) {
+    vector::pop(state.stack)
 }
 
-export def get_stack_frame(state: *State) -> *StackFrame {
-    return vector::peek(state.stack) !*StackFrame
+export def get_stack_frame(state: &State) -> &StackFrame {
+    return vector::peek(state.stack)
 }
 
-def print_stack_trace(state: *State) {
+def print_stack_trace(state: &State) {
     for var i in 0..vector::length(state.stack) {
-        let frame = vector::get(state.stack, vector::length(state.stack) - 1 - i) !*StackFrame
+        let frame = state.stack[vector::length(state.stack) - 1 - i]
         print(frame.function_name, ":", frame.line, "\n")
     }
 }
 
-export def make_stack_frame(block: *compiler::Block, name: string, line: int) -> *StackFrame {
-    let stack_frame = allocate(StackFrame)
-    @stack_frame = {
-        locals = map::make(),
+export def make_stack_frame(block: &compiler::Block, name: &string, line: int) -> &StackFrame {
+    let stack_frame = {
+        locals = map::make(type *),
         function_name = name,
         line = line,
-        jump_table = map::make()
-    } !StackFrame
+        jump_table = map::make(type &compiler::Block)
+    } !&StackFrame
 
     while block {
-        map::put(stack_frame.jump_table, block.label_, block)
+        stack_frame.jump_table[block.label_] = block
         block = block.next
     }
 
     return stack_frame
 }
 
-export def get(mem: *, tpe: *typechecking::Type) -> compiler::Value {
+export def get(mem: *, tpe: &typechecking::Type) -> compiler::Value {
     if not mem { return NO_VALUE }
     switch tpe.kind !int {
         case typechecking::TypeKind::WORD, typechecking::TypeKind::CHAR:
@@ -116,21 +113,21 @@ export def get(mem: *, tpe: *typechecking::Type) -> compiler::Value {
             return { kind = compiler::ValueKind::BOOL, tpe = tpe, i = (@(mem !*bool)) !int64 } !compiler::Value
         case typechecking::TypeKind::POINTER:
             return { kind = compiler::ValueKind::POINTER, tpe = tpe, i = @(mem !*int64) } !compiler::Value
-        case typechecking::TypeKind::REFERENCE:
-            let values = allocate(compiler::Value, 3)
+        case typechecking::TypeKind::REFERENCE, typechecking::TypeKind::WEAK_REF:
+            let values = allocate_ref(compiler::Value, 3)
             values[0] = { kind = compiler::ValueKind::POINTER, tpe = typechecking::pointer(builtins::size_t_), i = @(mem !*int64) } !compiler::Value
             values[1] = { kind = compiler::ValueKind::POINTER, tpe = typechecking::pointer(tpe.tpe), i = @((mem ++ (size_of type *)) !*int64) } !compiler::Value
             values[2] = { kind = compiler::ValueKind::POINTER, tpe = typechecking::pointer(builtins::Type_), i = @((mem ++ (size_of type *) * 2) !*int64) } !compiler::Value
             return { kind = compiler::ValueKind::STRUCT, tpe = tpe, values = values } !compiler::Value
         case typechecking::TypeKind::UNION:
-            let values = allocate(compiler::Value, 1)
-            values[0] = get(mem, (vector::get(tpe.field_types, 0) !*typechecking::TypeMember).tpe)
+            let values = allocate_ref(compiler::Value, 1)
+            values[0] = get(mem, (tpe.field_types[0]).tpe)
             return { kind = compiler::ValueKind::STRUCT, tpe = tpe, values = values } !compiler::Value
         case typechecking::TypeKind::STRUCT:
             let len = vector::length(tpe.field_types)
-            let values = allocate(compiler::Value, len)
+            let values = allocate_ref(compiler::Value, len)
             for var i in 0..len {
-                let type_member = vector::get(tpe.field_types, i) !*typechecking::TypeMember
+                let type_member = tpe.field_types[i]
                 values[i] = get(mem ++ type_member.offset, type_member.tpe)
             }
             return { kind = compiler::ValueKind::STRUCT, tpe = tpe, values = values } !compiler::Value
@@ -140,7 +137,7 @@ export def get(mem: *, tpe: *typechecking::Type) -> compiler::Value {
                 memcopy(mem, str.value, tpe.size)
                 return { kind = compiler::ValueKind::STRING, tpe = tpe, s = str } !compiler::Value
             } else {
-                let values = allocate(compiler::Value, tpe.size / tpe.tpe.size)
+                let values = allocate_ref(compiler::Value, tpe.size / tpe.tpe.size)
                 for var i in 0..values.size {
                     values[i] = get(mem, tpe.tpe)
                     mem = mem ++ tpe.tpe.size
@@ -148,7 +145,7 @@ export def get(mem: *, tpe: *typechecking::Type) -> compiler::Value {
                 return { kind = compiler::ValueKind::ARRAY, tpe = tpe, values = values } !compiler::Value
             }
         case typechecking::TypeKind::ARRAY:
-            let values = allocate(compiler::Value, 2)
+            let values = allocate_ref(compiler::Value, 2)
             values[0] = { kind = compiler::ValueKind::INT, tpe = builtins::size_t_, i = @(mem !*int64) } !compiler::Value
             values[1] = { kind = compiler::ValueKind::POINTER, tpe = typechecking::pointer(tpe.tpe), i = @((mem ++ (size_of size_t)) !*int64) } !compiler::Value
             return { kind = compiler::ValueKind::STRUCT, tpe = tpe, values = values } !compiler::Value
@@ -162,32 +159,32 @@ export def get(mem: *, tpe: *typechecking::Type) -> compiler::Value {
     }
 }
 
-export def get_address(loc: compiler::Value, state: *State) -> * {
+export def get_address(loc: compiler::Value, state: &State) -> * {
     if loc.kind == compiler::ValueKind::LOCAL {
-        let mem = map::get(get_stack_frame(state).locals, loc.name)
+        let mem = get_stack_frame(state).locals.get_or_default(loc.name, null)
         return mem
     } else if loc.kind == compiler::ValueKind::GLOBAL {
         assert(typechecking::is_pointer(loc.tpe))
-        var mem = map::get(state.cstate.globals, loc.name)
+        var mem = state.cstate.globals.get_or_default(loc.name, null)
         if not mem {
             var ptr: *
 
-            var function = map::get(state.cstate.module.result.functions, loc.name) !*compiler::Function
+            var function = state.cstate.module.result.functions.get_or_default(loc.name, null)
             if not function {
-                function = map::get(consteval::const_module.result.functions, loc.name) !*compiler::Function
+                function = consteval::const_module.result.functions.get_or_default(loc.name, null)
             }
             if function {
                 ptr = zero_allocate(FunctionPtr)
                 (ptr !*FunctionPtr).function = function
                 //set(ptr, loc.tpe.tpe, { kind = compiler::ValueKind::FUNCTION, tpe = loc.tpe.tpe, function = (ptr !*FunctionPtr) } !compiler::Value)
             } else {
-                let ffi_global = map::get(preload::FFI_GLOBALS, loc.name) !*preload::FfiGlobal
+                let ffi_global = preload::FFI_GLOBALS.get_or_default(loc.name, null)
                 if ffi_global {
                     ptr = ffi_global.ptr
                 } else {
-                    var global = map::get(state.cstate.module.result.globals, loc.name) !*compiler::Global
+                    var global = state.cstate.module.result.globals.get_or_default(loc.name, null)
                     if not global {
-                        global = map::get(consteval::const_module.result.globals, loc.name) !*compiler::Global
+                        global = consteval::const_module.result.globals.get_or_default(loc.name, null)
                     }
                     if not global {
                         errors::errorv("Global by the name of `", loc.name, "` not found")
@@ -201,17 +198,20 @@ export def get_address(loc: compiler::Value, state: *State) -> * {
                 }
             }
 
+            // TODO Use something like a linear allocator to store these
+            state.cstate.globals[compiler::make_global_name("__eval_tmp", state.cstate)] = ptr
+
             mem = allocate(loc.tpe.size)
             let value = { kind = compiler::ValueKind::POINTER, tpe = loc.tpe, i = ptr !int64 } !compiler::Value
             set(mem, loc.tpe, value)
-            map::put(state.cstate.globals, loc.name, mem)
+            state.cstate.globals[loc.name] = mem
         }
         return mem
     }
     return null
 }
 
-export def get_value(loc: compiler::Value, state: *State) -> compiler::Value {
+export def get_value(loc: compiler::Value, state: &State) -> compiler::Value {
     if loc.kind == compiler::ValueKind::LOCAL or loc.kind == compiler::ValueKind::GLOBAL {
         let mem = get_address(loc, state)
         return get(mem, loc.tpe)
@@ -220,7 +220,7 @@ export def get_value(loc: compiler::Value, state: *State) -> compiler::Value {
     }
 }
 
-def set(mem: *, tpe: *typechecking::Type, value: compiler::Value) {
+def set(mem: *, tpe: &typechecking::Type, value: compiler::Value) {
     if not mem { 
         errors::errorv("Tried to assign a null pointer")
         return
@@ -248,7 +248,7 @@ def set(mem: *, tpe: *typechecking::Type, value: compiler::Value) {
             }
         case typechecking::TypeKind::POINTER:
             (@(mem !*int64)) = value.i
-        case typechecking::TypeKind::REFERENCE:
+        case typechecking::TypeKind::REFERENCE, typechecking::TypeKind::WEAK_REF:
             @(mem !*int64) = value.values[0].i
             @((mem ++ (size_of type *)) !*int64) = value.values[1].i
             @((mem ++ (size_of type *) * 2) !*int64) = value.values[2].i
@@ -256,7 +256,7 @@ def set(mem: *, tpe: *typechecking::Type, value: compiler::Value) {
             (@(mem !*int8)) = value.i !int8
         case typechecking::TypeKind::STRUCT:
             for var i in 0..vector::length(tpe.field_types) {
-                let type_member = vector::get(tpe.field_types, i) !*typechecking::TypeMember
+                let type_member = tpe.field_types[i]
                 set(mem ++ type_member.offset, type_member.tpe, value.values[i])
             }
         case typechecking::TypeKind::UNION:
@@ -286,21 +286,21 @@ def set(mem: *, tpe: *typechecking::Type, value: compiler::Value) {
     }
 }
 
-export def set_value(loc: compiler::Value, value: compiler::Value, state: *State) {
+export def set_value(loc: compiler::Value, value: compiler::Value, state: &State) {
     if loc.kind == compiler::ValueKind::LOCAL {
-        var mem = map::get(get_stack_frame(state).locals, loc.name)
+        var mem = get_stack_frame(state).locals.get_or_default(loc.name, null)
         if not mem {
             // TODO This shouldn't need to be initialized, we seem to have a bug elsewhere
             mem = zero_allocate(loc.tpe.size)
-            map::put(get_stack_frame(state).locals, loc.name, mem)
+            get_stack_frame(state).locals[loc.name] = mem
         }
         set(mem, loc.tpe, value)
     } else if loc.kind == compiler::ValueKind::GLOBAL {
-        var mem = map::get(state.cstate.globals, loc.name)
+        var mem = state.cstate.globals.get_or_default(loc.name, null)
         var ptr: * = null
         if not mem {
             mem = allocate(loc.tpe.size)
-            map::put(state.cstate.globals, loc.name, mem)
+            state.cstate.globals[loc.name] = mem
             ptr = allocate(loc.tpe.tpe.size)
             set(mem, loc.tpe, { kind = compiler::ValueKind::POINTER, tpe = loc.tpe, i = ptr !int64 } !compiler::Value)
         } else {
@@ -315,24 +315,24 @@ export def set_value(loc: compiler::Value, value: compiler::Value, state: *State
 def unwrap_undef(value: compiler::Value) -> compiler::Value {
     if value.kind == compiler::ValueKind::UNDEF {
         if value.tpe.kind == typechecking::TypeKind::STRUCT {
-            let values = allocate(compiler::Value, value.tpe.fields.size)
+            let values = allocate_ref(compiler::Value, value.tpe.fields.size)
             for var i in 0..value.tpe.fields.size {
                 let field = value.tpe.fields[i]
                 values[i] = unwrap_undef({ kind = compiler::ValueKind::UNDEF, tpe = field.tpe } !compiler::Value)
             }
             value = { kind = compiler::ValueKind::STRUCT, tpe = value.tpe, values = values } !compiler::Value
         } else if value.tpe.kind == typechecking::TypeKind::UNION {
-            let values = allocate(compiler::Value, 1)
-            let type_member = vector::get(value.tpe.field_types, 0) !*typechecking::TypeMember
+            let values = allocate_ref(compiler::Value, 1)
+            let type_member = value.tpe.field_types[0]
             values[0] = unwrap_undef({ kind = compiler::ValueKind::UNDEF, tpe = type_member.tpe } !compiler::Value)
             value = { kind = compiler::ValueKind::STRUCT, tpe = value.tpe, values = values } !compiler::Value
         } else if value.tpe.kind == typechecking::TypeKind::ARRAY {
-            let values = allocate(compiler::Value, 2)
+            let values = allocate_ref(compiler::Value, 2)
             values[0] = { kind = compiler::ValueKind::UNDEF, tpe = builtins::size_t_ } !compiler::Value
             values[1] = { kind = compiler::ValueKind::UNDEF, tpe = typechecking::pointer(value.tpe.tpe) } !compiler::Value
             value = { kind = compiler::ValueKind::ARRAY, tpe = value.tpe, values = values } !compiler::Value
-        } else if value.tpe.kind == typechecking::TypeKind::REFERENCE {
-            let values = allocate(compiler::Value, 3)
+        } else if value.tpe.kind == typechecking::TypeKind::REFERENCE or value.tpe.kind == typechecking::TypeKind::WEAK_REF {
+            let values = allocate_ref(compiler::Value, 3)
             values[0] = { kind = compiler::ValueKind::UNDEF, tpe = typechecking::pointer(builtins::size_t_) } !compiler::Value
             values[1] = { kind = compiler::ValueKind::UNDEF, tpe = typechecking::pointer(value.tpe.tpe) } !compiler::Value
             values[2] = { kind = compiler::ValueKind::UNDEF, tpe = typechecking::pointer(builtins::Type_) } !compiler::Value
@@ -342,7 +342,7 @@ def unwrap_undef(value: compiler::Value) -> compiler::Value {
     return value
 }
 
-def eval_InsertValue(insn: *compiler::Insn, state: *State) {
+def eval_InsertValue(insn: &compiler::Insn, state: &State) {
     // We need a deep copy here because we don't want to modify the operand,
     // if we didn't do this, the operation would fail when executed multiple times
     let value = unwrap_undef(compiler::copy(get_value(insn.value.insert_value.value, state)))
@@ -355,6 +355,7 @@ def eval_InsertValue(insn: *compiler::Insn, state: *State) {
         let j = index[i]
         if typechecking::is_struct(to_set.tpe) or 
             to_set.tpe.kind == typechecking::TypeKind::REFERENCE or 
+            to_set.tpe.kind == typechecking::TypeKind::WEAK_REF or
             to_set.tpe.kind == typechecking::TypeKind::ARRAY {
             
             to_set = *to_set.values[j]
@@ -373,7 +374,7 @@ def eval_InsertValue(insn: *compiler::Insn, state: *State) {
     set_value(ret, value, state)
 }
 
-def eval_ExtractValue(insn: *compiler::Insn, state: *State) {
+def eval_ExtractValue(insn: &compiler::Insn, state: &State) {
     let value = get_value(insn.value.extract_value.value, state)
     let ret = insn.value.extract_value.ret
     let index = insn.value.extract_value.index
@@ -383,7 +384,8 @@ def eval_ExtractValue(insn: *compiler::Insn, state: *State) {
         let j = index[i]
         if typechecking::is_struct(to_get.tpe) or 
             to_get.tpe.kind == typechecking::TypeKind::ARRAY or
-            to_get.tpe.kind == typechecking::TypeKind::REFERENCE {
+            to_get.tpe.kind == typechecking::TypeKind::REFERENCE or 
+            to_get.tpe.kind == typechecking::TypeKind::WEAK_REF {
             
             to_get = to_get.values[j]
         } else if to_get.tpe.kind == typechecking::TypeKind::STATIC_ARRAY {
@@ -400,7 +402,7 @@ def eval_ExtractValue(insn: *compiler::Insn, state: *State) {
     set_value(ret, to_get, state)
 }
 
-def eval_GetElementPtr(insn: *compiler::Insn, state: *State) {
+def eval_GetElementPtr(insn: &compiler::Insn, state: &State) {
     let ret = insn.value.gep.ret
     let value = insn.value.gep.value
     let index = insn.value.gep.index
@@ -413,7 +415,7 @@ def eval_GetElementPtr(insn: *compiler::Insn, state: *State) {
         if tpe.kind == typechecking::TypeKind::STRUCT {
             let len = vector::length(tpe.field_types)
             assert(index < len)
-            let type_member = vector::get(tpe.field_types, index) !*typechecking::TypeMember
+            let type_member = tpe.field_types[index]
             addr = addr ++ type_member.offset
             tpe = type_member.tpe
         } else if tpe.kind == typechecking::TypeKind::UNION {
@@ -449,11 +451,11 @@ def eval_GetElementPtr(insn: *compiler::Insn, state: *State) {
     }
 
     //assert(ret.kind == compiler::ValueKind::LOCAL)
-    //map::put(get_stack_frame(state).locals, ret.name, addr)
+    //get_stack_frame(state).locals[ret.name] = addr
     set_value(ret, { kind = compiler::ValueKind::POINTER, tpe = typechecking::pointer(tpe), i = addr !int64 } !compiler::Value, state)
 }
 
-def eval_Convert(insn: *compiler::Insn, state: *State) {
+def eval_Convert(insn: &compiler::Insn, state: &State) {
     // This is basically a noop
     let ret = insn.value.convert.ret
     let value = get_value(insn.value.convert.value, state)
@@ -461,7 +463,7 @@ def eval_Convert(insn: *compiler::Insn, state: *State) {
 }
 
 // TODO These functions should be made faster by directly working with the memory
-def eval_Load(insn: *compiler::Insn, state: *State) {
+def eval_Load(insn: &compiler::Insn, state: &State) {
     let loc = insn.value.load.loc
     let mem = get_address(loc, state)
     let ptr = get(mem, loc.tpe).i !*
@@ -469,7 +471,7 @@ def eval_Load(insn: *compiler::Insn, state: *State) {
     set_value(insn.value.load.value, value, state)
 }
 
-def eval_Store(insn: *compiler::Insn, state: *State) {
+def eval_Store(insn: &compiler::Insn, state: &State) {
     let loc = insn.value.store.loc
     let mem = get_address(loc, state)
     let ptr = get(mem, loc.tpe).i !*
@@ -477,17 +479,22 @@ def eval_Store(insn: *compiler::Insn, state: *State) {
     set(ptr, value.tpe, value)
 }
 
-def eval_Alloca(insn: *compiler::Insn, state: *State) {
+def eval_Alloca(insn: &compiler::Insn, state: &State) {
+    let frame = get_stack_frame(state)
     let ret = insn.value.alloca.ret
-    let mem = zero_allocate(ret.tpe.size) // TODO: We shouldn't have to initalize this
+
+    let mem = zero_allocate(ret.tpe.size) // TODO: We shouldn't have to initialize this
+    frame.locals["__eval_tmp::" + to_string(state.temp_counter)] = mem // TODO again use a linear allocator
+    state.temp_counter += 1
+
     ret.tpe = typechecking::pointer(ret.tpe)
     let ptr = { kind = compiler::ValueKind::POINTER, tpe = ret.tpe, i = mem !int64 } !compiler::Value
     let addr = allocate(ret.tpe.size)
-    map::put(get_stack_frame(state).locals, ret.name, addr)
+    frame.locals[ret.name] = addr
     set(addr, ret.tpe, ptr)
 }
 
-def eval_FAdd(insn: *compiler::Insn, state: *State) {
+def eval_FAdd(insn: &compiler::Insn, state: &State) {
     let left = get_value(insn.value.arith.left, state)
     let right = get_value(insn.value.arith.right, state)
     let ret = insn.value.arith.ret 
@@ -496,7 +503,7 @@ def eval_FAdd(insn: *compiler::Insn, state: *State) {
     set_value(ret, { kind = ValueKind::FLOAT, tpe = ret.tpe, f = result } !compiler::Value, state)
 }
 
-def eval_FSub(insn: *compiler::Insn, state: *State) {
+def eval_FSub(insn: &compiler::Insn, state: &State) {
     let left = get_value(insn.value.arith.left, state)
     let right = get_value(insn.value.arith.right, state)
     let ret = insn.value.arith.ret 
@@ -505,7 +512,7 @@ def eval_FSub(insn: *compiler::Insn, state: *State) {
     set_value(ret, { kind = ValueKind::FLOAT, tpe = ret.tpe, f = result } !compiler::Value, state)
 }
 
-def eval_FMul(insn: *compiler::Insn, state: *State) {
+def eval_FMul(insn: &compiler::Insn, state: &State) {
     let left = get_value(insn.value.arith.left, state)
     let right = get_value(insn.value.arith.right, state)
     let ret = insn.value.arith.ret 
@@ -514,7 +521,7 @@ def eval_FMul(insn: *compiler::Insn, state: *State) {
     set_value(ret, { kind = ValueKind::FLOAT, tpe = ret.tpe, f = result } !compiler::Value, state)
 }
 
-def eval_FRem(insn: *compiler::Insn, state: *State) {
+def eval_FRem(insn: &compiler::Insn, state: &State) {
     let left = get_value(insn.value.arith.left, state)
     let right = get_value(insn.value.arith.right, state)
     let ret = insn.value.arith.ret 
@@ -523,7 +530,7 @@ def eval_FRem(insn: *compiler::Insn, state: *State) {
     set_value(ret, { kind = ValueKind::FLOAT, tpe = ret.tpe, f = result } !compiler::Value, state)
 }
 
-def eval_FDiv(insn: *compiler::Insn, state: *State) {
+def eval_FDiv(insn: &compiler::Insn, state: &State) {
     let left = get_value(insn.value.arith.left, state)
     let right = get_value(insn.value.arith.right, state)
     let ret = insn.value.arith.ret 
@@ -532,7 +539,7 @@ def eval_FDiv(insn: *compiler::Insn, state: *State) {
     set_value(ret, { kind = ValueKind::FLOAT, tpe = ret.tpe, f = result } !compiler::Value, state)
 }
 
-def eval_FNeg(insn: *compiler::Insn, state: *State) {
+def eval_FNeg(insn: &compiler::Insn, state: &State) {
     let value = get_value(insn.value.fneg.value, state)
     let ret = insn.value.fneg.ret 
 
@@ -540,7 +547,7 @@ def eval_FNeg(insn: *compiler::Insn, state: *State) {
     set_value(ret, { kind = ValueKind::FLOAT, tpe = ret.tpe, f = result } !compiler::Value, state)
 }
 
-def eval_SRem(insn: *compiler::Insn, state: *State) {
+def eval_SRem(insn: &compiler::Insn, state: &State) {
     let left = get_value(insn.value.arith.left, state)
     let right = get_value(insn.value.arith.right, state)
     let ret = insn.value.arith.ret
@@ -549,7 +556,7 @@ def eval_SRem(insn: *compiler::Insn, state: *State) {
     set_value(ret, { kind = ValueKind::INT, tpe = ret.tpe, i = result } !compiler::Value, state)
 }
 
-def eval_URem(insn: *compiler::Insn, state: *State) {
+def eval_URem(insn: &compiler::Insn, state: &State) {
     let left = get_value(insn.value.arith.left, state)
     let right = get_value(insn.value.arith.right, state)
     let ret = insn.value.arith.ret
@@ -558,7 +565,7 @@ def eval_URem(insn: *compiler::Insn, state: *State) {
     set_value(ret, { kind = ValueKind::INT, tpe = ret.tpe, i = result } !compiler::Value, state)
 }
 
-def eval_Add(insn: *compiler::Insn, state: *State) {
+def eval_Add(insn: &compiler::Insn, state: &State) {
     let left = get_value(insn.value.arith.left, state)
     let right = get_value(insn.value.arith.right, state)
     let ret = insn.value.arith.ret
@@ -567,7 +574,7 @@ def eval_Add(insn: *compiler::Insn, state: *State) {
     set_value(ret, { kind = ValueKind::INT, tpe = ret.tpe, i = result } !compiler::Value, state)
 }
 
-def eval_Sub(insn: *compiler::Insn, state: *State) {
+def eval_Sub(insn: &compiler::Insn, state: &State) {
     let left = get_value(insn.value.arith.left, state)
     let right = get_value(insn.value.arith.right, state)
     let ret = insn.value.arith.ret
@@ -576,7 +583,7 @@ def eval_Sub(insn: *compiler::Insn, state: *State) {
     set_value(ret, { kind = ValueKind::INT, tpe = ret.tpe, i = result } !compiler::Value, state)
 }
 
-def eval_AShr(insn: *compiler::Insn, state: *State) {
+def eval_AShr(insn: &compiler::Insn, state: &State) {
     let left = get_value(insn.value.arith.left, state)
     let right = get_value(insn.value.arith.right, state)
     let ret = insn.value.arith.ret
@@ -585,7 +592,7 @@ def eval_AShr(insn: *compiler::Insn, state: *State) {
     set_value(ret, { kind = ValueKind::INT, tpe = ret.tpe, i = result } !compiler::Value, state)
 }
 
-def eval_LShr(insn: *compiler::Insn, state: *State) {
+def eval_LShr(insn: &compiler::Insn, state: &State) {
     let left = get_value(insn.value.arith.left, state)
     let right = get_value(insn.value.arith.right, state)
     let ret = insn.value.arith.ret
@@ -594,7 +601,7 @@ def eval_LShr(insn: *compiler::Insn, state: *State) {
     set_value(ret, { kind = ValueKind::INT, tpe = ret.tpe, i = result } !compiler::Value, state)
 }
 
-def eval_Shl(insn: *compiler::Insn, state: *State) {
+def eval_Shl(insn: &compiler::Insn, state: &State) {
     let left = get_value(insn.value.arith.left, state)
     let right = get_value(insn.value.arith.right, state)
     let ret = insn.value.arith.ret
@@ -603,7 +610,7 @@ def eval_Shl(insn: *compiler::Insn, state: *State) {
     set_value(ret, { kind = ValueKind::INT, tpe = ret.tpe, i = result } !compiler::Value, state)
 }
 
-def eval_And(insn: *compiler::Insn, state: *State) {
+def eval_And(insn: &compiler::Insn, state: &State) {
     let left = get_value(insn.value.arith.left, state)
     let right = get_value(insn.value.arith.right, state)
     let ret = insn.value.arith.ret
@@ -612,7 +619,7 @@ def eval_And(insn: *compiler::Insn, state: *State) {
     set_value(ret, { kind = ValueKind::INT, tpe = ret.tpe, i = result } !compiler::Value, state)
 }
 
-def eval_Or(insn: *compiler::Insn, state: *State) {
+def eval_Or(insn: &compiler::Insn, state: &State) {
     let left = get_value(insn.value.arith.left, state)
     let right = get_value(insn.value.arith.right, state)
     let ret = insn.value.arith.ret
@@ -621,7 +628,7 @@ def eval_Or(insn: *compiler::Insn, state: *State) {
     set_value(ret, { kind = ValueKind::INT, tpe = ret.tpe, i = result } !compiler::Value, state)
 }
 
-def eval_XOr(insn: *compiler::Insn, state: *State) {
+def eval_XOr(insn: &compiler::Insn, state: &State) {
     let left = get_value(insn.value.arith.left, state)
     let right = get_value(insn.value.arith.right, state)
     let ret = insn.value.arith.ret
@@ -631,7 +638,7 @@ def eval_XOr(insn: *compiler::Insn, state: *State) {
 }
 
 
-def eval_Mul(insn: *compiler::Insn, state: *State) {
+def eval_Mul(insn: &compiler::Insn, state: &State) {
     let left = get_value(insn.value.arith.left, state)
     let right = get_value(insn.value.arith.right, state)
     let ret = insn.value.arith.ret
@@ -640,7 +647,7 @@ def eval_Mul(insn: *compiler::Insn, state: *State) {
     set_value(ret, { kind = ValueKind::INT, tpe = ret.tpe, i = result } !compiler::Value, state)
 }
 
-def eval_SDiv(insn: *compiler::Insn, state: *State) {
+def eval_SDiv(insn: &compiler::Insn, state: &State) {
     let left = get_value(insn.value.arith.left, state)
     let right = get_value(insn.value.arith.right, state)
     let ret = insn.value.arith.ret
@@ -649,7 +656,7 @@ def eval_SDiv(insn: *compiler::Insn, state: *State) {
     set_value(ret, { kind = ValueKind::INT, tpe = ret.tpe, i = result } !compiler::Value, state)
 }
 
-def eval_UDiv(insn: *compiler::Insn, state: *State) {
+def eval_UDiv(insn: &compiler::Insn, state: &State) {
     let left = get_value(insn.value.arith.left, state)
     let right = get_value(insn.value.arith.right, state)
     let ret = insn.value.arith.ret
@@ -658,7 +665,7 @@ def eval_UDiv(insn: *compiler::Insn, state: *State) {
     set_value(ret, { kind = ValueKind::INT, tpe = ret.tpe, i = result } !compiler::Value, state)
 }
 
-def eval_ICmp(insn: *compiler::Insn, state: *State) {
+def eval_ICmp(insn: &compiler::Insn, state: &State) {
     let left = get_value(insn.value.icmp.left, state)
     let right = get_value(insn.value.icmp.right, state)
     let ret = insn.value.icmp.ret
@@ -692,7 +699,7 @@ def eval_ICmp(insn: *compiler::Insn, state: *State) {
     set_value(ret, { kind = ValueKind::BOOL, tpe = ret.tpe, i = result !int64 } !compiler::Value, state)
 }
 
-def eval_FCmp(insn: *compiler::Insn, state: *State) {
+def eval_FCmp(insn: &compiler::Insn, state: &State) {
     let left = get_value(insn.value.fcmp.left, state)
     let right = get_value(insn.value.fcmp.right, state)
     let ret = insn.value.fcmp.ret
@@ -719,17 +726,17 @@ def eval_FCmp(insn: *compiler::Insn, state: *State) {
 }
 
 // TODO
-def struct_to_ffi(tpe: *typechecking::Type) -> *ffi::ffi_type {
+def struct_to_ffi(tpe: &typechecking::Type) -> *ffi::ffi_type {
     assert(false)
     return null
 }
 
-def union_to_ffi(tpe: *typechecking::Type) -> *ffi::ffi_type {
+def union_to_ffi(tpe: &typechecking::Type) -> *ffi::ffi_type {
     assert(false)
     return null
 }
 
-def type_to_ffi(tpe: *typechecking::Type, varargs: bool = false) -> *ffi::ffi_type {
+def type_to_ffi(tpe: &typechecking::Type, varargs: bool = false) -> *ffi::ffi_type {
     if not tpe {
         return *ffi::ffi_type_void
     } else if tpe.kind == typechecking::TypeKind::STRUCT {
@@ -771,7 +778,7 @@ def type_to_ffi(tpe: *typechecking::Type, varargs: bool = false) -> *ffi::ffi_ty
 }
 
 // ARGH C Why
-def promote(tpe: *typechecking::Type) -> *typechecking::Type {
+def promote(tpe: &typechecking::Type) -> &typechecking::Type {
     if typechecking::equals(tpe, builtins::float_) { return builtins::double_ }
     if (tpe.kind == typechecking::TypeKind::WORD or tpe.kind == typechecking::TypeKind::CHAR) and tpe.size < builtins::int_.size {
         if tpe.unsig { return builtins::uint_ }
@@ -780,7 +787,7 @@ def promote(tpe: *typechecking::Type) -> *typechecking::Type {
     return tpe
 }
 
-def ffi_call(args: [compiler::Value], ret: compiler::Value, parameter_t: *vector::Vector, ret_tpe: *typechecking::Type, ffi_function: *preload::FfiFunction, varargs: bool, state: *State) {
+def ffi_call(args: &[compiler::Value], ret: compiler::Value, parameter_t: &Vector(typechecking::NamedParameter), ret_tpe: &typechecking::Type, ffi_function: &preload::FfiFunction, varargs: bool, state: &State) {
     let ffi_cif = *ffi_function.ffi_cif
 
     let ffi_args = allocate((size_of type *ffi::ffi_type) * args.size) !**ffi::ffi_type
@@ -826,7 +833,7 @@ def ffi_call(args: [compiler::Value], ret: compiler::Value, parameter_t: *vector
         }
         rvalue = allocate(size)
         // TODO This will fail for function pointers
-        map::put(get_stack_frame(state).locals, ret.name, rvalue)
+        get_stack_frame(state).locals[ret.name] = rvalue
     }
     
     ffi::ffi_call(ffi_cif, ffi_function.ptr, rvalue, avalues)
@@ -837,7 +844,7 @@ def ffi_call(args: [compiler::Value], ret: compiler::Value, parameter_t: *vector
     free(avalues)
 }
 
-def eval_Call(insn: *compiler::Insn, state: *State) {
+def eval_Call(insn: &compiler::Insn, state: &State) {
     let call = insn.value.call.name 
     let args = insn.value.call.args
     let ret = insn.value.call.ret
@@ -851,9 +858,9 @@ def eval_Call(insn: *compiler::Insn, state: *State) {
         fp = value.function
     } else if call.kind == compiler::ValueKind::GLOBAL {
         if starts_with(name, "llvm.") { return }
-        var function = map::get(state.cstate.module.result.functions, name) !*compiler::Function
+        var function = state.cstate.module.result.functions.get_or_default(name, null)
         if not function {
-            function = map::get(consteval::const_module.result.functions, name) !*compiler::Function
+            function = consteval::const_module.result.functions.get_or_default(name, null)
         }
         if function {
             let functionptr = { is_fp = false } !FunctionPtr
@@ -879,24 +886,24 @@ def eval_Call(insn: *compiler::Insn, state: *State) {
 
     if fp.is_fp {
         let ffi_function = {
-            name = name,
+            name = @name,
             ptr = fp.fp
-        } !preload::FfiFunction
+        } !&preload::FfiFunction
 
         var varargs = false
-        var ret_tpe: *typechecking::Type = null
+        var ret_tpe: &typechecking::Type = null
         if vector::length(call.tpe.return_t) >= 1 {
-            ret_tpe = vector::get(call.tpe.return_t, 0) !*typechecking::Type
+            ret_tpe = call.tpe.return_t[0]
         }
-        let last_arg = vector::peek(call.tpe.parameter_t) !*typechecking::NamedParameter
-        if last_arg {
+        if vector::length(call.tpe.parameter_t) > 0 {
+            let last_arg = vector::peek(call.tpe.parameter_t) 
             varargs = last_arg.varargs
         }
-        ffi_call(args, ret, call.tpe.parameter_t, ret_tpe, *ffi_function, varargs, state)
+        ffi_call(args, ret, call.tpe.parameter_t, ret_tpe, ffi_function, varargs, state)
     } else {
         let function = fp.function
         if function.imported {
-            let ffi_function = map::get(preload::FFI_FUNCTIONS, name) !*preload::FfiFunction
+            let ffi_function = preload::FFI_FUNCTIONS[name]
             
             ffi_call(args, ret, function.args, function.ret, ffi_function, function.varargs, state)
         } else {
@@ -906,7 +913,7 @@ def eval_Call(insn: *compiler::Insn, state: *State) {
             var line = 1
             if insn.debug {
                 // TODO This points to another file
-                let debug_value = map::get(function.module.result.metadata, insn.debug.name) !*compiler::Value
+                let debug_value = function.module.result.metadata.get_or_default(insn.debug.name, null)
                 if debug_value and debug_value.debug_values.value {
                     line = debug_value.debug_values[0].value.i !int 
                 }
@@ -916,15 +923,12 @@ def eval_Call(insn: *compiler::Insn, state: *State) {
 
             for var i in 0..args.size {
                 let arg = args[i]
-                let np = vector::get(function.args, i) !*typechecking::NamedParameter
+                let np = function.args[i]
                 let arg_value = get_value(arg, state)
                 let mem = allocate(arg.tpe.size)
-
-                let buf = buffer::make_buffer()
-                buffer::append_str(*buf, np.name)
-                buffer::append_str(*buf, ".value")
-                let name = buffer::to_string(*buf)
-                map::put(stack_frame.locals, name, mem)
+                
+                let name = np.name + ".value"
+                stack_frame.locals[name] = mem
                 set(mem, arg.tpe, arg_value)
             }
 
@@ -946,20 +950,20 @@ def eval_Call(insn: *compiler::Insn, state: *State) {
     
 }
 
-def eval_Ret(insn: *compiler::Insn, state: *State) {
+def eval_Ret(insn: &compiler::Insn, state: &State) {
     let ret = insn.value.ret.value
     let stack_frame = get_stack_frame(state)
     stack_frame.ret = get_value(ret, state)
     stack_frame.next = null
 }
 
-def eval_BrUnc(insn: *compiler::Insn, state: *State) {
+def eval_BrUnc(insn: &compiler::Insn, state: &State) {
     let label_ = insn.value.br_unc.label_
     let stack_frame = get_stack_frame(state)
-    stack_frame.next = map::get(stack_frame.jump_table, label_.name) !*compiler::Block
+    stack_frame.next = stack_frame.jump_table[label_.name]
 }
 
-def eval_Br(insn: *compiler::Insn, state: *State) {
+def eval_Br(insn: &compiler::Insn, state: &State) {
     let if_true = insn.value.br.if_true
     let if_false = insn.value.br.if_false
     
@@ -968,70 +972,70 @@ def eval_Br(insn: *compiler::Insn, state: *State) {
     
     let stack_frame = get_stack_frame(state)
     if cond.i {
-        stack_frame.next = map::get(stack_frame.jump_table, if_true.name) !*compiler::Block
+        stack_frame.next = stack_frame.jump_table[if_true.name]
     } else {
-        stack_frame.next = map::get(stack_frame.jump_table, if_false.name) !*compiler::Block
+        stack_frame.next = stack_frame.jump_table[if_false.name]
     }
 }
 
-def eval_Switch(insn: *compiler::Insn, state: *State) {
+def eval_Switch(insn: &compiler::Insn, state: &State) {
     let value = get_value(insn.value.switch_.value, state)
     let switch_values = insn.value.switch_.switch_values
     let otherwise = insn.value.switch_.otherwise
 
     let stack_frame = get_stack_frame(state)
     for var i in 0..vector::length(switch_values) {
-        let sw = vector::get(switch_values, i) !*SwitchValue
+        let sw = switch_values[i]
         if sw.value.i == value.i {
-            stack_frame.next = map::get(stack_frame.jump_table, sw.label_.name) !*compiler::Block
+            stack_frame.next = stack_frame.jump_table[sw.label_.name] 
             return
         }
     }
 
-    stack_frame.next = map::get(stack_frame.jump_table, otherwise.name) !*compiler::Block
+    stack_frame.next = stack_frame.jump_table[otherwise.name]
 }
 
-def eval_Fptoui(insn: *compiler::Insn, state: *State) {
+def eval_Fptoui(insn: &compiler::Insn, state: &State) {
     let ret = insn.value.convert.ret
     let value = get_value(insn.value.convert.value, state)
     let result = (value.f !uint64) !int64
     set_value(ret, { kind = ValueKind::INT, tpe = ret.tpe, i = result } !compiler::Value, state)
 }
 
-def eval_Fptosi(insn: *compiler::Insn, state: *State) {
+def eval_Fptosi(insn: &compiler::Insn, state: &State) {
     let ret = insn.value.convert.ret
     let value = get_value(insn.value.convert.value, state)
     let result = value.f !int64
     set_value(ret, { kind = ValueKind::INT, tpe = ret.tpe, i = result } !compiler::Value, state)
 }
 
-def eval_Uitofp(insn: *compiler::Insn, state: *State) {
+def eval_Uitofp(insn: &compiler::Insn, state: &State) {
     let ret = insn.value.convert.ret
     let value = get_value(insn.value.convert.value, state)
     let result = (value.i !uint64) !double
     set_value(ret, { kind = ValueKind::INT, tpe = ret.tpe, f = result } !compiler::Value, state)
 }
 
-def eval_Sitofp(insn: *compiler::Insn, state: *State) {
+def eval_Sitofp(insn: &compiler::Insn, state: &State) {
     let ret = insn.value.convert.ret
     let value = get_value(insn.value.convert.value, state)
     let result = value.i !double
     set_value(ret, { kind = ValueKind::INT, tpe = ret.tpe, f = result } !compiler::Value, state)
 }
 
-def eval_Ptrtoint(insn: *compiler::Insn, state: *State) {
+def eval_Ptrtoint(insn: &compiler::Insn, state: &State) {
     let ret = insn.value.convert.ret
     let value = get_value(insn.value.convert.value, state)
     set_value(ret, { kind = ValueKind::INT, tpe = ret.tpe, i = value.i } !compiler::Value, state) 
 }
 
-def eval_Inttoptr(insn: *compiler::Insn, state: *State) {
+def eval_Inttoptr(insn: &compiler::Insn, state: &State) {
     let ret = insn.value.convert.ret
     let value = get_value(insn.value.convert.value, state)
     set_value(ret, { kind = ValueKind::POINTER, tpe = ret.tpe, i = value.i } !compiler::Value, state) 
 }
 
-def eval_insn(insn: *compiler::Insn, state: *State) {
+def eval_insn(insn: &compiler::Insn, state: &State) {
     switch insn.kind !int {
         case compiler::InsnKind::INSERTVALUE:
             eval_InsertValue(insn, state)
@@ -1121,9 +1125,9 @@ def eval_insn(insn: *compiler::Insn, state: *State) {
     }
 }
 
-export def print_block(block: *compiler::Block) {
+export def print_block(block: &compiler::Block) {
     for var i in 0..vector::length(block.insn) {
-        let insn = vector::get(block.insn, i) !*compiler::Insn
+        let insn = block.insn[i]
         if insn.kind == compiler::InsnKind::LOAD {
             print(insn.kind, " ", insn.value.load.loc.name, "\n")
         } else if insn.kind == compiler::InsnKind::ALLOCA {
@@ -1137,16 +1141,16 @@ export def print_block(block: *compiler::Block) {
     print("\n")
 }
 
-def eval_block(block: *compiler::Block, state: *State) {
+def eval_block(block: &compiler::Block, state: &State) {
     let stack_frame = get_stack_frame(state)
     stack_frame.next = block.next
     for var i in 0..vector::length(block.insn) {
-        let insn = vector::get(block.insn, i) !*compiler::Insn
+        let insn = block.insn[i]
         eval_insn(insn, state)
     }
 }
 
-export def eval(block: *compiler::Block, state: *State) {
+export def eval(block: &compiler::Block, state: &State) {
     let stack_frame = get_stack_frame(state)
     while block {
         eval_block(block, state)
@@ -1157,7 +1161,7 @@ export def eval(block: *compiler::Block, state: *State) {
 // Turn pointers into their own constants
 // the first parameter is an out value, you need to pass true and it gets set to false if any of the 
 // sub expressions of value is not a constant (pointers and arrays)
-def serialize(is_constant: *bool, value: compiler::Value, global: *compiler::Global, index: *vector::Vector, module: *toolchain::Module, cstate: *compiler::State) -> compiler::Value {
+def serialize(is_constant: *bool, value: compiler::Value, global: &compiler::Global, index: &Vector(compiler::Value), module: &toolchain::Module, cstate: &compiler::State) -> compiler::Value {
     if value.kind == compiler::ValueKind::POINTER {
         @is_constant = false
 
@@ -1166,10 +1170,10 @@ def serialize(is_constant: *bool, value: compiler::Value, global: *compiler::Glo
             loc = compiler::make_local_value(typechecking::pointer(value.tpe), null, cstate)
 
             let gep = compiler::make_insn(compiler::InsnKind::GETELEMENTPTR)
-            let index_array = allocate(compiler::Value, vector::length(index) + 1)
+            let index_array = allocate_ref(compiler::Value, vector::length(index) + 1)
             index_array[0] = compiler::make_int_value(0)
             for var i in 0..vector::length(index) {
-                index_array[i + 1] = @(vector::get(index, i) !*compiler::Value)
+                index_array[i + 1] = index[i]
             }
             gep.value.gep = {
                 ret = loc,
@@ -1182,18 +1186,15 @@ def serialize(is_constant: *bool, value: compiler::Value, global: *compiler::Glo
             loc = { kind = compiler::ValueKind::GLOBAL, name = global.name, tpe = global.tpe } !compiler::Value
         }
 
-        let new_global = allocate(compiler::Global)
-        @new_global = {
+        let new_global = {
             private = true,
             name = compiler::make_global_name("const", cstate),
             tpe = value.tpe.tpe,
             line = -1
-        } !compiler::Global
-        map::put(module.result.globals, new_global.name, new_global)
-
-        let valuep = allocate(compiler::Value)
-        @valuep = serialize(is_constant, get(value.i !*, value.tpe.tpe), new_global, vector::make(), module, cstate)
-        new_global.value = valuep
+        } !&compiler::Global
+        module.result.globals[new_global.name] = new_global
+        
+        new_global.value = serialize(is_constant, get(value.i !*, value.tpe.tpe), new_global, vector::make(compiler::Value), module, cstate)
         
         let store = compiler::make_insn(compiler::InsnKind::STORE)
         store.value.store = {
@@ -1208,38 +1209,35 @@ def serialize(is_constant: *bool, value: compiler::Value, global: *compiler::Glo
 
         let length = value.values[0].i
         let ptr = value.values[1].i !*
-        let values = allocate(compiler::Value, length)
+        let values = allocate_ref(compiler::Value, length)
         let array_value = { kind = compiler::ValueKind::ARRAY, tpe = value.tpe, values = values } !compiler::Value
         
         let tpe = typechecking::make_type_raw(typechecking::TypeKind::STATIC_ARRAY)
-        tpe.tpe = builtins::char_
+        tpe._tpe = builtins::char_
         tpe.length = length
         tpe.size = tpe.length * value.tpe.tpe.size
         tpe.align = value.tpe.tpe.align
 
-        let new_global = allocate(compiler::Global)
-        @new_global = {
+        let new_global = {
             private = true,
             name = compiler::make_global_name("const", cstate),
             tpe = tpe,
             line = -1
-        } !compiler::Global
-        map::put(module.result.globals, new_global.name, new_global)
+        } !&compiler::Global
+        module.result.globals[new_global.name] = new_global
 
         for var i in 0..length {
-            let new_index = vector::make()
-            let indexp = allocate(compiler::Value)
-            @indexp = compiler::make_int_value(i)
-            vector::push(new_index, indexp)
+            let new_index = vector::make(compiler::Value)
+            new_index.push(compiler::make_int_value(i))
             values[i] = serialize(is_constant, get(ptr ++ value.tpe.tpe.size * i, value.tpe.tpe), new_global, new_index, module, cstate)
         }
 
         let loc = compiler::make_local_value(typechecking::pointer(typechecking::pointer(value.tpe.tpe)), null, cstate)
         let gep = compiler::make_insn(compiler::InsnKind::GETELEMENTPTR)
-        let index_array = allocate(compiler::Value, vector::length(index) + 2)
+        let index_array = allocate_ref(compiler::Value, vector::length(index) + 2)
         index_array[0] = compiler::make_int_value(0)
         for var i in 0..vector::length(index) {
-            index_array[i + 1] = @(vector::get(index, i) !*compiler::Value)
+            index_array[i + 1] = index[i]
         }
         index_array[vector::length(index) + 1] = compiler::make_int_value(1)
         gep.value.gep = {
@@ -1252,7 +1250,7 @@ def serialize(is_constant: *bool, value: compiler::Value, global: *compiler::Glo
 
         let gep2_ret = compiler::make_local_value(typechecking::pointer(value.tpe.tpe), null, cstate)
         let gep2 = compiler::make_insn(compiler::InsnKind::GETELEMENTPTR)
-        let index_array2 = allocate(compiler::Value, 2)
+        let index_array2 = allocate_ref(compiler::Value, 2)
         index_array2[0] = compiler::make_int_value(0)
         index_array2[1] = compiler::make_int_value(0)
         gep2.value.gep = {
@@ -1270,9 +1268,7 @@ def serialize(is_constant: *bool, value: compiler::Value, global: *compiler::Glo
         } !compiler::InsnStore
         compiler::push_insn(store, cstate)
 
-        let valuep = allocate(compiler::Value)
-        @valuep = array_value
-        new_global.value = valuep
+        new_global.value = array_value
 
         value.values[1].kind = compiler::ValueKind::UNDEF
         return value
@@ -1281,9 +1277,7 @@ def serialize(is_constant: *bool, value: compiler::Value, global: *compiler::Glo
         @is_constant = false
         for var i in 0..value.values.size {
             let new_index = vector::copy(index)
-            let indexp = allocate(compiler::Value)
-            @indexp = compiler::make_int_value(i)
-            vector::push(new_index, indexp)
+            new_index.push(compiler::make_int_value(i))
             value.values[i] = serialize(is_constant, value.values[i], global, new_index, module, cstate)
         }
         return value
@@ -1292,29 +1286,29 @@ def serialize(is_constant: *bool, value: compiler::Value, global: *compiler::Glo
     }
 }
 
-export def eval(cstate: *compiler::State) -> State {
+export def eval(cstate: &compiler::State) -> &State {
     var block = cstate.current_function.block
     vector::insert(block.insn, 0, cstate.current_function.allocas)
 
-    let stack_frame = make_stack_frame(block, "<inline>", 1)
-
     let state = {
         cstate = cstate,
-        stack = vector::make()
-    } !State
+        stack = vector::make(type &StackFrame)
+    } !&State
+    let stack_frame = make_stack_frame(block, "<inline>", 1)
 
-    vector::push(state.stack, stack_frame)
-
-    eval(block, *state)
+    push_stack_frame(stack_frame, state)
+    eval(block, state)
+    //pop_stack_frame(state)
 
     return state
 }
 
-export def serialize_value(key: string, module: *toolchain::Module, cstate: *compiler::State) -> *compiler::Global {
+export def serialize_value(key: &string, module: &toolchain::Module, cstate: &compiler::State) -> &compiler::Global {
     cstate.current_block = module.code
 
-    let mem = map::get(cstate.globals, key)
-    let global = map::get(cstate.module.result.globals, key) !*compiler::Global
+    let mem = cstate.globals.get_or_default(key, null) 
+    if not mem { return null }
+    let global = cstate.module.result.globals.get_or_default(key, null)
     if not global { return null } // Probably a constant
     if typechecking::is_stub(global.tpe) { return null } // Didn't reference
 
@@ -1324,29 +1318,25 @@ export def serialize_value(key: string, module: *toolchain::Module, cstate: *com
         *is_constant, 
         get(ptr, global.tpe), 
         global, 
-        vector::make(), 
+        vector::make(compiler::Value), 
         module, 
         cstate
     )
-    
-    let valuep = allocate(compiler::Value)
-    @valuep = value
 
     if is_constant {
-        global.value = valuep
+        global.value = value
     }
 
     // We need to create a new global, or else the constant is getting inlined
-    let new_global = allocate(compiler::Global)
-    @new_global = {
+    let new_global = {
         private = false,
         name = global.name,
         tpe = global.tpe,
-        value = valuep,
+        value = value,
         line = -1
-    } !compiler::Global
-    map::put(module.result.globals, new_global.name, new_global)
-    map::put(module.imported, new_global.name, map::sentinel)
+    } !&compiler::Global
+    module.result.globals[new_global.name] = new_global
+    module.imported.add(new_global.name)
 
     return global 
 }
