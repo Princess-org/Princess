@@ -52,6 +52,10 @@ class File:
 def escape_name(name: str) -> str:
     if name == "type":
         return "type_"
+    elif name == "in":
+        return "in_"
+    elif name == "from":
+        return "from_"
     return name
     
 # Types
@@ -288,11 +292,12 @@ class VarDecl(Declaration):
         return ret
 
 class FunctionDecl(Declaration):
-    def __init__(self, name: str, ret: Type, args, variadic: bool):
+    def __init__(self, name: str, ret: Type, args, variadic: bool, dllimport: bool):
         self.name = name
         self.ret = ret
         self.args = args
         self.variadic = variadic
+        self.dllimport = dllimport
 
     def to_declaration(self, n: int, file: File) -> str:
         args = []
@@ -300,8 +305,11 @@ class FunctionDecl(Declaration):
             args.append(name + ": " + tpe.to_string(file))
         if self.variadic:
             args.append("...")
-
-        ret = f"export import def #extern {self.name}({', '.join(args)})"
+        
+        ret = "export import def #extern "
+        if self.dllimport:
+            ret += "#dllimport "
+        ret += f"{self.name}({', '.join(args)})"
         if self.ret != void: ret += " -> " + self.ret.to_string(file)
         ret += f"\n__DEF_NAMES[{n}] = \"{self.name}\""
         ret += f"\n__DEFS[{n}] = *{self.name} !() -> ()"
@@ -511,17 +519,20 @@ def walk_FunctionDecl(node, file: File):
     ret = Walker(file).walk(parse(get_type(node)))
     if node.get("storageClass", None) != "static":
         variadic = node.get("variadic", False)
+        dllimport = False
         args = []
         if "inner" in node:
             for (i, param) in enumerate(node["inner"]):
-                if param["kind"] != "ParmVarDecl":
-                    continue
-                argname = escape_name(param.get("name", "_" + str(i)))
-                tpe = Walker(file).walk(parse(get_type(param)))
-                args.append((argname, tpe))
+                if param["kind"] == "ParmVarDecl":
+                    argname = escape_name(param.get("name", "_" + str(i)))
+                    tpe = Walker(file).walk(parse(get_type(param)))
+                    args.append((argname, tpe))
+                elif param["kind"] == "DLLImportAttr":
+                    dllimport = True
 
 
-        file.GLOBALS[name] = FunctionDecl(name, ret, args, variadic)
+
+        file.GLOBALS[name] = FunctionDecl(name, ret, args, variadic, dllimport)
 
 def walk(node, file: File):
     if node["kind"] == "VarDecl": 
