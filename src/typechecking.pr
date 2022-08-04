@@ -16,6 +16,8 @@ import consteval
 import errors
 import runtime
 import eval
+import md5
+import optional
 
 export type TypeKind = enum {
     TYPE
@@ -143,9 +145,184 @@ export type Type = struct {
     tc_incomplete: bool
     // null means any, Vector of Type
     variants: &Vector(&Type)
-    has_destructor: int8
-    destructor: weak_ref(scope::Value)
-    has_copy_constructor: int8
+    _hash: uint64
+}
+
+export def hash(tpe: &Type) -> uint64 {
+    if tpe._hash { return tpe._hash }
+    tpe._hash = md5::high(md5::md5(debug::type_to_str(tpe, full_name = true)))
+    return tpe._hash
+}
+export def == (this: &Type, other: &Type) -> bool {
+    return equals(this, other)
+}
+export def != (this: &Type, other: &Type) -> bool {
+    return not equals(this, other)
+}
+
+let meta = map::make(type &Type, type &TypeMeta)
+
+export type TypeMeta = struct {
+    has_constructor: int
+    has_user_defined_constructor: int
+    constructor: &scope::Value
+
+    has_destructor: int
+    has_builtin_destructor: int
+    destructor: &scope::Value
+    builtin_destructor: &scope::Value
+}
+
+export def get_meta(tpe: &Type) -> &TypeMeta {
+    if not tpe { return null }
+    let m = meta.get(tpe)
+    if m.exists { return m.get() }
+    let new_meta = {} !&TypeMeta
+    meta[tpe] = new_meta
+    return new_meta
+}
+
+// Returns true if there's any destructor present
+export def has_destructor(tpe: &Type) -> bool {
+    if not tpe { return false }
+    let tm = get_meta(tpe)
+    if tm.has_destructor != 0 {
+        return tm.has_destructor == 1
+    }
+    var res = false
+    if is_ref(tpe) {
+        let generic = get_generic(tpe)
+        if not generic { return true }
+        res = not generic.tc_incomplete
+    } else if tpe.kind == TypeKind::STATIC_ARRAY { 
+        res = has_destructor(tpe.tpe) 
+    } else if tpe.module and get_user_defined_destructor(tpe) != null {
+        res = true
+    } else if tpe.kind == TypeKind::STRUCT {
+        for var i in 0..tpe.fields.size {
+            let field = tpe.fields[i]
+            if has_destructor(field.tpe) {
+                tm.has_destructor = 1
+                res = true
+                break
+            }
+        }
+    }
+    // FIXME
+    if res { tm.has_destructor = 1 }
+    else { tm.has_destructor = -1 }
+    return res
+}
+
+export def get_builtin_destructor(tpe: &Type) -> &scope::Value {
+    let tm = get_meta(tpe)
+    if tm.has_builtin_destructor != 0 {
+        return tm.builtin_destructor
+    }
+
+    let args = vector::make(typechecking::NamedParameter)
+    args.push({ tpe = pointer(tpe) } !typechecking::NamedParameter)
+    let destructor = scope::get_function(builtins::builtins, parser::make_identifier("__destruct__"), args)
+    tm.builtin_destructor = destructor
+    if destructor { tm.has_builtin_destructor = 1 }
+    else { tm.has_builtin_destructor = -1 }
+    return destructor
+}
+
+export def get_user_defined_destructor(tpe: &Type) -> &scope::Value {
+    let tm = get_meta(tpe)
+    if tm.has_destructor != 0 {
+        return tm.destructor
+    }
+    if tpe.module {
+        let args = vector::make(NamedParameter)
+        args.push({
+            tpe = pointer(tpe)
+        } !NamedParameter)
+        let destructor = scope::get_function(tpe.module.scope, parser::make_identifier("destruct"), args)
+        if destructor { 
+            tm.has_destructor = 1
+            tm.destructor = destructor
+            return destructor 
+        }
+    }
+    tm.has_destructor = -1
+    return null
+}
+
+export def get_constructor(tpe: &Type) -> &scope::Value {
+    has_copy_constructor(tpe)
+    let tm = get_meta(tpe)
+    if tm.has_constructor != 0 {
+        return tm.constructor
+    }
+    return null
+}
+
+export def has_user_defined_copy_constructor(tpe: &Type) -> bool {
+    if not tpe { return false }
+    let tm = get_meta(tpe)
+    if tm.has_user_defined_constructor != 0 {
+        return tm.has_user_defined_constructor == 1
+    }
+    var res = false
+    if tpe.kind == TypeKind::STATIC_ARRAY { res = has_user_defined_copy_constructor(tpe.tpe) }
+    else if tpe.module {
+        let args = vector::make(NamedParameter)
+        let arg = {
+            tpe = pointer(tpe)
+        } !NamedParameter
+        args.push(arg)
+        args.push(arg)
+        let constructor = scope::get_function(tpe.module.scope, parser::make_identifier("construct"), args)
+        if constructor { 
+            tm.constructor = constructor
+            res = true 
+        }
+    }
+    if res { tm.has_user_defined_constructor = 1 }
+    else { tm.has_user_defined_constructor = -1 }
+    return res
+}
+
+// Returns true if there's any copy constructor
+// TODO Write a separate function for checking without generating
+export def has_copy_constructor(tpe: &Type, lookup: bool = true) -> bool {
+    if not tpe { return false }
+    let tm = get_meta(tpe)
+    if tm.has_constructor != 0 {
+        return tm.has_constructor == 1
+    }
+
+    var res = false
+    if has_user_defined_copy_constructor(tpe) { res = true }
+    else if tpe.kind == TypeKind::STRUCT {
+        for var i in 0..tpe.fields.size {
+            let field = tpe.fields[i]
+            if has_copy_constructor(field.tpe) or is_ref(field.tpe) {  
+                res = true
+                break
+            }
+        }
+    } else if tpe.kind == TypeKind::STATIC_ARRAY {
+        while tpe != null and tpe.kind == TypeKind::STATIC_ARRAY {
+            tpe = tpe.tpe
+        }
+        if has_copy_constructor(tpe) or is_ref(tpe) { 
+            res = true
+        }
+    }
+
+    if not tm.constructor and lookup {
+        let args = vector::make(typechecking::NamedParameter)
+        vector::push(args, { tpe = pointer(tpe) } !typechecking::NamedParameter)
+        vector::push(args, { tpe = pointer(tpe) } !typechecking::NamedParameter)
+        tm.constructor = scope::get_function(builtins::builtins, parser::make_identifier("__construct__"), args)
+    }
+
+    if res { tm.has_constructor = 1 }
+    else { tm.has_constructor = -1 }
+    return res
 }
 
 export def tpe(tpe: &Type) -> &Type {
@@ -643,10 +820,14 @@ export def shallow_copy(tpe: &Type) -> &Type {
 }
 
 export def equals(a: &Type, b: &Type) -> bool {
-    if a == b {
+    if a !* == b !* {
         return true
     }
     if not a or not b { return false }
+    /*if a._hash and b._hash {
+        // Speed up equality if hashes are defined
+        return a._hash == b._hash
+    }*/
 
     if a.tc_args and b.tc_args and a.tc_tpe and b.tc_tpe and equals(a.tc_tpe, b.tc_tpe) {
         for var i in 0..vector::length(a.tc_args) {
@@ -674,7 +855,16 @@ export def equals(a: &Type, b: &Type) -> bool {
     if (@a).kind != (@b).kind { return false }
 
     let kind = (@a).kind
-    if kind == TypeKind::BOOL or kind == TypeKind::TYPE or kind == TypeKind::CHAR { return true }
+    if kind == TypeKind::RANGE or 
+        kind == TypeKind::RANGE_INC or 
+        kind == TypeKind::VOID or 
+        kind == TypeKind::NULL or 
+        kind == TypeKind::BOOL or 
+        kind == TypeKind::TYPE or 
+        kind == TypeKind::CHAR { 
+            
+        return true 
+    }
     if kind == TypeKind::WORD {
         return (@a).size == (@b).size and (@a).unsig == (@b).unsig
     }
@@ -688,7 +878,7 @@ export def equals(a: &Type, b: &Type) -> bool {
         kind == TypeKind::STRUCTURAL or
         kind == TypeKind::TYPE_CONSTRUCTOR {
         
-        return (@a).type_name == (@b).type_name
+        return a.hash == b.hash
     }
     if kind == TypeKind::ARRAY or
         kind == TypeKind::POINTER or
@@ -700,21 +890,27 @@ export def equals(a: &Type, b: &Type) -> bool {
     if kind == TypeKind::STATIC_ARRAY {
         return (@a).length == (@b).length and equals((@a).tpe, (@b).tpe)
     }
-    if kind == TypeKind::FUNCTION {
-        if vector::length((@a).parameter_t) != vector::length((@b).parameter_t) or
-            vector::length((@a).return_t) != vector::length((@b).return_t) {
-            return false        
-        }
-        for var i in 0..vector::length((@a).parameter_t) {
-            let param_a = (@a).parameter_t[i]
-            let param_b = (@b).parameter_t[i]
-            if not equals(param_a.tpe, param_b.tpe) {
-                return false
+    if kind == TypeKind::FUNCTION or kind == TypeKind::TUPLE {
+        if a.parameter_t != b.parameter_t {
+            if vector::length((@a).parameter_t) != vector::length((@b).parameter_t) {
+                return false        
+            }
+            for var i in 0..vector::length((@a).parameter_t) {
+                let param_a = (@a).parameter_t[i]
+                let param_b = (@b).parameter_t[i]
+                if not equals(param_a.tpe, param_b.tpe) {
+                    return false
+                }
             }
         }
-        for var i in 0..vector::length((@a).return_t) {
-            if not equals(a.return_t[i], b.return_t[i]) {
+        if kind == TypeKind::FUNCTION {
+            if vector::length((@a).return_t) != vector::length((@b).return_t) {
                 return false
+            }
+            for var i in 0..vector::length((@a).return_t) {
+                if not equals(a.return_t[i], b.return_t[i]) {
+                    return false
+                }
             }
         }
         return true
@@ -734,8 +930,7 @@ export def equals(a: &Type, b: &Type) -> bool {
         }
         return false
     }
-
-    assert(false)
+    assert
 }
 
 def has_function(entry: &TypeEntry, mb: StructuralTypeMember, module: &toolchain::Module) -> bool {
@@ -1123,83 +1318,6 @@ export def is_polymorph(tpe: &Type, is_ref: bool = false) -> bool {
                 return true
             }
         }
-    }
-    return false
-}
-
-export def has_destructor(tpe: &Type) -> bool {
-    if not tpe { return false }
-    if tpe.has_destructor != 0 {
-        return tpe.has_destructor == 1
-    }
-    if is_ref(tpe) {
-        let generic = get_generic(tpe)
-        if not generic { return true }
-        return not generic.tc_incomplete
-    }
-    if tpe.kind == TypeKind::STATIC_ARRAY { return has_destructor(tpe.tpe) }
-    if tpe.module {
-        let args = vector::make(NamedParameter)
-        args.push({
-            tpe = pointer(tpe)
-        } !NamedParameter)
-        let destructor = scope::get_function(tpe.module.scope, parser::make_identifier("destruct"), args)
-        if destructor { 
-            tpe.has_destructor = 1
-            return true 
-        }
-    }
-    if tpe.kind == TypeKind::STRUCT {
-        for var i in 0..tpe.fields.size {
-            let field = tpe.fields[i]
-            if has_destructor(field.tpe) {
-                tpe.has_destructor = 1
-                return true
-            }
-        }
-    }
-    tpe.has_destructor = -1
-    return false
-}
-
-export def has_user_defined_copy_constructor(tpe: &Type) -> bool {
-    if not tpe { return false }
-    if tpe.has_copy_constructor != 0 {
-        return tpe.has_copy_constructor == 1
-    }
-    if tpe.kind == TypeKind::STATIC_ARRAY { return has_user_defined_copy_constructor(tpe.tpe) }
-    if tpe.module {
-        let args = vector::make(NamedParameter)
-        let arg = {
-            tpe = pointer(tpe)
-        } !NamedParameter
-        args.push(arg)
-        args.push(arg)
-        let constructor = scope::get_function(tpe.module.scope, parser::make_identifier("construct"), args)
-        if constructor {
-            tpe.has_copy_constructor = 1
-            return true 
-        }
-    }
-    tpe.has_copy_constructor = -1
-    return false
-}
-
-
-// TODO also cache this maybe?
-export def has_copy_constructor(tpe: &Type) -> bool {
-    if not tpe { return false }
-    if has_user_defined_copy_constructor(tpe) { return true }
-    if tpe.kind == TypeKind::STRUCT {
-        for var i in 0..tpe.fields.size {
-            let field = tpe.fields[i]
-            if has_copy_constructor(field.tpe) or is_ref(field.tpe) { return true }
-        }
-    } else if tpe.kind == TypeKind::STATIC_ARRAY {
-        while tpe != null and tpe.kind == TypeKind::STATIC_ARRAY {
-            tpe = tpe.tpe
-        }
-        if has_copy_constructor(tpe) or is_ref(tpe) { return true }
     }
     return false
 }
@@ -1641,7 +1759,7 @@ export def generate_concrete_functions(type_constructor: &Type, tpe: &Type, stat
 export def type_lookup(node: &parser::Node, state: &State, current_type: &Type = null, lookup_default: bool = false, cache: &SMap(&Type) = null) -> &Type {
     var tpe = do_type_lookup(node, state, current_type, lookup_default, cache)
     if node { node.tpe = tpe }
-    if tpe == current_type { return current_type }
+    if tpe !* == current_type !* { return current_type }
     
     let type_constructor = get_type_constructor(tpe)
     if tpe and type_constructor and type_constructor.kind != TypeKind::STUB {
@@ -1649,7 +1767,7 @@ export def type_lookup(node: &parser::Node, state: &State, current_type: &Type =
 
         if not map::contains(type_constructor.cache, type_name) {
             generate_concrete_functions(type_constructor, tpe, state)
-            type_constructor.cache[type_name] = (tpe if tpe.tc_tpe == type_constructor else null !&Type)
+            type_constructor.cache[type_name] = (tpe if tpe.tc_tpe !* == type_constructor !* else null !&Type)
         }
     }
     if tpe and (tpe.kind == TypeKind::STRUCT or tpe.kind == TypeKind::UNION) {
@@ -2108,7 +2226,7 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
             state.scope = scpe
             return tpe
         }
-        if not cache { cache = map::make(type &Type) }
+        if not cache { cache = map::make(type &string, type &Type) }
         var cached_type = cache.get_or_default(type_name, null)
         if cached_type != null {
             state.scope = scpe
@@ -3129,7 +3247,7 @@ export def walk_Def(node: &parser::Node, state: &State) {
 
 def check_is_recursive(tpe: &Type, types: &SMap(&Type) = null) -> bool {
     if not tpe { return false }
-    if not types { types = map::make(type &Type) }
+    if not types { types = map::make(type &string, type &Type) }
     if tpe.kind == TypeKind::STATIC_ARRAY {
         return check_is_recursive(tpe.tpe, types)
     }
@@ -3139,7 +3257,7 @@ def check_is_recursive(tpe: &Type, types: &SMap(&Type) = null) -> bool {
             types[tpe.type_name] = tpe
         }
         for var i in 0..tpe.fields.size {
-            let new_types = map::make(type &Type)
+            let new_types = map::make(type &string, type &Type)
             let keys = map::keys(types)
             for var j in 0..keys.size {
                 new_types[keys[j]] = types[keys[j]]
