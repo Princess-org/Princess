@@ -1,73 +1,76 @@
 import map
 import ffi
 import std
+import vector
+import symbol
 
-export type FfiFunction = struct {
-    name: string
-    ptr: ->
-    initialized: bool
-    ffi_cif: ffi::ffi_cif
+const RTLD_LAZY = 1
+
+export type DLL = struct {
+    handle: *
 }
 
-export type FfiGlobal = struct {
-    name: string
-    ptr: *
+export def destruct(dll: *DLL) {
+    #if defined WIN32 {
+        windows::FreeLibrary(dll.handle !*windows::s_HINSTANCE__)
+    } else {
+        linux::dlclose(dll.handle)
+    }
 }
 
-// Map of FfiVariable
-export var FFI_GLOBALS: &SMap(&FfiGlobal)
-// Map of FfiFunction
-export var FFI_FUNCTIONS: &SMap(&FfiFunction)
+export let symbols = map::make(type &symbol::Symbol)
+export let dlls = map::make(DLL)
 
-export def load_ffi(def_names: [string], defs: [type () -> ()], var_names: [string], vars: [*]) {
-    // We are getting called from before the module's main function so
-    // we must do some setup here
-    if not FFI_GLOBALS {
-        FFI_GLOBALS = map::make(type &FfiGlobal)
+export def load_ffi(syms: [symbol::Symbol]) {
+    for var i in 0..symbols.size {
+        let sym = syms[i]
+        symbols[sym.name] = sym
     }
-    if not FFI_FUNCTIONS {
-        FFI_FUNCTIONS = map::make(type &FfiFunction)
-    }
+}
 
-    assert(def_names.size == defs.size)
-    for var i in 0..def_names.size {
-        let name = def_names[i]
-        let value = defs[i]
-        let ffi_function = {
-            name = name,
-            ptr = value,
-            initialized = false
-        } !&FfiFunction
-        FFI_FUNCTIONS[name] = ffi_function
-
-        let ffi_global = {
-            name = name,
-            ptr = value !*
-        } !&FfiGlobal
-        FFI_GLOBALS[name] = ffi_global
+export def load_library(name: string) {
+    if dlls.contains(name) { return }
+    #if defined WIN32 {
+        dlls[name] = { windows::LoadLibraryA(name.value) !* } !DLL
+    } else {
+        dlls[name] = { linux::dlopen(name.value, RTLD_LAZY) } !DLL
     }
+}
 
-    assert(var_names.size == vars.size)
-    for var i in 0..var_names.size {
-        let name = var_names[i]
-        let value = vars[i]
-        let ffi_global = {
-            name = name,
-            ptr = value
-        } !&FfiGlobal
-        FFI_GLOBALS[name] = ffi_global
+export def get_function(sym: &symbol::Symbol) -> () -> () {
+    assert sym.kind == symbol::SymbolKind::FUNCTION
+    let name = sym.name
+    if sym.function { return sym.function }
+    if sym.dllimport {
+        let keys = dlls.keys
+        for var i in 0..keys.size {
+            let dll = dlls[keys[i]]
+            var proc: *
+            #if defined WIN32 {
+                proc = windows::GetProcAddress(dll.handle !*windows::s_HINSTANCE__, name.value)
+            } else {
+                proc = linux::dlsym(dll.handle, name.value)
+            }
+            if proc {
+                sym.function = proc !() -> ()
+                break
+            }
+        }
     }
+    return sym.function
 }
 
 import cstd
-load_ffi(cstd::__DEF_NAMES, cstd::__DEFS, cstd::__VAR_NAMES, cstd::__VARS)
+load_ffi(cstd::__SYMBOLS)
 import ffi
-load_ffi(ffi::__DEF_NAMES, ffi::__DEFS, ffi::__VAR_NAMES, ffi::__VARS)
+load_ffi(ffi::__SYMBOLS)
 
 #if defined WIN32 {
     import windows
-    load_ffi(windows::__DEF_NAMES, windows::__DEFS, windows::__VAR_NAMES, windows::__VARS)
+    load_ffi(windows::__SYMBOLS)
+    load_library("Kernel32.dll")
+    load_library("User32.dll")
 } else {
     import linux
-    load_ffi(linux::__DEF_NAMES, linux::__DEFS, linux::__VAR_NAMES, linux::__VARS)
+    load_ffi(linux::__SYMBOLS)
 }

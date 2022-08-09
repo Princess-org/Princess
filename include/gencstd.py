@@ -287,8 +287,7 @@ class VarDecl(Declaration):
 
     def to_declaration(self, n: int, file: File) -> str:
         ret = f"export import var #extern {self.name}: {self.type.to_string(file)}"
-        ret += f"\n__VAR_NAMES[{n}] = \"{self.name}\""
-        ret += f"\n__VARS[{n}] = *{self.name} !*"
+        ret += f"\n__SYMBOLS[{n}] = {{ kind = symbol::SymbolKind::VARIABLE, name = \"{self.name}\", variable = *{self.name} !*}} !symbol::Symbol"
         return ret
 
 class FunctionDecl(Declaration):
@@ -307,12 +306,15 @@ class FunctionDecl(Declaration):
             args.append("...")
         
         ret = "export import def #extern "
+        function = ""
         if self.dllimport:
             ret += "#dllimport "
+        else:
+            function = f", function = *{self.name} !() -> ()"
+
         ret += f"{self.name}({', '.join(args)})"
         if self.ret != void: ret += " -> " + self.ret.to_string(file)
-        ret += f"\n__DEF_NAMES[{n}] = \"{self.name}\""
-        ret += f"\n__DEFS[{n}] = *{self.name} !() -> ()"
+        ret += f"\n__SYMBOLS[{n}] = {{ kind = symbol::SymbolKind::FUNCTION, dllimport = {'true' if self.dllimport else 'false'}, name = \"{self.name}\"{function}}} !symbol::Symbol"
 
         return ret
 
@@ -519,6 +521,7 @@ def walk_FunctionDecl(node, file: File):
     ret = Walker(file).walk(parse(get_type(node)))
     if node.get("storageClass", None) != "static":
         variadic = node.get("variadic", False)
+        if node.get("inline", False): return
         dllimport = False
         args = []
         if "inner" in node:
@@ -582,10 +585,8 @@ def process_module(name: str):
         VARS = {k:v for k,v in file.GLOBALS.items() if isinstance(v, VarDecl)}
         CONSTS = {k:v for k,v in file.GLOBALS.items() if isinstance(v, ConstDecl)}
         
-        print(f"export var __DEFS: [{len(DEFS)}; () -> ()]", file = fp)
-        print(f"export var __DEF_NAMES: [{len(DEFS)}; string]", file = fp)
-        print(f"export var __VARS: [{len(VARS)}; *]", file = fp)
-        print(f"export var __VAR_NAMES: [{len(VARS)}; string]", file = fp)
+        print("import symbol", file = fp)
+        print(f"export var __SYMBOLS: [{len(DEFS) + len(VARS)}; symbol::Symbol]", file = fp)
 
         for g in CONSTS.values():
             print(g.to_declaration(0, file), file = fp)
@@ -600,7 +601,6 @@ def process_module(name: str):
             print(g.to_declaration(num_decls, file), file = fp)
             num_decls += 1
 
-        num_decls = 0
         for g in VARS.values():
             print(g.to_declaration(num_decls, file), file = fp)
             num_decls += 1
