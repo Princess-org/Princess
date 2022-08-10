@@ -783,8 +783,7 @@ export def make_global_value(tpe: &typechecking::Type, name: &string, value: &Va
     } !Value
 }
 
-export def load_value(node: &parser::Node, value: Value, state: &State) -> Value {
-    let loc = make_location(node, state)
+export def load_value(value: Value, loc: &Value, state: &State) -> Value {
     if value.addr {
         let ret = make_local_value(value.tpe, value.addr, state)
         let load = make_insn_dbg(InsnKind::LOAD, loc)
@@ -955,7 +954,7 @@ def import_cstd_function(name: &string, state: &State) {
 
 export def walk_and_load_expression(node: &parser::Node, state: &State) -> Value {
     let expr = walk_expression(node, state)
-    return load_value(node, expr, state)
+    return load_value(expr, make_location(node, state), state)
 }
 
 def walk_Null(node: &parser::Node, state: &State) -> Value {
@@ -1090,6 +1089,13 @@ def walk_String(node: &parser::Node, state: &State) -> Value {
     return ret
 }
 
+// TODO This name is stupid
+def do_create_type(tpe: &typechecking::Type, module: &toolchain::Module) -> Value {
+    let value = create_type(tpe, module)
+    if value { return @value }
+    return { kind = ValueKind::NULL, tpe = typechecking::pointer(builtins::Type_) } !Value
+}
+
 def convert_ref_to_ref(tpe: &typechecking::Type, value: Value, loc: &Value, state: &State) -> Value {
     if not value.tpe {
         return NO_VALUE
@@ -1177,468 +1183,478 @@ def convert_ref_to_ref(tpe: &typechecking::Type, value: Value, loc: &Value, stat
     return insert3_ret
 }
 
-// TODO This name is stupid
-def do_create_type(tpe: &typechecking::Type, module: &toolchain::Module) -> Value {
-    let value = create_type(tpe, module)
-    if value { return @value }
-    return { kind = ValueKind::NULL, tpe = typechecking::pointer(builtins::Type_) } !Value
+def convert_ref_to_ptr(tpe: &typechecking::Type, value: Value, loc: &Value, state: &State) -> Value {
+    let index = allocate_ref(int, 1)
+    index[0] = 1
+    let extract_ret = make_local_value(typechecking::pointer(value.tpe.tpe), null, state)
+    let extract = make_insn_dbg(InsnKind::EXTRACTVALUE, loc)
+    extract.value.extract_value = {
+        ret = extract_ret,
+        value = value,
+        index = index
+    } !InsnExtractValue
+    push_insn(extract, state)
+
+    let bitcast_ret = make_local_value(typechecking::pointer(tpe.tpe), null, state)
+    let bitcast = make_insn_dbg(InsnKind::BITCAST, loc)
+    bitcast.value.convert = {
+        ret = bitcast_ret,
+        value = extract_ret
+    } !InsnConvert
+    push_insn(bitcast, state)
+
+    return bitcast_ret
 }
 
-// TODO This has over 500 lines, refactor this monstrosity please
+def convert_value_to_ref(tpe: &typechecking::Type, value: Value, loc: &Value, state: &State) -> Value {
+    if tpe.tpe and value.tpe.kind != tpe.tpe.kind {
+        value = convert_to(loc, value, tpe.tpe, state)
+    }
+
+    import_cstd_function("malloc", state)
+
+    var is_null = false
+    if value.tpe.kind == typechecking::TypeKind::NULL { 
+        value.tpe = tpe.tpe 
+        is_null = true
+    }
+
+    // Create type entry
+    typechecking::create_type_entry(reference(value.tpe))
+
+    var refcount = { kind = ValueKind::NULL, tpe = pointer(builtins::int64_) } !Value
+
+    if not is_null {
+        let args1 = allocate_ref(Value, 1)
+        args1[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = builtins::int64_.size } !Value
+        let call1_ret = make_local_value(typechecking::pointer(builtins::int8_), null, state)
+        let call1 = make_insn_dbg(InsnKind::CALL, loc)
+        call1.value.call = {
+            name = {kind = ValueKind::GLOBAL, name = "malloc" } !Value,
+            ret = call1_ret,
+            args = args1
+        } !InsnCall
+        push_insn(call1, state)
+
+        refcount = make_local_value(typechecking::pointer(builtins::int64_), null, state)
+        let bitcast1 = make_insn_dbg(InsnKind::BITCAST, loc)
+        bitcast1.value.convert = {
+            ret = refcount,
+            value = call1_ret
+        } !InsnConvert
+        push_insn(bitcast1, state)
+
+        let store1 = make_insn_dbg(InsnKind::STORE, loc)
+        store1.value.store = {
+            loc = refcount,
+            value = { kind = ValueKind::INT, tpe = builtins::int64_, i = 0 } !Value
+        } !InsnStore
+        push_insn(store1, state)
+    }
+
+    let start = { kind = ValueKind::UNDEF, tpe = tpe } !Value
+
+    let index1 = allocate_ref(int, 1)
+    index1[0] = 0
+    let ret_insert1 = make_local_value(tpe, null, state)
+    let insert1 = make_insn_dbg(InsnKind::INSERTVALUE, loc)
+    insert1.value.insert_value = {
+        ret = ret_insert1,
+        value = start,
+        element = refcount,
+        index = index1
+    } !InsnInsertValue
+    push_insn(insert1, state)
+
+    var heapval: Value
+    if not is_null {
+        let args2 = allocate_ref(Value, 1)
+        args2[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = value.tpe.size } !Value
+        let call2_ret = make_local_value(typechecking::pointer(builtins::int8_), null, state)
+        let call2 = make_insn_dbg(InsnKind::CALL, loc)
+        call2.value.call = {
+            name = {kind = ValueKind::GLOBAL, name = "malloc" } !Value,
+            ret = call2_ret,
+            args = args2
+        } !InsnCall
+        push_insn(call2, state)
+        
+        heapval = make_local_value(typechecking::pointer(value.tpe), null, state)
+        let bitcast2 = make_insn_dbg(InsnKind::BITCAST, loc)
+        bitcast2.value.convert = {
+            ret = heapval,
+            value = call2_ret
+        } !InsnConvert
+        push_insn(bitcast2, state)
+        
+        if has_copy_constructor(value.tpe) {
+            let ret = state.alloca(value.tpe, loc)
+            insert_copy_constructor(ret, value, loc, state)
+            value = state.load(value.tpe, ret, loc)
+        } else if is_array(value.tpe) {
+            import_cstd_function("memcpy", state)
+
+            var size = NO_VALUE
+            var data = NO_VALUE
+            var new_ptr = NO_VALUE
+            if value.tpe.kind == typechecking::TypeKind::ARRAY {
+                // We need to copy the array
+                size = state.extract_value(builtins::int64_, value, [0], loc)
+                let size_in_bytes = state.mul(builtins::int64_, size, { kind = ValueKind::INT, tpe = builtins::int64_, i = value.tpe.tpe.size } !Value, loc)
+                data = state.extract_value(pointer(value.tpe.tpe), value, [1], loc)
+                let ptr_i8 = state.bitcast(pointer(builtins::int8_), data, loc)
+                let new_ptr_i8 = state.call("malloc", pointer(builtins::int8_), [size_in_bytes], loc)
+                state.call("memcpy", pointer(builtins::int8_), [new_ptr_i8, ptr_i8, size_in_bytes], loc)
+                new_ptr = state.bitcast(pointer(value.tpe.tpe), new_ptr_i8, loc)
+                value = { kind = ValueKind::UNDEF, tpe = value.tpe } !Value
+                value = state.insert_value(value.tpe, value, size, [0], loc)
+                value = state.insert_value(value.tpe, value, new_ptr, [1], loc)
+            } else {
+                data = @value.addr
+                size = { kind = ValueKind::INT, tpe = builtins::int64_, i = value.tpe.length } !Value
+                let size_in_bytes = { kind = ValueKind::INT, tpe = builtins::int64_, i = value.tpe.size } !Value
+                let ptr_i8 = state.bitcast(pointer(builtins::int8_), @value.addr, loc)
+                state.call("memcpy", pointer(builtins::int8_), [call2_ret, ptr_i8, size_in_bytes], loc)
+                new_ptr = state.bitcast(pointer(value.tpe), call2_ret, loc)
+                value = state.load(value.tpe, new_ptr, loc)
+            }
+
+            if is_ref(value.tpe.tpe) or has_copy_constructor(value.tpe.tpe) {
+                // TODO The looping bit should be extracted into its own function, let's see what we can do once we have closures
+                let counter_ptr = state.alloca(builtins::size_t_)
+                state.store(counter_ptr, { kind = ValueKind::INT, tpe = builtins::size_t_, i = 0 } !Value)
+                
+                let br_to_start = make_insn_dbg(InsnKind::BR_UNC, loc)
+                push_insn(br_to_start, state)
+
+                let loop_start = make_label(state)
+                push_label(loop_start, state)
+                br_to_start.value.br_unc.label_ = loop_start
+                
+                let counter_value = state.load(builtins::size_t_, counter_ptr)
+                let cond = state.icmp(CompareInt::eq, counter_value, size)
+                let br = make_insn_dbg(InsnKind::BR, loc)
+                br.value.br = { cond = cond } !InsnBr
+                push_insn(br, state)
+
+                let loop_inner = make_label(state)
+                push_label(loop_inner, state)
+                br.value.br.if_false = loop_inner
+
+                let ptpe = pointer(value.tpe.tpe)
+                var array_val = NO_VALUE
+                if value.tpe.kind == typechecking::TypeKind::ARRAY {
+                    array_val = state.gep(ptpe, value.tpe.tpe, data, [counter_value], loc)
+                } else {
+                    array_val = state.gep(ptpe, value.tpe, data, [make_int_value(0), counter_value], loc)
+                }
+
+                if is_ref(value.tpe.tpe) {
+                    increase_ref_count(array_val, loc, state)
+                } else if has_copy_constructor(value.tpe.tpe) {
+                    let val = state.load(value.tpe.tpe, array_val, loc)
+                    let addr = state.gep(ptpe, value.tpe.tpe, new_ptr, [counter_value], loc)
+                    insert_copy_constructor(addr, val, loc, state)
+                }
+
+                let counter_inc = state.add(builtins::size_t_, counter_value, { kind = ValueKind::INT, tpe = builtins::size_t_, i = 1 } !Value, loc)
+                state.store(counter_ptr, counter_inc)
+
+                push_insn(br_to_start, state)
+
+                let loop_end = make_label(state)
+                push_label(loop_end, state)
+                br.value.br.if_true = loop_end
+            }
+        }
+
+        let store2 = make_insn_dbg(InsnKind::STORE, loc)
+        store2.value.store = {
+            loc = heapval,
+            value = value
+        } !InsnStore
+        push_insn(store2, state)
+
+        if not typechecking::equals(tpe.tpe, value.tpe) {
+            let bitcast2_ret = make_local_value(typechecking::pointer(tpe.tpe), null, state)
+            let bitcast2 = make_insn_dbg(InsnKind::BITCAST, loc)
+            bitcast2.value.convert = {
+                ret = bitcast2_ret,
+                value = heapval
+            } !InsnConvert
+            push_insn(bitcast2, state)
+            heapval = bitcast2_ret
+        }
+    } else {
+        heapval = { kind = ValueKind::NULL, tpe = typechecking::pointer(value.tpe) } !Value
+    }
+    
+    let index2 = allocate_ref(int, 1)
+    index2[0] = 1
+    let ret_insert2 = make_local_value(tpe, null, state)
+    let insert2 = make_insn_dbg(InsnKind::INSERTVALUE, loc)
+    insert2.value.insert_value = {
+        ret = ret_insert2,
+        value = ret_insert1,
+        element = heapval,
+        index = index2
+    }
+    push_insn(insert2, state)
+
+    let svalue = do_create_type(typechecking::reference(value.tpe), state.module)
+
+    let index3 = allocate_ref(int, 1)
+    index3[0] = 2
+    let ret_insert3 = make_local_value(tpe, null, state)
+    let insert3 = make_insn_dbg(InsnKind::INSERTVALUE, loc)
+    insert3.value.insert_value = {
+        ret = ret_insert3,
+        value = ret_insert2,
+        element = svalue,
+        index = index3
+    }
+    push_insn(insert3, state)
+
+    /*if not is_null and not is_captured {
+        // Destroy the value
+        let ptr = state.alloca(tpe, loc)
+        state.store(ptr, ret_insert3)
+        insert_destructor(ptr, state.scope, loc, state)
+    }*/
+
+    return ret_insert3
+}
+
+// This function needs to be called with an address value
+def convert_array_to_array(tpe: &typechecking::Type, value: Value, loc: &Value, state: &State) -> Value {
+    if (@value.tpe).kind == typechecking::TypeKind::STATIC_ARRAY and
+        (@value.tpe).length == 0 {
+
+        let values = allocate_ref(Value, 2)
+        values[0] = {
+            kind = ValueKind::INT,
+            tpe = builtins::size_t_,
+            i = (@value.tpe).length
+        } !Value
+        values[1] = {
+            kind = ValueKind::NULL,
+            tpe = typechecking::pointer(tpe.tpe)
+        } !Value
+        return {
+            kind = ValueKind::STRUCT,
+            values = values,
+            tpe = tpe
+        } !Value
+    } else if (@value.tpe).kind == typechecking::TypeKind::STATIC_ARRAY and 
+        (not tpe.tpe or typechecking::equals(tpe.tpe, (@value.tpe).tpe)) {
+
+        var local = make_local_value(typechecking::pointer((@value.tpe).tpe), null, state)
+
+        let index = allocate_ref(Value, 2)
+        index[0] = make_int_value(0)
+        index[0].tpe = builtins::size_t_
+        index[1] = make_int_value(0)
+        index[1].tpe = builtins::size_t_
+
+        let gep = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
+        (@gep).value.gep = {
+            ret = local,
+            tpe = value.tpe,
+            value = @value.addr,
+            index = index
+        } !InsnGetElementPtr
+
+        push_insn(gep, state)
+
+        if not tpe.tpe {
+            let local1 = local
+            local = make_local_value(typechecking::pointer(null), null, state)
+            let bitcast = make_insn_dbg(InsnKind::BITCAST, loc)
+            (@bitcast).value.convert = {
+                ret = local,
+                value = local1
+            } !InsnConvert
+
+            push_insn(bitcast, state)
+        }
+
+        let ret = make_local_value(tpe, null, state)
+
+        let values = allocate_ref(Value, 2)
+        values[0] = {
+            kind = ValueKind::INT,
+            tpe = builtins::size_t_,
+            i = (@value.tpe).length
+        } !Value
+        values[1] = {
+            kind = ValueKind::UNDEF,
+            tpe = typechecking::pointer(tpe.tpe)
+        } !Value
+
+        let value = {
+            kind = ValueKind::STRUCT,
+            values = values,
+            tpe = tpe
+        } !Value
+
+        let index2 = allocate_ref(int, 1)
+        index2[0] = 1
+        let insert = make_insn_dbg(InsnKind::INSERTVALUE, loc)
+        (@insert).value.insert_value = {
+            ret = ret,
+            value = value,
+            element = local, 
+            index = index2
+        } !InsnInsertValue
+
+        push_insn(insert, state)
+
+        return ret
+    } else if not tpe.tpe and (@value.tpe).kind == typechecking::TypeKind::ARRAY {
+        value = load_value(value, loc, state)
+        let index1 = allocate_ref(int, 1)
+        index1[0] = 0
+
+        let size = make_local_value(builtins::size_t_, null, state)
+        let extract1 = make_insn_dbg(InsnKind::EXTRACTVALUE, loc)
+        (@extract1).value.extract_value = {
+            ret = size,
+            value = value,
+            index = index1
+        } !InsnExtractValue
+
+        push_insn(extract1, state)
+
+        let index2 = allocate_ref(int, 1)
+        index2[0] = 1
+
+        let ptr = make_local_value(typechecking::pointer((@value.tpe).tpe), null, state)
+        let extract2 = make_insn_dbg(InsnKind::EXTRACTVALUE, loc)
+        (@extract2).value.extract_value = {
+            ret = ptr,
+            value = value,
+            index = index2
+        } !InsnExtractValue
+
+        push_insn(extract2, state)
+
+        let bitcast_ret = make_local_value(typechecking::pointer(null), null, state)
+        let bitcast = make_insn_dbg(InsnKind::BITCAST, loc)
+        (@bitcast).value.convert = {
+            ret = bitcast_ret,
+            value = ptr
+        } !InsnConvert
+
+        push_insn(bitcast, state)
+
+        let insert1_ret = make_local_value(tpe, null, state)
+        let insert1 = make_insn_dbg(InsnKind::INSERTVALUE, loc)
+        (@insert1).value.insert_value = {
+            ret = insert1_ret,
+            value = { kind = ValueKind::UNDEF, tpe = tpe } !Value,
+            element = size,
+            index = index1
+        } !InsnInsertValue
+
+        push_insn(insert1, state)
+
+        let insert2_ret = make_local_value(tpe, null, state)
+        let insert2 = make_insn_dbg(InsnKind::INSERTVALUE, loc)
+        (@insert2).value.insert_value = {
+            ret = insert2_ret,
+            value = insert1_ret,
+            element = bitcast_ret,
+            index = index2
+        } !InsnInsertValue
+
+        push_insn(insert2, state)
+
+        return insert2_ret
+    } else {
+        return load_value(value, loc, state)
+    }
+}
+
+def convert_value_to_bool(tpe: &typechecking::Type, value: Value, loc: &Value, state: &State) -> Value {
+    if typechecking::is_ref_or_weak(value.tpe) {
+        value = state.extract_value(pointer(value.tpe.tpe if value.tpe.tpe else pointer(builtins::int8_)), value, [1], loc)
+        value = convert_to(loc, value, builtins::size_t_, state)
+    } else if typechecking::is_pointer(value.tpe) {
+        // TODO This isn't the correct type, we need something like
+        // intptr_t
+        value = convert_to(loc, value, builtins::size_t_, state)
+    }
+    if typechecking::is_float(value.tpe) {
+        let ret = make_local_value(builtins::bool_, null, state)
+        let insn = make_insn_dbg(InsnKind::FCMP, loc)
+        (@insn).value.fcmp = {
+            op = CompareFloat::une,
+            ret = ret,
+            left = value,
+            right = {
+                kind = ValueKind::FLOAT,
+                tpe = value.tpe,
+                f = 0.0
+            } !Value
+        } !InsnFcmp
+        push_insn(insn, state)
+        return ret
+    } else if typechecking::is_integer(value.tpe) {
+        let ret = make_local_value(builtins::bool_, null, state)
+        let insn = make_insn_dbg(InsnKind::ICMP, loc)
+        (@insn).value.icmp = {
+            op = CompareInt::ne,
+            ret = ret,
+            left = value,
+            right = {
+                kind = ValueKind::INT,
+                tpe = value.tpe,
+                i = 0
+            } !Value
+        } !InsnIcmp
+        push_insn(insn, state)
+        return ret
+    }
+    return value
+}
+
 export def convert_to(node: &parser::Node, value: Value, tpe: &typechecking::Type, state: &State) -> Value {
-    if not value.tpe or not tpe { return value }
     let loc = make_location(node, state)
+    return convert_to(loc, value, tpe, state)
+}
+
+// value gets loaded by this function
+def convert_to(loc: &Value, value: Value, tpe: &typechecking::Type, state: &State) -> Value {
+    if not value.tpe or not tpe { return NO_VALUE }
     
     if typechecking::equals(value.tpe, tpe) {
-        return value
+        return load_value(value, loc, state)
     }
 
     var kind: InsnKind
     if typechecking::is_ref_or_weak(tpe) and typechecking::is_ref_or_weak(value.tpe) {
-        return convert_ref_to_ref(tpe, value, loc, state)
+        return convert_ref_to_ref(tpe, load_value(value, loc, state), loc, state)
     } else if typechecking::is_ref_or_weak(tpe) and typechecking::equals(value.tpe, builtins::Ref_) {
-        return convert_ref_to_ref(tpe, value, loc, state)
+        return convert_ref_to_ref(tpe, load_value(value, loc, state), loc, state)
     } else if typechecking::equals(tpe, builtins::Ref_) and typechecking::is_ref_or_weak(value.tpe) {
-        return convert_ref_to_ref(tpe, value, loc, state)
+        return convert_ref_to_ref(tpe, load_value(value, loc, state), loc, state)
     } else if typechecking::is_pointer(tpe) and typechecking::is_ref_or_weak(value.tpe) {
-
-        let index = allocate_ref(int, 1)
-        index[0] = 1
-        let extract_ret = make_local_value(typechecking::pointer(value.tpe.tpe), null, state)
-        let extract = make_insn_dbg(InsnKind::EXTRACTVALUE, loc)
-        extract.value.extract_value = {
-            ret = extract_ret,
-            value = value,
-            index = index
-        } !InsnExtractValue
-        push_insn(extract, state)
-
-        let bitcast_ret = make_local_value(typechecking::pointer(tpe.tpe), null, state)
-        let bitcast = make_insn_dbg(InsnKind::BITCAST, loc)
-        bitcast.value.convert = {
-            ret = bitcast_ret,
-            value = extract_ret
-        } !InsnConvert
-        push_insn(bitcast, state)
-
-        return bitcast_ret
-
+        return convert_ref_to_ptr(tpe, load_value(value, loc, state), loc, state)
     } else if typechecking::is_ref_or_weak(tpe) and (typechecking::is_assignable(tpe.tpe, value.tpe, state.module) or 
         typechecking::is_assignable(tpe, typechecking::reference(value.tpe), state.module) or 
         tpe.tpe == null or value.tpe.kind == typechecking::TypeKind::NULL) {
-
-        if tpe.tpe and value.tpe.kind != tpe.tpe.kind {
-            value = convert_to(node, value, tpe.tpe, state)
-        }
-
-        import_cstd_function("malloc", state)
-
-        var is_null = false
-        if value.tpe.kind == typechecking::TypeKind::NULL { 
-            value.tpe = tpe.tpe 
-            is_null = true
-        }
-
-        // Create type entry
-        typechecking::create_type_entry(reference(value.tpe))
-
-        var refcount = { kind = ValueKind::NULL, tpe = pointer(builtins::int64_) } !Value
-
-        if not is_null {
-            let args1 = allocate_ref(Value, 1)
-            args1[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = builtins::int64_.size } !Value
-            let call1_ret = make_local_value(typechecking::pointer(builtins::int8_), null, state)
-            let call1 = make_insn_dbg(InsnKind::CALL, loc)
-            call1.value.call = {
-                name = {kind = ValueKind::GLOBAL, name = "malloc" } !Value,
-                ret = call1_ret,
-                args = args1
-            } !InsnCall
-            push_insn(call1, state)
-
-            refcount = make_local_value(typechecking::pointer(builtins::int64_), null, state)
-            let bitcast1 = make_insn_dbg(InsnKind::BITCAST, loc)
-            bitcast1.value.convert = {
-                ret = refcount,
-                value = call1_ret
-            } !InsnConvert
-            push_insn(bitcast1, state)
-
-            let store1 = make_insn_dbg(InsnKind::STORE, loc)
-            store1.value.store = {
-                loc = refcount,
-                value = { kind = ValueKind::INT, tpe = builtins::int64_, i = 0 } !Value
-            } !InsnStore
-            push_insn(store1, state)
-        }
-
-        let start = { kind = ValueKind::UNDEF, tpe = tpe } !Value
-
-        let index1 = allocate_ref(int, 1)
-        index1[0] = 0
-        let ret_insert1 = make_local_value(tpe, null, state)
-        let insert1 = make_insn_dbg(InsnKind::INSERTVALUE, loc)
-        insert1.value.insert_value = {
-            ret = ret_insert1,
-            value = start,
-            element = refcount,
-            index = index1
-        } !InsnInsertValue
-        push_insn(insert1, state)
-
-        var heapval: Value
-        if not is_null {
-            let args2 = allocate_ref(Value, 1)
-            args2[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = value.tpe.size } !Value
-            let call2_ret = make_local_value(typechecking::pointer(builtins::int8_), null, state)
-            let call2 = make_insn_dbg(InsnKind::CALL, loc)
-            call2.value.call = {
-                name = {kind = ValueKind::GLOBAL, name = "malloc" } !Value,
-                ret = call2_ret,
-                args = args2
-            } !InsnCall
-            push_insn(call2, state)
-            
-            heapval = make_local_value(typechecking::pointer(value.tpe), null, state)
-            let bitcast2 = make_insn_dbg(InsnKind::BITCAST, loc)
-            bitcast2.value.convert = {
-                ret = heapval,
-                value = call2_ret
-            } !InsnConvert
-            push_insn(bitcast2, state)
-            
-            if has_copy_constructor(value.tpe) {
-                let ret = state.alloca(value.tpe, loc)
-                insert_copy_constructor(ret, value, loc, state)
-                value = state.load(value.tpe, ret, loc)
-            } else if is_array(value.tpe) {
-                import_cstd_function("memcpy", state)
-
-                var size = NO_VALUE
-                var data = NO_VALUE
-                var new_ptr = NO_VALUE
-                if value.tpe.kind == typechecking::TypeKind::ARRAY {
-                    // We need to copy the array
-                    size = state.extract_value(builtins::int64_, value, [0], loc)
-                    let size_in_bytes = state.mul(builtins::int64_, size, { kind = ValueKind::INT, tpe = builtins::int64_, i = value.tpe.tpe.size } !Value, loc)
-                    data = state.extract_value(pointer(value.tpe.tpe), value, [1], loc)
-                    let ptr_i8 = state.bitcast(pointer(builtins::int8_), data, loc)
-                    let new_ptr_i8 = state.call("malloc", pointer(builtins::int8_), [size_in_bytes], loc)
-                    state.call("memcpy", pointer(builtins::int8_), [new_ptr_i8, ptr_i8, size_in_bytes], loc)
-                    new_ptr = state.bitcast(pointer(value.tpe.tpe), new_ptr_i8, loc)
-                    value = { kind = ValueKind::UNDEF, tpe = value.tpe } !Value
-                    value = state.insert_value(value.tpe, value, size, [0], loc)
-                    value = state.insert_value(value.tpe, value, new_ptr, [1], loc)
-                } else {
-                    data = @value.addr
-                    size = { kind = ValueKind::INT, tpe = builtins::int64_, i = value.tpe.length } !Value
-                    let size_in_bytes = { kind = ValueKind::INT, tpe = builtins::int64_, i = value.tpe.size } !Value
-                    let ptr_i8 = state.bitcast(pointer(builtins::int8_), @value.addr, loc)
-                    state.call("memcpy", pointer(builtins::int8_), [call2_ret, ptr_i8, size_in_bytes], loc)
-                    new_ptr = state.bitcast(pointer(value.tpe), call2_ret, loc)
-                    value = state.load(value.tpe, new_ptr, loc)
-                }
-
-                if is_ref(value.tpe.tpe) or has_copy_constructor(value.tpe.tpe) {
-                    // TODO The looping bit should be extracted into its own function, let's see what we can do once we have closures
-                    let counter_ptr = state.alloca(builtins::size_t_)
-                    state.store(counter_ptr, { kind = ValueKind::INT, tpe = builtins::size_t_, i = 0 } !Value)
-                    
-                    let br_to_start = make_insn_dbg(InsnKind::BR_UNC, loc)
-                    push_insn(br_to_start, state)
-
-                    let loop_start = make_label(state)
-                    push_label(loop_start, state)
-                    br_to_start.value.br_unc.label_ = loop_start
-                    
-                    let counter_value = state.load(builtins::size_t_, counter_ptr)
-                    let cond = state.icmp(CompareInt::eq, counter_value, size)
-                    let br = make_insn_dbg(InsnKind::BR, loc)
-                    br.value.br = { cond = cond } !InsnBr
-                    push_insn(br, state)
-
-                    let loop_inner = make_label(state)
-                    push_label(loop_inner, state)
-                    br.value.br.if_false = loop_inner
-
-                    let ptpe = pointer(value.tpe.tpe)
-                    var array_val = NO_VALUE
-                    if value.tpe.kind == typechecking::TypeKind::ARRAY {
-                        array_val = state.gep(ptpe, value.tpe.tpe, data, [counter_value], loc)
-                    } else {
-                        array_val = state.gep(ptpe, value.tpe, data, [make_int_value(0), counter_value], loc)
-                    }
-
-                    if is_ref(value.tpe.tpe) {
-                        increase_ref_count(array_val, loc, state)
-                    } else if has_copy_constructor(value.tpe.tpe) {
-                        let val = state.load(value.tpe.tpe, array_val, loc)
-                        let addr = state.gep(ptpe, value.tpe.tpe, new_ptr, [counter_value], loc)
-                        insert_copy_constructor(addr, val, loc, state)
-                    }
-
-                    let counter_inc = state.add(builtins::size_t_, counter_value, { kind = ValueKind::INT, tpe = builtins::size_t_, i = 1 } !Value, loc)
-                    state.store(counter_ptr, counter_inc)
-
-                    push_insn(br_to_start, state)
-
-                    let loop_end = make_label(state)
-                    push_label(loop_end, state)
-                    br.value.br.if_true = loop_end
-                }
-            }
-
-            let store2 = make_insn_dbg(InsnKind::STORE, loc)
-            store2.value.store = {
-                loc = heapval,
-                value = value
-            } !InsnStore
-            push_insn(store2, state)
-
-            if not typechecking::equals(tpe.tpe, value.tpe) {
-                let bitcast2_ret = make_local_value(typechecking::pointer(tpe.tpe), null, state)
-                let bitcast2 = make_insn_dbg(InsnKind::BITCAST, loc)
-                bitcast2.value.convert = {
-                    ret = bitcast2_ret,
-                    value = heapval
-                } !InsnConvert
-                push_insn(bitcast2, state)
-                heapval = bitcast2_ret
-            }
-        } else {
-            heapval = { kind = ValueKind::NULL, tpe = typechecking::pointer(value.tpe) } !Value
-        }
-        
-        let index2 = allocate_ref(int, 1)
-        index2[0] = 1
-        let ret_insert2 = make_local_value(tpe, null, state)
-        let insert2 = make_insn_dbg(InsnKind::INSERTVALUE, loc)
-        insert2.value.insert_value = {
-            ret = ret_insert2,
-            value = ret_insert1,
-            element = heapval,
-            index = index2
-        }
-        push_insn(insert2, state)
-
-        let svalue = do_create_type(typechecking::reference(value.tpe), state.module)
-
-        let index3 = allocate_ref(int, 1)
-        index3[0] = 2
-        let ret_insert3 = make_local_value(tpe, null, state)
-        let insert3 = make_insn_dbg(InsnKind::INSERTVALUE, loc)
-        insert3.value.insert_value = {
-            ret = ret_insert3,
-            value = ret_insert2,
-            element = svalue,
-            index = index3
-        }
-        push_insn(insert3, state)
-
-        /*if not is_null and not is_captured {
-            // Destroy the value
-            let ptr = state.alloca(tpe, loc)
-            state.store(ptr, ret_insert3)
-            insert_destructor(ptr, state.scope, loc, state)
-        }*/
-
-        return ret_insert3
+        return convert_value_to_ref(tpe, load_value(value, loc, state), loc, state)
     } else if tpe.kind == typechecking::TypeKind::ARRAY {
-        if (@value.tpe).kind == typechecking::TypeKind::STATIC_ARRAY and
-            (@value.tpe).length == 0 {
-
-            let values = allocate_ref(Value, 2)
-            values[0] = {
-                kind = ValueKind::INT,
-                tpe = builtins::size_t_,
-                i = (@value.tpe).length
-            } !Value
-            values[1] = {
-                kind = ValueKind::NULL,
-                tpe = typechecking::pointer(tpe.tpe)
-            } !Value
-            return {
-                kind = ValueKind::STRUCT,
-                values = values,
-                tpe = tpe
-            } !Value
-        } else if (@value.tpe).kind == typechecking::TypeKind::STATIC_ARRAY and 
-            (not tpe.tpe or typechecking::equals(tpe.tpe, (@value.tpe).tpe)) {
-
-            var local = make_local_value(typechecking::pointer((@value.tpe).tpe), null, state)
-
-            let index = allocate_ref(Value, 2)
-            index[0] = make_int_value(0)
-            index[0].tpe = builtins::size_t_
-            index[1] = make_int_value(0)
-            index[1].tpe = builtins::size_t_
-
-            let gep = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
-            (@gep).value.gep = {
-                ret = local,
-                tpe = value.tpe,
-                value = @value.addr,
-                index = index
-            } !InsnGetElementPtr
-
-            push_insn(gep, state)
-
-            if not tpe.tpe {
-                let local1 = local
-                local = make_local_value(typechecking::pointer(null), null, state)
-                let bitcast = make_insn_dbg(InsnKind::BITCAST, loc)
-                (@bitcast).value.convert = {
-                    ret = local,
-                    value = local1
-                } !InsnConvert
-
-                push_insn(bitcast, state)
-            }
-
-            let ret = make_local_value(tpe, null, state)
-
-            let values = allocate_ref(Value, 2)
-            values[0] = {
-                kind = ValueKind::INT,
-                tpe = builtins::size_t_,
-                i = (@value.tpe).length
-            } !Value
-            values[1] = {
-                kind = ValueKind::UNDEF,
-                tpe = typechecking::pointer(tpe.tpe)
-            } !Value
-
-            let value = {
-                kind = ValueKind::STRUCT,
-                values = values,
-                tpe = tpe
-            } !Value
-
-            let index2 = allocate_ref(int, 1)
-            index2[0] = 1
-            let insert = make_insn_dbg(InsnKind::INSERTVALUE, loc)
-            (@insert).value.insert_value = {
-                ret = ret,
-                value = value,
-                element = local, 
-                index = index2
-            } !InsnInsertValue
-
-            push_insn(insert, state)
-
-            return ret
-        } else if not tpe.tpe and (@value.tpe).kind == typechecking::TypeKind::ARRAY {
-            let index1 = allocate_ref(int, 1)
-            index1[0] = 0
-
-            let size = make_local_value(builtins::size_t_, null, state)
-            let extract1 = make_insn_dbg(InsnKind::EXTRACTVALUE, loc)
-            (@extract1).value.extract_value = {
-                ret = size,
-                value = value,
-                index = index1
-            } !InsnExtractValue
-
-            push_insn(extract1, state)
-
-            let index2 = allocate_ref(int, 1)
-            index2[0] = 1
-
-            let ptr = make_local_value(typechecking::pointer((@value.tpe).tpe), null, state)
-            let extract2 = make_insn_dbg(InsnKind::EXTRACTVALUE, loc)
-            (@extract2).value.extract_value = {
-                ret = ptr,
-                value = value,
-                index = index2
-            } !InsnExtractValue
-
-            push_insn(extract2, state)
-
-            let bitcast_ret = make_local_value(typechecking::pointer(null), null, state)
-            let bitcast = make_insn_dbg(InsnKind::BITCAST, loc)
-            (@bitcast).value.convert = {
-                ret = bitcast_ret,
-                value = ptr
-            } !InsnConvert
-
-            push_insn(bitcast, state)
-
-            let insert1_ret = make_local_value(tpe, null, state)
-            let insert1 = make_insn_dbg(InsnKind::INSERTVALUE, loc)
-            (@insert1).value.insert_value = {
-                ret = insert1_ret,
-                value = { kind = ValueKind::UNDEF, tpe = tpe } !Value,
-                element = size,
-                index = index1
-            } !InsnInsertValue
-
-            push_insn(insert1, state)
-
-            let insert2_ret = make_local_value(tpe, null, state)
-            let insert2 = make_insn_dbg(InsnKind::INSERTVALUE, loc)
-            (@insert2).value.insert_value = {
-                ret = insert2_ret,
-                value = insert1_ret,
-                element = bitcast_ret,
-                index = index2
-            } !InsnInsertValue
-
-            push_insn(insert2, state)
-
-            return insert2_ret
-        } else {
-            return value
-        }
+        return convert_array_to_array(tpe, value, loc, state)
     } else if tpe.kind == typechecking::TypeKind::BOOL {
-        if typechecking::is_ref_or_weak(value.tpe) {
-            value = state.extract_value(pointer(value.tpe.tpe if value.tpe.tpe else pointer(builtins::int8_)), value, [1], loc)
-            value = convert_to(node, value, builtins::size_t_, state)
-        } else if typechecking::is_pointer(value.tpe) {
-            // TODO This isn't the correct type, we need something like
-            // intptr_t
-            value = convert_to(node, value, builtins::size_t_, state)
-        }
-        if typechecking::is_float(value.tpe) {
-            let ret = make_local_value(builtins::bool_, null, state)
-            let insn = make_insn_dbg(InsnKind::FCMP, loc)
-            (@insn).value.fcmp = {
-                op = CompareFloat::une,
-                ret = ret,
-                left = value,
-                right = {
-                    kind = ValueKind::FLOAT,
-                    tpe = value.tpe,
-                    f = 0.0
-                } !Value
-            } !InsnFcmp
-            push_insn(insn, state)
-            return ret
-        } else if typechecking::is_integer(value.tpe) {
-            let ret = make_local_value(builtins::bool_, null, state)
-            let insn = make_insn_dbg(InsnKind::ICMP, loc)
-            (@insn).value.icmp = {
-                op = CompareInt::ne,
-                ret = ret,
-                left = value,
-                right = {
-                    kind = ValueKind::INT,
-                    tpe = value.tpe,
-                    i = 0
-                } !Value
-            } !InsnIcmp
-            push_insn(insn, state)
-            return ret
-        } else {
-            // TODO Arrays and Co
-            return value
-        }
+        return convert_value_to_bool(tpe, load_value(value, loc, state), loc, state)
     } else if typechecking::is_integer(tpe) {
         if value.tpe.kind == typechecking::TypeKind::BOOL {
             kind = InsnKind::ZEXT
         } else if typechecking::is_integer(value.tpe) {
             if (@value.tpe).size == tpe.size {
                 // Types only differ in sign, llvm doesn't treat them any different
-                return value
+                return load_value(value, loc, state)
             } else if (@value.tpe).size > tpe.size {
                 kind = InsnKind::TRUNC
             } else if tpe.unsig {
@@ -1655,7 +1671,7 @@ export def convert_to(node: &parser::Node, value: Value, tpe: &typechecking::Typ
         } else if typechecking::is_pointer(value.tpe) {
             kind = InsnKind::PTRTOINT
         } else {
-            return value
+            return load_value(value, loc, state)
         }
     } else if typechecking::is_float(tpe) {
         if typechecking::is_integer(value.tpe) {
@@ -1671,7 +1687,7 @@ export def convert_to(node: &parser::Node, value: Value, tpe: &typechecking::Typ
                 kind = InsnKind::FPEXT
             }
         } else {
-            return value
+            return load_value(value, loc, state)
         }
     } else if typechecking::is_pointer(tpe) {
         if (@value.tpe).kind == typechecking::TypeKind::NULL {
@@ -1684,12 +1700,13 @@ export def convert_to(node: &parser::Node, value: Value, tpe: &typechecking::Typ
         } else if typechecking::is_integer(value.tpe) {
             kind = InsnKind::INTTOPTR
         } else {
-            return value
+            return load_value(value, loc, state)
         }
     } else {
-        return value
+        return load_value(value, loc, state)
     }
 
+    value = load_value(value, loc, state)
     let ret = make_local_value(tpe, null, state)
 
     let insn = make_insn_dbg(kind, loc)
@@ -1759,7 +1776,7 @@ def walk_StructLitUnion(node: &parser::Node, state: &State) -> Value {
         }
     }
 
-    let value = convert_to(arg, walk_and_load_expression(arg, state), arg_tpe, state)
+    let value = convert_to(arg, walk_expression(arg, state), arg_tpe, state)
     if typechecking::is_ref(arg_tpe) {
         increase_ref_count_of_value(value, loc, state)
     }
@@ -1866,7 +1883,7 @@ def walk_StructLit(node: &parser::Node, state: &State) -> Value {
         for var i in 0..vector::length(args) {
             let arg = args[i]
             let arg_tpe = tpe.fields[i].tpe
-            let value = walk_and_load_expression(arg, state)
+            let value = walk_expression(arg, state)
             values[i] = convert_to(arg, value, arg_tpe, state)
             if typechecking::is_ref(arg_tpe) {
                 increase_ref_count_of_value(values[i], loc, state)
@@ -1879,7 +1896,7 @@ def walk_StructLit(node: &parser::Node, state: &State) -> Value {
         for var i in 0..vector::length(kwargs) {
             let kwarg = kwargs[i]
             let name = typechecking::last_ident_to_str((@kwarg).value.named_arg.name)
-            let value = walk_and_load_expression((@kwarg).value.named_arg.value, state)
+            let value = walk_expression((@kwarg).value.named_arg.value, state)
             
             for var j in 0..tpe.fields.size {
                 let field = tpe.fields[j]
@@ -1994,8 +2011,8 @@ def walk_ArrayLit(node: &parser::Node, state: &State) -> Value {
 
 def walk_ArithmeticOp(node: &parser::Node, insn_kind: InsnKind, tpe: &typechecking::Type, state: &State) -> Value {
     let loc = make_location(node, state)
-    let left = convert_to(node, walk_and_load_expression((@node).value.bin_op.left, state), tpe, state)
-    let right = convert_to(node, walk_and_load_expression((@node).value.bin_op.right, state), tpe, state)
+    let left = convert_to(node, walk_expression((@node).value.bin_op.left, state), tpe, state)
+    let right = convert_to(node, walk_expression((@node).value.bin_op.right, state), tpe, state)
 
     let value = make_local_value(tpe, null, state)
     let insn = make_insn_dbg(insn_kind, loc)
@@ -2042,7 +2059,7 @@ def walk_UAdd(node: &parser::Node, state: &State) -> Value {
 
 def walk_Not(node: &parser::Node, state: &State) -> Value {
     let loc = make_location(node, state)
-    let expr = convert_to(node, walk_and_load_expression((@node).value.expr, state), builtins::bool_, state)
+    let expr = convert_to(node, walk_expression((@node).value.expr, state), builtins::bool_, state)
     
     let ret = make_local_value(builtins::bool_, null, state)
     let xor = make_insn_dbg(InsnKind::XOR, loc)
@@ -2060,7 +2077,7 @@ def walk_Not(node: &parser::Node, state: &State) -> Value {
 def walk_And(node: &parser::Node, state: &State) -> Value {
     let loc = make_location(node, state)
 
-    let left_expr = walk_and_load_expression((@node).value.bin_op.left, state)
+    let left_expr = walk_expression((@node).value.bin_op.left, state)
     insert_destructors(node.value.bin_op.left.scope, loc, state)
     let left = convert_to(node, left_expr, builtins::bool_, state)
 
@@ -2097,7 +2114,7 @@ def walk_And(node: &parser::Node, state: &State) -> Value {
     let if_true = make_label(state)
     push_label(if_true, state)
 
-    let right_expr = walk_and_load_expression((@node).value.bin_op.right, state)
+    let right_expr = walk_expression((@node).value.bin_op.right, state)
     insert_destructors(node.value.bin_op.right.scope, loc, state)
     let right = convert_to(node, right_expr, builtins::bool_, state)
 
@@ -2131,7 +2148,7 @@ def walk_And(node: &parser::Node, state: &State) -> Value {
 
 def walk_Or(node: &parser::Node, state: &State) -> Value {
     let loc = make_location(node, state)
-    let left_expr = walk_and_load_expression((@node).value.bin_op.left, state)
+    let left_expr = walk_expression((@node).value.bin_op.left, state)
     insert_destructors(node.value.bin_op.left.scope, loc, state)
     let left = convert_to(node, left_expr, builtins::bool_, state)
 
@@ -2168,7 +2185,7 @@ def walk_Or(node: &parser::Node, state: &State) -> Value {
     let if_false = make_label(state)
     push_label(if_false, state)
 
-    let right_expr = walk_and_load_expression((@node).value.bin_op.right, state)
+    let right_expr = walk_expression((@node).value.bin_op.right, state)
     insert_destructors(node.value.bin_op.right.scope, loc, state)
     let right = convert_to(node, right_expr, builtins::bool_, state)
 
@@ -2389,17 +2406,17 @@ def walk_Call(node: &parser::Node, state: &State) -> Value {
     for var i in 0..vector::length(call_args) {
         let n = call_args[i]
         if i == len - 1 and pass_array_as_varargs {
-            var expr = walk_and_load_expression(n, state)
+            var expr = walk_expression(n, state)
             expr = convert_to(n, expr, typechecking::array(last_np.tpe), state)
             args[i] = expr
         } else if i < len - 1 or i == len - 1 and not last_np.varargs {
             let p = parameter_t[i]
-            var expr = walk_and_load_expression(n, state)
+            var expr = walk_expression(n, state)
             expr = convert_to(n, expr, p.tpe, state)
             args[i] = expr
         } else if last_np.varargs {
             if last_np.tpe {
-                var expr = walk_and_load_expression(n, state)
+                var expr = walk_expression(n, state)
                 expr = convert_to(n, expr, last_np.tpe, state)
                 if typechecking::has_copy_constructor(expr.tpe) {
                     let ret = state.alloca(expr.tpe, loc)
@@ -2443,7 +2460,7 @@ def walk_Call(node: &parser::Node, state: &State) -> Value {
         for var j in 0..vector::length(parameter_t) {
             let p = parameter_t[j]
             if p.name == name {
-                var expr = walk_and_load_expression(value, state)
+                var expr = walk_expression(value, state)
                 expr = convert_to(n, expr, p.tpe, state)
 
                 if typechecking::has_copy_constructor(expr.tpe) {
@@ -3565,7 +3582,7 @@ def walk_ArraySubscript(node: &parser::Node, state: &State) -> Value {
         push_insn(gep, state)
         return ret
     } else if typechecking::is_pointer(array_tpe) {
-        left_value = load_value(node, left_value, state)
+        left_value = load_value(left_value, loc, state)
 
         var index = allocate_ref(Value, 1)
         index[0] = right_value
@@ -3845,8 +3862,8 @@ def walk_ComparisionOp(node: &parser::Node, state: &State) -> Value {
 def walk_PointerOp(node: &parser::Node, kind: InsnKind, state: &State) -> Value {
     let loc = make_location(node, state)
     // TODO This is not the correct type
-    let value_left = convert_to(node, walk_and_load_expression((@node).value.bin_op.left, state), builtins::size_t_, state)
-    var value_right = convert_to(node, walk_and_load_expression((@node).value.bin_op.right, state), builtins::size_t_, state)
+    let value_left = convert_to(node, walk_expression((@node).value.bin_op.left, state), builtins::size_t_, state)
+    var value_right = convert_to(node, walk_expression((@node).value.bin_op.right, state), builtins::size_t_, state)
     value_right = state.mul(builtins::size_t_, value_right, { kind = ValueKind::INT, tpe = builtins::size_t_, i = node.tpe.tpe.size if node.tpe.tpe else 1 !size_t } !Value, loc)
 
     let ret_arith = make_local_value(builtins::size_t_, null, state)
@@ -3873,7 +3890,7 @@ def walk_PointerOp(node: &parser::Node, kind: InsnKind, state: &State) -> Value 
 
 def walk_IfExpr(node: &parser::Node, state: &State) -> Value {
     let loc = make_location(node, state)
-    let cond = convert_to(node, walk_and_load_expression(node.value.if_expr.cond, state), builtins::bool_, state)
+    let cond = convert_to(node, walk_expression(node.value.if_expr.cond, state), builtins::bool_, state)
     let if_true = node.value.if_expr.if_true
     let if_false = node.value.if_expr.if_false
 
@@ -3894,7 +3911,7 @@ def walk_IfExpr(node: &parser::Node, state: &State) -> Value {
     push_insn(br, state)
     push_label(entry_label, state)
     
-    var true_value = convert_to(if_true, walk_and_load_expression(if_true, state), node.tpe, state)
+    var true_value = convert_to(if_true, walk_expression(if_true, state), node.tpe, state)
     if typechecking::is_ref(if_true.tpe) {
         increase_ref_count_of_value(true_value, loc, state)
     } else if typechecking::has_copy_constructor(if_true.tpe) {
@@ -3919,7 +3936,7 @@ def walk_IfExpr(node: &parser::Node, state: &State) -> Value {
     br.value.br.if_false = false_label
     push_label(false_label, state)
 
-    var false_value = convert_to(if_false, walk_and_load_expression(if_false, state), node.tpe, state)
+    var false_value = convert_to(if_false, walk_expression(if_false, state), node.tpe, state)
     if typechecking::is_ref(if_false.tpe) {
         increase_ref_count_of_value(false_value, loc, state)
     } else if typechecking::has_copy_constructor(if_false.tpe) {
@@ -4080,7 +4097,7 @@ export def walk_expression(node: &parser::Node, state: &State) -> Value {
 def walk_If(node: &parser::Node, state: &State) {
     let loc = make_location(node, state)
 
-    let cond = convert_to((@node).value.if_.cond, walk_and_load_expression((@node).value.if_.cond, state), builtins::bool_, state)
+    let cond = convert_to((@node).value.if_.cond, walk_expression((@node).value.if_.cond, state), builtins::bool_, state)
     let entry_label = make_label(state)
     var entry = make_insn_dbg(InsnKind::BR, loc)
     (@entry).value.br = {
@@ -4109,7 +4126,7 @@ def walk_If(node: &parser::Node, state: &State) {
         push_label(br_label, state)
         
         let else_if = (@node).value.if_.else_if[i]
-        let cond = convert_to((@else_if).value.else_if.cond, walk_and_load_expression((@else_if).value.else_if.cond, state), builtins::bool_, state)
+        let cond = convert_to((@else_if).value.else_if.cond, walk_expression((@else_if).value.else_if.cond, state), builtins::bool_, state)
         insert_destructors(else_if.scope, make_location(else_if, state), state)
 
         entry = make_insn_dbg(InsnKind::BR, make_location(else_if, state))
@@ -4413,7 +4430,7 @@ def walk_Return(node: &parser::Node, state: &State) {
         for var i in 0..ret_args.size {
             let n = (@node).value.body[i]
             let tpe = (@(@current_function).ret).fields[i].tpe
-            var expr = convert_to(n, walk_and_load_expression(n, state), tpe, state)
+            var expr = convert_to(n, walk_expression(n, state), tpe, state)
             ret_args[i] = return_post(expr, loc, state)
         }
         value = {
@@ -4427,7 +4444,7 @@ def walk_Return(node: &parser::Node, state: &State) {
         let tpe = (@current_function).ret
         if tpe and vector::length(node.value.body) > 0 {
             let arg = vector::peek(node.value.body)
-            value = convert_to(arg, walk_and_load_expression(arg, state), tpe, state)
+            value = convert_to(arg, walk_expression(arg, state), tpe, state)
             value = return_post(@value, loc, state)
         }
     }
@@ -4526,7 +4543,7 @@ def walk_While(node: &parser::Node, state: &State) {
     let start_label = make_label(state)
     push_label(start_label, state)
 
-    let cond = convert_to(node, walk_and_load_expression((@node).value.while_loop.expr, state), builtins::bool_, state)
+    let cond = convert_to(node, walk_expression((@node).value.while_loop.expr, state), builtins::bool_, state)
     
     let br = make_insn_dbg(InsnKind::BR, loc)
     (@br).value.br = {
@@ -4574,8 +4591,8 @@ def walk_For(node: &parser::Node, state: &State) {
 
     let left = (@range).value.bin_op.left
     let right = (@range).value.bin_op.right
-    let startv = convert_to(left, walk_and_load_expression((@range).value.bin_op.left, state), tpe, state)
-    let endv = convert_to(right, walk_and_load_expression(right, state), tpe, state)
+    let startv = convert_to(left, walk_expression((@range).value.bin_op.left, state), tpe, state)
+    let endv = convert_to(right, walk_expression(right, state), tpe, state)
 
     push_scope(node, state)
     let loc = make_location(node, state)
@@ -4993,7 +5010,7 @@ def walk_Assert(node: &parser::Node, state: &State) {
     var args: &[Value]
 
     if cond {
-        let expr = convert_to(cond, walk_and_load_expression(cond, state), builtins::bool_, state)
+        let expr = convert_to(cond, walk_expression(cond, state), builtins::bool_, state)
         let if_false = make_label(state)
     
         br = make_insn_dbg(InsnKind::BR, loc)
