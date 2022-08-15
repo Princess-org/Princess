@@ -8,7 +8,7 @@ import tatsu
 from tatsu.walkers import NodeWalker
 from pathlib import Path
 
-GRAMMAR = """\
+GRAMMAR = r"""
     function_decl = ret: type_1 '(' args: ','.{ type_1 | varargs } ')';
 
     sign = 'signed' | 'unsigned';
@@ -113,7 +113,7 @@ class Integer(Type):
         return self.name
 
 class Function(Type):
-    def __init__(self, args: list[Type], ret: Type):
+    def __init__(self, args: List[Type], ret: Type):
         self.args = args
         self.ret = ret
 
