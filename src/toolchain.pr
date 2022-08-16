@@ -49,6 +49,8 @@ export var print_ast = false
 // This flag controls emitting debug information to llvm
 export var debug_sym = false
 
+var main_module_name: &string
+
 export def add_define(define: &string) {
     let tokens = lexer::lex(define)
     let program = parser::parse(tokens, [define], "<internal>", "<internal>")
@@ -112,9 +114,6 @@ export type Stage = enum {
 }
 
 export type Module = struct {
-    // This is true if the module has been forward declared
-    // By use of type module::Type
-    forward_declared: bool
     filename: &string
     llfile: &string
     module: &string
@@ -168,34 +167,6 @@ export def is_preload(module: &Module) -> bool {
     return s
 }
 
-// TODO We don't really need this anymore
-export def get_forward_declared_scope(ident: &parser::Node) -> &scope::Scope {
-
-    var modulename: &string = ""
-    let len = vector::length(ident.value.identifier.path) - 1
-    for var i in 0..len {
-        modulename += ident.value.identifier.path[i]
-        if i < len - 1 {
-            modulename += "::"
-        }
-    }
-
-    var module = modules.get_or_default(modulename, null)
-    if module {
-        return module.scope
-    }
-    
-    module = {
-        forward_declared = true,
-        scope = scope::enter_function_scope(builtins::builtins, module ),
-        code = compiler::make_block()
-    } !&Module
-
-    modules[modulename] = module
-
-    return (@module).scope
-}
-
 export def find_module_file(module: &parser::Node) -> &string {
     assert module.kind == parser::NodeKind::IDENTIFIER
     let ident = module.value.identifier.path
@@ -225,7 +196,7 @@ export def typecheck_module(name: &parser::Node) -> &Module {
     var module = modules.get_or_default(modulename, null)
     if module and module.stage < Stage::TYPECHECKING {
         module.stage = Stage::TYPECHECKING
-        typechecking::typecheck(module )
+        typechecking::typecheck(module)
         return module
     }
     return null
@@ -236,13 +207,13 @@ export def compile_module(name: &parser::Node) -> &Module {
     var module = modules.get_or_default(modulename, null)
     if module and module.stage < Stage::COMPILING {
         module.stage = Stage::COMPILING
-        compiler::compile(module )
+        compiler::compile(module)
         return module
     }
     return null
 }
 
-export def consteval_file(filename: &string, modulename: &string, forward_declared: &Module) -> &Module {
+export def consteval_file(filename: &string, modulename: &string) -> &Module {
     let fh = open(@filename, "rb")
     if not fh {
         error("File \"", filename, "\" doesn't exist\n")
@@ -259,31 +230,12 @@ export def consteval_file(filename: &string, modulename: &string, forward_declar
             debug::print_node(node)
         }
         
-        var sc: &scope::Scope
-        var module: &Module
-        if forward_declared { 
-            module = forward_declared 
-            sc = (@forward_declared).scope
-        } else {
-            module = {} !&Module
-            sc = scope::enter_function_scope(builtins::builtins, module)
-        }
-
+        var sc = scope::enter_function_scope(builtins::builtins, null)
+        var module = make_module(filename, modulename, node, sc)
         let state = compiler::make_state(module)
-        @module = {
-            forward_declared = false,
-            filename = filename,
-            module = modulename,
-            node = node,
-            scope = sc,
-            result = compiler::make_result(),
-            code = compiler::make_block(),  
-            imported = set::make(),
-            dependants = vector::make(type weak_ref(Module)),
-            dyn_dispatch = vector::make(type &typechecking::Type),
-            compiler_state = state
-        } !Module
+        sc.module = module
 
+        module.compiler_state = state
         modules[modulename] = module
 
         consteval::consteval(module)
@@ -297,11 +249,14 @@ export def consteval_file(filename: &string, modulename: &string, forward_declar
 // name is an identifier
 export def consteval_module(name: &parser::Node) -> &Module {
     let modulename = parser::identifier_to_str(name)
+    if modulename == main_module_name {
+        return modules["main"]
+    }
     var module = modules.get_or_default(modulename, null)
-    if not module or (@module).forward_declared {
+    if not module {
         let filename = find_module_file(name)
         if not filename { return null }
-        module = consteval_file(filename, modulename, module)
+        module = consteval_file(filename, modulename)
     }
 
     return module
@@ -530,9 +485,9 @@ def create_runtime_module {
     modules["runtime"] = runtime_module
     runtime = runtime_module
 
-    consteval::consteval(runtime_module )
+    consteval::consteval(runtime_module)
     runtime_module.stage = Stage::TYPECHECKING
-    typechecking::typecheck(runtime_module )
+    typechecking::typecheck(runtime_module)
     
     builtins::Type_ = scope::get_type(runtime.scope, make_identifier("Type"))
     builtins::Ref_  = scope::get_type(runtime.scope, make_identifier("Ref"))
@@ -607,13 +562,31 @@ export def reset_types {
     create_types_main()
 }
 
+def extract_module_name(filename: &string) -> &string {
+    // TODO Path manipulation should be made easier
+    var folder_sep = filename.last_index_of("/")
+    if folder_sep == -1 {
+        folder_sep = filename.last_index_of("\\")
+    }
+    if folder_sep == -1 {
+        folder_sep = 0
+    }
+    return filename.substring(folder_sep - 1 if folder_sep > 0 else 0, filename.length() - 4)
+}
+
 export def compile_main_file(filename: &string) {
+    if not filename.ends_with(".pr") {
+        error("File ", filename, " is not a Princess source file")
+        exit(1)
+    }
+
     let start_frontend = util::millis()
 
     prepare_preload()
     create_types_main()
 
-    var module = consteval_file(filename, "main", null) 
+    main_module_name = extract_module_name(filename)
+    var module = consteval_file(filename, "main") 
     if not module { exit(1) }
 
     module.stage = Stage::TYPECHECKING
