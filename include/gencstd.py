@@ -281,14 +281,21 @@ class ConstDecl(Declaration):
         return f"export const {self.name}: {self.type.to_string(file)} = {self.value}"
 
 class VarDecl(Declaration):
-    def __init__(self, name: str, type: Type):
+    def __init__(self, name: str, type: Type, dllimport: bool):
         self.name = name
         self.type = type
+        self.dllimport = dllimport
 
     def to_declaration(self, n: int, file: File) -> str:
-        ret = f"export import var #extern {self.name}: {self.type.to_string(file)}"
-        ret += f"\n__VAR_NAMES[{n}] = \"{self.name}\""
-        ret += f"\n__VARS[{n}] = *{self.name} !*"
+        ret = "export import var #extern "
+        variable = ""
+        if self.dllimport:
+            ret += "#dllimport "
+        else:
+            variable = f", variable = *{self.name} !*"
+
+        ret += f"{self.name}: {self.type.to_string(file)}"
+        ret += f"\n__SYMBOLS[{n}] = {{ kind = symbol::SymbolKind::VARIABLE, dllimport = {'true' if self.dllimport else 'false'}, name = \"{self.name}\"{variable}}} !symbol::Symbol"
         return ret
 
 class FunctionDecl(Declaration):
@@ -428,7 +435,13 @@ def walk_VarDecl(node, file: File):
     name = node["name"]
     tpe = parse(get_type(node))
     tpe = Walker(file).walk(tpe)
-    file.GLOBALS[name] = VarDecl(name, tpe)
+    dllimport = False
+    if "inner" in node:
+        for param in node["inner"]:
+            if param["kind"] == "DLLImportAttr":
+                dllimport = True
+
+    file.GLOBALS[name] = VarDecl(name, tpe, dllimport)
 
 def walk_EnumDecl(node, file: File):
     name = node["name"] if "name" in node else ""
@@ -460,7 +473,6 @@ def is_anonymous(qual_type):
         "anonymous at" in qual_type)
 
 def walk_TypedefDecl(node, file: File):
-
     name = node["name"]
     inner = node["inner"][0]
     if "ownedTagDecl" in inner:
@@ -522,7 +534,7 @@ def walk_FunctionDecl(node, file: File):
         dllimport = False
         args = []
         if "inner" in node:
-            for (i, param) in enumerate(node["inner"]):
+            for i, param in enumerate(node["inner"]):
                 if param["kind"] == "ParmVarDecl":
                     argname = escape_name(param.get("name", "_" + str(i)))
                     tpe = Walker(file).walk(parse(get_type(param)))
@@ -567,7 +579,7 @@ def process_module(name: str):
             if line.startswith("%EXCLUDE"):
                 line = line.replace("%EXCLUDE", "")
                 line = line.strip()
-                excluded = set(line.split(" "))
+                excluded.update(line.split(" "))
 
     with open(folder / f"{name}.pr", "w") as fp:
         file = File(fp)
