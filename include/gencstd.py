@@ -268,7 +268,11 @@ class Enum(Type):
 
 class Declaration(ABC):
     @abstractmethod
-    def to_declaration(self, n: int) -> str:
+    def to_declaration(self, n: int, file: File) -> str:
+        pass
+
+    @abstractmethod
+    def to_symbol(self, n: int, file: File) -> str:
         pass
 
 class ConstDecl(Declaration):
@@ -279,6 +283,9 @@ class ConstDecl(Declaration):
 
     def to_declaration(self, n: int, file: File) -> str:
         return f"export const {self.name}: {self.type.to_string(file)} = {self.value}"
+    
+    def to_symbol(self, n: int, file: File) -> str:
+        return ""
 
 class VarDecl(Declaration):
     def __init__(self, name: str, type: Type, dllimport: bool):
@@ -288,14 +295,18 @@ class VarDecl(Declaration):
 
     def to_declaration(self, n: int, file: File) -> str:
         ret = "export import var #extern "
-        variable = ""
         if self.dllimport:
             ret += "#dllimport "
-        else:
-            variable = f", variable = *{self.name} !*"
 
         ret += f"{self.name}: {self.type.to_string(file)}"
-        ret += f"\n__SYMBOLS[{n}] = {{ kind = symbol::SymbolKind::VARIABLE, dllimport = {'true' if self.dllimport else 'false'}, name = \"{self.name}\"{variable}}} !symbol::Symbol"
+        return ret
+
+    def to_symbol(self, n: int, file: File) -> str:
+        variable = ""
+        if not self.dllimport:
+            variable = f", variable = *{self.name} !*"
+
+        ret = f"__SYMBOLS[{n}] = {{ kind = symbol::SymbolKind::VARIABLE, dllimport = {'true' if self.dllimport else 'false'}, name = \"{self.name}\"{variable}}} !symbol::Symbol"
         return ret
 
 class FunctionDecl(Declaration):
@@ -314,16 +325,20 @@ class FunctionDecl(Declaration):
             args.append("...")
         
         ret = "export import def #extern "
-        function = ""
         if self.dllimport:
             ret += "#dllimport "
-        else:
-            function = f", function = *{self.name} !() -> ()"
 
         ret += f"{self.name}({', '.join(args)})"
         if self.ret != void: ret += " -> " + self.ret.to_string(file)
-        ret += f"\n__SYMBOLS[{n}] = {{ kind = symbol::SymbolKind::FUNCTION, dllimport = {'true' if self.dllimport else 'false'}, name = \"{self.name}\"{function}}} !symbol::Symbol"
 
+        return ret
+
+    def to_symbol(self, n: int, file: File) -> str:
+        function = ""
+        if not self.dllimport:
+            function = f", function = *{self.name} !() -> ()"
+
+        ret = f"__SYMBOLS[{n}] = {{ kind = symbol::SymbolKind::FUNCTION, dllimport = {'true' if self.dllimport else 'false'}, name = \"{self.name}\"{function}}} !symbol::Symbol"
         return ret
 
 PRIMITIVES = {
@@ -585,7 +600,9 @@ def process_module(name: str):
                 line = line.strip()
                 excluded.update(line.split(" "))
 
-    with open(folder / f"{name}.pr", "w") as fp:
+    with open(folder / f"{name}.pr", "w") as fp,\
+        open(folder / f"{name}_sym.pr", "w") as fp2:
+
         file = File(fp)
 
         for top_level in data:
@@ -598,8 +615,9 @@ def process_module(name: str):
         VARS = {k:v for k,v in file.GLOBALS.items() if isinstance(v, VarDecl)}
         CONSTS = {k:v for k,v in file.GLOBALS.items() if isinstance(v, ConstDecl)}
         
-        print("import symbol", file = fp)
-        print(f"export var __SYMBOLS: [{len(DEFS) + len(VARS)}; symbol::Symbol]", file = fp)
+        print(f"import {name}", file = fp2)
+        print("import symbol", file = fp2)
+        print(f"export var __SYMBOLS: [{len(DEFS) + len(VARS)}; symbol::Symbol]", file = fp2)
 
         for g in CONSTS.values():
             print(g.to_declaration(0, file), file = fp)
@@ -612,10 +630,12 @@ def process_module(name: str):
         num_decls = 0
         for g in DEFS.values():
             print(g.to_declaration(num_decls, file), file = fp)
+            print(g.to_symbol(num_decls, file), file = fp2)
             num_decls += 1
 
         for g in VARS.values():
             print(g.to_declaration(num_decls, file), file = fp)
+            print(g.to_symbol(num_decls, file), file = fp2)
             num_decls += 1
 
     return file
