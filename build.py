@@ -16,10 +16,8 @@ with open("version") as fp:
 
 if sys.platform == "win32":
     ARCHIVE = f"princess-win32-{VERSION}.zip"
-    EXE_FILE = "princess.exe"
 else:
     ARCHIVE = f"princess-{VERSION}.tar.gz"
-    EXE_FILE = "princess"
 
 SOURCE_URL = f"https://github.com/Princess-org/Princess/releases/download/v{VERSION}-alpha/{ARCHIVE}"
 
@@ -88,7 +86,7 @@ def download():
 
     shutil.unpack_archive(ARCHIVE, Path("bin") / FOLDER)
 
-    shutil.copy(Path("bin") / FOLDER / "bin" / EXE_FILE, "bin")
+    shutil.copy(Path("bin") / FOLDER / "bin" / exe_file("princess"), "bin")
     shutil.rmtree(Path("bin") / FOLDER)
     Path(ARCHIVE).unlink()
 
