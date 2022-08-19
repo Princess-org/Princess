@@ -1,5 +1,6 @@
 #!/usr/bin/python3.9
 
+import json
 from os import system
 import os
 from pathlib import Path
@@ -7,6 +8,7 @@ import subprocess
 import sys
 import shutil
 import glob
+from urllib import request
 import requests
 
 from include import gencstd
@@ -14,12 +16,7 @@ from include import gencstd
 with open("version") as fp:
     VERSION = fp.read().split("VERSION=")[1]
 
-if sys.platform == "win32":
-    ARCHIVE = f"princess-win32-{VERSION}.zip"
-else:
-    ARCHIVE = f"princess-{VERSION}.tar.gz"
-
-SOURCE_URL = f"https://github.com/Princess-org/Princess/releases/download/v{VERSION}-alpha/{ARCHIVE}"
+RELEASES_URL = f"https://api.github.com/repos/Princess-Org/Princess/releases"
 
 WIN_ARGS = ["-llibffi", "--link-flag", "/FORCE:UNRESOLVED", "--link-flag", "/STACK:67108864", "--clang=-gcodeview"]
 if sys.platform == "win32":
@@ -75,20 +72,23 @@ def clean():
 
 def download():
     print("Downloading Princess compiler from Github...")
+
+    latest_version = json.loads(requests.get(RELEASES_URL).text)[0]
+    for asset in latest_version["assets"]:
+        if sys.platform == "win32":
+            if asset["name"].endswith(".zip"): break
+        else:
+            if asset["name"].endswith(".tar.gz"): break
     
-    with open(ARCHIVE, "wb") as fp:
-        fp.write(requests.get(SOURCE_URL).content)
+    archive = "princess.zip" if sys.platform == "win32" else "princess.tar.gz"
+    with open(archive, "wb") as fp:
+        fp.write(requests.get(asset["browser_download_url"]).content)
 
-    if sys.platform == "win32":
-        FOLDER = f"princess-win32-{VERSION}"
-    else:
-        FOLDER = f"princess-{VERSION}"
-
-    shutil.unpack_archive(ARCHIVE, Path("bin") / FOLDER)
-
-    shutil.copy(Path("bin") / FOLDER / "bin" / exe_file("princess"), "bin")
-    shutil.rmtree(Path("bin") / FOLDER)
-    Path(ARCHIVE).unlink()
+    shutil.unpack_archive(archive, "princess")
+    shutil.copy(Path("princess") / os.listdir(Path("princess"))[0] / "bin" / exe_file("princess"), "bin")
+    
+    shutil.rmtree(Path("princess"))
+    Path(archive).unlink()
 
 def build(extra):
     args = [exe_file("bin/princess"), "-d", "-Isrc", "--buildfolder=build", "--outfile", exe_file("bin/princess2"), "src/main.pr"]
