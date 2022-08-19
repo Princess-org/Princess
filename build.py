@@ -85,7 +85,10 @@ def download():
         fp.write(requests.get(asset["browser_download_url"]).content)
 
     shutil.unpack_archive(archive, "princess")
-    shutil.copy(Path("princess") / os.listdir(Path("princess"))[0] / "bin" / exe_file("princess"), "bin")
+    if sys.platform == "win32":
+        shutil.copy(Path("princess") / os.listdir(Path("princess"))[0] / "bin/princess.exe", "bin")
+    else:
+        shutil.copy(Path("princess") / "bin/princess", "bin")
     
     shutil.rmtree(Path("princess"))
     Path(archive).unlink()
@@ -99,9 +102,11 @@ def build(extra):
 def main():
     Path("bin/").mkdir(exist_ok = True)
     Path("build/").mkdir(exist_ok = True)
+    downloaded = False
     if not Path(exe_file("bin/princess")).exists():
         download()
         gencstd.main()
+        downloaded = True
 
     args = sys.argv
     if len(args) == 1:
@@ -113,7 +118,8 @@ def main():
     elif args[1] == "clean":
         clean()
     elif args[1] == "download":
-        download()
+        if not downloaded:
+            download()
     else:
         build(args[1:])
 
