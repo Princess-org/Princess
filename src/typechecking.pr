@@ -373,6 +373,7 @@ export type Function = struct {
     tpe: &Type
     locals: &SMap(&Type)
     has_defer: bool
+    has_yield: bool
 }
 
 export type State = struct {
@@ -3245,11 +3246,32 @@ export def walk_Def(node: &parser::Node, state: &State) {
             walk(node, body[i], state)
         }
 
-        pop_function(state)
-        state.scope = outer_scope
-
         node.value.def_.locals = function.locals
         node.value.def_.has_defer = function.has_defer
+        node.value.def_.has_yield = function.has_yield
+
+        if function.has_yield {
+            let generator_ctor = {
+                kind = parser::NodeKind::TYPE_CONSTRUCTOR
+            } !&parser::Node
+            generator_ctor.value.type_constructor = {
+                name = parser::make_identifier("Generator"),
+                args = node.value.def_.returns
+            } !parser::NodeTypeConstructor
+
+            var generator = reference(typechecking::type_lookup(generator_ctor, state))
+
+            tpe.return_t = vector::make(type &typechecking::Type)
+            tpe.return_t.push(generator)
+            let name = typechecking::append_module(tpe.name, state.module.module)
+            tpe.type_name = typechecking::mangle_function_name(name, tpe.parameter_t)
+
+            has_destructor(generator.tpe)
+            has_copy_constructor(generator.tpe)
+        }
+
+        pop_function(state)
+        state.scope = outer_scope
     }
 
     node.tpe = tpe
@@ -3320,23 +3342,10 @@ def walk_TypeDecl(node: &parser::Node, state: &State) {
     }
 }
 
-def walk_Return(node: &parser::Node, state: &State) {
-    let current_fun = current_function(state)
-    let body = node.value.body
-    if current_fun.is_global {
-        // TODO This is actually allowed, I just need to infer the types
-        // and assign to some sort of internal variable
-        errors::errorn(node, "return outside of a function")
-        return
-    }
-    let tpe = current_fun.tpe
-
-    let ltypes = tpe.return_t
-    let rtypes = collapse_types(node, ltypes, body, state)
-
+def check_return_arguments(is_yield: bool, node: &parser::Node, ltypes: &Vector(&Type), rtypes: &Vector(&Type), state: &State) {
     if vector::length(ltypes) != vector::length(rtypes) {
         // TODO Improve error message
-        errors::errorn(node, "Wrong number of arguments to return")
+        errors::errorn(node, "Wrong number of arguments to ", "yield" if is_yield else "return")
     }
 
     for var i in 0..vector::length(ltypes) {
@@ -3348,9 +3357,49 @@ def walk_Return(node: &parser::Node, state: &State) {
         if not argtpe or not rettpe { continue }
         if not is_assignable(argtpe, rettpe, state.module) {
             // TODO This doesn't point to the actual value
-            errors::errorn(node, "Wrong type of return argument, got ", debug::type_to_str(rettpe), ", expected ", debug::type_to_str(argtpe))
+            errors::errorn(node, 
+                "Wrong type of ", "yield" if is_yield else "return",
+                " argument, got ", debug::type_to_str(rettpe), ", expected ", debug::type_to_str(argtpe)
+            )
         }
     }
+}
+
+def walk_Return(node: &parser::Node, state: &State) {
+    let current_fun = current_function(state)
+    let body = node.value.body
+    if current_fun.is_global {
+        // TODO This is actually allowed, I just need to infer the types
+        // and assign to some sort of internal variable
+        errors::errorn(node, "return outside of a function")
+        return
+    }
+    let tpe = current_fun.tpe
+    let ltypes = tpe.return_t
+    let rtypes = collapse_types(node, ltypes, body, state)
+
+    if not (current_fun.has_yield and vector::length(rtypes) == 0) {
+        check_return_arguments(false, node, ltypes, rtypes, state)
+    }
+    
+    node.tpe = tpe
+}
+
+def walk_Yield(node: &parser::Node, state: &State) {
+    let current_fun = current_function(state)
+    let body = node.value.body
+    if current_fun.is_global {
+        errors::errorn(node, "yield outside of a function")
+        return
+    }
+    let tpe = current_fun.tpe
+    let ltypes = tpe.return_t
+    let rtypes = collapse_types(node, ltypes, body, state)
+    if rtypes.length != 1 {
+        errors::errorn(node, "Yield needs a single argument")
+    }
+    check_return_arguments(true, node, ltypes, rtypes, state)
+    
     node.tpe = tpe
 }
 
@@ -3671,15 +3720,73 @@ def walk_While(node: &parser::Node, state: &State) {
     }
 }
 
+def for_setup_generator(expr: &parser::Node, node: &parser::Node, state: &State) {
+    let parameter_t = vector::make(NamedParameter)
+    parameter_t.push({ tpe = expr.tpe } !NamedParameter)
+    let generator_next = state.scope.get_function(
+        id = parser::make_identifier("next"),
+        parameter_t = parameter_t
+    )
+    node.value.for_loop.generator_next = generator_next
+
+    let parameter_t2 = vector::make(NamedParameter)
+    parameter_t2.push({ tpe = generator_next.tpe.return_t[0] } !NamedParameter)
+    let generator_get = state.scope.get_function(
+        id = parser::make_identifier("get"),
+        parameter_t = parameter_t2
+    )
+    node.value.for_loop.generator_get = generator_get
+}
+
 def walk_For(node: &parser::Node, state: &State) {
-    let expr = node.value.for_loop.expr
+    var expr = node.value.for_loop.expr
     walk(node, expr, state)
+    if not expr.tpe { return }
 
     let iddecl = node.value.for_loop.iddecl
-    var tpe = builtins::int_
-    if is_array((@expr).tpe) {
-        tpe = (@(@expr).tpe).tpe
+    var tpe: &typechecking::Type
+    if is_array(expr.tpe) {
+        tpe = expr.tpe.tpe
+    } else if expr.tpe.kind == TypeKind::RANGE or expr.tpe.kind == TypeKind::RANGE_INC {
+        tpe = builtins::int_
+    } else if expr.tpe.kind == TypeKind::REFERENCE and expr.tpe.tpe and expr.tpe.tpe.tc_tpe == builtins::Generator_ {
+        tpe = expr.tpe.tpe.tc_args[0]
+        for_setup_generator(expr, node, state)
+    } else {
+        let args = vector::make(NamedParameter)
+        args.push({ tpe = expr.tpe } !NamedParameter)
+        let ident = parser::make_identifier("iterate")
+        let fun = scope::get_function(state.scope, ident, args, true)
+        if fun {
+            let args = vector::make(type &parser::Node)
+            args.push(expr)
+
+            let function = {
+                kind = parser::NodeKind::FUNC_CALL,
+                loc = node.loc
+            } !&parser::Node
+            function.value.func_call = {
+                left = ident,
+                args = args,
+                kwargs = vector::make(type &parser::Node)
+            } !parser::NodeFuncCall
+            function.parent = node
+            function.scope = node.scope
+
+            walk(node, function, state)
+            node.value.for_loop.expr = expr = function
+
+            if expr.tpe.kind == TypeKind::REFERENCE and expr.tpe.tpe and expr.tpe.tpe.tc_tpe == builtins::Generator_ {
+                tpe = expr.tpe.tpe.tc_args[0]
+                for_setup_generator(expr, node, state)
+            } else {
+                errors::errorn(expr, "Wrong return type for generator, needs to return &Generator(T), got ", debug::type_to_str(expr.tpe))  
+            }
+        } else {
+            errors::errorn(expr, "Invalid generator, got ", debug::type_to_str(expr.tpe), " expected array, range or iterable")
+        }
     }
+
     if (@iddecl).kind == parser::NodeKind::FOR_ID_DECL {
         (@iddecl).tpe = tpe
         (@iddecl).scope = node.inner_scope
@@ -4106,9 +4213,6 @@ def walk_PSub(node: &parser::Node, state: &State) {
 }
 
 def walk_Defer(node: &parser::Node, state: &State) {
-    let function = current_function(state)
-    function.has_defer = true
-
     if state.in_defer { 
         errors::errorn(node, "Can't nest defers!")
     }
@@ -4229,6 +4333,8 @@ export def walk(parent: &parser::Node, node: &parser::Node, state: &State) {
             walk_TypeDecl(node, state)
         case parser::NodeKind::RETURN:
             walk_Return(node, state)
+        case parser::NodeKind::YIELD:
+            walk_Yield(node, state)
         case parser::NodeKind::FUNC_CALL:
             walk_Call(node, state)
         case parser::NodeKind::BREAK..=parser::NodeKind::CONTINUE:
@@ -4329,8 +4435,8 @@ export def walk_Def_with_type_argument(node: &parser::Node, parameter_t: &Vector
         create_type_entry(first_param.tpe, (share !int & parser::ShareMarker::EXPORT !int) != 0, tpe, state.module, true)
     }
 
-    state.scope = node.scope
     walk_Def(node, state)
+    state.scope = node.scope
 
     // This makes sure that the function is walked by the compiler
     state.module.node.body.push(node)
@@ -4374,7 +4480,8 @@ export def typecheck(state: &State) {
         // compile standard library
         toolchain::typecheck_module(parser::make_identifier("cstd"))
         toolchain::typecheck_module(parser::make_identifier("std"))
-        //toolchain::typecheck_module(parser::make_identifier("preload"))
+        toolchain::typecheck_module(parser::make_identifier("runtime"))
+        toolchain::typecheck_module(parser::make_identifier("optional"))
     }
 
     let function = {
