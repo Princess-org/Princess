@@ -2,6 +2,8 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+import os
+from struct import pack
 import subprocess, json, sys
 from typing import List
 import tatsu
@@ -271,24 +273,42 @@ class Declaration(ABC):
     def to_declaration(self, n: int, file: File) -> str:
         pass
 
+    @abstractmethod
+    def to_symbol(self, n: int, file: File) -> str:
+        pass
+
 class ConstDecl(Declaration):
     def __init__(self, name: str, type: Type, value: str) -> None:
         self.name = name
         self.type = type
         self.value = value
 
-    def to_declaration(self, n: int, file: File) -> str:
+    def to_declaration(self, file: File) -> str:
         return f"export const {self.name}: {self.type.to_string(file)} = {self.value}"
+    
+    def to_symbol(self, n: int, file: File) -> str:
+        return ""
 
 class VarDecl(Declaration):
-    def __init__(self, name: str, type: Type):
+    def __init__(self, name: str, type: Type, dllimport: bool):
         self.name = name
         self.type = type
+        self.dllimport = dllimport
 
-    def to_declaration(self, n: int, file: File) -> str:
-        ret = f"export import var #extern {self.name}: {self.type.to_string(file)}"
-        ret += f"\n__VAR_NAMES[{n}] = \"{self.name}\""
-        ret += f"\n__VARS[{n}] = *{self.name} !*"
+    def to_declaration(self, file: File) -> str:
+        ret = "export import var #extern "
+        if self.dllimport:
+            ret += "#dllimport "
+
+        ret += f"{self.name}: {self.type.to_string(file)}"
+        return ret
+
+    def to_symbol(self, n: int, file: File) -> str:
+        variable = ""
+        if not self.dllimport:
+            variable = f", variable = *{self.name} !*"
+
+        ret = f"__SYMBOLS[{n}] = {{ kind = symbol::SymbolKind::VARIABLE, dllimport = {'true' if self.dllimport else 'false'}, name = \"{self.name}\"{variable}}} !symbol::Symbol"
         return ret
 
 class FunctionDecl(Declaration):
@@ -299,7 +319,7 @@ class FunctionDecl(Declaration):
         self.variadic = variadic
         self.dllimport = dllimport
 
-    def to_declaration(self, n: int, file: File) -> str:
+    def to_declaration(self, file: File) -> str:
         args = []
         for (name, tpe) in self.args:
             args.append(name + ": " + tpe.to_string(file))
@@ -309,11 +329,18 @@ class FunctionDecl(Declaration):
         ret = "export import def #extern "
         if self.dllimport:
             ret += "#dllimport "
+
         ret += f"{self.name}({', '.join(args)})"
         if self.ret != void: ret += " -> " + self.ret.to_string(file)
-        ret += f"\n__DEF_NAMES[{n}] = \"{self.name}\""
-        ret += f"\n__DEFS[{n}] = *{self.name} !() -> ()"
 
+        return ret
+
+    def to_symbol(self, n: int, file: File) -> str:
+        function = ""
+        if not self.dllimport:
+            function = f", function = *{self.name} !() -> ()"
+
+        ret = f"__SYMBOLS[{n}] = {{ kind = symbol::SymbolKind::FUNCTION, dllimport = {'true' if self.dllimport else 'false'}, name = \"{self.name}\"{function}}} !symbol::Symbol"
         return ret
 
 PRIMITIVES = {
@@ -428,7 +455,13 @@ def walk_VarDecl(node, file: File):
     name = node["name"]
     tpe = parse(get_type(node))
     tpe = Walker(file).walk(tpe)
-    file.GLOBALS[name] = VarDecl(name, tpe)
+    dllimport = False
+    if "inner" in node:
+        for param in node["inner"]:
+            if param["kind"] == "DLLImportAttr":
+                dllimport = True
+
+    file.GLOBALS[name] = VarDecl(name, tpe, dllimport)
 
 def walk_EnumDecl(node, file: File):
     name = node["name"] if "name" in node else ""
@@ -460,7 +493,6 @@ def is_anonymous(qual_type):
         "anonymous at" in qual_type)
 
 def walk_TypedefDecl(node, file: File):
-
     name = node["name"]
     inner = node["inner"][0]
     if "ownedTagDecl" in inner:
@@ -519,10 +551,11 @@ def walk_FunctionDecl(node, file: File):
     ret = Walker(file).walk(parse(get_type(node)))
     if node.get("storageClass", None) != "static":
         variadic = node.get("variadic", False)
+        if node.get("inline", False): return
         dllimport = False
         args = []
         if "inner" in node:
-            for (i, param) in enumerate(node["inner"]):
+            for i, param in enumerate(node["inner"]):
                 if param["kind"] == "ParmVarDecl":
                     argname = escape_name(param.get("name", "_" + str(i)))
                     tpe = Walker(file).walk(parse(get_type(param)))
@@ -548,7 +581,41 @@ def walk(node, file: File):
 
 ALL_DEFINITIONS = {}
 
-def process_module(name: str):
+def get_symbols(lib: str):
+    if sys.platform == "win32":
+        vswhere = os.environ["ProgramFiles(x86)"] + r"\Microsoft Visual Studio\Installer\vswhere.exe"
+        dumpbin = subprocess.check_output([vswhere, "-latest", "-find", r"VC\Tools\**\x64\dumpbin.exe"]).splitlines()[0]
+        winsdk_bat = subprocess.check_output([vswhere, "-latest", "-find", "**\winsdk.bat"]).splitlines()[0]
+        os.environ["VSCMD_ARG_HOST_ARCH"] = "x64"
+        os.environ["VSCMD_ARG_TGT_ARCH"] = "x64"
+        env = dict([tuple(var.decode().split("=")) for var in subprocess.check_output([winsdk_bat, ">", "nul", "&&", "set"], shell = True).splitlines()])
+        lib_path = env["WindowsSdkDir"] + "Lib\\" + env["WindowsSDKVersion"] + "um\\x64\\"
+        dout = subprocess.check_output([dumpbin, "/exports", lib_path + lib]).decode().splitlines()
+        
+        symbols = []
+        for i, line in enumerate(dout):
+            if "ordinal" in line and "name" in line:
+                for j in dout[i+2:]:
+                    j = j.strip()
+                    if len(j) == 0:
+                        break
+                    
+                    sym = j.split("    ")
+                    if len(sym) > 1:
+                        sym = sym[1]
+                    else: sym = sym[0]
+                    symbols.append(sym)
+                break
+        return symbols
+    return []
+
+def process_module(name: str, *libs):
+    included = []
+    if len(libs) > 0:
+        for lib in libs:
+            included.extend(get_symbols(lib))
+
+
     folder = Path(__file__).parent
 
     with open(folder / f"{name}.json", "w") as fp:
@@ -567,9 +634,11 @@ def process_module(name: str):
             if line.startswith("%EXCLUDE"):
                 line = line.replace("%EXCLUDE", "")
                 line = line.strip()
-                excluded = set(line.split(" "))
+                excluded.update(line.split(" "))
 
-    with open(folder / f"{name}.pr", "w") as fp:
+    with open(folder / f"{name}.pr", "w") as fp,\
+        open(folder / f"{name}_sym.pr", "w") as fp2:
+
         file = File(fp)
 
         for top_level in data:
@@ -581,28 +650,33 @@ def process_module(name: str):
         DEFS = {k:v for k,v in file.GLOBALS.items() if isinstance(v, FunctionDecl)}
         VARS = {k:v for k,v in file.GLOBALS.items() if isinstance(v, VarDecl)}
         CONSTS = {k:v for k,v in file.GLOBALS.items() if isinstance(v, ConstDecl)}
-        
-        print(f"export var __DEFS: [{len(DEFS)}; () -> ()]", file = fp)
-        print(f"export var __DEF_NAMES: [{len(DEFS)}; string]", file = fp)
-        print(f"export var __VARS: [{len(VARS)}; *]", file = fp)
-        print(f"export var __VAR_NAMES: [{len(VARS)}; string]", file = fp)
 
         for g in CONSTS.values():
-            print(g.to_declaration(0, file), file = fp)
+            print(g.to_declaration(file), file = fp)
 
         for type in file.TYPEDEFS.values():
             type.print_references(file)
         for type in file.TAGGED.values():
             type.print_references(file)
 
-        num_decls = 0
         for g in DEFS.values():
-            print(g.to_declaration(num_decls, file), file = fp)
-            num_decls += 1
+            print(g.to_declaration(file), file = fp)
+        for g in VARS.values():
+            print(g.to_declaration(file), file = fp)
+
+        filtered_defs = {k:v for k,v in DEFS.items() if not included or v.name in included }
+        filtered_vars = {k:v for k,v in VARS.items() if not included or v.name in included }
+
+        print(f"import {name}", file = fp2)
+        print("import symbol", file = fp2)
+        print(f"export var __SYMBOLS: [{len(filtered_defs) + len(filtered_vars)}; symbol::Symbol]", file = fp2)
 
         num_decls = 0
-        for g in VARS.values():
-            print(g.to_declaration(num_decls, file), file = fp)
+        for g in filtered_defs.values():
+            print(g.to_symbol(num_decls, file), file = fp2)
+            num_decls += 1
+        for g in filtered_vars.values():
+            print(g.to_symbol(num_decls, file), file = fp2)
             num_decls += 1
 
     return file
@@ -615,7 +689,7 @@ def main():
     process_module("ffi")
 
     if sys.platform == "win32":
-        process_module("windows")
+        process_module("windows", "User32.lib", "Kernel32.lib")
 
 if __name__ == "__main__":
     main()

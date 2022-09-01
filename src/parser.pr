@@ -87,6 +87,7 @@ export type NodeKind = enum {
     BREAK
     CONTINUE
     RETURN
+    YIELD
     ARRAY_SUBSCRIPT
     FUNC_CALL
     TYPE_DECL
@@ -141,6 +142,7 @@ export type NodeDef = struct {
     // Map of typechecking::Type
     locals: &SMap(&typechecking::Type)
     has_defer: bool
+    has_yield: bool
 }
 
 export type NodeParam = struct {
@@ -255,6 +257,9 @@ export type NodeFor = struct {
     iddecl: &Node
     expr: &Node
     body: &Vector(&Node)
+    // This is only used by generators
+    generator_next: &scope::Value
+    generator_get: &scope::Value
 }
 
 export type NodeWhile = struct {
@@ -394,7 +399,7 @@ export type Node = struct {
 export def destruct(node: *Node) {
     switch node.kind {
         case NodeKind::LOOP, NodeKind::ELSE, NodeKind::DEFER, 
-            NodeKind::RETURN, NodeKind::IMPORT, NodeKind::ARRAY_LIT,
+            NodeKind::RETURN, NodeKind::YIELD, NodeKind::IMPORT, NodeKind::ARRAY_LIT,
             NodeKind::STRUCT_T, NodeKind::UNION_T, NodeKind::STRUCTURAL_T:
             __destruct__(*node.value.body)
         case NodeKind::PROGRAM:
@@ -496,7 +501,7 @@ export def construct(copy: *Node, node: *Node) {
         case NodeKind::LOOP, NodeKind::ELSE, NodeKind::DEFER:
             copy.value.body = node.value.body
             copy.body = copy.value.body
-        case NodeKind::RETURN, NodeKind::IMPORT, NodeKind::ARRAY_LIT,
+        case NodeKind::RETURN, NodeKind::YIELD, NodeKind::IMPORT, NodeKind::ARRAY_LIT,
             NodeKind::STRUCT_T, NodeKind::UNION_T, NodeKind::STRUCTURAL_T:
             copy.value.body = node.value.body
         case NodeKind::ASSERT:
@@ -642,7 +647,7 @@ export def deep_copy_node(node: &Node, clear_svalue: bool = true) -> &Node {
         case NodeKind::LOOP, NodeKind::ELSE, NodeKind::DEFER:
             copy.value.body = deep_copy_vector_of_nodes(node.value.body, clear_svalue)
             copy.body = copy.value.body
-        case NodeKind::RETURN, NodeKind::IMPORT, NodeKind::ARRAY_LIT,
+        case NodeKind::RETURN, NodeKind::YIELD, NodeKind::IMPORT, NodeKind::ARRAY_LIT,
             NodeKind::STRUCT_T, NodeKind::UNION_T, NodeKind::STRUCTURAL_T:
             copy.value.body = deep_copy_vector_of_nodes(node.value.body, clear_svalue)
         case NodeKind::ASSERT:
@@ -3025,12 +3030,16 @@ def expect_import_stmt(parse_state: &ParseState) -> &Node {
     return node
 }
 
-def expect_return_stmt(parse_state: &ParseState) -> &Node {
+def expect_yield_or_return(is_yield: bool, parse_state: &ParseState) -> &Node{
     var token = peek(parse_state)
     let line = token.line
     let column = token.column
-
-    expect(parse_state, lexer::TokenType::K_RETURN, "Expected return")
+    
+    if is_yield {
+        expect(parse_state, lexer::TokenType::K_YIELD, "Expected yield")
+    } else {
+        expect(parse_state, lexer::TokenType::K_RETURN, "Expected return")
+    }
 
     var body = vector::make(type &Node)
     token = peek(parse_state)
@@ -3049,10 +3058,17 @@ def expect_return_stmt(parse_state: &ParseState) -> &Node {
         }
     }
 
-    var node = make_node(NodeKind::RETURN, line, column, parse_state)
+    var node = make_node(NodeKind::YIELD if is_yield else NodeKind::RETURN, line, column, parse_state)
     (@node).value.body = body
     
     return node
+}
+
+def expect_return_stmt(parse_state: &ParseState) -> &Node {
+    return expect_yield_or_return(false, parse_state)
+}
+def expect_yield_stmt(parse_state: &ParseState) -> &Node {
+    return expect_yield_or_return(true, parse_state)
 }
 
 def parse_t_term(parse_state: &ParseState) {
@@ -3176,6 +3192,8 @@ def parse_statement(parse_state: &ParseState) -> &Node {
         node = expect_while_stmt(parse_state)
     } else if lh.tpe == lexer::TokenType::K_RETURN {
         node = expect_return_stmt(parse_state)
+    } else if lh.tpe == lexer::TokenType::K_YIELD {
+        node = expect_yield_stmt(parse_state)
     } else if lh.tpe == lexer::TokenType::K_DEFER {
         node = expect_defer_stmt(parse_state)
     } else if lh.tpe == lexer::TokenType::K_ASSERT {
