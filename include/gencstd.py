@@ -268,7 +268,7 @@ class Enum(Type):
 
 class Declaration(ABC):
     @abstractmethod
-    def to_declaration(self, n: int) -> str:
+    def to_declaration(self, n: int, file: File) -> str:
         pass
 
 class ConstDecl(Declaration):
