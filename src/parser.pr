@@ -143,6 +143,7 @@ export type NodeDef = struct {
     locals: &SMap(&typechecking::Type)
     has_defer: bool
     has_yield: bool
+    signature_hash: uint64
 }
 
 export type NodeParam = struct {
@@ -394,6 +395,32 @@ export type Node = struct {
     // Need to keep copied type nodes in the tree
     variants: &SMap(&Node)
     is_assign_right: bool
+
+    // This is used to check for changes in a function
+    _hash: uint64
+}
+
+def hash(node: &Node) -> uint64 {
+    if not node { return 0 }
+    return node._hash
+}
+
+def hash(nodes: &Vector(&Node)) -> uint64 {
+    if not nodes { return 0 }
+    var h: uint64 = 17
+    for var i in 0..nodes.length {
+        h = combine_hashes(h, hash(nodes[i]))
+    }
+    return h
+}
+
+def hash(path: &Vector(&string)) -> uint64 {
+    if not path { return 0 }
+    var h: uint64 = 17
+    for var i in 0..path.length {
+        h = combine_hashes(h, hash(path[i]))
+    }
+    return h
 }
 
 export def destruct(node: *Node) {
@@ -770,7 +797,7 @@ export def deep_copy_node(node: &Node, clear_svalue: bool = true) -> &Node {
     return copy
 }
 
-export def identifier_to_str(node: &Node, types: bool) -> &string {
+export def identifier_to_str(node: &Node, types: bool = true) -> &string {
     assert node.kind == NodeKind::IDENTIFIER
     var res: &string = ""
     let len = vector::length((@node).value.identifier.path)
@@ -799,10 +826,6 @@ export def identifier_to_str(node: &Node, types: bool) -> &string {
     return res
 }
 
-export def identifier_to_str(node: &Node) -> &string {
-    return identifier_to_str(node, true)
-}
-
 def make_node(kind: NodeKind, line: int, column: int, state: &ParseState) -> &Node {
     let current_token = peek(state)
     return {
@@ -824,6 +847,7 @@ def make_bin_op(state: &ParseState, token: lexer::Token, kind: NodeKind, left: &
     (@node).value.bin_op = {
         left, right
     } !NodeBinaryOp
+    node._hash = combine_hashes(kind !uint64, left.hash, right.hash)
 
     return node
 }
@@ -831,6 +855,7 @@ def make_bin_op(state: &ParseState, token: lexer::Token, kind: NodeKind, left: &
 def make_un_op(state: &ParseState, token: lexer::Token, kind: NodeKind, right: &Node) -> &Node {
     var node = make_node(kind, token.line, token.column, state)
     (@node).value.expr = right
+    node.hash = combine_hashes(kind !uint64, right.hash)
 
     return node
 }
@@ -971,6 +996,14 @@ def parse_identifier(parse_state: &ParseState) -> &Node {
     node.value.identifier.path = path
     node.value.identifier.args = args
 
+    var h: uint64 = hash(path)
+    if args {
+        for var i in 0..args.length {
+            h = combine_hashes(h, hash(args[i]))
+        }
+    }
+    node._hash = h
+
     return node
 }
 
@@ -1025,6 +1058,7 @@ def parse_array_n(parse_state: &ParseState) -> &Node {
         kw = kw,
         tpe = tpe
     } !NodeArrayStaticT
+    node._hash = combine_hashes(node.kind !uint64, kw !uint64, hash(n), hash(tpe))
 
     return node
 }
@@ -1064,7 +1098,7 @@ def expect_array(parse_state: &ParseState) -> &Node {
         kw = kw,
         tpe = tpe
     } !NodePtrArrayT
-
+    node._hash = combine_hashes(node.kind !uint64, kw !uint64, hash(tpe))
     
     return node
 }
@@ -1106,6 +1140,7 @@ def expect_weak_ref(parse_state: &ParseState, inline_types: bool) -> &Node {
         kw = kw,
         tpe = tpe
     } !NodePtrArrayT
+    node._hash = combine_hashes(node.kind !uint64, kw !uint64, hash(tpe))
 
     return node
 }
@@ -1143,6 +1178,7 @@ def expect_ptr_ref(parse_state: &ParseState, ref: bool, inline_types: bool) -> &
         kw = kw,
         tpe = tpe
     } !NodePtrArrayT
+    node._hash = combine_hashes(node.kind !uint64, kw !uint64, hash(tpe))
 
     return node
 }
@@ -1202,6 +1238,7 @@ def parse_id_decl_struct(parse_state: &ParseState) -> &Node {
             is_bitfield = is_bitfield,
             bit_size = bit_size
         } !NodeIdDeclStruct
+        node._hash = combine_hashes(node.kind !uint64, is_bitfield !uint64, bit_size, hash(ident), hash(tpe))
     }
     
     parse_t_term(parse_state)
@@ -1244,6 +1281,7 @@ def expect_struct(parse_state: &ParseState) -> &Node {
 
     var node = make_node(kind, line, column, parse_state)
     (@node).value.body = body
+    node._hash = combine_hashes(node.kind !uint64, hash(body))
     return node
 }
 
@@ -1266,6 +1304,7 @@ def parse_id_decl_enum(parse_state: &ParseState) -> &Node {
         ident = ident,
         value = value
     } !NodeIdDeclEnum
+    node._hash = combine_hashes(node.kind !uint64, hash(ident), hash(value))
     
     parse_t_term(parse_state)
     return node
@@ -1307,6 +1346,7 @@ def expect_enum(parse_state: &ParseState) -> &Node {
         tpe = tpe,
         body = body
     } !NodeEnumT
+    node._hash = combine_hashes(node.kind !uint64, hash(tpe), hash(body))
     return node
 }
 
@@ -1316,6 +1356,7 @@ def expect_type_of(parse_state: &ParseState) -> &Node {
     let expr = expect_expression(parse_state)
     var node = make_node(NodeKind::TYPE_OF_T, tok.line, tok.column, parse_state)
     node.value.expr = expr
+    node._hash = combine_hashes(node.kind !uint64, hash(expr))
     return node
 }
 
@@ -1366,6 +1407,7 @@ def expect_structural_type(parse_state: &ParseState) -> &Node {
                             name = name,
                             tpe = tpe
                         } !NodeParam
+                        param._hash = combine_hashes(param.kind !uint64, hash(name), hash(tpe))
 
                         params.push(param)
 
@@ -1408,6 +1450,7 @@ def expect_structural_type(parse_state: &ParseState) -> &Node {
                 params = params,
                 returns = returns
             } !NodeStructuralMember
+            member._hash = combine_hashes(member.kind !uint64, hash(name), hash(params), hash(returns))
 
             defs.push(member)
         } else if tok.tpe == lexer::TokenType::C_BRACE or tok.tpe == lexer::TokenType::EOF {
@@ -1424,6 +1467,7 @@ def expect_structural_type(parse_state: &ParseState) -> &Node {
 
     let node = make_node(NodeKind::STRUCTURAL_T, line, column, parse_state)
     node.value.body = defs
+    node._hash = combine_hashes(node.kind !uint64, hash(defs))
     return node
 }
 
@@ -1462,6 +1506,7 @@ def parse_type_identifier(parse_state: &ParseState, inline_types: bool) -> &Node
                 name = name,
                 args = args
             }
+            node._hash = combine_hashes(node.kind !uint64, hash(name), hash(args))
             return node
         }
     }
@@ -1480,10 +1525,11 @@ def parse_type2(parse_state: &ParseState, inline_types: bool) -> &Node {
         expect(parse_state, lexer::TokenType::C_PAREN, "Expected ')'")
         return node
     } else if tok.tpe == lexer::TokenType::K_TYPE {
-        var tpe_node = expect_type(parse_state, inline_types)
+        let tpe_node = expect_type(parse_state, inline_types)
         if inline_types { return tpe_node }
         let node = make_node(NodeKind::TYPE_T, tok.line, tok.column, parse_state)
         node.value.expr = tpe_node
+        node._hash = combine_hashes(node.kind !uint64, hash(tpe_node))
         return node
     } else if tok.tpe == lexer::TokenType::K_WORD {
         expect(parse_state, lexer::TokenType::O_PAREN, "Expected '('")
@@ -1494,14 +1540,17 @@ def parse_type2(parse_state: &ParseState, inline_types: bool) -> &Node {
         expect(parse_state, lexer::TokenType::C_PAREN, "Expected ')'")
         var node = make_node(NodeKind::WORD_T, tok.line, tok.column, parse_state)
         (@node).value.i = n.value.i
+        node._hash = combine_hashes(node.kind !uint64, n.value.i !uint64)
 
         return node
     } else if tok.tpe == lexer::TokenType::K_TYPE_OF {
         back(parse_state)
         return expect_type_of(parse_state)
     } else if tok.tpe == lexer::TokenType::K_UNSIGNED {
+        let tpe_node = expect_type(parse_state)
         var node = make_node(NodeKind::UNSIGNED_T, tok.line, tok.column, parse_state)
-        (@node).value.expr = expect_type(parse_state)
+        (@node).value.expr = tpe_node
+        node._hash = combine_hashes(node.kind !uint64, hash(tpe_node))
 
         return node
     } else if tok.tpe == lexer::TokenType::O_SQUARE {
@@ -1580,6 +1629,7 @@ def parse_type(parse_state: &ParseState, inline_types: bool = true) -> &Node {
             args = args,
             ret = ret
         } !NodeFunctionT
+        node._hash = combine_hashes(node.kind !uint64, hash(args), hash(ret))
         return node
     } else if vector::length(args) > 1 {
         errors::errort(token, parse_state, "Expected single type, got multiple")
@@ -1630,6 +1680,7 @@ def expect_array_lit(parse_state: &ParseState) -> &Node {
 
     var node = make_node(NodeKind::ARRAY_LIT, line, column, parse_state)
     (@node).value.body = body
+    node._hash = combine_hashes(node.kind !uint64, hash(body))
 
     return node
 }
@@ -1697,6 +1748,7 @@ def expect_struct_lit(parse_state: &ParseState) -> &Node {
             name = ident,
             value = expr
         } !NodeNamedArg
+        named_arg._hash = combine_hashes(named_arg.kind !uint64, hash(ident), hash(expr))
         kwargs.push(named_arg)
 
         skip_newline(parse_state)
@@ -1719,6 +1771,7 @@ def expect_struct_lit(parse_state: &ParseState) -> &Node {
         args = args,
         kwargs = kwargs
     } !NodeStructLit
+    call._hash = combine_hashes(call.kind !uint64, hash(args), hash(kwargs))
 
     return call
 }
@@ -1852,6 +1905,7 @@ def expect_func_args(parse_state: &ParseState, node: &Node) -> &Node {
             value = expr
         } !NodeNamedArg
         kwargs.push(named_arg)
+        named_arg._hash = combine_hashes(named_arg.kind !uint64, hash(ident), hash(expr))
 
         token = peek(parse_state)
         if token.tpe != lexer::TokenType::C_PAREN {
@@ -1871,6 +1925,7 @@ def expect_func_args(parse_state: &ParseState, node: &Node) -> &Node {
         args = args,
         kwargs = kwargs
     } !NodeFuncCall
+    call._hash = combine_hashes(call.kind !uint64, hash(node), hash(args), hash(kwargs))
 
     return call
 }
@@ -2189,6 +2244,7 @@ def parse_assign(parse_state: &ParseState) -> &Node {
         left = left,
         right = right
     } !NodeAssign
+    result._hash = combine_hashes(result.kind !uint64, hash(left), hash(right))
 
     return result
 }
@@ -2234,6 +2290,7 @@ def make_operator_ident(name: &string, token: Token, parse_state: &ParseState) -
     let path = vector::make(type &string)
     path.push(name)
     ident.value.identifier.path = path
+    ident._hash = combine_hashes(ident.kind !uint64, hash(path))
     return ident
 }
 
@@ -2355,6 +2412,7 @@ def parse_def(parse_state: &ParseState, share: ShareMarker) -> &Node {
                     tpe = tpe,
                     value = value
                 } !NodeParam
+                param._hash = combine_hashes(param.kind !uint64, varargs !uint64, kw !uint64, hash(name), hash(tpe), hash(value))
 
                 params.push(param)
 
@@ -2471,6 +2529,7 @@ def parse_def(parse_state: &ParseState, share: ShareMarker) -> &Node {
         errors::errort(token, parse_state, "Expected identifier or operator")
     }
     
+    let signature_hash = combine_hashes(dllimport !uint64, extern !uint64, share !uint64, hash(name), hash(params), hash(returns))
     var node = make_node(NodeKind::DEF, line, column, parse_state)
     (@node).value.def_ = {
         dllimport = dllimport,
@@ -2479,9 +2538,11 @@ def parse_def(parse_state: &ParseState, share: ShareMarker) -> &Node {
         name = name,
         params = params,
         returns = returns,
-        body = body
+        body = body,
+        signature_hash = signature_hash
     } !NodeDef
     node.body = body
+    node._hash = combine_hashes(node.kind !uint64, signature_hash, hash(body))
     return node
 }
 
@@ -2522,6 +2583,7 @@ def parse_vardecl(parse_state: &ParseState, share: ShareMarker, vardecl: VarDecl
             let expr = expect_expression_no_assign(parse_state)
             expect(parse_state, lexer::TokenType::C_PAREN, "Expected ')'")
             var node = make_node(NodeKind::ID_ASSIGN, tok.line, tok.column, parse_state)
+            node._hash = combine_hashes(node.kind !uint64, hash(expr))
             (@node).value.expr = expr
             vec_left.push(node)
         } else {
@@ -2541,6 +2603,7 @@ def parse_vardecl(parse_state: &ParseState, share: ShareMarker, vardecl: VarDecl
                 value = ident,
                 tpe = tpe
             } !NodeIdDecl
+            node._hash = combine_hashes(node.kind !uint64, hash(ident), hash(tpe))
             vec_left.push(node)
         }
         tok = pop(parse_state)
@@ -2594,6 +2657,10 @@ def parse_vardecl(parse_state: &ParseState, share: ShareMarker, vardecl: VarDecl
         left = vec_left,
         right = vec_right
     } !NodeVarDecl
+    node._hash = combine_hashes(
+        node.kind !uint64, extern !uint64, dllimport !uint64, 
+        share !uint64, vardecl !uint64, hash(vec_left), hash(vec_right)
+    )
 
     return node
 }
@@ -2631,6 +2698,7 @@ def parse_typedecl(parse_state: &ParseState, share: ShareMarker) -> &Node {
                     param.value.param = {
                         name = name
                     }
+                    param._hash = combine_hashes(param.kind !uint64, hash(name))
                     args.push(param)
                     
                     token = peek(parse_state)
@@ -2650,6 +2718,7 @@ def parse_typedecl(parse_state: &ParseState, share: ShareMarker) -> &Node {
                     name = ident,
                     args = args
                 } !NodeTypeConstructor
+                typec._hash = combine_hashes(typec.kind !uint64, hash(ident), hash(args))
                 vec_left.push(typec)
             }
         } else {
@@ -2692,6 +2761,7 @@ def parse_typedecl(parse_state: &ParseState, share: ShareMarker) -> &Node {
         left = vec_left,
         right = vec_right
     } !NodeTypeDecl
+    node._hash = combine_hashes(node.kind !uint64, share !uint64, hash(vec_left), hash(vec_right))
 
     return node
 }
@@ -2711,6 +2781,7 @@ def expect_loop_stmt(parse_state: &ParseState) -> &Node {
     var node = make_node(NodeKind::LOOP, line, column, parse_state)
     (@node).value.body = body
     node.body = body
+    node._hash = combine_hashes(node.kind !uint64, hash(body))
 
     return node
 }
@@ -2735,6 +2806,7 @@ def expect_while_stmt(parse_state: &ParseState) -> &Node {
         body = body
     } !NodeWhile
     node.body = body
+    node._hash = combine_hashes(node.kind !uint64, hash(expr), hash(body))
 
     return node
 }
@@ -2765,6 +2837,7 @@ def expect_for_stmt(parse_state: &ParseState) -> &Node {
             kw = kw,
             ident = ident
         } !NodeForIdDecl
+        iddecl._hash = combine_hashes(iddecl.kind !uint64, kw !uint64, hash(ident))
     } else {
         iddecl = expect_identifier(parse_state)
     }
@@ -2785,6 +2858,7 @@ def expect_for_stmt(parse_state: &ParseState) -> &Node {
         body = body
     } !NodeFor
     node.body = body
+    node._hash = combine_hashes(node.kind !uint64, hash(iddecl), hash(expr), hash(body))
 
     return node
 }
@@ -2807,6 +2881,7 @@ def expect_if_expr(parse_state: &ParseState, if_true: &Node) -> &Node {
         if_true = if_true,
         if_false = if_false
     } !NodeIfExpr
+    node._hash = combine_hashes(node.kind !uint64, hash(cond), hash(if_true), hash(if_false))
 
     return node
 }
@@ -2868,6 +2943,7 @@ def expect_if_stmt(parse_state: &ParseState, static_if: bool) -> &Node {
                     body = body
                 } !NodeElseIf
                 elif_node.body = body
+                elif_node._hash = combine_hashes(elif_node.kind !uint64, hash(cond), hash(body))
 
                 else_if.push(elif_node)
 
@@ -2887,6 +2963,7 @@ def expect_if_stmt(parse_state: &ParseState, static_if: bool) -> &Node {
                 else_node = make_node(NodeKind::ELSE, token.line, token.column, parse_state)
                 (@else_node).value.body = body
                 else_node.body = body
+                else_node._hash = combine_hashes(else_node.kind !uint64, hash(body))
                     
                 break
             }
@@ -2908,6 +2985,7 @@ def expect_if_stmt(parse_state: &ParseState, static_if: bool) -> &Node {
         else_ = else_node
     } !NodeIf
     node.body = body
+    node._hash = combine_hashes(node.kind !uint64, hash(cond), hash(body), hash(else_if), hash(else_node))
 
     return node
 }
@@ -2965,6 +3043,7 @@ def expect_switch_stmt(parse_state: &ParseState) -> &Node {
                 body = body2
             } !NodeCase
             node.body = body
+            node._hash = combine_hashes(node.kind !uint64, hash(expr2), hash(body2))
 
             body.push(node)
         } else {
@@ -2981,6 +3060,7 @@ def expect_switch_stmt(parse_state: &ParseState) -> &Node {
         body = body
     } !NodeSwitch
     node.body = body
+    node._hash = combine_hashes(node.kind !uint64, hash(expr), hash(body))
 
     return node
 }
@@ -3011,6 +3091,7 @@ def expect_import_stmt(parse_state: &ParseState) -> &Node {
             name = name,
             alias = alias
         } !NodeImportModule
+        module._hash = combine_hashes(module.kind !uint64, hash(name), hash(alias))
 
         body.push(module)
 
@@ -3026,6 +3107,7 @@ def expect_import_stmt(parse_state: &ParseState) -> &Node {
 
     var node = make_node(NodeKind::IMPORT, line, column, parse_state)
     (@node).value.body = body
+    node._hash = combine_hashes(node.kind !uint64, hash(body))
 
     return node
 }
@@ -3060,6 +3142,7 @@ def expect_yield_or_return(is_yield: bool, parse_state: &ParseState) -> &Node{
 
     var node = make_node(NodeKind::YIELD if is_yield else NodeKind::RETURN, line, column, parse_state)
     (@node).value.body = body
+    node._hash = combine_hashes(node.kind !uint64, hash(body))
     
     return node
 }
@@ -3120,6 +3203,7 @@ def expect_defer_stmt(parse_state: &ParseState) -> &Node {
     let node = make_node(NodeKind::DEFER, line, column, parse_state)
     node.value.body = body
     node.body = body
+    node._hash = combine_hashes(node.kind !uint64, hash(body))
     return node
 }
 
@@ -3151,6 +3235,7 @@ def expect_assert_stmt(parse_state: &ParseState) -> &Node {
         cond = cond,
         message = msg
     } !NodeAssert
+    node._hash = combine_hashes(node.kind !uint64, hash(cond), hash(msg))
     return node
 }
 
@@ -3201,9 +3286,11 @@ def parse_statement(parse_state: &ParseState) -> &Node {
     } else if lh.tpe == lexer::TokenType::K_BREAK {
         pop(parse_state)
         node = make_node(NodeKind::BREAK, lh.line, lh.column, parse_state)
+        node._hash = NodeKind::BREAK !uint64
     } else if lh.tpe == lexer::TokenType::K_CONTINUE {
         pop(parse_state)
         node = make_node(NodeKind::CONTINUE, lh.line, lh.column, parse_state)
+        node._hash = NodeKind::CONTINUE !uint64
     } else if lh.tpe == lexer::TokenType::PRAGMA and lh.value.str == "#error" {
         pop(parse_state)
         node = make_un_op(parse_state, lh, NodeKind::ERROR, expect_expression(parse_state))
@@ -3270,6 +3357,7 @@ export def parse(list: *lexer::TokenList, lines: &[&string], filename: &string, 
         body = vec
     } !NodeProgram
     program_node.body = vec
+    program_node._hash = combine_hashes(program_node.kind !uint64, hash(vec))
 
     let end = util::millis()
     time_spent += end - start
