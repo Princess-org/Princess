@@ -12,4 +12,5 @@
     #include <unistd.h>
     #include <termios.h>
     #include <stdlib.h>
+    #include <dlfcn.h>
 #endif

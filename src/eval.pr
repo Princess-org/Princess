@@ -14,6 +14,7 @@ import debug
 import errors
 import preload
 import ffi
+import symbol
 
 export type StackFrame = struct {
     next: &compiler::Block
@@ -178,9 +179,9 @@ export def get_address(loc: compiler::Value, state: &State) -> * {
                 (ptr !*FunctionPtr).function = function
                 //set(ptr, loc.tpe.tpe, { kind = compiler::ValueKind::FUNCTION, tpe = loc.tpe.tpe, function = (ptr !*FunctionPtr) } !compiler::Value)
             } else {
-                let ffi_global = preload::FFI_GLOBALS.get_or_default(loc.name, null)
-                if ffi_global {
-                    ptr = ffi_global.ptr
+                let ffi_global = preload::symbols.get_or_default(loc.name, null)
+                if ffi_global and ffi_global.kind == preload::SymbolKind::VARIABLE {
+                    ptr = ffi_global.variable
                 } else {
                     var global = state.cstate.module.result.globals.get_or_default(loc.name, null)
                     if not global {
@@ -726,19 +727,19 @@ def eval_FCmp(insn: &compiler::Insn, state: &State) {
 }
 
 // TODO
-def struct_to_ffi(tpe: &typechecking::Type) -> *ffi::ffi_type {
+def struct_to_ffi(tpe: &typechecking::Type) -> ffi::ffi_type {
     assert(false)
-    return null
+    return ffi::ffi_type_void
 }
 
-def union_to_ffi(tpe: &typechecking::Type) -> *ffi::ffi_type {
+def union_to_ffi(tpe: &typechecking::Type) -> ffi::ffi_type {
     assert(false)
-    return null
+    return ffi::ffi_type_void
 }
 
-def type_to_ffi(tpe: &typechecking::Type, varargs: bool = false) -> *ffi::ffi_type {
+def type_to_ffi(tpe: &typechecking::Type, varargs: bool = false) -> ffi::ffi_type {
     if not tpe {
-        return *ffi::ffi_type_void
+        return ffi::ffi_type_void
     } else if tpe.kind == typechecking::TypeKind::STRUCT {
         return struct_to_ffi(tpe)
     } else if tpe.kind == typechecking::TypeKind::UNION {
@@ -746,31 +747,31 @@ def type_to_ffi(tpe: &typechecking::Type, varargs: bool = false) -> *ffi::ffi_ty
     } else if typechecking::is_enum(tpe) {
         return type_to_ffi(tpe.tpe)
     } else if typechecking::is_pointer(tpe) {
-        return *ffi::ffi_type_pointer
+        return ffi::ffi_type_pointer
     } else if typechecking::equals(tpe, builtins::char_) {
-        return *ffi::ffi_type_uint8
+        return ffi::ffi_type_uint8
     } else if typechecking::equals(tpe, builtins::int8_) {
-        return *ffi::ffi_type_sint8
+        return ffi::ffi_type_sint8
     } else if typechecking::equals(tpe, builtins::uint8_) {
-        return *ffi::ffi_type_uint8
+        return ffi::ffi_type_uint8
     } else if typechecking::equals(tpe, builtins::int16_) {
-        return *ffi::ffi_type_sint16
+        return ffi::ffi_type_sint16
     } else if typechecking::equals(tpe, builtins::uint16_) {
-        return *ffi::ffi_type_uint16
+        return ffi::ffi_type_uint16
     } else if typechecking::equals(tpe, builtins::int32_) {
-        return *ffi::ffi_type_sint32
+        return ffi::ffi_type_sint32
     } else if typechecking::equals(tpe, builtins::uint32_) {
-        return *ffi::ffi_type_uint32
+        return ffi::ffi_type_uint32
     } else if typechecking::equals(tpe, builtins::int64_) {
-        return *ffi::ffi_type_sint64
+        return ffi::ffi_type_sint64
     } else if typechecking::equals(tpe, builtins::uint64_) {
-        return *ffi::ffi_type_uint64
+        return ffi::ffi_type_uint64
     } else if typechecking::equals(tpe, builtins::float_) {
-        return *ffi::ffi_type_float
+        return ffi::ffi_type_float
     } else if typechecking::equals(tpe, builtins::double_) {
-        return *ffi::ffi_type_double
+        return ffi::ffi_type_double
     } else if typechecking::equals(tpe, builtins::bool_) {
-        return *ffi::ffi_type_sint8
+        return ffi::ffi_type_sint8
     } else {
         error(debug::type_to_str(tpe), "\n")
         assert(false)
@@ -787,23 +788,43 @@ def promote(tpe: &typechecking::Type) -> &typechecking::Type {
     return tpe
 }
 
-def ffi_call(args: &[compiler::Value], ret: compiler::Value, parameter_t: &Vector(typechecking::NamedParameter), ret_tpe: &typechecking::Type, ffi_function: &preload::FfiFunction, varargs: bool, state: &State) {
-    let ffi_cif = *ffi_function.ffi_cif
-
-    let ffi_args = allocate((size_of type *ffi::ffi_type) * args.size) !**ffi::ffi_type
-    for var i in 0..args.size {
-        var tpe = args[i].tpe
-        if varargs { tpe = promote(tpe) }
-        ffi_args[i] = type_to_ffi(tpe)
+def ffi_call(args: &[compiler::Value], ret: compiler::Value, parameter_t: &Vector(typechecking::NamedParameter), ret_tpe: &typechecking::Type, ffi_function: &symbol::Symbol, varargs: bool, state: &State) {
+    let function = preload::get_function(ffi_function)
+    if not function {
+        errors::errorv("Failed to find function ", ffi_function.name)
+        return
     }
+
+    let ffi_cif = *ffi_function.ffi_cif
+    var ffi_args: **ffi::ffi_type
+    var ffi_ret_tpe: *ffi::ffi_type
+
+    if varargs or not ffi_function.initialized {
+        ffi_args = allocate((size_of type *ffi::ffi_type) * args.size) !**ffi::ffi_type
+        for var i in 0..args.size {
+            var tpe = args[i].tpe
+            if varargs { tpe = promote(tpe) }
+            let ffi_tpe = allocate(ffi::ffi_type)
+            @ffi_tpe = type_to_ffi(tpe)
+            ffi_args[i] = ffi_tpe
+        }
+        ffi_ret_tpe = allocate(ffi::ffi_type)
+        @ffi_ret_tpe = type_to_ffi(ret_tpe)
+
+        ffi_function.arglen = args.size
+        ffi_function.args = ffi_args
+        ffi_function.ret = ffi_ret_tpe
+    }
+    
 
     var status: ffi::ffi_status = ffi::ffi_status::FFI_OK
     if varargs {
-        status = ffi::ffi_prep_cif_var(ffi_cif, ffi::ffi_abi::FFI_DEFAULT_ABI, (vector::length(parameter_t) - 1) !uint, args.size !uint, type_to_ffi(ret_tpe), ffi_args)
+        status = ffi::ffi_prep_cif_var(ffi_cif, ffi::ffi_abi::FFI_DEFAULT_ABI, (vector::length(parameter_t) - 1) !uint, args.size !uint, ffi_ret_tpe, ffi_args)
     } else if not ffi_function.initialized {
-        status = ffi::ffi_prep_cif(ffi_cif, ffi::ffi_abi::FFI_DEFAULT_ABI, args.size !uint, type_to_ffi(ret_tpe), ffi_args)
+        status = ffi::ffi_prep_cif(ffi_cif, ffi::ffi_abi::FFI_DEFAULT_ABI, args.size !uint, ffi_ret_tpe, ffi_args)
         ffi_function.initialized = true
     }
+
     if status != ffi::ffi_status::FFI_OK {
         errors::errorv("Failed to prepare ffi for function `", ffi_function.name, "`. Status: ", status.to_string())
         return
@@ -836,7 +857,16 @@ def ffi_call(args: &[compiler::Value], ret: compiler::Value, parameter_t: &Vecto
         get_stack_frame(state).locals[ret.name] = rvalue
     }
     
-    ffi::ffi_call(ffi_cif, ffi_function.ptr, rvalue, avalues)
+    ffi::ffi_call(ffi_cif, function, rvalue, avalues)
+
+    if varargs {
+        // Cleanup
+        for var i in 0..args.size {
+            free(ffi_args[i])
+        }
+        free(ffi_args)
+        free(ffi_ret_tpe)
+    }
 
     for var i in 0..args.size {
         free(avalues[i])
@@ -887,8 +917,8 @@ def eval_Call(insn: &compiler::Insn, state: &State) {
     if fp.is_fp {
         let ffi_function = {
             name = @name,
-            ptr = fp.fp
-        } !&preload::FfiFunction
+            function = fp.fp
+        } !symbol::Symbol
 
         var varargs = false
         var ret_tpe: &typechecking::Type = null
@@ -903,7 +933,7 @@ def eval_Call(insn: &compiler::Insn, state: &State) {
     } else {
         let function = fp.function
         if function.imported {
-            let ffi_function = preload::FFI_FUNCTIONS[name]
+            let ffi_function = preload::symbols[name]
             
             ffi_call(args, ret, function.args, function.ret, ffi_function, function.varargs, state)
         } else {
