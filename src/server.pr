@@ -2,6 +2,82 @@
 import vector
 import json
 
+const VERSION = "0.0.1"
+
+const ParseError = -32700
+const InvalidRequest = -32600
+const MethodNotFound = -32601
+const InvalidParams = -32602
+const InternalError = -32603
+
+const ServerNotInitialized = -32002
+const UnknownErrorCode = -32001
+
+type MessageType = enum {
+    Error = 1
+    Warning = 2
+    Info = 3
+    Log = 4
+}
+
+type DocumentUri = &string
+
+type TextDocumentIdentifier = struct {
+    uri: DocumentUri
+}
+
+type Position = struct {
+    line: int
+    character: int
+}
+
+type WorkspaceFolder = struct {
+    uri: DocumentUri
+    name: &string
+}
+
+type InitializeParams = struct {
+    processId: int
+    clientInfo: struct {
+        name: &string
+        version: &string
+    }
+    locale: &string
+    rootPath: &string
+    rootUri: DocumentUri
+    initializationOptions: &JsonTree
+    capabilities: &JsonTree
+    traceValue: &string
+    workspaceFolders: &[WorkspaceFolder]
+}
+
+type DefinitionParams = struct {
+    textDocument: TextDocumentIdentifier
+    position: Position
+}
+
+def go_to_definition(id: int, params: DefinitionParams) {
+    send_error(id, InternalError, "Not implemented")
+}
+
+def initialize(id: int, params: InitializeParams) {
+    let result = json::make_object()
+
+    let capabilities = json::make_object()
+    capabilities["positionEncoding"] = "utf-8"
+    capabilities["textDocumentSync"] = 2 // Incremental
+    capabilities["definitionProvider"] = true
+
+    let serverInfo = json::make_object()
+    serverInfo["name"] = "Princess Language Server"
+    serverInfo["version"] = VERSION
+
+    result["serverCapabilities"] = capabilities
+    result["serverInfo"] = serverInfo
+
+    send_reply(id, result)
+}
+
 type Header = &Vector(&string)
 
 def get(header: Header, key: &string) -> &string {
@@ -11,18 +87,165 @@ def get(header: Header, key: &string) -> &string {
             return entry.substring(entry.index_of(": ") + 2)
         }
     }
+    return null
 }
 
 def read_header -> Header {
-    return vector::make(type &string)
+    let header = vector::make(type &string)
+    loop {
+        var s: &string = ""
+        loop {
+            var c: char
+            read(std::stdin(), *c)
+            if c == '\r' {
+                read(std::stdin(), *c)
+                if c == '\n' {
+                    break
+                }
+            }
+            s += c
+        }
+        if s.length == 0 {
+            break
+        }
+        header.push(s)
+    }
+    return header
+}
+
+def send_message(payload: &JsonTree) {
+    let message = to_string(payload)
+    print("Content-Length: ", message.length, "\r\n")
+    print("Content-Type: application/vscode-jsonrpc; charset=utf-8\r\n")
+    print("\r\n")
+    print(message)
+}
+
+var request_id = 0
+def log_message(str: &string, tpe: int = MessageType::Log) {
+    let obj = json::make_object()
+    obj["type"] = tpe
+    obj["message"] = str
+    send_request(request_id, "window/logMessage", obj)
+    request_id += 1
+}
+
+def send_request(id: int, method: &string, params: &JsonTree) {
+    let obj = json::make_object()
+    obj["jsonrpc"] = "2.0"
+    obj["id"] = id
+    obj["method"] = method
+    obj["params"] = params
+
+    send_message(obj)
+}
+
+def send_error(id: int, error_code: int, message: &string, data: &JsonTree = null) {
+    let obj = json::make_object()
+    obj["jsonrpc"] = "2.0"
+    obj["id"] = id
+
+    let error = json::make_object()
+    error["code"] = error_code
+    error["message"] = message
+    if data {
+        error["data"] = data
+    }
+ 
+    obj["error"] = error
+
+    send_message(obj)
+}
+
+def send_reply(id: int, data: &JsonTree) {
+    let obj = json::make_object()
+    obj["jsonrpc"] = "2.0"
+    obj["id"] = id
+    obj["result"] = data
+    send_message(obj)
 }
 
 def read_message -> &JsonTree {
     let header = read_header()
+    if not header {
+        send_error(0, ParseError, "Invalid header")
+        return null
+    }
+    let content_length = parse_int(header.get("Content-Length"))
+    if content_length == 0 {
+        send_error(0, ParseError, "Invalid Content-Length")
+        return null
+    }
+    let encoding = header.get("Content-Type")
+    if encoding {
+        if encoding != "application/vscode-jsonrpc; charset=utf-8" and
+            encoding != "application/vscode-jsonrpc; charset=utf8" {
+            
+            send_error(0, ParseError, "Incalid Content-Type")
+            return null
+        }
+    }
+
+    let message_str = zero_allocate(char, content_length + 1)
+    read(std::stdin(), message_str)
+    let message = json::parse(message_str)
+    if message.status == json::Status::JSON_ERROR {
+        send_error(0, ParseError, "Can't parse content as json")
+        return null
+    }
+    return message
 }
 
-export def main {
+var is_initialized = false
+var is_shutdown = false
+
+export def main -> int {
     loop {
         let message = read_message()
+        if message {
+            let id = message["id"].as_int()
+            let method = message["method"].as_string()
+
+            if method == "exit" {
+                if is_shutdown {
+                    return 0
+                } else {
+                    return 1
+                }
+            }
+
+            if is_shutdown {
+                send_error(id, InvalidRequest, "Server is shut down")
+                continue
+            }
+
+            if method == "shutdown" {
+                is_shutdown = true
+                send_reply(id, null)
+                continue
+            }
+
+            if not is_initialized {
+                if method == "initialize" {
+
+                    is_initialized = true
+                } else {
+                    send_error(id, ServerNotInitialized, "Server not initialized!")
+                }
+                continue
+            }
+
+            if method {
+                let params = message["params"]
+                if method == "textDocument/definition" {
+                    let params = json::deserialize(params, DefinitionParams)
+                    if not params.exists { send_error(id, ParseError, "Couldn't parse parameters") }
+                    else { go_to_definition(id, params.get()) }
+                }
+            } else {
+                send_error(id, MethodNotFound, "No method specified")
+            }
+        }
     }
+    return 1
 }
