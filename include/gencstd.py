@@ -121,7 +121,7 @@ class Function(Type):
 
     def to_string(self, file: File) -> str:
         args = ', '.join(map(lambda x: x.to_string(file), filter(lambda x: x != void, self.args)))
-        return f"({args}) -> ({self.ret.to_string(file) if self.ret != void else ''})"
+        return f"def ({args}) -> ({self.ret.to_string(file) if self.ret != void else ''})"
 
 class Pointer(Type):
     def __init__(self, tpe: Type):
@@ -338,7 +338,7 @@ class FunctionDecl(Declaration):
     def to_symbol(self, n: int, file: File) -> str:
         function = ""
         if not self.dllimport:
-            function = f", function = *{self.name} !() -> ()"
+            function = f", function = *{self.name} !def () -> ()"
 
         ret = f"__SYMBOLS[{n}] = {{ kind = symbol::SymbolKind::FUNCTION, dllimport = {'true' if self.dllimport else 'false'}, name = \"{self.name}\"{function}}} !symbol::Symbol"
         return ret
