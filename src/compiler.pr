@@ -461,6 +461,12 @@ export type Function = struct {
     yield_index: int
     yield_switch: &Insn
 
+    // Closures
+    state: &typechecking::Type
+    scope: weak_ref(scope::Scope)
+    inner_scope: weak_ref(scope::Scope)
+    captures: &Vector(weak_ref(scope::Value))
+
     is_compiled: bool
 }
 
@@ -1259,7 +1265,7 @@ def convert_value_to_ref(tpe: &typechecking::Type, value: Value, loc: &Value, st
         let call1_ret = make_local_value(typechecking::pointer(builtins::int8_), null, state)
         let call1 = make_insn_dbg(InsnKind::CALL, loc)
         call1.value.call = {
-            name = {kind = ValueKind::GLOBAL, name = "malloc" } !Value,
+            name = { kind = ValueKind::GLOBAL, name = "malloc" } !Value,
             ret = call1_ret,
             args = args1
         } !InsnCall
@@ -1302,7 +1308,7 @@ def convert_value_to_ref(tpe: &typechecking::Type, value: Value, loc: &Value, st
         let call2_ret = make_local_value(typechecking::pointer(builtins::int8_), null, state)
         let call2 = make_insn_dbg(InsnKind::CALL, loc)
         call2.value.call = {
-            name = {kind = ValueKind::GLOBAL, name = "malloc" } !Value,
+            name = { kind = ValueKind::GLOBAL, name = "malloc" } !Value,
             ret = call2_ret,
             args = args2
         } !InsnCall
@@ -1647,6 +1653,13 @@ def convert_value_to_bool(tpe: &typechecking::Type, value: Value, loc: &Value, s
     return value
 }
 
+def convert_fp_to_closure(tpe: &typechecking::Type, value: Value, loc: &Value, state: &State) -> Value {
+    var ret = { kind = ValueKind::ZEROINITIALIZER, tpe = tpe } !Value
+    value = state.bitcast(tpe.fields[0].tpe, value, loc)
+    ret = state.insert_value(tpe, ret, value, [0], loc)
+    return ret
+}
+
 export def convert_to(node: &parser::Node, value: Value, tpe: &typechecking::Type, state: &State) -> Value {
     let loc = make_location(node, state)
     return convert_to(loc, value, tpe, state)
@@ -1673,6 +1686,8 @@ def convert_to(loc: &Value, value: Value, tpe: &typechecking::Type, state: &Stat
         typechecking::is_assignable(tpe, typechecking::reference(value.tpe), state.module) or 
         tpe.tpe == null or value.tpe.kind == typechecking::TypeKind::NULL) {
         return convert_value_to_ref(tpe, load_value(value, loc, state), loc, state)
+    } else if tpe.kind == typechecking::TypeKind::CLOSURE and is_function_pointer(value.tpe) {
+        return convert_fp_to_closure(tpe, load_value(value, loc, state), loc, state)
     } else if tpe.kind == typechecking::TypeKind::ARRAY {
         return convert_array_to_array(tpe, value, loc, state)
     } else if tpe.kind == typechecking::TypeKind::BOOL {
@@ -2320,17 +2335,61 @@ def walk_BNot(node: &parser::Node, state: &State) -> Value {
     return ret
 }
 
+def insert_call(
+    name_v: Value, value: Value, args: &[Value], 
+    proto: &[typechecking::NamedParameter], ret: &typechecking::Type, 
+    varargs_loc: &Vector(&Value), addr: Value, loc: &Value, 
+    multiple_returns: bool, state: &State) {
+
+    let insn = make_insn_dbg(InsnKind::CALL, loc)
+    (@insn).value.call = {
+        name = name_v,
+        ret = value,
+        args = args,
+        proto = proto
+    } !InsnCall
+
+    push_insn(insn, state)
+
+    for var i in 0..vector::length(varargs_loc) {
+        let ptr = @(varargs_loc[i])
+        insert_destructor(ptr, loc, state)
+    }
+
+    if ret {
+        let store = make_insn_dbg(InsnKind::STORE, loc)
+        (@store).value.store = {
+            value = value,
+            loc = addr
+        } !InsnStore
+        push_insn(store, state)
+
+        if multiple_returns {
+            for var i in 0..ret.fields.size {
+                let field = ret.fields[i]
+                let ret2 = state.gep(pointer(field.tpe), ret, addr, [make_int_value(0), make_int_value(i)])
+                create_temporary(ret2, state.load(field.tpe, ret2, loc), loc, state)
+            }
+        } else {
+            create_temporary(addr, value, loc, state)
+        }
+    }
+}
+
 // TODO Refactor this
 def walk_Call(node: &parser::Node, state: &State) -> Value {
     let loc = make_location(node, state)
     let left = node.value.func_call.left
     var tpe = node.function
+    if not tpe { return NO_VALUE }
+
     var is_fp = false
     if typechecking::is_function_pointer(tpe) {
         tpe = tpe.tpe
         is_fp = true
+    } else if tpe.kind == typechecking::TypeKind::CLOSURE {
+        is_fp = true
     }
-    if not tpe { return NO_VALUE }
 
     // Filter out type arguments
     let parameter_t = vector::make(NamedParameter)
@@ -2575,38 +2634,64 @@ def walk_Call(node: &parser::Node, state: &State) -> Value {
         }
     }
 
-    let insn = make_insn_dbg(InsnKind::CALL, loc)
-    (@insn).value.call = {
-        name = name_v,
-        ret = value,
-        args = args,
-        proto = proto
-    } !InsnCall
+    var stored_fun: &typechecking::Type
+    if tpe.kind == typechecking::TypeKind::CLOSURE {
+        let call_v = state.extract_value(tpe.fields[0].tpe, name_v, [0], loc)
+        let state_ref = state.extract_value(tpe.fields[1].tpe, name_v, [1], loc)
 
-    push_insn(insn, state)
+        stored_fun = tpe.fields[0].tpe._tpe
 
-    for var i in 0..vector::length(varargs_loc) {
-        let ptr = @(varargs_loc[i])
-        insert_destructor(ptr, loc, state)
-    }
+        let function_tpe = typechecking::make_function_type()
+        function_tpe.return_t = stored_fun.return_t.copy()
+        function_tpe.parameter_t = stored_fun.parameter_t.copy()
+        function_tpe.parameter_t.remove(0)
+        name_v = state.bitcast(pointer(function_tpe), call_v, loc)
 
-    if ret {
-        let store = make_insn_dbg(InsnKind::STORE, loc)
-        (@store).value.store = {
-            value = value,
-            loc = addr
-        } !InsnStore
-        push_insn(store, state)
+        let state_ptr = state.extract_value(pointer(null), state_ref, [1], loc)
+        let state_value = state.ptr_to_int(state_ptr, loc)
+        let cond = state.icmp(CompareInt::eq, state_value, { kind = ValueKind::INT, tpe = builtins::int64_, i = 0 } !Value)
 
-        if multiple_returns {
-            for var i in 0..ret.fields.size {
-                let field = ret.fields[i]
-                let ret2 = state.gep(pointer(field.tpe), ret, addr, [make_int_value(0), make_int_value(i)])
-                create_temporary(ret2, state.load(field.tpe, ret2, loc), loc, state)
-            }
-        } else {
-            create_temporary(addr, value, loc, state)
+        let br = make_insn_dbg(InsnKind::BR, loc)
+        br.value.br = { cond = cond } !InsnBr
+        push_insn(br, state)
+        let exit = make_insn_dbg(InsnKind::BR_UNC, loc)
+
+        let if_true = make_label(state)
+        push_label(if_true, state)
+
+        insert_call(name_v, value, args, proto, ret, varargs_loc, addr, loc, multiple_returns, state)
+
+        push_insn(exit, state)
+
+        let if_false = make_label(state)
+        push_label(if_false, state)
+
+        let args2 = allocate_ref(Value, args.size + 1)
+        for var i in 0..args.size {
+            args2[i + 1] = args[i]
         }
+        args2[0] = state_ref
+
+        let proto2 = allocate_ref(typechecking::NamedParameter, proto.size + 1)
+        for var i in 0..proto.size {
+            proto2[i + 1] = proto[i]
+        }
+        proto2[0] = { name = "__data", tpe = typechecking::reference(null) } !typechecking::NamedParameter
+
+        insert_call(call_v, value, args2, proto2, ret, varargs_loc, addr, loc, multiple_returns, state)
+
+        push_insn(exit, state)
+
+        let end = make_label(state)
+        push_label(end, state)
+
+        exit.value.br_unc.label_ = end
+        br.value.br.if_true = if_true
+        br.value.br.if_false = if_false
+
+    } else {
+        // TODO This should be a closure by all means
+        insert_call(name_v, value, args, proto, ret, varargs_loc, addr, loc, multiple_returns, state)
     }
 
     return value
@@ -3326,6 +3411,9 @@ def walk_Deref(node: &parser::Node, state: &State) -> Value {
 def walk_Ptr(node: &parser::Node, state: &State) -> Value {
     let value = walk_expression(node.value.expr, state)
     if not value.addr { return NO_VALUE }
+    if value.tpe.kind == typechecking::TypeKind::CLOSURE {
+        return value
+    }
 
     return @(value.addr)
 }
@@ -5024,6 +5112,75 @@ export def walk_VarDecl(node: &parser::Node, state: &State, set_constant: bool =
     }
 }
 
+def walk_Def(node: &parser::Node, state: &State) {
+    import_cstd_function("malloc", state)
+    let function = node.value.def_.function
+
+    let name = node.value.def_.name
+    let loc = make_location(node, state)
+    let context_tpe = node.value.def_.function.state
+
+    typechecking::create_type_entry(typechecking::reference(context_tpe))
+
+    let value = state.scope.get(name)
+    if not value { return }
+    
+    let ret = {
+        kind = ValueKind::LOCAL,
+        name = value.assembly_name,
+        tpe = value.tpe
+    } !Value
+
+    state.current_function().function_locals.add(value.assembly_name)
+
+    let insn = make_insn_dbg(InsnKind::ALLOCA, loc)
+    insn.value.alloca = {
+        ret = ret
+    } !InsnAlloca
+    push_alloca(insn, state)
+    ret.tpe = pointer(ret.tpe)
+
+    push_declare(node, ret, value.name, state)
+
+    let context_ptr_i8 = state.call("malloc", pointer(builtins::int8_), [{ kind = ValueKind::INT, tpe = builtins::size_t_, i = context_tpe.size } !Value], loc)
+    let ref_count_i8 = state.call("malloc", pointer(builtins::int8_), [{ kind = ValueKind::INT, tpe = builtins::size_t_, i = builtins::int64_.size } !Value], loc)
+    let ref_count = state.bitcast(pointer(builtins::int64_), ref_count_i8, loc)
+    state.store(ref_count, { kind = ValueKind::INT, tpe = ValueKind::int64_, i = 1 } !Value, loc)
+
+    let context_tpe_value = do_create_type(reference(context_tpe), state.module)
+
+    var closure = { kind = ValueKind::UNDEF, tpe = typechecking::reference(null) } !Value
+    closure = state.insert_value(typechecking::reference(null), closure, ref_count, [0], loc)
+    closure = state.insert_value(typechecking::reference(null), closure, context_ptr_i8, [1], loc)
+    closure = state.insert_value(typechecking::reference(null), closure, context_tpe_value, [2], loc)
+
+    let context_fun_ptr = state.gep(pointer(pointer(node.tpe)), value.tpe, ret, [make_int_value(0), make_int_value(0)], loc)
+    state.store(context_fun_ptr, { kind = ValueKind::GLOBAL, tpe = pointer(node.tpe), name = node.tpe.type_name } !Value, loc)
+    let context_ref_ptr = state.gep(pointer(typechecking::reference(null)), value.tpe, ret, [make_int_value(0), make_int_value(1)], loc)
+    state.store(context_ref_ptr, closure, loc)
+
+    predeclare_function(function)
+    create_function(node, node.tpe, node.value.def_.body, node.inner_scope, null, state, is_closure = true)
+    state.module.imported.add(node.tpe.type_name)
+
+    let context_ptr = state.bitcast(pointer(context_tpe), context_ptr_i8, loc)
+    var context = { kind = ValueKind::UNDEF, tpe = context_tpe } !Value
+
+    for var i in 0..function.captures.length {
+        let capture = function.captures[i]
+        var svalue = scope::get(state.scope, parser::make_identifier(capture.name))
+        var value = NO_VALUE
+        if capture.name.starts_with("__ref.") and not svalue {
+            svalue = scope::get(state.scope, parser::make_identifier(capture.name.substring(6, capture.name.length - 1)))
+            value = { kind = ValueKind::LOCAL, tpe = capture.tpe, name = svalue.assembly_name } !Value
+        } else {
+            value = state.load(capture.tpe, { kind = ValueKind::LOCAL, tpe = pointer(capture.tpe), name = svalue.assembly_name } !Value, loc)
+        }
+        context = state.insert_value(context_tpe, context, value, [i], loc)
+    }
+    state.store(context_ptr, context, loc)
+}
+
 def walk_Defer(node: &parser::Node, state: &State) {
     let current_function = state.current_function()
     let current_block = state.current_block
@@ -5349,8 +5506,7 @@ export def walk(node: &parser::Node, state: &State) {
     if not node { return }
     switch node.kind !int {
         case parser::NodeKind::DEF:
-            // TODO Nested functions not implemented
-            null
+            walk_Def(node, state)
         case parser::NodeKind::VAR_DECL:
             walk_VarDecl(node, state)
         case parser::NodeKind::RETURN:
@@ -5697,7 +5853,7 @@ def di_type(tpe: &typechecking::Type, state: &State) -> &Value {
             @ditpe = @di_basic_type(tpe, name, "DW_ATE_float", state)
         case typechecking::TypeKind::BOOL:
             @ditpe = @di_basic_type(tpe, name, "DW_ATE_unsigned", state)
-        case typechecking::TypeKind::STRUCT:
+        case typechecking::TypeKind::STRUCT, typechecking::TypeKind::CLOSURE:
             @ditpe = @di_composite_type(ditpep, tpe, name, "DW_TAG_structure_type", state)
         case typechecking::TypeKind::UNION:
             @ditpe = @di_composite_type(ditpep, tpe, name, "DW_TAG_union_type", state)
@@ -6130,7 +6286,8 @@ export def create_function(
     scpe: &scope::Scope, 
     block: &Block,
     state: &State,
-    no_cleanup: bool = false
+    no_cleanup: bool = false,
+    is_closure: bool = false
 ) {
     let function = state.module.result.functions.get_or_default(tpe.type_name, null)
     if not function { return }
@@ -6181,6 +6338,38 @@ export def create_function(
         state.local_counter = 0
         let previous_scope = state.scope
         state.scope = scpe
+
+        if is_closure {
+            let context_ptr_i8 = state.extract_value(pointer(null), {
+                kind = ValueKind::LOCAL,
+                tpe = typechecking::reference(null),
+                name = "__state.value"
+            } !Value, [1])
+            let context_ptr = state.bitcast(pointer(function.state), context_ptr_i8)
+            let context = state.load(function.state, context_ptr)
+
+            import_structure(function.state, state.module)
+            state.module.imported.add(function.state.type_name)
+
+            for var i in 0..function.captures.length {
+                let capture = function.captures[i]
+                let ret = {
+                    kind = ValueKind::LOCAL,
+                    name = capture.assembly_name,
+                    tpe = capture.tpe
+                } !Value
+
+                let alloca = make_insn(InsnKind::ALLOCA)
+                alloca.value.alloca = {
+                    ret = ret
+                } !InsnAlloca
+                push_alloca(alloca, state)
+                ret.tpe = pointer(capture.tpe)
+                
+                let capture_value = state.extract_value(capture.tpe, context, [i])
+                state.store(ret, capture_value)
+            }
+        }
 
         // Create function arguments
         for var i in 0..vector::length(function.args) {
@@ -7018,7 +7207,10 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
         swtch.value.switch_.otherwise = end_label
     }
 
-    if structure_type and structure_type.kind == typechecking::TypeKind::STRUCT {
+    if structure_type and 
+        structure_type.kind == typechecking::TypeKind::STRUCT or 
+        structure_type.kind == typechecking::TypeKind::CLOSURE {
+            
         var obj: Value
         if typechecking::is_ref(value.tpe.tpe) {
             let ref = state.load(tpe.tpe, value)
