@@ -617,14 +617,21 @@ def process_module(name: str, *libs):
 
 
     folder = Path(__file__).parent
+    platform = folder / ("windows" if sys.platform == "win32" else "linux")
 
-    with open(folder / f"{name}.json", "w") as fp:
+    clang_cmd = ["clang" if sys.platform == "win32" else "clang-13", "-Xclang", "-ast-dump=json", "-fsyntax-only"]
+    if sys.platform == "win32":
+        clang_cmd.append("--include-directory")
+        clang_cmd.append(platform)
+
+    with open(platform / f"{name}.json", "w") as fp:
+        clang_cmd.append(folder / f"{name}.h")
         p = subprocess.Popen(
-            ["clang" if sys.platform == "win32" else "clang-13", "-Xclang", "-ast-dump=json", "-fsyntax-only", folder / f"{name}.h"], 
+            clang_cmd, 
             stdout = fp)
         p.wait()
 
-    with open(folder / f"{name}.json", "r") as fp:
+    with open(platform / f"{name}.json", "r") as fp:
         data = json.load(fp)
         data = data["inner"]
     
@@ -636,8 +643,8 @@ def process_module(name: str, *libs):
                 line = line.strip()
                 excluded.update(line.split(" "))
 
-    with open(folder / f"{name}.pr", "w") as fp,\
-        open(folder / f"{name}_sym.pr", "w") as fp2:
+    with open(platform / f"{name}.pr", "w") as fp,\
+        open(platform / f"{name}_sym.pr", "w") as fp2:
 
         file = File(fp)
 
