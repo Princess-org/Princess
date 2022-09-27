@@ -1,5 +1,6 @@
 // This is the entry point for a language server as defined by the LSP
 import vector
+import map
 import json
 
 const VERSION = "0.0.1"
@@ -98,12 +99,8 @@ def initialized {
     let obj = json::make_object()
     obj["registrations"] = registrations
 
-    def on_register {
-
-    }
-
-    send_request("client/registerCapability", obj, reply = on_register)
-    read_reply()
+    def on_register(reply: &JsonTree) {}
+    send_request("client/registerCapability", obj, reply = *on_register)
 }
 
 type Header = &Vector(&string)
@@ -142,15 +139,6 @@ def read_header -> Header {
     return header
 }
 
-def read_reply -> &JsonTree {
-    let message = read_message()
-    if message.has_item("error") {
-        error(message["error"]["message"].as_string(), "\n")
-        exit(1)
-    }
-    return message["result"]
-}
-
 def send_message(payload: &JsonTree) {
     let message = to_string(payload)
     print("Content-Length: ", message.length, "\r\n")
@@ -167,19 +155,24 @@ def log_message(str: &string, tpe: int = MessageType::Log) {
     send_request("window/logMessage", obj)
 }
 
-var request_id = 0
+var request_id: size_t = 0
+def send_request(method: &string, params: &JsonTree, reply: &JsonTree -> ()) {
+    on_reply(request_id, reply)
+    send_request(method, params)
+}
+
 def send_request(method: &string, params: &JsonTree) {
     let obj = json::make_object()
     obj["jsonrpc"] = "2.0"
-    obj["id"] = request_id
+    obj["id"] = request_id !int
     obj["method"] = method
     obj["params"] = params
-    request_id += 1
     send_message(obj)
+    request_id += 1
 }
 
 def send_error(id: int, error_code: int, message: &string, data: &JsonTree = null) {
-    fprint(std::stderr(), message, "\n")
+    error(message, "\n")
 
     let obj = json::make_object()
     obj["jsonrpc"] = "2.0"
@@ -239,15 +232,37 @@ def read_message -> &JsonTree {
 
 var is_initialized = false
 var is_shutdown = false
+var reply_handlers = map::make(size_t, type &JsonTree -> ())
+
+def on_reply(id: size_t, handler: &JsonTree -> ()) {
+    reply_handlers[id] = handler
+}
 
 export def main -> int {
     loop {
         let message = read_message()
         if message {
             let id = message["id"].as_int() if message.has_item("id") else 0
-            let method = message["method"].as_string()
+            var method = message["method"].as_string() if message.has_item("method") else null
             let params = message["params"]
-            error("Called method: ", method, "\n")
+
+            if not method {
+                if message.has_item("error") {
+                    let error_msg = message["error"]["message"].as_string()
+                    error("Error: ", error_msg, "\n")
+                } else {
+                    let request_id = id !size_t
+                    // This is a response
+                    if not reply_handlers.contains(request_id) {
+                        send_error(id, InvalidRequest, "Not a valid request id")
+                        continue
+                    }
+                    let handler = reply_handlers[request_id]
+                    handler(message["result"])
+                    reply_handlers.remove(request_id)
+                    continue
+                }
+            }
         
             if method == "exit" {
                 if is_shutdown {
