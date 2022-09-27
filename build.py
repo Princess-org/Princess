@@ -43,8 +43,25 @@ def release():
 
     shutil.copy(Path(exe_file("bin/princess2")), FOLDER / exe_file("bin/princess"))
     shutil.copy(Path("version"), FOLDER)
+
     for path in glob.glob("include/*.h"):
         shutil.copy(path, FOLDER / "include")
+
+    if sys.platform == "win32":
+        shutil.copy(Path("bin/libffi.dll"), FOLDER / "bin")
+        shutil.copy(Path("bin/libffi.lib"), FOLDER / "bin")
+
+        (FOLDER / "include/windows").mkdir(exist_ok=True)
+        for path in glob.glob("include/windows/*.pr")
+            shutil.copy(path, FOLDER / "include/windows")
+
+        shutil.copy(Path("include/windows/ffi.h"), FOLDER / "include/windows")
+        shutil.copy(Path("include/windows/ffitarget.h"), FOLDER / "include/windows")
+    else:
+        (FOLDER / "include/linux").mkdir(exist_ok=True)
+        for path in glob.glob("include/linux/*.pr")
+            shutil.copy(path, FOLDER / "include/linux")
+
     shutil.copy(Path("include/preload.pr"), FOLDER / "include")
     shutil.copy(Path("include/symbol.pr"), FOLDER / "include")
     shutil.copy(Path("include/gencstd.py"), FOLDER / "include")
