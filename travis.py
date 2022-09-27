@@ -2,7 +2,6 @@
 from pathlib import Path
 import sys
 import subprocess
-from include import gencstd
 import build
 
 
@@ -10,8 +9,6 @@ def main():
     Path("build").mkdir(exist_ok = True)
     Path("bin").mkdir(exist_ok = True)
     build.download()
-    print("Generating standard library...")
-    gencstd.main()
     print("Building the compiler...")
     build.build([])
 

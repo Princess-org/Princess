@@ -15,16 +15,20 @@ import util
 import debug
 import errors
 
+
 export let const_module = toolchain::make_module(
     filename = null,
     modulename = "const",
     node = null,
-    scpe = scope::enter_function_scope(builtins::builtins, null)
+    scpe = scope::enter_function_scope(builtins::builtins, null),
 )
-const_module.scope.module = const_module 
 
 // This is for compiling expressions
 export let compiler_state = compiler::make_state(const_module)
+
+const_module.scope.module = const_module
+const_module.state = typechecking::make_state(const_module)
+const_module.compiler_state = compiler_state
 
 import eval
 
@@ -53,7 +57,7 @@ def set_current_function {
         block = block,
         function_locals = set::make()
     } !&compiler::Function
-    compiler_state.current_function = function
+    compiler_state.function_stack.push(function)
     compiler_state.current_block = block
 }
 
@@ -66,6 +70,7 @@ export def expr(node: &parser::Node, state: &typechecking::State) -> compiler::V
     var result = compiler::walk_expression(node, compiler_state)
     let estate = eval::eval(compiler_state)
     result = eval::get_value(result, estate)
+    compiler_state.function_stack.pop()
     return result
 }
 
@@ -79,6 +84,7 @@ export def boolean_expr(node: &parser::Node, state: &typechecking::State) -> com
     result = compiler::convert_to(node, result, builtins::bool_, compiler_state)
     let estate = eval::eval(compiler_state)
     result = eval::get_value(result, estate)
+    compiler_state.function_stack.pop()
     return result
 }
 
@@ -143,12 +149,12 @@ def walk_Import(node: &parser::Node, state: &typechecking::State) {
         if not alias {
             alias = name
         }
-        let module = toolchain::consteval_module(name)
+        let module = toolchain::consteval_module(name, state.module)
         if not module {
             errors::errorn(name, "Module `", parser::identifier_to_str(name), "` could not be found")
             return
         }
-        scope::insert_module(state.scope, alias, module )
+        scope::insert_module(state.scope, alias, module)
     }
     compiler::predeclare_functions(state.module)
 }
@@ -168,7 +174,7 @@ def walk_Def(node: &parser::Node, state: &typechecking::State) {
     let return_t = vector::make(type &typechecking::Type)
     for var i in 0..vector::length(params) {
         let param = params[i]
-        assert(param.kind == parser::NodeKind::PARAMETER)
+        assert param.kind == parser::NodeKind::PARAMETER
 
         var tpe: &typechecking::Type = null
         if param.value.param.kw == parser::VarDecl::TYPE {
@@ -219,6 +225,7 @@ def walk_Def(node: &parser::Node, state: &typechecking::State) {
                     errors::errorn(param.value.param.value, "Can only assign null to a pointer or reference")
                 }
             }
+            compiler_state.function_stack.pop()
         }
 
         let name = param.value.param.name
@@ -239,11 +246,13 @@ def walk_Def(node: &parser::Node, state: &typechecking::State) {
     let tpe = typechecking::make_function_type_n(name, parameter_t, return_t, state.module, extern, imported, dllimport)
     tpe.node = node
     
-    if body {
-        node.inner_scope = scope::enter_function_scope(state.scope)
-        scope::create_function(state.scope, name, share, tpe, scope::Phase::DEFINED, node, copy_state(state))
-    } else {
-        scope::create_function(state.scope, name, share, tpe, scope::Phase::DECLARED, node, null)
+    if state.function_stack.length <= 1 {
+        if body {
+            node.inner_scope = scope::enter_function_scope(state.scope)
+            scope::create_function(state.scope, name, share, tpe, scope::Phase::DEFINED, node, copy_state(state))
+        } else {
+            scope::create_function(state.scope, name, share, tpe, scope::Phase::DECLARED, node, null)
+        }
     }
 
     // TODO Move this to typechecking maybe
@@ -366,7 +375,6 @@ def walk_top_VarDecl(node: &parser::Node, state: &typechecking::State) {
             walk(node, right[i], state)
         }
 
-        set_current_function()
         typechecking::walk_VarDecl(node, state, true)
 
         // We need to walk twice to catch static function calls
@@ -374,6 +382,7 @@ def walk_top_VarDecl(node: &parser::Node, state: &typechecking::State) {
             walk(node, right[i], state)
         }
 
+        set_current_function()
         let assign = compiler::walk_top_VarDecl(node, compiler_state, true)
         compiler::walk_expression(assign, compiler_state)
         eval::eval(compiler_state)
@@ -382,6 +391,7 @@ def walk_top_VarDecl(node: &parser::Node, state: &typechecking::State) {
             let n = left[i]
             if n.kind != parser::NodeKind::ID_DECL {
                 errors::errorn(n, "Can't assign in const statement")
+                compiler_state.function_stack.pop()
                 return
             }
             let ident = n.value.id_decl.value
@@ -391,6 +401,7 @@ def walk_top_VarDecl(node: &parser::Node, state: &typechecking::State) {
             }
         }
         state.is_static = is_static
+        compiler_state.function_stack.pop()
 
         return
     }
@@ -539,8 +550,7 @@ export def compile_function(node: &parser::Node, state: &typechecking::State) {
     // This is a big ugly but what can we do
     let debug = toolchain::debug_sym
     toolchain::debug_sym = false
-    compiler::create_function(node, copy.tpe, copy.value.def_.body, copy.inner_scope,
-         null, copy.value.def_.locals, copy.value.def_.has_defer, copy.value.def_.has_yield, compiler_state)
+    compiler::create_function(node, copy.tpe, copy.value.def_.body, copy.inner_scope, null, compiler_state)
     toolchain::debug_sym = debug
 
     if function.defer_functions {
@@ -873,19 +883,19 @@ export def consteval(state: &typechecking::State) {
     if not toolchain::is_preload(state.module) {
         // import standard library
         let cstd_ident = parser::make_identifier("cstd")
-        let cstd = toolchain::consteval_module(cstd_ident) 
+        let cstd = toolchain::consteval_module(cstd_ident, state.module) 
         scope::insert_module(state.module.scope, cstd_ident, cstd)
         
         let std_ident = parser::make_identifier("std")
-        let std = toolchain::consteval_module(std_ident) 
+        let std = toolchain::consteval_module(std_ident, state.module) 
         scope::insert_module(state.module.scope, std_ident, std)
 
         let runtime_ident = parser::make_identifier("runtime")
-        let runtime = toolchain::consteval_module(runtime_ident) 
+        let runtime = toolchain::consteval_module(runtime_ident, state.module) 
         scope::insert_module(state.module.scope, runtime_ident, runtime)
 
         let optional_ident = parser::make_identifier("optional")
-        let optional = toolchain::consteval_module(optional_ident) 
+        let optional = toolchain::consteval_module(optional_ident, state.module) 
         scope::insert_module(state.module.scope, optional_ident, optional)
     }
 
@@ -894,7 +904,7 @@ export def consteval(state: &typechecking::State) {
     let function = {
         is_global = true,
         locals = map::make(type &typechecking::Type)
-    } !&typechecking::Function
+    } !&compiler::Function
 
     typechecking::push_function(state, function)
 

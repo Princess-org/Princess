@@ -28,6 +28,7 @@ export type TypeKind = enum {
     UNION
     ENUM
     FUNCTION
+    CLOSURE
     TUPLE
     POINTER
     REFERENCE
@@ -209,6 +210,8 @@ export def has_destructor(tpe: &Type) -> bool {
                 break
             }
         }
+    } else if tpe.kind == TypeKind::CLOSURE {
+        res = true
     }
     tm.has_destructor = 1 if res else -1
     return res
@@ -294,7 +297,8 @@ export def has_copy_constructor(tpe: &Type, lookup: bool = true) -> bool {
     if not tpe { return false }
     if tpe.kind != TypeKind::STRUCT and 
         tpe.kind != TypeKind::UNION and
-        tpe.kind != TypeKind::STATIC_ARRAY { 
+        tpe.kind != TypeKind::STATIC_ARRAY and 
+        tpe.kind != TypeKind::CLOSURE { 
         return false 
     }
 
@@ -313,6 +317,8 @@ export def has_copy_constructor(tpe: &Type, lookup: bool = true) -> bool {
                 break
             }
         }
+    } else if tpe.kind == TypeKind::CLOSURE {
+        res = true
     } else if tpe.kind == TypeKind::STATIC_ARRAY {
         while tpe != null and tpe.kind == TypeKind::STATIC_ARRAY {
             tpe = tpe.tpe
@@ -368,26 +374,18 @@ export type NamedParameter = struct {
     value: &compiler::Value
 }
 
-export type Function = struct {
-    is_global: bool
-    value: &scope::Value
-    locals: &SMap(&Type)
-    has_defer: bool
-    has_yield: bool
-}
-
 export type State = struct {
     module: weak_ref(toolchain::Module)
     counter: int
     scope: weak_ref(scope::Scope)
     // Vector of Type
-    function_stack: &Vector(&Function)
+    function_stack: &Vector(&compiler::Function)
     // Used by consteval
     is_static: bool
     in_defer: bool
 }
 
-export def current_function(state: &State) -> &Function {
+export def current_function(state: &State) -> &compiler::Function {
     let length = vector::length((@state).function_stack)
     if length == 0 {
         return null
@@ -396,11 +394,11 @@ export def current_function(state: &State) -> &Function {
     }
 }
 
-export def push_function(state: &State, function: &Function) {
+export def push_function(state: &State, function: &compiler::Function) {
     (@state).function_stack.push(function)
 }
 
-export def pop_function(state: &State) -> &Function {
+export def pop_function(state: &State) -> &compiler::Function {
     return vector::pop((@state).function_stack)
 }
 
@@ -556,8 +554,8 @@ export def make_type(kind: TypeKind, node: &parser::Node) -> &Type {
 
 export def make_function_type() -> &Type {
     let tpe = make_type_raw(TypeKind::FUNCTION)
-    tpe.size = size_of type () -> ()
-    tpe.align = align_of type () -> ()
+    tpe.size = size_of type def () -> ()
+    tpe.align = align_of type def () -> ()
     tpe.imported = false
     return tpe
 }
@@ -899,7 +897,7 @@ export def equals(a: &Type, b: &Type) -> bool {
     if kind == TypeKind::STATIC_ARRAY {
         return (@a).length == (@b).length and equals((@a).tpe, (@b).tpe)
     }
-    if kind == TypeKind::FUNCTION or kind == TypeKind::TUPLE {
+    if kind == TypeKind::FUNCTION or kind == TypeKind::TUPLE or kind == TypeKind::CLOSURE {
         if a.parameter_t != b.parameter_t {
             if vector::length((@a).parameter_t) != vector::length((@b).parameter_t) {
                 return false        
@@ -912,7 +910,7 @@ export def equals(a: &Type, b: &Type) -> bool {
                 }
             }
         }
-        if kind == TypeKind::FUNCTION {
+        if kind == TypeKind::FUNCTION or kind == TypeKind::CLOSURE {
             if vector::length((@a).return_t) != vector::length((@b).return_t) {
                 return false
             }
@@ -1259,6 +1257,28 @@ def convert_type_score(a: &Type, b: &Type, module: &toolchain::Module, is_type: 
         } else {
             return 0 if equals(a.tpe, b.tpe) else -1
         }
+    }
+    if a.kind == TypeKind::CLOSURE and b.kind == TypeKind::POINTER and b._tpe and b._tpe.kind == TypeKind::FUNCTION {
+        b = b._tpe
+        if vector::length(a.parameter_t) != vector::length(b.parameter_t) {
+            return -1
+        }
+        for var i in 0..vector::length(a.parameter_t) {
+            let param_a = a.parameter_t[i]
+            let param_b = b.parameter_t[i]
+            if not equals(param_a.tpe, param_b.tpe) {
+                return -1
+            }
+        }
+        if vector::length(a.return_t) != vector::length(b.return_t) {
+            return -1
+        }
+        for var i in 0..vector::length(a.return_t) {
+            if not equals(a.return_t[i], b.return_t[i]) {
+                return -1
+            }
+        }
+        return 1
     }
 
     if is_type { 
@@ -1753,13 +1773,18 @@ export def generate_concrete_functions(type_constructor: &Type, tpe: &Type, stat
         if not is_polymorph(tpe) and not is_polymorph(ftpe) and new_entry {
             let scpe = state.scope
             let module = state.module
+            let function_stack = state.function_stack
             state.scope = ftpe.node.module.scope
             state.module = ftpe.node.module
+            state.function_stack = vector::make(type &compiler::Function)
+            state.function_stack.push(function_stack[0])
+
             if not scope::has_function(state.scope, ftpe) {
                 walk_Def_with_type_argument(ftpe.node, pars, state)
             }
             state.scope = scpe
             state.module = module
+            state.function_stack = function_stack
         }
     }
 }
@@ -2041,8 +2066,24 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
 
         let tpe = make_static_array(array_tpe, n, node.value.t_arrs.kw)
         return tpe
-    } else if node.kind == parser::NodeKind::FUNCTION_T {
-        var tpe = make_function_type()
+    } else if node.kind == parser::NodeKind::FUNCTION_T or node.kind == parser::NodeKind::CLOSURE_T {
+        var tpe: &Type
+        var fun: &Type
+        if node.kind == parser::NodeKind::FUNCTION_T {
+            tpe = make_function_type()
+        } else {
+            fun = make_function_type()
+            fun.parameter_t = vector::make(NamedParameter)
+            fun.parameter_t.push({ name = "__data", tpe = reference(null) } !NamedParameter)
+            fun.return_t = vector::make(type &Type)
+
+            let types = allocate_ref(StructMember, 2)
+            types[0] = { tpe = pointer(fun), name = "function" } !StructMember
+            types[1] = { tpe = reference(null), name = "data"} !StructMember
+            tpe = make_struct_type(types)
+            tpe.kind = TypeKind::CLOSURE
+        }
+
         (@tpe).line = node.loc.line
         (@tpe).parameter_t = vector::make(NamedParameter)
         for var i in 0..vector::length(node.value.t_func.args) {
@@ -2057,6 +2098,9 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
                 node = arg
             } !NamedParameter
             tpe.parameter_t.push(np)
+            if fun {
+                fun.parameter_t.push(np)
+            }
         }
         (@tpe).return_t = vector::make(type &Type)
         for var i in 0..vector::length(node.value.t_func.ret) {
@@ -2066,10 +2110,17 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
             }
 
             let arg = node.value.t_func.ret[i]
-            vector::push((@tpe).return_t, type_lookup(arg, state, return_type, lookup_default, cache))
+            let ret_tpe = type_lookup(arg, state, return_type, lookup_default, cache)
+
+            tpe.return_t.push(ret_tpe)
+            if fun {
+                fun.return_t.push(ret_tpe)
+            }
         }
         tpe.module = state.module
-        tpe = pointer(tpe)
+        if node.kind == parser::NodeKind::FUNCTION_T {
+            tpe = pointer(tpe)
+        }
         return tpe
     } else if node.kind == parser::NodeKind::TYPE_T {
         if current_type { return current_type }
@@ -2411,6 +2462,35 @@ def walk_Identifier(node: &parser::Node, state: &State) {
 
     var value = scope::get(state.scope, node) !&scope::Value
     if not value {
+        let len = state.function_stack.length
+        for var i in 0..len {
+            var current_fun = state.function_stack[len - i - 1]
+            value = scope::get(current_fun.inner_scope, node)
+            if value {
+                for var j in (len - i - 1)..len {
+                    node.svalue = null
+                    let parent_function = state.function_stack[j]
+                    if parent_function.captures and scope::get(parent_function.inner_scope, node) == null {
+                        let new_value = scope::create_variable(
+                            parent_function.inner_scope, node, parser::ShareMarker::NONE,
+                             parser::VarDecl::LET, value.tpe, null
+                        )
+                        new_value.is_capture = true
+                        let new_value_ref = scope::create_variable(
+                            parent_function.inner_scope, parser::make_identifier("__ref." + value.name), parser::ShareMarker::NONE,
+                             parser::VarDecl::LET, pointer(value.tpe), null
+                        )
+                        parent_function.captures.push(new_value)
+                        parent_function.captures.push(new_value_ref)
+                        value = new_value
+                    }
+                }
+                break
+            }
+        }
+    }
+
+    if not value {
         errors::errorn(node, "Unknown identifier `", parser::identifier_to_str(node), "`")
         return
     }
@@ -2428,13 +2508,13 @@ def walk_Identifier(node: &parser::Node, state: &State) {
     node.svalue = value
     node.kw = value.modifier
     
-    if is_function(node.tpe) and 
+    if (is_function(node.tpe) or node.tpe.kind == TypeKind::CLOSURE) and 
         (@node.parent).kind != parser::NodeKind::FUNC_CALL and
         (@node.parent).kind != parser::NodeKind::PTR {
 
         let parent = node.parent
         let old_node = parser::copy_node(node)
-        (@old_node).tpe = flatten_return_type(old_node, (@node.tpe).return_t)
+        old_node.tpe = flatten_return_type(old_node, node.tpe.return_t)
 
         @node = {
             kind = parser::NodeKind::FUNC_CALL,
@@ -3029,6 +3109,11 @@ def walk_Cast(node: &parser::Node, state: &State) {
     var ltpe = left.tpe
     if not ltpe { return }
 
+    if left.kind == parser::NodeKind::INTEGER and 
+        is_integer(ltpe) and is_integer(rtpe) {
+        left.tpe = rtpe
+    }
+
     if equals(ltpe, rtpe) or (equals(ltpe, builtins::Ref_) and (is_ref(rtpe) or is_weak_ref(rtpe))) {
     } else if equals(rtpe, builtins::Ref_) {
         if not (is_ref(ltpe) or is_weak_ref(ltpe)) {
@@ -3076,7 +3161,7 @@ def walk_Import(node: &parser::Node, state: &State) {
     for var i in 0..vector::length(imports) {
         let imprt = imports[i]
         var name = (@imprt).value.import_module.name
-        toolchain::typecheck_module(name)
+        toolchain::typecheck_module(name, state.module)
     }
 }
 
@@ -3184,26 +3269,104 @@ export def walk_Def(node: &parser::Node, state: &State) {
     let imported = (share !int & parser::ShareMarker::IMPORT !int) !bool
 
     if not name or not params or not returns { return }
-
-    // TODO
-    /*if not current_function(state).is_global {
-        if share != parser::ShareMarker::NONE {
-            errors::errorn(node, "Can't share non top level function")
-        }
-    }*/
     
-    if not node.tpe { return }
-    let tpe = make_function_type_n(name, node.tpe.parameter_t, node.tpe.return_t, state.module, extern, imported, dllimport)
-    tpe.node = node
-    check_is_valid_function(name, node.tpe.parameter_t, state)
+    let is_closure = state.function_stack.length > 1 // Main function is 0
 
-    var function: &Function
+    var tpe: &Type
+    var closure_type: &Type
+    var state_node = parser::make_identifier("__state") // This is needed for ref counting reasons
+
+    if is_closure {
+        let c_parameter_t = vector::make(NamedParameter)
+        let c_return_t = vector::make(type &Type)
+
+        let parameter_t = vector::make(NamedParameter)
+        let return_t = vector::make(type &Type)
+
+        let types = allocate_ref(StructMember, 2)
+        types[0] = { tpe = pointer(make_function_type_n(name, parameter_t, return_t)), name = "function" } !StructMember
+        types[1] = { tpe = reference(null), name = "data"} !StructMember
+        closure_type = make_struct_type(types)
+        closure_type.kind = TypeKind::CLOSURE
+        closure_type.parameter_t = c_parameter_t
+        closure_type.return_t = c_return_t
+        // Need to store a strong reference
+        node.value.def_.closure_type = closure_type
+
+        if dllimport or extern or share != parser::ShareMarker::NONE {
+            errors::errorn(name, "Invalid modifier to closure")
+            return
+        }
+        
+        // State argument
+        parameter_t.push({ name = "__state", tpe = reference(null), node = state_node } !NamedParameter)
+
+        for var i in 0..params.length {
+            let param = params[i]
+            assert param.kind == parser::NodeKind::PARAMETER
+            if param.value.param.value {
+                errors::errorn(param, "Can't have default parameters for closure")
+                return
+            }
+            if param.value.param.varargs {
+                errors::errorn(param, "Can't have varargs for closure")
+                return
+            }
+            if param.value.param.kw == parser::VarDecl::TYPE {
+                errors::errorn(param, "Can't have type argument in closure")
+                return
+            }
+            // TODO : type T is also not allowed
+
+            let name = param.value.param.name
+            let tpe = typechecking::type_lookup(param.value.param.tpe, state, null, true)
+            let np = {
+                name = last_ident_to_str(name),
+                node = name,
+                tpe = tpe
+            } !NamedParameter
+            parameter_t.push(np)
+            c_parameter_t.push(np)
+        }
+
+        for var i in 0..returns.length {
+            let tpe = typechecking::type_lookup(returns[i], state, null, true)
+            return_t.push(tpe)
+            c_return_t.push(tpe)
+        }
+
+        let arr = zero_allocate(type &string, state.function_stack.length)
+        for var i in 1..state.function_stack.length {
+            arr[i - 1] = state.function_stack[i].unmangled
+        }
+        arr[state.function_stack.length - 1] = parser::identifier_to_str(name)
+
+        tpe = make_function_type_n(make_identifier(arr), parameter_t, return_t, state.module)
+        tpe.type_name += "." + state.counter
+        state.counter += 1
+
+        delete(arr)
+        tpe.node = node
+    } else {
+        if not node.tpe { return }
+        tpe = make_function_type_n(name, node.tpe.parameter_t, node.tpe.return_t, state.module, extern, imported, dllimport)
+        tpe.node = node
+        check_is_valid_function(name, node.tpe.parameter_t, state)
+    } 
+
+    var function = {
+        tpe = tpe,
+        module = state.module,
+        locals = map::make(type &Type),
+        unmangled = parser::identifier_to_str(name),
+        scope = state.scope,
+        inner_scope = inner_scope,
+        captures = vector::make(type weak_ref(scope::Value))
+    } !&compiler::Function
+    node.value.def_.function = function
+
     var phase = scope::Phase::DECLARED
     if body {
-        function = {
-            locals = map::make(type &Type)
-        } !&Function
-
         phase = scope::Phase::COMPILED
         for var i in 0..vector::length(tpe.parameter_t) {
             let np = tpe.parameter_t[i]
@@ -3227,20 +3390,21 @@ export def walk_Def(node: &parser::Node, state: &State) {
         }
     }
 
-    //if not current_function(state).is_global {
-        // This is so that we don't create overloaded functions
-        // inside of a function
-        // TODO what about forward declarations?
-    //    scope::create_variable(outer_scope, name, share, parser::VarDecl::CONST, tpe, null)
-    //} else {
-        let value = scope::create_function(outer_scope, name, share, tpe, phase, node, state)
-    //}
+    if is_closure {
+        tpe.parameter_t.get(0).node = null // TODO This is ugly, maybe NamedParameter should have a strong reference instead?
+        scope::create_variable(outer_scope, name, parser::ShareMarker::NONE, parser::VarDecl::CONST, closure_type, null)
+    } else {
+        scope::create_function(outer_scope, name, share, tpe, phase, node, state)
+    }
     
     if body {
-        function.value = value
-
         state.scope = inner_scope
         push_function(state, function)
+
+        var global_scope = state.scope.parent
+        while not scope::is_global(global_scope) {
+           global_scope = global_scope.parent 
+        }
 
         let body_copy = vector::copy(body)
         for var i in 0..vector::length(body_copy) {
@@ -3248,12 +3412,14 @@ export def walk_Def(node: &parser::Node, state: &State) {
             consteval::walk(node, body_copy[i], state)
         }
         for var i in 0..vector::length(body) {
-            walk(node, body[i], state)
+            let inner = body[i]
+            // Create scopes for inner functions
+            if inner.kind == parser::NodeKind::DEF {
+                inner.scope = state.scope
+                inner.inner_scope = scope::enter_function_scope(global_scope)
+            }
+            walk(node, inner, state)
         }
-
-        node.value.def_.locals = function.locals
-        node.value.def_.has_defer = function.has_defer
-        node.value.def_.has_yield = function.has_yield
 
         if function.has_yield {
             let generator_ctor = {
@@ -3277,6 +3443,17 @@ export def walk_Def(node: &parser::Node, state: &State) {
 
         pop_function(state)
         state.scope = outer_scope
+    }
+
+    if is_closure {
+        let members = allocate_ref(StructMember, function.captures.length)
+        for var i in 0..function.captures.length {
+            members[i] = { name = to_string(i), tpe = function.captures[i].tpe } !StructMember
+        }
+
+        function.state = make_struct_type(members)
+        function.state.name = tpe.type_name + ".context"
+        function.state.type_name = append_module(function.state.name, state.module.module)
     }
 
     node.tpe = tpe
@@ -3491,7 +3668,7 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
         }
     }
 
-    if not is_function_pointer(tpe) {
+    if not is_function_pointer(tpe) and (not tpe or tpe.kind != TypeKind::CLOSURE) {
         let args = vector::copy(arguments)
         vector::insert(args, 0, { name = "", tpe = tpe } !NamedParameter)
 
@@ -3835,10 +4012,28 @@ def walk_Deref(node: &parser::Node, state: &State) {
 }
 
 def walk_Ptr(node: &parser::Node, state: &State) {
-    walk(node, node.value.expr, state)
-    let tpe = (@node.value.expr).tpe
+    let expr = node.value.expr
+    if not expr { return }
+    walk(node, expr, state)
+    let tpe = expr.tpe
     if not tpe { return }
-    node.tpe = pointer(tpe, tpe.kw)
+
+    if expr.kind == parser::NodeKind::IDENTIFIER and expr.svalue {
+        if expr.svalue.is_capture {
+            let name = parser::make_identifier("__ref." + expr.svalue.name)
+            var value = scope::get(state.scope, name)
+            if value {
+                @node = @expr
+                node.svalue = value
+            }
+        }
+    }
+
+    if tpe.kind == TypeKind::CLOSURE {
+        node.tpe = tpe
+    } else {
+        node.tpe = pointer(tpe, tpe.kw)
+    }
 }
 
 def walk_MemberAccess_ucs(node: &parser::Node, state: &State) -> bool {
@@ -4247,7 +4442,7 @@ def walk_Assert(node: &parser::Node, state: &State) {
     }
 
     // Compile stderr function
-    let std_module = toolchain::modules["std"] 
+    let std_module = toolchain::find_module("std")
     scope::get(std_module.scope, parser::make_identifier("stderr"))
 }
 
@@ -4400,7 +4595,7 @@ export def make_state(module: &toolchain::Module) -> &State {
     return {
         module = module,
         scope = module.scope,
-        function_stack = vector::make(type &Function)
+        function_stack = vector::make(type &compiler::Function)
     } !&State
 }
 
@@ -4497,10 +4692,10 @@ export def typecheck(state: &State) {
     
     if not toolchain::is_preload(state.module) {
         // compile standard library
-        toolchain::typecheck_module(parser::make_identifier("cstd"))
-        toolchain::typecheck_module(parser::make_identifier("std"))
-        toolchain::typecheck_module(parser::make_identifier("runtime"))
-        toolchain::typecheck_module(parser::make_identifier("optional"))
+        toolchain::typecheck_module(parser::make_identifier("cstd"), state.module)
+        toolchain::typecheck_module(parser::make_identifier("std"), state.module)
+        toolchain::typecheck_module(parser::make_identifier("runtime"), state.module)
+        toolchain::typecheck_module(parser::make_identifier("optional"), state.module)
     }
 
     let ident = parser::make_identifier("__main__")
@@ -4520,9 +4715,8 @@ export def typecheck(state: &State) {
 
     let function = {
         is_global = true,
-        locals = map::make(type &Type),
-        value = value
-    } !&Function
+        locals = map::make(type &Type)
+    } !&compiler::Function
 
     push_function(state, function)
     for var i in 0..vector::length(node.body) {
