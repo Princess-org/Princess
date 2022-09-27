@@ -11,8 +11,6 @@ import glob
 from urllib import request
 import requests
 
-from include import gencstd
-
 with open("version") as fp:
     VERSION = fp.read().split("VERSION=")[1]
 
@@ -123,7 +121,6 @@ def main():
     downloaded = False
     if not Path(exe_file("bin/princess")).exists():
         download()
-        gencstd.main()
         downloaded = True
 
     args = sys.argv
