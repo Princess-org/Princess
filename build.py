@@ -48,6 +48,7 @@ def release():
     shutil.copy(Path("include/preload.pr"), FOLDER / "include")
     shutil.copy(Path("include/symbol.pr"), FOLDER / "include")
     shutil.copy(Path("include/gencstd.py"), FOLDER / "include")
+    shutil.copy(Path("include/cstd.c", FOLDER / "include")
     shutil.copytree(Path("std"), FOLDER / "std")
 
     if sys.platform == "win32":
