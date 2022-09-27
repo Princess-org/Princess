@@ -50,14 +50,14 @@ def release():
         shutil.copy(Path("bin/libffi.lib"), FOLDER / "bin")
 
         (FOLDER / "include/windows").mkdir(exist_ok=True)
-        for path in glob.glob("include/windows/*.pr")
+        for path in glob.glob("include/windows/*.pr"):
             shutil.copy(path, FOLDER / "include/windows")
 
         shutil.copy(Path("include/windows/ffi.h"), FOLDER / "include/windows")
         shutil.copy(Path("include/windows/ffitarget.h"), FOLDER / "include/windows")
     else:
         (FOLDER / "include/linux").mkdir(exist_ok=True)
-        for path in glob.glob("include/linux/*.pr")
+        for path in glob.glob("include/linux/*.pr"):
             shutil.copy(path, FOLDER / "include/linux")
 
     shutil.copy(Path("include/preload.pr"), FOLDER / "include")
