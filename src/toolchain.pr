@@ -19,6 +19,17 @@ import errors
 // map of Module
 export let modules = map::make(type &Module)
 
+export def find_module(name: &string) -> &Module {
+    let keys = modules.keys()
+    for var i in 0..keys.size {
+        let module = modules[keys[i]]
+        if module.module == name {
+            return module
+        }
+    }
+    return null
+}
+
 export var include_path = vector::make(type &string)
 export var clang_flags = vector::make(type &string)
 export var link_directories = vector::make(type &string)
@@ -63,7 +74,7 @@ export var print_ast = false
 // This flag controls emitting debug information to llvm
 export var debug_sym = false
 
-var main_module_name: &string
+var main_module_file: &string
 
 export def add_define(define: &string) {
     let tokens = lexer::lex(define)
@@ -181,8 +192,16 @@ export def is_preload(module: &Module) -> bool {
     return starts_with(mfilename, ifilename) or starts_with(mfilename, std_filename)
 }
 
-export def find_module_file(module: &parser::Node) -> &string {
+export def find_module_file(module: &parser::Node, calling_module: &Module) -> &string {
     assert module.kind == parser::NodeKind::IDENTIFIER
+
+    let name = parser::identifier_to_str(module)
+    if name == "runtime" {
+        return "runtime"
+    } else if name == "main" {
+        return main_module_file
+    }
+
     let ident = module.value.identifier.path
     var path: &string = ""
 
@@ -195,8 +214,15 @@ export def find_module_file(module: &parser::Node) -> &string {
         }
     }
 
+    if not module.value.identifier.prefixed {
+        let base = util::dirname(calling_module.filename)
+        let module_path = absolute_path(base + "/" + path + ".pr")
+        if util::exists(module_path) {
+            return module_path
+        }
+    }
     for var i in 0..vector::length(include_path) {
-        var module_path = include_path[i] + "/" + path + ".pr"
+        let module_path = absolute_path(include_path[i] + "/" + path + ".pr")
         if util::exists(module_path) {
             return module_path
         }
@@ -205,9 +231,10 @@ export def find_module_file(module: &parser::Node) -> &string {
 }
 
 // name is an identifier
-export def typecheck_module(name: &parser::Node) -> &Module {
-    let modulename = parser::identifier_to_str(name)
-    var module = modules.get_or_default(modulename, null)
+export def typecheck_module(name: &parser::Node, calling_module: &Module) -> &Module {
+    let filename = find_module_file(name, calling_module)
+    if not filename { return null }
+    var module = modules.get_or_default(filename, null)
     if module and module.stage < Stage::TYPECHECKING {
         module.stage = Stage::TYPECHECKING
         typechecking::typecheck(module)
@@ -216,9 +243,10 @@ export def typecheck_module(name: &parser::Node) -> &Module {
     return null
 }
 
-export def compile_module(name: &parser::Node) -> &Module {
-    let modulename = parser::identifier_to_str(name)
-    var module = modules.get_or_default(modulename, null)
+export def compile_module(name: &parser::Node, calling_module: &Module) -> &Module {
+    let filename = find_module_file(name, calling_module)
+    if not filename { return null }
+    var module = modules.get_or_default(filename, null)
     if module and module.stage < Stage::COMPILING {
         module.stage = Stage::COMPILING
         compiler::compile(module)
@@ -250,7 +278,7 @@ export def consteval_file(filename: &string, modulename: &string) -> &Module {
         sc.module = module
 
         module.compiler_state = state
-        modules[modulename] = module
+        modules[filename] = module
 
         consteval::consteval(module)
 
@@ -261,15 +289,17 @@ export def consteval_file(filename: &string, modulename: &string) -> &Module {
 
 // TODO This is inconsistent with the functions above, as a cached module is returned
 // name is an identifier
-export def consteval_module(name: &parser::Node) -> &Module {
+export def consteval_module(name: &parser::Node, calling_module: &Module) -> &Module {
     let modulename = parser::identifier_to_str(name)
-    if modulename == main_module_name {
-        return modules["main"]
+    if modulename == "runtime" {
+        return modules["runtime"] // This module is special
     }
-    var module = modules.get_or_default(modulename, null)
+
+    let filename = find_module_file(name, calling_module)
+    if not filename { return null}
+
+    var module = modules.get_or_default(filename, null)
     if not module {
-        let filename = find_module_file(name)
-        if not filename { return null }
         module = consteval_file(filename, modulename)
     }
 
@@ -375,7 +405,7 @@ export def create_types_main {
 }
 
 export def load_file_type {
-    let std_module = modules["std"]
+    let std_module = find_module("std")
     builtins::File_ = scope::get_type(std_module.scope, parser::make_identifier("File"))
 }
 
@@ -405,13 +435,14 @@ export def compile_main_file(filename: &string) {
         error("File ", filename, " is not a Princess source file")
         exit(1)
     }
+    include_path.push(absolute_path(util::dirname(filename)))
 
     let start_frontend = util::millis()
 
     prepare_preload()
     create_types_main()
 
-    main_module_name = extract_module_name(filename)
+    main_module_file = filename
     var module = consteval_file(filename, "main") 
     if not module { exit(1) }
 
