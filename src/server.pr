@@ -47,7 +47,7 @@ type InitializeParams = struct {
     rootUri: DocumentUri
     initializationOptions: &JsonTree
     capabilities: &JsonTree
-    traceValue: &string
+    trace: &string
     workspaceFolders: &[WorkspaceFolder]
 }
 
@@ -72,10 +72,38 @@ def initialize(id: int, params: InitializeParams) {
     serverInfo["name"] = "Princess Language Server"
     serverInfo["version"] = VERSION
 
-    result["serverCapabilities"] = capabilities
+    result["capabilities"] = capabilities
     result["serverInfo"] = serverInfo
-
+    
     send_reply(id, result)
+}
+
+def initialized {
+    let watcherPr = json::make_object()
+    watcherPr["globPattern"] = "**/*.pr"
+    let watchers = json::make_array()
+    watchers.push(watcherPr)
+
+    let registerOptions = json::make_object()
+    registerOptions["watchers"] = watchers
+
+    let registration = json::make_object()
+    registration["id"] = "didChangeWatchedFiles"
+    registration["method"] = "workspace/didChangeWatchedFiles"
+    registration["registerOptions"] = registerOptions
+
+    let registrations = json::make_array()
+    registrations.push(registration)
+
+    let obj = json::make_object()
+    obj["registrations"] = registrations
+
+    def on_register {
+
+    }
+
+    send_request("client/registerCapability", obj, reply = on_register)
+    read_reply()
 }
 
 type Header = &Vector(&string)
@@ -102,8 +130,9 @@ def read_header -> Header {
                 if c == '\n' {
                     break
                 }
+            } else {
+                s += c
             }
-            s += c
         }
         if s.length == 0 {
             break
@@ -113,34 +142,45 @@ def read_header -> Header {
     return header
 }
 
+def read_reply -> &JsonTree {
+    let message = read_message()
+    if message.has_item("error") {
+        error(message["error"]["message"].as_string(), "\n")
+        exit(1)
+    }
+    return message["result"]
+}
+
 def send_message(payload: &JsonTree) {
     let message = to_string(payload)
     print("Content-Length: ", message.length, "\r\n")
     print("Content-Type: application/vscode-jsonrpc; charset=utf-8\r\n")
     print("\r\n")
     print(message)
+    fflush(std::stdout())
 }
 
-var request_id = 0
 def log_message(str: &string, tpe: int = MessageType::Log) {
     let obj = json::make_object()
     obj["type"] = tpe
     obj["message"] = str
-    send_request(request_id, "window/logMessage", obj)
-    request_id += 1
+    send_request("window/logMessage", obj)
 }
 
-def send_request(id: int, method: &string, params: &JsonTree) {
+var request_id = 0
+def send_request(method: &string, params: &JsonTree) {
     let obj = json::make_object()
     obj["jsonrpc"] = "2.0"
-    obj["id"] = id
+    obj["id"] = request_id
     obj["method"] = method
     obj["params"] = params
-
+    request_id += 1
     send_message(obj)
 }
 
 def send_error(id: int, error_code: int, message: &string, data: &JsonTree = null) {
+    fprint(std::stderr(), message, "\n")
+
     let obj = json::make_object()
     obj["jsonrpc"] = "2.0"
     obj["id"] = id
@@ -187,7 +227,8 @@ def read_message -> &JsonTree {
     }
 
     let message_str = zero_allocate(char, content_length + 1)
-    read(std::stdin(), message_str)
+    read(std::stdin(), message_str, content_length)
+    error(message_str, "\n")
     let message = json::parse(message_str)
     if message.status == json::Status::JSON_ERROR {
         send_error(0, ParseError, "Can't parse content as json")
@@ -203,9 +244,11 @@ export def main -> int {
     loop {
         let message = read_message()
         if message {
-            let id = message["id"].as_int()
+            let id = message["id"].as_int() if message.has_item("id") else 0
             let method = message["method"].as_string()
-
+            let params = message["params"]
+            error("Called method: ", method, "\n")
+        
             if method == "exit" {
                 if is_shutdown {
                     return 0
@@ -227,8 +270,10 @@ export def main -> int {
 
             if not is_initialized {
                 if method == "initialize" {
-
                     is_initialized = true
+                    let p = json::deserialize(params, InitializeParams)
+                    if not p.exists { send_error(id, ParseError, "Couldn't parse parameters") }
+                    else { initialize(id, p.get()) }
                 } else {
                     send_error(id, ServerNotInitialized, "Server not initialized!")
                 }
@@ -236,11 +281,14 @@ export def main -> int {
             }
 
             if method {
-                let params = message["params"]
-                if method == "textDocument/definition" {
-                    let params = json::deserialize(params, DefinitionParams)
-                    if not params.exists { send_error(id, ParseError, "Couldn't parse parameters") }
-                    else { go_to_definition(id, params.get()) }
+                if method == "initialized" {
+                    initialized()
+                } else if method == "textDocument/definition" {
+                    let p = json::deserialize(params, DefinitionParams)
+                    if not p.exists { send_error(id, ParseError, "Couldn't parse parameters") }
+                    else { go_to_definition(id, p.get()) }
+                } else {
+                    send_error(id, MethodNotFound, "Method " + method + " not found")
                 }
             } else {
                 send_error(id, MethodNotFound, "No method specified")

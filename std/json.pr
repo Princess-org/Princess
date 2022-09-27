@@ -49,12 +49,9 @@ export def construct(copy: *JsonTreeNode, this: *JsonTreeNode) {
         copy.data.b = this.data.b        
     }
 
-    copy.children = this.children
+    copy.children = null
     if this.children {
-        copy.children = vector::make(JsonTreeNode)
-        for var i in 0..this.children.length {
-            copy.children.push(this.children[i])
-        }
+        copy.children = @this.children
     }
 }
 
@@ -76,6 +73,7 @@ def == (this: *JsonTreeNode, other: *JsonTreeNode) -> bool {
         return this.data.number == other.data.number
     }
     if this.tpe == Type::ARRAY {
+        if not this.children or other.children { return false }
         if this.children.length != other.children.length { return false }
         for var i in 0..this.children.length {
             if this.children.get(i) != other.children.get(i) { return false }
@@ -83,6 +81,7 @@ def == (this: *JsonTreeNode, other: *JsonTreeNode) -> bool {
         return true
     }
     if this.tpe == Type::OBJECT {
+        if not this.children or not other.children { return false }
         if this.children.length != other.children.length { return false }
         for var i in 0..this.children.length {
             let key = this.children.get(i)
@@ -145,6 +144,9 @@ export def push(tree: &JsonTree, item: &string) {
 
 export def set_item(tree: &JsonTree, key: &string, item: &JsonTree) {
     assert tree.root.tpe == Type::OBJECT
+    if not tree.root.children {
+        tree.root.children = vector::make(JsonTreeNode)
+    }
     for var i in 0..tree.root.children.length {
         let child = tree.root.children.get(i)
         if child.data.str == tree {
@@ -171,11 +173,13 @@ export def set_item(tree: &JsonTree, key: &string, item: &string) {
 
 export def length(tree: &JsonTree) -> size_t {
     assert tree.root.tpe == Type::OBJECT or tree.root.tpe == Type::ARRAY
+    if not tree.root.children { return 0 }
     return tree.root.children.length
 }
 
 export def has_item(tree: &JsonTree, str: &string) -> bool {
     if tree.root.tpe != Type::OBJECT { return false }
+    if not tree.root.children { return false }
     for var i in 0..tree.root.children.length {
         if tree.root.children.get(i).data.str == str {
             return true
@@ -187,13 +191,14 @@ export def get_item(tree: &JsonTree, str: &string) -> &JsonTree {
     assert tree.status == Status::JSON_OK
     assert tree.root.tpe == Type::OBJECT
 
-    var node: JsonTreeNode
+    if not tree.root.children { return null }
     for var i in 0..tree.root.children.length {
-        if tree.root.children.get(i).data.str == str {
-            return { status = Status::JSON_OK, root = tree.root.children[i].children[0] } !&JsonTree
+        let child = tree.root.children.get(i)
+        if child.data.str == str {
+            return { status = Status::JSON_OK, root = child.children[0] } !&JsonTree
         }
     }
-    assert
+    return null
 }
 
 export def has_item(tree: &JsonTree, index: size_t) -> bool {
@@ -205,6 +210,7 @@ export def get_item(tree: &JsonTree, index: size_t) -> &JsonTree {
     assert tree.root.tpe == Type::ARRAY
     assert index < tree.root.children.length
 
+    if not tree.root.children { return null }
     return { status = Status::JSON_OK, root = tree.root.children[index] } !&JsonTree
 }
 
@@ -307,7 +313,7 @@ export def serialize(obj: type *T) -> &JsonTree {
 
 def deserialize(tpe: *runtime::Type, data: *, json: *JsonTreeNode) -> bool {
     if tpe == type &JsonTree {
-        @@(data !*&JsonTree) = { status = Status::JSON_OK, root = @json } !JsonTree
+        @(data !*&JsonTree) = { status = Status::JSON_OK, root = @json } !JsonTree
     } else if tpe == int8 {
         if json.tpe != Type::NUMBER or json.data.number < MIN_INT8 or json.data.number > MAX_INT8  { return false } 
         else { @(data !*int8) = json.data.number !int8 }
@@ -351,18 +357,15 @@ def deserialize(tpe: *runtime::Type, data: *, json: *JsonTreeNode) -> bool {
         if json.tpe != Type::OBJECT { return false }
         for var i in 0..tpe.fields.size {
             let field = tpe.fields[i]
-            var found = false
             for var j in 0..json.children.length {
                 let child = json.children.get(j)
                 if @child.data.str == field.name {
                     if not deserialize(field.tpe, data ++ field.offset, child.children.get(0)) {
                         return false
                     }
-                    found = true
                     break
                 }
             }
-            if not found { return false }
         }
     } else if tpe.kind == runtime::TypeKind::STATIC_ARRAY {
         if json.tpe != Type::ARRAY { return false }
@@ -375,13 +378,14 @@ def deserialize(tpe: *runtime::Type, data: *, json: *JsonTreeNode) -> bool {
     } else if tpe.kind == runtime::TypeKind::REFERENCE and tpe.tpe and tpe.tpe.kind == runtime::TypeKind::ARRAY {
         if json.tpe != Type::ARRAY { return false }
         let array_tpe = tpe.tpe.tpe
-        let array: [int8] = allocate(type int8, json.children.length)
-        let data = array.value !*
+        let array: [int8] = zero_allocate(type int8, json.children.length * array_tpe.size)
         for var i in 0..json.children.length {
-            let child = json.children[i]
-            deserialize(array_tpe, *data[i * array_tpe.size], child)
+            deserialize(array_tpe, (*array.value[i * array_tpe.size]) !*, *json.children[i])
         }
-        @@(data !*&[int8]) = array
+
+        let d = data !*&[int8]
+        @d = array
+        (@d).size = json.children.length
         delete(array)
     } else {
         return false
@@ -408,15 +412,17 @@ def to_string(node: *JsonTreeNode, level: int = 1) -> &string {
     switch node.tpe {
     case Type::OBJECT, Type::ARRAY:
         var res: &string = "{\n" if node.tpe == Type::OBJECT else "[\n"
-        for var i in 0..node.children.length {
-            for var j in 0..level {
-                res += "  "
+        if node.children {
+            for var i in 0..node.children.length {
+                for var j in 0..level {
+                    res += "  "
+                }
+                res += to_string(node.children.get(i), level + 1)
+                if i < node.children.length - 1 {
+                    res += ","
+                }
+                res += "\n"
             }
-            res += to_string(node.children.get(i), level + 1)
-            if i < node.children.length - 1 {
-                res += ","
-            }
-            res += "\n"
         }
         for var j in 0..(level - 1) {
             res += "  "
