@@ -30,6 +30,19 @@ export def find_module(name: &string) -> &Module {
     return null
 }
 
+export def find_module_by_path(path: &string) -> &Module {
+    let keys = modules.keys()
+    for var i in 0..keys.size {
+        let module = modules[keys[i]]
+        if module.filename == path {
+            return module
+        }
+    }
+    return null
+}
+
+export var file_loader: (&string) -> (&string) = *load_file
+
 export var include_path = vector::make(type &string)
 export var clang_flags = vector::make(type &string)
 export var link_directories = vector::make(type &string)
@@ -153,14 +166,24 @@ export type Module = struct {
     imported: &SSet
     difile: &compiler::Value
     stage: Stage
-    // Vector of Module
-    dependants: &Vector(weak_ref(Module))
+    imports: &Set(&string)
+    dependants: &Set(weak_ref(Module))
     // List of Type
     // This is a list of functions that are generated for dynamic dispatch
     dyn_dispatch: &Vector(&typechecking::Type)
     // This is needed to generate functions from create_destructor
     compiler_state: &compiler::State
     state: &typechecking::State
+}
+
+export def hash(this: &Module) -> uint64 {
+    return map::hash(this.filename)
+}
+export def == (this: &Module, other: &Module) -> bool {
+    return this.filename == other.filename
+}
+export def != (this: &Module, other: &Module) -> bool {
+    return not (this == other)
 }
 
 export def make_module(filename: &string, modulename: &string, node: &parser::Node, scpe: &scope::Scope) -> &Module {
@@ -172,7 +195,8 @@ export def make_module(filename: &string, modulename: &string, node: &parser::No
         result = compiler::make_result(),
         code = compiler::make_block(),  
         imported = set::make(),
-        dependants = vector::make(type weak_ref(Module)),
+        imports = set::make(type &string),
+        dependants = set::make(type weak_ref(Module)),
         dyn_dispatch = vector::make(type &typechecking::Type)
     } !&Module
     module.compiler_state = compiler::make_state(module )
@@ -193,19 +217,15 @@ export def is_preload(module: &Module) -> bool {
     return starts_with(mfilename, ifilename) or starts_with(mfilename, std_filename)
 }
 
-export def find_module_file(module: &parser::Node, calling_module: &Module) -> &string {
+export def identifier_to_path(module: &parser::Node) -> &string {
     assert module.kind == parser::NodeKind::IDENTIFIER
-
-    let name = parser::identifier_to_str(module)
-    if name == "runtime" {
-        return "runtime"
-    } else if name == "main" {
-        return main_module_file
+    
+    var path: &string = ""
+    if module.value.identifier.prefixed {
+        path = "/"
     }
 
     let ident = module.value.identifier.path
-    var path: &string = ""
-
     let len = vector::length(ident)
     for var i in 0..len {
         var str = ident[i]
@@ -214,8 +234,21 @@ export def find_module_file(module: &parser::Node, calling_module: &Module) -> &
             path += "/"
         }
     }
+    return path
+}
 
-    if not module.value.identifier.prefixed and calling_module.filename {
+export def find_module_file(module: &parser::Node, calling_module: &Module) -> &string {
+    return find_module_file(identifier_to_path(module), calling_module)
+}
+
+export def find_module_file(path: &string, calling_module: &Module) -> &string {
+    if path == "runtime" {
+        return "runtime"
+    } else if path == "main" {
+        return main_module_file
+    }
+
+    if not path.starts_with("/") and calling_module.filename {
         let base = util::dirname(calling_module.filename)
         let module_path = absolute_path(base + "/" + path + ".pr")
         if util::exists(module_path) {
@@ -256,36 +289,51 @@ export def compile_module(name: &parser::Node, calling_module: &Module) -> &Modu
     return null
 }
 
-export def consteval_file(filename: &string, modulename: &string) -> &Module {
+export def load_file(filename: &string) -> &string {
     let fh = open(@filename, "rb")
     if not fh {
+        return null
+    }
+
+    let buf = util::read_all(fh)
+    close(fh)
+    return buf
+}
+
+export def consteval_file(filename: &string, modulename: &string) -> &Module {
+    let buf = file_loader(filename)
+    if not buf {
         error("File \"", filename, "\" doesn't exist\n")
-    } else {
-        let buf = util::read_all(fh)
-        close(fh)
-        let lines = util::split_lines(buf)
+        return null
+    }
+    let lines = util::split_lines(buf)
 
-        debug::trace("Lexing ", modulename)
-        let tokens = lexer::lex(buf)
-        let node = parser::parse(tokens, lines, filename, modulename)
-        delete(tokens)
-        if print_ast {
-            debug::print_node(node)
-        }
-        
-        var sc = scope::enter_function_scope(builtins::builtins, null)
-        var module = make_module(filename, modulename, node, sc)
-        let state = compiler::make_state(module)
-        sc.module = module
+    debug::trace("Lexing ", modulename)
+    let tokens = lexer::lex(buf)
+    let node = parser::parse(tokens, lines, filename, modulename)
+    delete(tokens)
+    if print_ast {
+        debug::print_node(node)
+    }
 
-        module.compiler_state = state
-        modules[filename] = module
-
+    if modules.contains(filename) {
+        let module = modules[filename]
+        module.imports = set::make(type &string)
         consteval::consteval(module)
-
         return module
     }
-    return null
+    
+    var sc = scope::enter_function_scope(builtins::builtins, null)
+    var module = make_module(filename, modulename, node, sc)
+    let state = compiler::make_state(module)
+    sc.module = module
+
+    module.compiler_state = state
+    modules[filename] = module
+
+    consteval::consteval(module)
+
+    return module
 }
 
 // TODO This is inconsistent with the functions above, as a cached module is returned
@@ -419,7 +467,7 @@ export def reset_types {
     create_types_main()
 }
 
-def extract_module_name(filename: &string) -> &string {
+export def extract_module_name(filename: &string) -> &string {
     // TODO Path manipulation should be made easier
     var folder_sep = filename.last_index_of("/")
     if folder_sep == -1 {
@@ -587,10 +635,10 @@ def print_dependency_graph(module: &Module, indent: &string, last: bool) {
         indent += "│   "
     }
         
-    let len = vector::length(module.dependants)
-    for var i in 0..len {
-        let dependant = module.dependants[i]
-        print_dependency_graph(dependant, indent, i == len - 1)
+    let keys = module.dependants.keys()
+    for var i in 0..keys.size {
+        let dependant = keys[i]
+        print_dependency_graph(dependant, indent, i == keys.size - 1)
     }
 }
 

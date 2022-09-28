@@ -2,6 +2,10 @@
 import vector
 import map
 import json
+import toolchain
+import parser
+
+import document
 
 const VERSION = "0.0.1"
 
@@ -21,10 +25,31 @@ type MessageType = enum {
     Log = 4
 }
 
-type DocumentUri = &string
+export type DocumentUri = &string
 
-type TextDocumentIdentifier = struct {
+export def uri_to_path(uri: DocumentUri) -> &string {
+    if uri.starts_with("file://") {
+        return uri.substring(7)
+    }
+    abort("Unsupported protocol in uri: " + uri)
+}
+
+export def path_to_uri(path: &string) -> DocumentUri {
+    return "file://" + path
+}
+
+export type TextDocumentIdentifier = struct {
     uri: DocumentUri
+}
+
+type Range = struct {
+	start: Position
+	end: Position
+}
+
+type Location = struct {
+	uri: DocumentUri
+	range: Range
 }
 
 type Position = struct {
@@ -37,6 +62,76 @@ type WorkspaceFolder = struct {
     name: &string
 }
 
+type TextDocumentItem = struct {
+    uri: DocumentUri
+    languageId: &string
+    version: int
+    text: &string
+}
+
+type DidOpenTextDocumentParams = struct {
+    textDocument: TextDocumentItem
+}
+
+def did_open(id: int, params: DidOpenTextDocumentParams) {
+    if params.textDocument.languageId != "princess" { return }
+    document::open_document(params.textDocument.uri, params.textDocument.text)
+}
+
+type DefinitionParams = struct {
+    textDocument: TextDocumentIdentifier
+    position: Position
+}
+
+def go_to_definition(id: int, params: DefinitionParams) {
+    let module = toolchain::find_module_by_path(uri_to_path(params.textDocument.uri))
+    if not module { send_reply(id, null); return }
+    let node = parser::find(module.node, params.position.line, params.position.character)
+    if not node { send_reply(id, null); return }
+    if node.kind != parser::NodeKind::IDENTIFIER { send_reply(id, null); return }
+    let svalue = node.svalue
+    if not svalue { send_reply(id, null); return }
+    let sloc = svalue.loc
+    if parser::is_invalid(sloc) { send_reply(id, null); return }
+
+    let loc = {
+        uri = path_to_uri(sloc.filename),
+        range = {
+            start = { sloc.line, sloc.column } !Position,
+            end = { sloc.end_line, sloc.end_column } !Position
+        } !Range
+    } !Location
+    send_reply(id, json::serialize(*loc))
+}
+
+type FileChangeType = enum {
+    Created = 1
+    Changed = 2
+    Deleted = 3
+}
+
+type FileEvent = struct {
+    uri: DocumentUri
+    _type: uint
+}
+
+type DidChangeWatchedFilesParams = struct {
+    changes: &[FileEvent]
+}
+
+def did_change_watched_files(id: int, params: DidChangeWatchedFilesParams) {
+    for var event in @params.changes {
+        switch event._type {
+        case FileChangeType::Created:
+            document::on_created(event.uri)
+        case FileChangeType::Changed:
+            document::on_changed(event.uri)
+        case FileChangeType::Deleted:
+            document::on_deleted(event.uri)
+        }
+    }
+}
+
 type InitializeParams = struct {
     processId: int
     clientInfo: struct {
@@ -46,19 +141,10 @@ type InitializeParams = struct {
     locale: &string
     rootPath: &string
     rootUri: DocumentUri
-    initializationOptions: &JsonTree
-    capabilities: &JsonTree
+    initializationOptions: &Json
+    capabilities: &Json
     trace: &string
     workspaceFolders: &[WorkspaceFolder]
-}
-
-type DefinitionParams = struct {
-    textDocument: TextDocumentIdentifier
-    position: Position
-}
-
-def go_to_definition(id: int, params: DefinitionParams) {
-    send_error(id, InternalError, "Not implemented")
 }
 
 def initialize(id: int, params: InitializeParams) {
@@ -99,8 +185,8 @@ def initialized {
     let obj = json::make_object()
     obj["registrations"] = registrations
 
-    def on_register(reply: &JsonTree) {}
-    send_request("client/registerCapability", obj, reply = *on_register)
+    def on_register(reply: &Json) {}
+    send_request("client/registerCapability", obj, reply = on_register)
 }
 
 type Header = &Vector(&string)
@@ -139,7 +225,7 @@ def read_header -> Header {
     return header
 }
 
-def send_message(payload: &JsonTree) {
+def send_message(payload: &Json) {
     let message = to_string(payload)
     print("Content-Length: ", message.length, "\r\n")
     print("Content-Type: application/vscode-jsonrpc; charset=utf-8\r\n")
@@ -156,12 +242,12 @@ def log_message(str: &string, tpe: int = MessageType::Log) {
 }
 
 var request_id: size_t = 0
-def send_request(method: &string, params: &JsonTree, reply: &JsonTree -> ()) {
+def send_request(method: &string, params: &Json, reply: (&Json) -> ()) {
     on_reply(request_id, reply)
     send_request(method, params)
 }
 
-def send_request(method: &string, params: &JsonTree) {
+def send_request(method: &string, params: &Json) {
     let obj = json::make_object()
     obj["jsonrpc"] = "2.0"
     obj["id"] = request_id !int
@@ -171,7 +257,7 @@ def send_request(method: &string, params: &JsonTree) {
     request_id += 1
 }
 
-def send_error(id: int, error_code: int, message: &string, data: &JsonTree = null) {
+def send_error(id: int, error_code: int, message: &string, data: &Json = null) {
     error(message, "\n")
 
     let obj = json::make_object()
@@ -190,7 +276,7 @@ def send_error(id: int, error_code: int, message: &string, data: &JsonTree = nul
     send_message(obj)
 }
 
-def send_reply(id: int, data: &JsonTree) {
+def send_reply(id: int, data: &Json) {
     let obj = json::make_object()
     obj["jsonrpc"] = "2.0"
     obj["id"] = id
@@ -198,7 +284,7 @@ def send_reply(id: int, data: &JsonTree) {
     send_message(obj)
 }
 
-def read_message -> &JsonTree {
+def read_message -> &Json {
     let header = read_header()
     if not header {
         send_error(0, ParseError, "Invalid header")
@@ -221,7 +307,6 @@ def read_message -> &JsonTree {
 
     let message_str = zero_allocate(char, content_length + 1)
     read(std::stdin(), message_str, content_length)
-    error(message_str, "\n")
     let message = json::parse(message_str)
     if message.status == json::Status::JSON_ERROR {
         send_error(0, ParseError, "Can't parse content as json")
@@ -232,13 +317,17 @@ def read_message -> &JsonTree {
 
 var is_initialized = false
 var is_shutdown = false
-var reply_handlers = map::make(size_t, type &JsonTree -> ())
+var reply_handlers = map::make(size_t, type (&Json) -> ())
 
-def on_reply(id: size_t, handler: &JsonTree -> ()) {
+def on_reply(id: size_t, handler: (&Json) -> ()) {
     reply_handlers[id] = handler
 }
 
 export def main -> int {
+    // Preparing toolchain
+    toolchain::prepare_preload()
+    toolchain::reset_types()
+
     loop {
         let message = read_message()
         if message {
@@ -302,6 +391,14 @@ export def main -> int {
                     let p = json::deserialize(params, DefinitionParams)
                     if not p.exists { send_error(id, ParseError, "Couldn't parse parameters") }
                     else { go_to_definition(id, p.get()) }
+                } else if method == "textDocument/didOpen" {
+                    let p = json::deserialize(params, DidOpenTextDocumentParams)
+                    if not p.exists { send_error(id, ParseError, "Couldn't parse parameters") }
+                    else { did_open(id, p.get()) }
+                } else if method == "workspace/didChangeWatchedFiles" {
+                    let p = json::deserialize(params, DidChangeWatchedFilesParams)
+                    if not p.exists { send_error(id, ParseError, "Couldn't parse parameters") }
+                    else { did_change_watched_files(id, p.get()) }
                 } else {
                     send_error(id, MethodNotFound, "Method " + method + " not found")
                 }
