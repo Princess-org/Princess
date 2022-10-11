@@ -1,0 +1,220 @@
+import map
+import set
+import vector
+import util
+import lexer
+import parser
+import consteval
+import toolchain
+import errors
+import typechecking
+import compiler
+import scope
+
+import document
+
+def recompile_node(module: &toolchain::Module, node: &parser::Node) {
+    if not node { return }
+    // Reset the state
+    module.state.scope = module.scope
+    module.state.function_stack = vector::make(type &compiler::Function)
+    module.state.function_stack.push(module.node.value.program.function)
+    // This makes scope override existing values
+    module.state.force_redefine = true
+    module.compiler_state.function_stack = vector::make(type &compiler::Function)
+    module.compiler_state.function_stack.push(module.node.value.program.function)
+    module.compiler_state.current_block = compiler::make_block()
+
+    if node.kind == parser::NodeKind::DEF {
+        error("Recompiling function ", parser::identifier_to_str(node.value.def_.name), " ", node.value.def_.name.loc.line, "\n")
+        consteval::walk_Def(node, module.state)
+        if not typechecking::is_polymorph(node.tpe) {
+            typechecking::walk_Def(node, module.state)
+            compiler::predeclare_function(node.tpe, module)
+            compiler::create_function(node, node.tpe, node.value.def_.body, node.inner_scope, null, module.compiler_state)
+        }
+    } else if node.kind == parser::NodeKind::VAR_DECL {
+        consteval::walk_top_VarDecl(node, module.state)
+        typechecking::walk_VarDecl(node, module.state)
+        compiler::walk_VarDecl(node, module.compiler_state)
+    }
+
+    module.state.force_redefine = false
+}
+
+var dependencies_to_resolve = map::make(type &scope::Value)
+
+def poll_dependencies {
+    for var key in @dependencies_to_resolve.keys() {
+        resolve_dependencies(dependencies_to_resolve[key])
+    }
+    dependencies_to_resolve = map::make(type &scope::Value)
+}
+
+def resolve_dependencies(node: &parser::Node) {
+    if node.kind == parser::NodeKind::VAR_DECL {
+        for var i in 0..node.value.var_decl.left.length {
+            let left = node.value.var_decl.left[i]
+            if left.svalue {
+                dependencies_to_resolve[left.svalue.assembly_name] = left.svalue
+            }
+        } 
+        return
+    }
+
+    let value = node.svalue
+    if value {
+        dependencies_to_resolve[value.assembly_name] = value
+    }
+}
+
+def remove(module: &toolchain::Module, node: &parser::Node) {
+    if node.kind == parser::NodeKind::VAR_DECL {
+        for var i in 0..node.value.var_decl.left.length {
+            let left = node.value.var_decl.left[i]
+            if left.svalue {
+                scope::remove(module.scope, left.svalue)
+            }
+        } 
+        return
+    }
+
+    let value = node.svalue
+    if value {
+        scope::remove(module.scope, value)
+    }
+}
+
+def resolve_dependencies(value: &scope::Value) {
+    if not value { return }
+    let keys = value.dependants.keys()
+    for var dependant in @keys {
+        let node = dependant.module.node
+        for var i in 0..node.value.program.body.length {
+            let n = node.value.program.body[i]
+            if n.svalue and n.svalue.ident == dependant {
+                recompile_node(dependant.module, n)
+                break
+            }
+        }
+    }
+}
+
+export def recompile(path: &string) {
+    var module = toolchain::find_module_by_path(path)
+
+    if not module {
+        error("Compiling ", path, "\n")
+        // Do a full compile
+        module = toolchain::consteval_file(path, toolchain::extract_module_name(path))
+        typechecking::typecheck(module)
+        compiler::compile(module)
+    } else {
+        // Create a diff and only compile functions as needed
+        let buf = document::load_file(path)
+        let lines = util::split_lines(buf)
+        let tokens = lexer::lex(buf)
+        let new_node = parser::parse(tokens, lines, path, toolchain::extract_module_name(path))
+        delete(tokens)
+
+        let node = module.node        
+        // Iterate top level functions
+        for var i in 0..new_node.value.program.body.length {
+            let n = new_node.value.program.body[i]
+            var found = false
+            for var j in 0..node.value.program.body.length {
+                let n2 = node.value.program.body[j]
+                if n2._hash == n._hash {
+                    found = true
+                    if n2.loc != n.loc { 
+                        parser::offset(n2, n)
+                        resolve_dependencies(n2) 
+                    }
+                    break
+                }
+            }
+            if not found {
+                // Check for signatures
+                var found_signature = false
+                var n2: &Node
+                if n.kind == parser::NodeKind::DEF {
+                    for var j in 0..node.value.program.body.length {
+                        n2 = node.value.program.body[j]
+                        if n2.kind == parser::NodeKind::DEF {
+                            if n.value.def_.signature_hash == n2.value.def_.signature_hash {
+                                found_signature = true
+                                break
+                            }
+                        }
+                    }
+                }
+                
+                if not found_signature {
+                    // Add new node
+                    var found = false
+                    for var j in 0..node.value.program.body.length {
+                        let n2 = node.value.program.body[j]
+                        if n2.loc.line > n.loc.line or
+                            (n2.loc.line == n.loc.line and n2.loc.column > n.loc.column) {
+                            
+                            node.value.program.body.insert(j, n)
+                            found = true
+                            break
+                        }
+                    }
+                    if not found {
+                        node.value.program.body.push(n)
+                    }
+                    recompile_node(module, n)
+                } else {
+                    let old_loc = n2.loc
+                    let svalue = n2.svalue
+                    @n2 = @n
+                    n2.svalue = svalue
+                    if old_loc != n.loc {
+                        resolve_dependencies(n2)
+                    }
+                    recompile_node(module, n2)
+                }
+            }
+        }
+
+        let new_body = vector::make(type &parser::Node)
+        for var i in 0..node.value.program.body.length {
+            let n = node.value.program.body[i]
+            var found = false
+            for var j in 0..new_node.value.program.body.length {
+                let n2 = new_node.value.program.body[j]
+                if n2._hash == n._hash {
+                    found = true
+                    break
+                }
+            }
+            if found {
+                new_body.push(n)
+            } else {
+                remove(module, n)
+                resolve_dependencies(n)
+            }
+        }
+        node.value.program.body = new_body
+        parser::offset(node, new_node)
+        poll_dependencies()
+    }
+}
+
+export def check_imports(path: &string) -> bool {
+    var did_change = false
+    let keys = toolchain::modules.keys()
+    for var i in 0..keys.size {
+        let module = toolchain::modules[keys[i]]
+        for var import_ in @map::keys(module.imports) {
+            let abspath = toolchain::find_module_file(import_, module)
+            if abspath == path {
+                recompile(module.filename)
+                did_change = true
+            }
+        }
+    }
+    return did_change
+}

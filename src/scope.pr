@@ -39,7 +39,8 @@ export def != (this: Ident, other: Ident) -> bool {
 }
 
 export type Value = struct {
-    loc: parser::SourceLoc
+    // This is needed to store the location
+    name_node: weak_ref(parser::Node)
     share: parser::ShareMarker
     modifier: parser::VarDecl
     // Name used by the source code
@@ -70,6 +71,15 @@ export type Value = struct {
     dependencies: &Set(Ident)
     dependants: &Set(Ident)
     is_capture: bool
+}
+
+export def loc(value: &Value) -> parser::SourceLoc {
+    if not value.name_node { return parser::invalid_loc }
+    let loc = value.name_node.loc
+    if not loc.filename {
+        return parser::invalid_loc
+    }
+    return loc
 }
 
 export def get_scope(value: &Value) -> &Scope {
@@ -342,6 +352,17 @@ export def has_function(scope: &Scope, ftpe: &typechecking::Type) -> bool {
     return false
 }
 
+export def remove(scope: &Scope, value: &Value) {
+    if not value or not scope { return }
+    let keys = scope.fields.keys()
+    for var key in @keys {
+        let v = scope.fields[key]
+        if v !* == value !* {
+            scope.fields.remove(key)
+        }
+    }
+}
+
 def generate_function(scope: &Scope, node: &parser::Node, parameter_t: &Vector(typechecking::NamedParameter), dry_run: bool) -> &Value {
     let module = scope.module
     while not is_global(scope) {
@@ -473,7 +494,7 @@ export def create_underscore(scope: &Scope, name_node: &parser::Node, tpe: &type
         scope = scope.parent
     }
     let value = {
-        loc = parser::loc_from_node(name_node),
+        name_node = name_node,
         share = parser::ShareMarker::NONE,
         modifier = parser::VarDecl::VAR,
         tpe = tpe,
@@ -797,7 +818,7 @@ export def create_function(
     let global = is_global(scope)
     
     let v = {
-        loc = parser::loc_from_node(name_node),
+        name_node = name_node,
         share = share,
         modifier = parser::VarDecl::CONST,
         name = name,
@@ -817,7 +838,7 @@ export def create_function(
 
     if scope.fields.contains(name) {
         var val = scope.fields[name]
-        if not typechecking::is_function((@val).tpe) {
+        if (not state or not state.force_redefine) and not typechecking::is_function((@val).tpe) {
             errors::errorn(name_node, "Redeclaration of `", name, "`")
             return null 
         }
@@ -828,7 +849,7 @@ export def create_function(
             }
             if typechecking::overload_score((@next).tpe, (@tpe).parameter_t, scope.module, true) == 0 {
                 if phase == Phase::DECLARED { return next }
-                if phase == Phase::DEFINED and next.phase != Phase::DECLARED {
+                if (not state or not state.force_redefine) and phase == Phase::DEFINED and next.phase != Phase::DECLARED {
                     errors::errorn(name_node, "Function `", name, "` was already declared previously (same arguments)")
                     return null
                 } else {
@@ -875,7 +896,7 @@ export def create_variable(
 
     let global = is_global(scope)
     let v = {
-        loc = parser::loc_from_node(name_node),
+        name_node = name_node,
         dllimport = dllimport,
         extern = extern,
         share = share,
@@ -904,9 +925,9 @@ export def create_variable(
 
     let val = scope.fields.get_or_default(name, null)
     if val {
-        if phase == Phase::DEFINED and val.phase != Phase::DECLARED or 
+        if (not state or not state.force_redefine) and (phase == Phase::DEFINED and val.phase != Phase::DECLARED or 
             phase == Phase::COMPILED and val.phase != Phase::DEFINED or 
-            typechecking::is_function(val.tpe) or typechecking::is_type(val.tpe) {
+            typechecking::is_function(val.tpe) or typechecking::is_type(val.tpe)) {
 
             errors::errorn(name_node, "Redeclaration of `", name, "`")
         } else {
@@ -946,7 +967,7 @@ export def create_type(
 
     let global = is_global(scope)
     let v = {
-        loc = parser::loc_from_node(name_node),
+        name_node = name_node,
         share = share,
         modifier = parser::VarDecl::TYPE,
         name = name,
@@ -968,9 +989,9 @@ export def create_type(
     let value = scope.fields.get_or_default(name, null)
     if value {
         let tpe2 = value.value
-        if phase == Phase::DEFINED and value.phase != Phase::DECLARED or 
+        if (not state or not state.force_redefine) and (phase == Phase::DEFINED and value.phase != Phase::DECLARED or 
             phase == Phase::COMPILED and value.phase != Phase::DEFINED and not typechecking::is_stub(tpe2.value_tpe) or 
-            value.tpe.kind != typechecking::TypeKind::TYPE {
+            value.tpe.kind != typechecking::TypeKind::TYPE) {
             
             errors::errorn(node, "Redeclaration of `", name, "`")
             return
@@ -978,7 +999,7 @@ export def create_type(
         if phase != Phase::DECLARED {
             @tpe2.value_tpe = @tpe
             v.value = tpe2
-            scope.fields[name] = v
+            @value = @v
         }
     } else {
         scope.fields[name] = v
@@ -999,7 +1020,6 @@ export def enter_namespace(scope: &Scope, scope2: &Scope, node: &parser::Node) -
     let tpe = typechecking::make_type(typechecking::TypeKind::NAMESPACE, node)
 
     let v = {
-        loc = parser::loc_from_node(node),
         share = parser::ShareMarker::NONE,
         modifier = parser::VarDecl::CONST,
         name = name,
