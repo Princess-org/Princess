@@ -10,8 +10,134 @@ import errors
 import typechecking
 import compiler
 import scope
+import util
 
 import document
+import server
+
+errors::error_handler = *error_handler
+
+type DiagnosticSet = &Set(errors::Diagnostic)
+type ModuleDiagnostics = struct {
+    functions: &SMap(DiagnosticSet)
+    diagnostics: DiagnosticSet
+}
+
+let diagnostics = map::make(type &ModuleDiagnostics)
+
+def error_to_diagnostic(error: errors::Diagnostic) -> server::Diagnostic {
+    return {
+        range = {
+            start = { error.line, error.column } !server::Position,
+            end = { error.end_line, error.end_column } !server::Position
+        } !server::Range,
+        severity = server::DiagnosticSeverity::Error !int,
+        message = error.message
+    } !server::Diagnostic
+}
+
+def publish_diagnostics(module: &toolchain::Module) {
+    if not diagnostics.contains(module.filename) { return }
+    let mdiags = diagnostics[module.filename]
+
+    let resolved = vector::make(server::Diagnostic)
+
+    let keys = mdiags.functions.keys()
+    for var key in @keys {
+        for var diagnostic in @map::keys(mdiags.functions[key]) {   // TODO This is clashing with keys somehow
+            resolved.push(error_to_diagnostic(diagnostic))
+        }
+    }
+    for var diagnostic in @map::keys(mdiags.diagnostics) {
+        resolved.push(error_to_diagnostic(diagnostic))
+    }
+
+    var params: server::PublishDiagnosticsParams
+    params.uri = server::path_to_uri(module.filename)
+    params.diagnostics = resolved.to_array()
+
+    server::publish_diagnostics(params)
+}
+
+def error_handler(diagnostic: errors::Diagnostic) {
+    var mdiags = diagnostics.get_or_default(diagnostic.filename, null)
+    if not mdiags {
+        mdiags = {
+            functions = map::make(DiagnosticSet),
+            diagnostics = set::make(errors::Diagnostic)
+        } !ModuleDiagnostics
+        diagnostics[diagnostic.filename] = mdiags
+    }
+
+    if diagnostic.function {
+        var fdiags = mdiags.functions.get_or_default(diagnostic.function, null)
+        if not fdiags {
+            fdiags = set::make(errors::Diagnostic)
+            mdiags.functions[diagnostic.function] = fdiags
+        }
+        fdiags.add(diagnostic)
+    } else {
+        mdiags.diagnostics.add(diagnostic)
+    }
+}
+
+export def offset_errors(path: &string, start: server::Position, end: server::Position, text: &string) {
+    if not diagnostics.contains(path) { return }
+    let mdiags = diagnostics[path]
+
+    for var key in @mdiags.functions.keys() {
+        let fdiags = mdiags.functions[key]
+        let new = set::make(errors::Diagnostic)
+        for var diagnostic in @fdiags.keys() {
+            if start.line != end.line or start.character != end.character {
+                if diagnostic.line > end.line {
+                    diagnostic.line -= end.line - start.line
+                    diagnostic.end_line -= end.line - start.line
+                }
+                if diagnostic.line == end.line and end.character <= diagnostic.column {
+                    if diagnostic.line == diagnostic.end_line {
+                        if start.line == end.line {
+                            diagnostic.column -= end.character - start.character
+                            diagnostic.end_column -= end.character - start.character
+                        } else {
+                            diagnostic.column -= end.character
+                            diagnostic.end_column -= end.character
+                        }
+                    } else {
+                        if start.line == end.line {
+                            diagnostic.column -= end.character - start.character
+                        } else {
+                            diagnostic.column -= end.character
+                        }
+                    }
+                }
+            }
+            if diagnostic.line >= start.line {
+                var last_newline = 0
+                var nlc = 0
+                for var i in 0..text.length() {
+                    let c = text[i]
+                    if c == '\n' {
+                        last_newline = i
+                        nlc += 1
+                    }
+                }
+                if nlc > 0 {
+                    diagnostic.line += nlc
+                    diagnostic.end_line += nlc
+                }
+                if diagnostic.line == start.line and start.character <= diagnostic.column {
+                    diagnostic.column += text.length() - 1 - last_newline
+                    diagnostic.end_column += text.length() - 1 - last_newline
+                }
+            }
+            
+            new.add(diagnostic)
+        }
+
+        mdiags.functions[key] = new
+    }
+}
 
 def recompile_node(module: &toolchain::Module, node: &parser::Node) {
     if not node { return }
@@ -26,9 +152,16 @@ def recompile_node(module: &toolchain::Module, node: &parser::Node) {
     module.compiler_state.current_block = compiler::make_block()
 
     if node.kind == parser::NodeKind::DEF {
+        if node.svalue {
+            var mdiags = diagnostics.get_or_default(module.filename, null)
+            if mdiags {
+                mdiags.functions.remove(node.svalue.tpe.type_name)
+            }
+        }
         if node.value.def_.name {
             error("Recompiling function ", parser::identifier_to_str(node.value.def_.name), " ", node.value.def_.name.loc.line, "\n")
         }
+        node.scope = module.scope
         consteval::walk_Def(node, module.state)
         if not typechecking::is_polymorph(node.tpe) {
             typechecking::walk_Def(node, module.state)
@@ -84,6 +217,12 @@ def remove(module: &toolchain::Module, node: &parser::Node) {
     let value = node.svalue
     if value {
         scope::remove(module.scope, value)
+        if value.tpe {
+            var mdiags = diagnostics.get_or_default(module.filename, null)
+            if mdiags {
+                mdiags.functions.remove(value.tpe.type_name)
+            }
+        }
     }
 }
 
@@ -127,6 +266,11 @@ def recompile_unresolved(node: &parser::Node) {
 export def recompile(path: &string) {
     var module = toolchain::find_module_by_path(path)
 
+    let mdiags = diagnostics.get_or_default(path, null)
+    if mdiags {
+        mdiags.diagnostics = set::make(errors::Diagnostic)
+    }
+
     if not module {
         error("Compiling ", path, "\n")
         // Do a full compile
@@ -141,7 +285,7 @@ export def recompile(path: &string) {
         let new_node = parser::parse(tokens, lines, path, toolchain::extract_module_name(path))
         delete(tokens)
 
-        let node = module.node        
+        let node = module.node
         // Iterate top level functions
         for var i in 0..new_node.value.program.body.length {
             let n = new_node.value.program.body[i]
@@ -204,6 +348,7 @@ export def recompile(path: &string) {
             }
         }
 
+        // Remove unused functions from old body
         let new_body = vector::make(type &parser::Node)
         for var i in 0..node.value.program.body.length {
             let n = node.value.program.body[i]
@@ -222,10 +367,13 @@ export def recompile(path: &string) {
                 resolve_dependencies(n)
             }
         }
+
         node.value.program.body = new_body
         parser::offset(node, new_node)
         poll_dependencies()
     }
+
+    publish_diagnostics(module)
 }
 
 export def check_imports(path: &string) -> bool {
