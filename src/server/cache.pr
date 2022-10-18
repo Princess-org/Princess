@@ -15,7 +15,9 @@ import util
 import document
 import server
 
-errors::error_handler = *error_handler
+export def setup_error_handler {
+    errors::error_handler = *error_handler
+}
 
 type DiagnosticSet = &Set(errors::Diagnostic)
 type ModuleDiagnostics = struct {
@@ -59,7 +61,7 @@ def publish_diagnostics(module: &toolchain::Module) {
     server::publish_diagnostics(params)
 }
 
-def error_handler(diagnostic: errors::Diagnostic) {
+export def error_handler(diagnostic: errors::Diagnostic) {
     var mdiags = diagnostics.get_or_default(diagnostic.filename, null)
     if not mdiags {
         mdiags = {
@@ -145,8 +147,7 @@ def recompile_node(module: &toolchain::Module, node: &parser::Node) {
     module.state.scope = module.scope
     module.state.function_stack = vector::make(type &compiler::Function)
     module.state.function_stack.push(module.node.value.program.function)
-    // This makes scope override existing values
-    module.state.force_redefine = true
+
     module.compiler_state.function_stack = vector::make(type &compiler::Function)
     module.compiler_state.function_stack.push(module.node.value.program.function)
     module.compiler_state.current_block = compiler::make_block()
@@ -173,8 +174,6 @@ def recompile_node(module: &toolchain::Module, node: &parser::Node) {
         typechecking::walk_VarDecl(node, module.state)
         compiler::walk_VarDecl(node, module.compiler_state)
     }
-
-    module.state.force_redefine = false
 }
 
 var dependencies_to_resolve = map::make(type &scope::Value)
@@ -285,7 +284,22 @@ export def recompile(path: &string) {
         let new_node = parser::parse(tokens, lines, path, toolchain::extract_module_name(path))
         delete(tokens)
 
+        module.state.shallow_walk = true
+        consteval::consteval(new_node, module.state)
+        module.state.shallow_walk = false
+
         let node = module.node
+        var new_body = vector::make(type &parser::Node)
+        for var i in 0..node.value.program.body.length {
+            let n = node.value.program.body[i]
+            if n and (n.kind == parser::NodeKind::DEF or
+                n.kind == parser::NodeKind::TYPE_DECL or
+                n.kind == parser::NodeKind::VAR_DECL) {
+                new_body.push(n)
+            }
+        }
+        node.value.program.body = new_body
+
         // Iterate top level functions
         for var i in 0..new_node.value.program.body.length {
             let n = new_node.value.program.body[i]
@@ -338,6 +352,7 @@ export def recompile(path: &string) {
                 } else {
                     let old_loc = n2.loc
                     let svalue = n2.svalue
+                    scope::remove(module.scope, svalue)
                     @n2 = @n
                     n2.svalue = svalue
                     if old_loc != n.loc {
@@ -349,9 +364,16 @@ export def recompile(path: &string) {
         }
 
         // Remove unused functions from old body
-        let new_body = vector::make(type &parser::Node)
+        new_body = vector::make(type &parser::Node)
         for var i in 0..node.value.program.body.length {
             let n = node.value.program.body[i]
+            if n and n.kind != parser::NodeKind::DEF and
+                n.kind != parser::NodeKind::VAR_DECL and
+                n.kind != parser::NodeKind::TYPE_DECL {
+                new_body.push(n)
+                continue
+            }
+
             var found = false
             for var j in 0..new_node.value.program.body.length {
                 let n2 = new_node.value.program.body[j]
@@ -369,8 +391,14 @@ export def recompile(path: &string) {
         }
 
         node.value.program.body = new_body
+        node.body = new_body
         parser::offset(node, new_node)
-        poll_dependencies()
+
+        // compile top level code
+        typechecking::typecheck(node, module.state)
+        compiler::compile(node, module.compiler_state)
+
+        poll_dependencies() 
     }
 
     publish_diagnostics(module)
