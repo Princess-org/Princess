@@ -143,6 +143,8 @@ export def offset_errors(path: &string, start: server::Position, end: server::Po
 
 def recompile_node(module: &toolchain::Module, node: &parser::Node) {
     if not node { return }
+    node.parent = module.node
+
     // Reset the state
     module.state.scope = module.scope
     module.state.function_stack = vector::make(type &compiler::Function)
@@ -172,7 +174,11 @@ def recompile_node(module: &toolchain::Module, node: &parser::Node) {
     } else if node.kind == parser::NodeKind::VAR_DECL {
         consteval::walk_top_VarDecl(node, module.state)
         typechecking::walk_VarDecl(node, module.state)
-        compiler::walk_VarDecl(node, module.compiler_state)
+        compiler::walk_top_VarDecl(node, module.compiler_state, false)
+    } else if node.kind == parser::NodeKind::TYPE_DECL {
+        consteval::walk_TypeDecl(node, module.state)
+        typechecking::walk_TypeDecl(node, module.state)
+        compiler::walk_TypeDecl(node, module.compiler_state)
     }
 }
 
@@ -182,45 +188,30 @@ def poll_dependencies {
     for var key in @dependencies_to_resolve.keys() {
         resolve_dependencies(dependencies_to_resolve[key])
     }
-    dependencies_to_resolve = map::make(type &scope::Value)
+    dependencies_to_resolve.clear()
 }
 
 def resolve_dependencies(node: &parser::Node) {
     if node.kind == parser::NodeKind::VAR_DECL {
         for var i in 0..node.value.var_decl.left.length {
             let left = node.value.var_decl.left[i]
+            if not left { continue }
             if left.svalue {
                 dependencies_to_resolve[left.svalue.assembly_name] = left.svalue
             }
         } 
-        return
-    }
-
-    let value = node.svalue
-    if value {
-        dependencies_to_resolve[value.assembly_name] = value
-    }
-}
-
-def remove(module: &toolchain::Module, node: &parser::Node) {
-    if node.kind == parser::NodeKind::VAR_DECL {
-        for var i in 0..node.value.var_decl.left.length {
-            let left = node.value.var_decl.left[i]
+    } else if node.kind == parser::NodeKind::TYPE_DECL {
+        for var i in 0..node.value.type_decl.left.length {
+            let left = node.value.type_decl.left[i]
+            if not left { continue }
             if left.svalue {
-                scope::remove(module.scope, left.svalue)
+                dependencies_to_resolve[left.svalue.assembly_name] = left.svalue
             }
         } 
-        return
-    }
-
-    let value = node.svalue
-    if value {
-        scope::remove(module.scope, value)
-        if value.tpe {
-            var mdiags = diagnostics.get_or_default(module.filename, null)
-            if mdiags {
-                mdiags.functions.remove(value.tpe.type_name)
-            }
+    } else {
+        let value = node.svalue
+        if value {
+            dependencies_to_resolve[value.assembly_name] = value
         }
     }
 }
@@ -233,8 +224,58 @@ def resolve_dependencies(value: &scope::Value) {
         for var i in 0..node.value.program.body.length {
             let n = node.value.program.body[i]
             if n.svalue and n.svalue.ident == dependant {
+                remove(dependant.module, n)
                 recompile_node(dependant.module, n)
                 break
+            }
+        }
+    }
+}
+
+def remove(module: &toolchain::Module, node: &parser::Node) {
+    if node.kind == parser::NodeKind::VAR_DECL {
+        for var i in 0..node.value.var_decl.left.length {
+            let left = node.value.var_decl.left[i]
+            if not left { continue }
+            if left.svalue {
+                scope::remove(module.scope, left.svalue)
+            }
+        } 
+    } else if node.kind == parser::NodeKind::TYPE_DECL {
+        for var i in 0..node.value.type_decl.left.length {
+            let left = node.value.type_decl.left[i]
+            if not left { continue }
+            if left.svalue {
+                scope::remove(module.scope, left.svalue)
+            }
+        } 
+    } else {
+        let value = node.svalue
+        if value {
+            scope::remove(module.scope, value)
+            if value.tpe {
+                var mdiags = diagnostics.get_or_default(module.filename, null)
+                if mdiags {
+                    mdiags.functions.remove(value.tpe.type_name)
+                }
+            }
+        }
+    }
+}
+
+def recompile_unresolved(ident: scope::Ident) {
+    let keys1 = toolchain::modules.keys()
+    for var key1 in @keys1 {
+        let module = toolchain::modules[key1]
+        let keys2 = map::keys(module.unresolved)
+        for var key2 in @keys2 {
+            let value = module.unresolved[key2]
+            let keys3 = value.unresolved.keys()
+            for var unresolved in @keys3 {
+                if unresolved == ident {
+                    remove(module, value.node)
+                    recompile_node(value.ident.module, value.node)
+                }
             }
         }
     }
@@ -244,20 +285,55 @@ def recompile_unresolved(node: &parser::Node) {
     if node.kind == parser::NodeKind::DEF {
         let name = typechecking::last_ident_to_str(node.value.def_.name)
         let ident = scope::make_ident(name)
-
-        let keys1 = toolchain::modules.keys()
-        for var key1 in @keys1 {
-            let module = toolchain::modules[key1]
-            let keys2 = map::keys(module.unresolved)
-            for var key2 in @keys2 {
-                let value = module.unresolved[key2]
-                let keys3 = value.unresolved.keys()
-                for var unresolved in @keys3 {
-                    if unresolved == ident {
-                        recompile_node(value.ident.module, value.node)
-                    }
-                }
+        recompile_unresolved(ident)
+    } else if node.kind == parser::NodeKind::VAR_DECL {
+        for var i in 0..node.value.var_decl.left.length {
+            let left = node.value.var_decl.left[i]
+            if not left or left.kind != parser::NodeKind::IDENTIFIER { continue }
+            let name = typechecking::last_ident_to_str(left)
+            let ident = scope::make_ident(name)
+            recompile_unresolved(ident)
+        } 
+    } else if node.kind == parser::NodeKind::TYPE_DECL {
+        for var i in 0..node.value.type_decl.left.length {
+            var left = node.value.type_decl.left[i]
+            if not left { continue }
+            if left.kind == parser::NodeKind::TYPE_CONSTRUCTOR {
+                left = left.value.type_constructor.name
             }
+            if not left or left.kind != parser::NodeKind::IDENTIFIER { continue }
+            let name = typechecking::last_ident_to_str(left)
+            let ident = scope::make_ident(name)
+            recompile_unresolved(ident)
+        } 
+    }
+}
+
+def find_signature(n: &parser::Node, program: &parser::Node) -> &parser::Node {
+    if n.signature_hash == 0 { return null }
+    for var j in 0..program.value.program.body.length {
+        let n2 = program.value.program.body[j]
+        if n2 and n2.kind == n.kind {
+            if n.signature_hash == n2.signature_hash {
+                return n2
+            }
+        }
+    }
+    return null
+}
+
+def transfer_value(frm: &parser::Node, to: &parser::Node) {
+    if frm.kind == parser::NodeKind::TYPE_DECL {
+        for var i in 0..frm.value.type_decl.left.length {
+            let left1 = frm.value.type_decl.left[i]
+            let left2 = to.value.type_decl.left[i]
+            left2.svalue = left1.svalue
+        }
+    } else if frm.kind == parser::NodeKind::VAR_DECL {
+        for var i in 0..frm.value.var_decl.left.length {
+            let left1 = frm.value.var_decl.left[i]
+            let left2 = to.value.type_decl.left[i]
+            left2.svalue = left1.svalue
         }
     }
 }
@@ -283,6 +359,10 @@ export def recompile(path: &string) {
         let tokens = lexer::lex(buf)
         let new_node = parser::parse(tokens, lines, path, toolchain::extract_module_name(path))
         delete(tokens)
+
+        // Remove all imports
+        module.scope.imports = null
+        consteval::import_stdlib(module.state)
 
         module.state.shallow_walk = true
         consteval::consteval(new_node, module.state)
@@ -317,21 +397,8 @@ export def recompile(path: &string) {
             }
             if not found {
                 // Check for signatures
-                var found_signature = false
-                var n2: &Node
-                if n.kind == parser::NodeKind::DEF {
-                    for var j in 0..node.value.program.body.length {
-                        n2 = node.value.program.body[j]
-                        if n2.kind == parser::NodeKind::DEF {
-                            if n.value.def_.signature_hash == n2.value.def_.signature_hash {
-                                found_signature = true
-                                break
-                            }
-                        }
-                    }
-                }
-                
-                if not found_signature {
+                var n2 = find_signature(n, node)
+                if not n2 {
                     // Add new node
                     var found = false
                     for var j in 0..node.value.program.body.length {
@@ -352,10 +419,12 @@ export def recompile(path: &string) {
                 } else {
                     let old_loc = n2.loc
                     let svalue = n2.svalue
-                    scope::remove(module.scope, svalue)
+                    transfer_value(n2, n)
                     @n2 = @n
                     n2.svalue = svalue
-                    if old_loc != n.loc {
+                    remove(module, n2)
+
+                    if n.kind != parser::NodeKind::DEF or old_loc != n.loc {
                         resolve_dependencies(n2)
                     }
                     recompile_node(module, n2)
