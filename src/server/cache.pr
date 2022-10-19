@@ -182,11 +182,26 @@ def recompile_node(module: &toolchain::Module, node: &parser::Node) {
     }
 }
 
-var dependencies_to_resolve = map::make(type &scope::Value)
+type ToResolve = struct {
+    module: &toolchain::Module
+    node: &parser::Node
+}
+export def hash(to_resolve: ToResolve) -> uint64 {
+    return (to_resolve.node !*) !uint64
+}
+export def == (this: ToResolve, other: ToResolve) -> bool {
+    return this.module == other.module
+}
+export def != (this: ToResolve, other: ToResolve) -> bool {
+    return not (this == other)
+}
+
+var dependencies_to_resolve = set::make(ToResolve)
 
 def poll_dependencies {
     for var key in @dependencies_to_resolve.keys() {
-        resolve_dependencies(dependencies_to_resolve[key])
+        remove(key.module, key.node)
+        recompile_node(key.module, key.node)
     }
     dependencies_to_resolve.clear()
 }
@@ -196,23 +211,17 @@ def resolve_dependencies(node: &parser::Node) {
         for var i in 0..node.value.var_decl.left.length {
             let left = node.value.var_decl.left[i]
             if not left { continue }
-            if left.svalue {
-                dependencies_to_resolve[left.svalue.assembly_name] = left.svalue
-            }
+            resolve_dependencies(left.svalue)
         } 
     } else if node.kind == parser::NodeKind::TYPE_DECL {
         for var i in 0..node.value.type_decl.left.length {
             let left = node.value.type_decl.left[i]
             if not left { continue }
-            if left.svalue {
-                dependencies_to_resolve[left.svalue.assembly_name] = left.svalue
-            }
+            resolve_dependencies(left.svalue)
         } 
     } else {
         let value = node.svalue
-        if value {
-            dependencies_to_resolve[value.assembly_name] = value
-        }
+        resolve_dependencies(value)
     }
 }
 
@@ -224,8 +233,9 @@ def resolve_dependencies(value: &scope::Value) {
         for var i in 0..node.value.program.body.length {
             let n = node.value.program.body[i]
             if n.svalue and n.svalue.ident == dependant {
-                remove(dependant.module, n)
-                recompile_node(dependant.module, n)
+                dependencies_to_resolve.add({
+                    dependant.module, n
+                } !ToResolve)
                 break
             }
         }
@@ -360,6 +370,12 @@ export def recompile(path: &string) {
         let new_node = parser::parse(tokens, lines, path, toolchain::extract_module_name(path))
         delete(tokens)
 
+        // Current imports
+        var old_imports = module.scope.imports
+        if not old_imports {
+            old_imports = vector::make(type weak_ref(toolchain::Module))
+        }
+
         // Remove all imports
         module.scope.imports = null
         consteval::import_stdlib(module.state)
@@ -390,7 +406,7 @@ export def recompile(path: &string) {
                     found = true
                     if n2.loc != n.loc { 
                         parser::offset(n2, n)
-                        resolve_dependencies(n2) 
+                        //resolve_dependencies(n2) 
                     }
                     break
                 }
@@ -467,7 +483,67 @@ export def recompile(path: &string) {
         typechecking::typecheck(node, module.state)
         compiler::compile(node, module.compiler_state)
 
-        poll_dependencies() 
+        var new_imports = module.scope.imports
+        if not new_imports {
+            new_imports = vector::make(type weak_ref(toolchain::Module))
+        }
+        
+        // Compare imports to old imports
+        for var i in 0..old_imports.length {
+            let imprt = old_imports[i]
+            var found = false
+            for var j in 0..new_imports.length {
+                let nimport = new_imports[j]
+                if nimport == imprt {
+                    found = true
+                    break
+                }
+            }
+            if not found {
+                // Remove import
+                let all_functions = imprt.scope.all_functions()
+                for var j in 0..all_functions.length {
+                    let function = all_functions[j]
+                    for var dependant in @function.dependants.keys() {
+                        if dependant.module == module {
+                            dependencies_to_resolve.add({
+                                module, dependant.find().node
+                            } !ToResolve)
+                        }
+                    }
+                }
+            }
+        }
+        for var i in 0..new_imports.length {
+            let imprt = new_imports[i]
+            var found = false
+            for var j in 0..old_imports.length {
+                let nimport = old_imports[j]
+                if nimport == imprt {
+                    found = true
+                    break
+                }
+            }
+            if not found {
+                // Add import
+                let all_functions = imprt.scope.all_functions()
+                for var j in 0..all_functions.length {
+                    let function = all_functions[j]
+                    for var ident in @module.unresolved.keys() {
+                        let value = module.unresolved[ident]
+                        for var unresolved in @value.unresolved.keys() {
+                            if function.ident == unresolved {
+                                dependencies_to_resolve.add({
+                                    module, value.node
+                                } !ToResolve)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        poll_dependencies()
     }
 
     publish_diagnostics(module)
