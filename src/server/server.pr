@@ -4,6 +4,9 @@ import map
 import json
 import toolchain
 import parser
+import scope
+import typechecking
+import debug
 
 import document
 import cache
@@ -107,18 +110,76 @@ def did_save(id: int, params: DidSaveTextDocumentParams) {
     document::save_document(params.textDocument.uri, params.text)
 }
 
+type HoverParams = struct {
+    textDocument: TextDocumentIdentifier
+    position: Position
+}
+
+const PlainText = "plaintext"
+const Markdown = "markdown"
+
+type MarkupContent = struct {
+    kind: &string
+    value: &string
+}
+
+type Hover = struct {
+    contents: MarkupContent
+}
+
+def hover(id: int, params: HoverParams) {
+    let module = toolchain::find_module_by_path(uri_to_path(params.textDocument.uri))
+    if not module { send_reply(id, null); return }	
+    let svalue = find_value_at(module, params.position)
+    if not svalue { send_reply(id, null); return }
+
+    var res: &string
+    if svalue.tpe.kind == typechecking::TypeKind::FUNCTION {
+        res = "(function) " + svalue.name + ": " + debug::type_to_str(svalue.tpe)
+    } else if svalue.tpe.kind == typechecking::TypeKind::NAMESPACE {
+        res = "(module) " + svalue.name
+    } else if svalue.modifier == VarDecl::TYPE {
+        if svalue.tpe.kind == typechecking::TypeKind::STRUCTURAL {
+            res = "(interface) " + svalue.name
+        } else if svalue.tpe.kind == typechecking::TypeKind::STRUCT {
+            res = "(struct) " + svalue.name
+        } else {
+            res = "(type) " + svalue.name
+        }
+    } else if svalue.modifier == VarDecl::CONST {
+        res = "(constant) " + svalue.name + ": " + debug::type_to_str(svalue.tpe)
+    } else {
+        res = "(variable) " + svalue.name + ": " + debug::type_to_str(svalue.tpe)
+    }
+    res = "```princess\n" + res + "\n\n```"
+
+    let content = {
+        kind = Markdown,
+        value = res
+    } !MarkupContent
+    let hover = {
+        contents = content
+    } !Hover
+    send_reply(id, json::serialize(*hover))
+}
+
 type DefinitionParams = struct {
     textDocument: TextDocumentIdentifier
     position: Position
 }
 
+def find_value_at(module: &toolchain::Module, position: Position) -> &scope::Value {
+    let node = parser::find(module.node, position.line, position.character)
+    if not node { return null }
+    if node.kind != parser::NodeKind::IDENTIFIER { return null }
+    let svalue = node.svalue
+    return svalue
+}
+
 def go_to_definition(id: int, params: DefinitionParams) {
     let module = toolchain::find_module_by_path(uri_to_path(params.textDocument.uri))
-    if not module { send_reply(id, null); return }
-    let node = parser::find(module.node, params.position.line, params.position.character)
-    if not node { send_reply(id, null); return }
-    if node.kind != parser::NodeKind::IDENTIFIER { send_reply(id, null); return }
-    let svalue = node.svalue
+    if not module { send_reply(id, null); return }	
+    let svalue = find_value_at(module, params.position)
     if not svalue { send_reply(id, null); return }
     let sloc = svalue.loc
     if parser::is_invalid(sloc) { send_reply(id, null); return }
@@ -216,6 +277,7 @@ def initialize(id: int, params: InitializeParams) {
 
     capabilities["textDocumentSync"] = sync_options
     capabilities["definitionProvider"] = true
+    capabilities["hoverProvider"] = true
 
     let serverInfo = json::make_object()
     serverInfo["name"] = "Princess Language Server"
@@ -464,6 +526,10 @@ export def main -> int {
                     let p = json::deserialize(params, DefinitionParams)
                     if not p.exists { send_error(id, ParseError, "Couldn't parse parameters") }
                     else { go_to_definition(id, p.get()) }
+                } else if method == "textDocument/hover" {
+                    let p = json::deserialize(params, HoverParams)
+                    if not p.exists { send_error(id, ParseError, "Couldn't parse parameters") }
+                    else { hover(id, p.get()) }
                 } else if method == "textDocument/didOpen" {
                     let p = json::deserialize(params, DidOpenTextDocumentParams)
                     if not p.exists { send_error(id, ParseError, "Couldn't parse parameters") }
