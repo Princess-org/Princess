@@ -201,7 +201,6 @@ var nodes_to_resolve = set::make(ToResolve)
 
 def recompile_nodes {
     for var key in @nodes_to_resolve.keys() {
-        remove(key.module, key.node)
         recompile_node(key.module, key.node)
     }
     nodes_to_resolve.clear()
@@ -238,6 +237,7 @@ def resolve_dependencies(value: &scope::Value) {
         for var i in 0..node.value.program.body.length {
             let n = node.value.program.body[i]
             if n.svalue and n.svalue.ident == dependant {
+                remove(dependant.module, n)
                 queue_node(dependant.module, n)
                 break
             }
@@ -246,6 +246,14 @@ def resolve_dependencies(value: &scope::Value) {
 }
 
 def remove(module: &toolchain::Module, node: &parser::Node) {
+    let new_queue = set::make(ToResolve)
+    for var to_resolve in @nodes_to_resolve.keys() {
+        if to_resolve.node != node {
+            new_queue.add(to_resolve)
+        }
+    }
+    nodes_to_resolve = new_queue
+
     if node.kind == parser::NodeKind::VAR_DECL {
         for var i in 0..node.value.var_decl.left.length {
             let left = node.value.var_decl.left[i]
@@ -286,6 +294,7 @@ def recompile_unresolved(ident: scope::Ident) {
             let keys3 = value.unresolved.keys()
             for var unresolved in @keys3 {
                 if unresolved == ident {
+                    remove(value.ident.module, value.node)
                     queue_node(value.ident.module, value.node)
                 }
             }
@@ -321,17 +330,17 @@ def recompile_unresolved(node: &parser::Node) {
     }
 }
 
-def find_signature(n: &parser::Node, program: &parser::Node) -> &parser::Node {
-    if n.signature_hash == 0 { return null }
+def find_signature(n: &parser::Node, program: &parser::Node) -> &parser::Node, size_t {
+    if n.signature_hash == 0 { return null, 0 }
     for var j in 0..program.value.program.body.length {
         let n2 = program.value.program.body[j]
         if n2 and n2.kind == n.kind {
             if n.signature_hash == n2.signature_hash {
-                return n2
+                return n2, j
             }
         }
     }
-    return null
+    return null, 0
 }
 
 def transfer_value(frm: &parser::Node, to: &parser::Node) {
@@ -404,19 +413,7 @@ export def recompile(path: &string) {
         module.state.shallow_walk = false
 
         let node = module.node
-        var new_body = vector::make(type &parser::Node)
-        for var i in 0..node.value.program.body.length {
-            let n = node.value.program.body[i]
-            if n and (n.kind == parser::NodeKind::DEF or
-                n.kind == parser::NodeKind::TYPE_DECL or
-                n.kind == parser::NodeKind::VAR_DECL) {
-                new_body.push(n)
-            }
-        }
-        node.value.program.body = new_body
-        node.body = new_body
-
-        let found_hashes = set::make(uint64)
+        let new_body = vector::make(type &parser::Node)
 
         // Iterate top level functions
         for var i in 0..new_node.value.program.body.length {
@@ -424,14 +421,9 @@ export def recompile(path: &string) {
             if n.kind != parser::NodeKind::DEF and
                 n.kind != parser::NodeKind::VAR_DECL and
                 n.kind != parser::NodeKind::TYPE_DECL {
-                insert_at_position(node, n)
+                new_body.push(n)
                 continue
             }
-            
-            if found_hashes.contains(n.signature_hash) {
-                errors::errorn(n, "Duplicate signature")
-            }
-            found_hashes.add(n.signature_hash)
 
             var found = false
             for var j in 0..node.value.program.body.length {
@@ -442,26 +434,26 @@ export def recompile(path: &string) {
                         parser::offset(n2, n)
                         //resolve_dependencies(n2) 
                     }
+                    new_body.push(n2)
                     break
                 }
             }
             if not found {
                 // Check for signatures
-                var n2 = find_signature(n, node)
+                var n2, loc = find_signature(n, node)
                 if not n2 {
                     // Add new node
-                    insert_at_position(node, n)
+                    new_body.push(n)
                     queue_node(module, n)
                     recompile_unresolved(n)
                 } else {
-                    let old_loc = n2.loc
-                    let svalue = n2.svalue
-                    transfer_value(n2, n)
-                    @n2 = @n
-                    n2.svalue = svalue
+                    remove(module, n2)
+                    //transfer_value(n2, n)
 
-                    queue_node(module, n2)
-                    if n.kind != parser::NodeKind::DEF or old_loc != n.loc {
+                    new_body.push(n)
+
+                    queue_node(module, n)
+                    if n.kind != parser::NodeKind::DEF or n2.loc != n.loc {
                         resolve_dependencies(n2)
                     }
                 }
@@ -469,13 +461,11 @@ export def recompile(path: &string) {
         }
 
         // Remove unused functions from old body
-        new_body = vector::make(type &parser::Node)
         for var i in 0..node.value.program.body.length {
             let n = node.value.program.body[i]
             if n and n.kind != parser::NodeKind::DEF and
                 n.kind != parser::NodeKind::VAR_DECL and
                 n.kind != parser::NodeKind::TYPE_DECL {
-                new_body.push(n)
                 continue
             }
 
@@ -487,16 +477,15 @@ export def recompile(path: &string) {
                     break
                 }
             }
-            if found {
-                new_body.push(n)
-            } else {
+            if not found {
                 remove(module, n)
                 resolve_dependencies(n)
             }
         }
-
+        
         node.value.program.body = new_body
         node.body = new_body
+
         parser::offset(node, new_node)
 
         // compile top level code
@@ -526,7 +515,9 @@ export def recompile(path: &string) {
                     let function = all_functions[j]
                     for var dependant in @function.dependants.keys() {
                         if dependant.module == module {
-                            queue_node(module, dependant.find().node)
+                            let n = dependant.find().node
+                            remove(module, n)
+                            queue_node(module, n)
                         }
                     }
                 }
@@ -551,6 +542,7 @@ export def recompile(path: &string) {
                         let value = module.unresolved[ident]
                         for var unresolved in @value.unresolved.keys() {
                             if function.ident == unresolved {
+                                remove(module, value.node)
                                 queue_node(module, value.node)
                             }
                         }
