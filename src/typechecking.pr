@@ -2644,6 +2644,14 @@ def walk_Assign(node: &parser::Node, state: &State) {
     node.tpe = vector::peek(ltypes)
 }
 
+export def walk_top_VarDecl(node: &parser::Node, state: &State, set_constant: bool = false) {
+    let current_signature = errors::current_signature
+    errors::current_signature = node.signature_hash
+    defer errors::current_signature = current_signature
+
+    walk_VarDecl(node, state, set_constant)
+}
+
 // This is getting called from consteval for constants
 export def walk_VarDecl(node: &parser::Node, state: &State, set_constant: bool = false) {
     let share = node.value.var_decl.share
@@ -3287,6 +3295,7 @@ export def walk_Def(node: &parser::Node, state: &State) {
     var closure_type: &Type
     var state_node = parser::make_identifier("__state") // This is needed for ref counting reasons
     let current_function = errors::current_function
+    let current_signature = errors::current_signature
 
     if is_closure {
         let c_parameter_t = vector::make(NamedParameter)
@@ -3408,6 +3417,7 @@ export def walk_Def(node: &parser::Node, state: &State) {
         function.value = scope::create_variable(outer_scope, name, parser::ShareMarker::NONE, parser::VarDecl::CONST, closure_type, null)
     } else {
         errors::current_function = tpe.type_name
+        errors::current_signature = node.signature_hash
         function.value = scope::create_function(outer_scope, name, share, tpe, phase, node, state)
     }
     
@@ -3470,6 +3480,7 @@ export def walk_Def(node: &parser::Node, state: &State) {
         function.state.type_name = append_module(function.state.name, state.module.module)
     }
     errors::current_function = current_function
+    errors::current_signature = current_signature
 
     node.tpe = tpe
 }
@@ -3501,6 +3512,10 @@ export def walk_TypeDecl(node: &parser::Node, state: &State) {
     let share = node.value.type_decl.share
     let left = node.value.type_decl.left
     let right = node.value.type_decl.right
+        
+    let current_signature = errors::current_signature
+    errors::current_signature = node.signature_hash
+    defer errors::current_signature = current_signature
 
     if vector::length(left) < vector::length(right) {
         errors::errorn(node, "Too many values to assign")
@@ -3521,7 +3536,7 @@ export def walk_TypeDecl(node: &parser::Node, state: &State) {
         }
 
         var tpe = make_type_raw(TypeKind::STUB)
-        left.svalue = scope::create_type(state.scope, name, share, tpe, scope::Phase::COMPILED, null, null)
+        left.svalue = scope::create_type(state.scope, name, share, tpe, scope::Phase::COMPILED, node, null)
         if value {
             if left.kind == parser::NodeKind::TYPE_CONSTRUCTOR {
                 tpe = lookup_type_constructor(left, value, state)
@@ -3536,7 +3551,7 @@ export def walk_TypeDecl(node: &parser::Node, state: &State) {
                 tpe.type_name = append_module(tpe.name, node.loc.module)
             }
             
-            left.svalue = scope::create_type(state.scope, name, share, tpe, scope::Phase::COMPILED, null, null)
+            left.svalue = scope::create_type(state.scope, name, share, tpe, scope::Phase::COMPILED, node, null)
         }
     }
 }
@@ -4101,15 +4116,27 @@ def walk_MemberAccess_ucs(node: &parser::Node, state: &State) -> bool {
     return true
 }
 
-export def lookup_struct_member(member: StructMember) {
+export def lookup_struct_member(member: StructMember, resolved: &SSet = null) {
     let tpe = member.tpe
-    if tpe and (tpe.kind == TypeKind::POINTER or
+    if not tpe { return }
+    if not resolved { resolved = set::make() }
+
+    let name = debug::type_to_str(tpe, full_name = true)
+    if resolved.contains(name) { return }
+    resolved.add(name)
+
+    if (tpe.kind == TypeKind::POINTER or
         tpe.kind == TypeKind::REFERENCE or
         tpe.kind == TypeKind::WEAK_REF or
         tpe.kind == TypeKind::ARRAY) {
         if tpe._tpe and tpe._tpe.kind == TypeKind::STUB and tpe._tpe.state {
             // FIXME Also box function types and unions, they might have self references
             tpe._tpe = box(TypeKind::STRUCT, type_lookup(tpe._tpe.node, tpe._tpe.state))
+        }
+    } else if tpe.kind == typechecking::TypeKind::STRUCT {
+        for var i in 0..tpe.fields.size {
+            let field = tpe.fields[i]
+            lookup_struct_member(field, resolved)
         }
     }
 }
@@ -4532,7 +4559,11 @@ export def walk(parent: &parser::Node, node: &parser::Node, state: &State) {
         case parser::NodeKind::ASSIGN:
             walk_Assign(node, state)
         case parser::NodeKind::VAR_DECL:
-            walk_VarDecl(node, state)
+            if node.parent.kind == parser::NodeKind::PROGRAM {
+                walk_top_VarDecl(node, state)
+            } else {
+                walk_VarDecl(node, state)
+            }
         case parser::NodeKind::UADD:
             walk_UAdd(node, state)
         case parser::NodeKind::USUB:
@@ -4601,7 +4632,7 @@ export def walk(parent: &parser::Node, node: &parser::Node, state: &State) {
             assert
     }
 
-    if node.tpe {
+    if node.tpe and is_struct(node.tpe) {
         // Generate copy constructor and destructor
         // TODO Why here you might ask? I have no idea but it works!
         generate_ctor_and_dtor(node.tpe)

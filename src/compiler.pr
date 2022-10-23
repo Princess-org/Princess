@@ -5090,8 +5090,11 @@ export def walk_VarDecl(node: &parser::Node, state: &State, set_constant: bool =
                 var is_undef = false
                 if i < vector::length(right) {
                     let r = right[i]
-                    if r and r.kind == parser::NodeKind::UNDEF {
-                        is_undef = true
+                    if r { 
+                        create_dependency(current_function.value, r.svalue) 
+                        if r.kind == parser::NodeKind::UNDEF {
+                            is_undef = true
+                        }
                     }
                 }
                 if not is_undef {
@@ -6318,9 +6321,12 @@ export def create_function(
     function.forward_declare = false
     function.allocas = vector::make(type &Insn)
     let current_function = errors::current_function
+    let current_signature = errors::current_signature
 
     if body {
         errors::current_function = tpe.type_name
+        if node { errors::current_signature = node.signature_hash }
+        
         let original_ret = function.ret
         var generator: &typechecking::Type
 
@@ -6606,6 +6612,7 @@ export def create_function(
     }
 
     errors::current_function = current_function
+    errors::current_signature = current_signature
 }
 
 def make_string(str: &string, state: &State) -> Value {
@@ -6634,11 +6641,18 @@ def make_string(str: &string, state: &State) -> Value {
 
 // TODO This is not going to work for nested type decls (we don't reset the state)
 export def walk_TypeDecl(node: &parser::Node, state: &State) {
+    if node.parent.kind == parser::NodeKind::PROGRAM {
+        let current_signature = errors::current_signature
+        errors::current_signature = node.signature_hash
+        defer errors::current_signature = current_signature
+    }
+
     let left = node.value.type_decl.left
     for var i in 0..vector::length(left) {
         let n = left[i]
         if not n { continue }
         let tpe = n.tpe
+        check_for_dependency(n.svalue, tpe)
         if not tpe { continue }
         if typechecking::is_struct(tpe) {
             import_structures(tpe, state.module)
@@ -6687,7 +6701,7 @@ export def walk_TypeDecl(node: &parser::Node, state: &State) {
                 let value = scpe.fields[name]
 
                 let int_key = to_string(value.value.i)
-                if used.contains(int_key) {
+                if set::contains(used, int_key) {
                     continue
                 } else {
                     used.add(int_key)
@@ -6733,6 +6747,10 @@ export def walk_top_VarDecl(node: &parser::Node, state: &State, set_constant: bo
     if kw == parser::VarDecl::CONST and not set_constant {
         return null
     }
+
+    let current_signature = errors::current_signature
+    errors::current_signature = node.signature_hash
+    defer errors::current_signature = current_signature
 
     let left = vector::make(type &parser::Node)
     var external = false
@@ -6884,7 +6902,7 @@ def create_constructors {
         var keys = map::keys(constructors)
         for var i in 0..keys.size {
             let key = keys[i]
-            if done.contains(key) { continue }
+            if set::contains(done, key) { continue }
             let tpe = constructors[key]
 
             if typechecking::is_polymorph(tpe) { continue }
@@ -8189,6 +8207,45 @@ def generate_vtable_function(function: &Function, tpe: &typechecking::Type, stat
     
 }
 
+def do_check_for_dependency(svalue: &scope::Value, tpe: &typechecking::Type, resolved: &SSet) {
+    if tpe and tpe.node {
+        scope::create_dependency(svalue, tpe.node.svalue)
+    }
+    check_for_dependency(svalue, tpe, resolved)
+}
+
+def check_for_dependency(svalue: &scope::Value, tpe: &typechecking::Type, resolved: &SSet = null) {
+    if not tpe or not svalue { return }
+    if not resolved { resolved = set::make() }
+    let name = debug::type_to_str(tpe, full_name = true)
+    if set::contains(resolved, name) { return }
+    resolved.add(name)
+    
+    if typechecking::is_box(tpe) {
+        do_check_for_dependency(svalue, tpe.tpe, resolved)
+    } else if typechecking::is_struct(tpe) {
+        for var i in 0..tpe.fields.size {
+            let field = tpe.fields[i]
+            if not field.tpe and field.node and field.node.kind == parser::NodeKind::ID_DECL_STRUCT {
+                let value = field.node.value.id_decl_struct.tpe
+                if value {
+                    var ident = value
+                    if value.kind == parser::NodeKind::TYPE_CONSTRUCTOR {
+                        ident = value.value.type_constructor.name
+                    }
+                    if ident {
+                        scope::create_dependency(svalue, scope::make_ident(parser::identifier_to_str(ident)))
+                    }
+                }
+            } else {
+                do_check_for_dependency(svalue, field.tpe, resolved)
+            }
+        }
+    } else if typechecking::is_stub(tpe) {
+        scope::create_dependency(svalue, scope::make_ident(tpe.name))
+    }
+}
+
 export def verify_function(node: &parser::Node) {
     let params = node.value.def_.params
     for var i in 0..params.length {
@@ -8202,10 +8259,14 @@ export def verify_function(node: &parser::Node) {
         if not tpe or tpe.kind == typechecking::TypeKind::STUB {
             scope::create_dependency(node.svalue, scope::make_ident(tpe.name))
             let current_function = errors::current_function
+            let current_signature = errors::current_signature
             errors::current_function = node.tpe.type_name
+            errors::current_signature = node.signature_hash
             errors::errorn(ptpe, "Invalid parameter, can't accept stub type")
             errors::current_function = current_function
+            errors::current_signature = current_signature
         }
+        check_for_dependency(node.svalue, tpe)
     }
 }
 

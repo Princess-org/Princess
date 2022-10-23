@@ -21,7 +21,7 @@ export def setup_error_handler {
 
 type DiagnosticSet = &Set(errors::Diagnostic)
 type ModuleDiagnostics = struct {
-    functions: &SMap(DiagnosticSet)
+    members: &Map(uint64, DiagnosticSet)
     diagnostics: DiagnosticSet
 }
 
@@ -44,9 +44,9 @@ def publish_diagnostics(module: &toolchain::Module) {
 
     let resolved = vector::make(server::Diagnostic)
 
-    let keys = mdiags.functions.keys()
+    let keys = mdiags.members.keys()
     for var key in @keys {
-        for var diagnostic in @map::keys(mdiags.functions[key]) {   // TODO This is clashing with keys somehow
+        for var diagnostic in @map::keys(mdiags.members[key]) {   // TODO This is clashing with keys somehow
             resolved.push(error_to_diagnostic(diagnostic))
         }
     }
@@ -65,17 +65,17 @@ export def error_handler(diagnostic: errors::Diagnostic) {
     var mdiags = diagnostics.get_or_default(diagnostic.filename, null)
     if not mdiags {
         mdiags = {
-            functions = map::make(DiagnosticSet),
+            members = map::make(uint64, DiagnosticSet),
             diagnostics = set::make(errors::Diagnostic)
         } !ModuleDiagnostics
         diagnostics[diagnostic.filename] = mdiags
     }
 
-    if diagnostic.function {
-        var fdiags = mdiags.functions.get_or_default(diagnostic.function, null)
+    if diagnostic.signature != 0 {
+        var fdiags = mdiags.members.get_or_default(diagnostic.signature, null)
         if not fdiags {
             fdiags = set::make(errors::Diagnostic)
-            mdiags.functions[diagnostic.function] = fdiags
+            mdiags.members[diagnostic.signature] = fdiags
         }
         fdiags.add(diagnostic)
     } else {
@@ -87,8 +87,8 @@ export def offset_errors(path: &string, start: server::Position, end: server::Po
     if not diagnostics.contains(path) { return }
     let mdiags = diagnostics[path]
 
-    for var key in @mdiags.functions.keys() {
-        let fdiags = mdiags.functions[key]
+    for var key in @mdiags.members.keys() {
+        let fdiags = mdiags.members[key]
         let new = set::make(errors::Diagnostic)
         for var diagnostic in @fdiags.keys() {
             if start.line != end.line or start.character != end.character {
@@ -137,7 +137,7 @@ export def offset_errors(path: &string, start: server::Position, end: server::Po
             new.add(diagnostic)
         }
 
-        mdiags.functions[key] = new
+        mdiags.members[key] = new
     }
 }
 
@@ -155,14 +155,13 @@ def recompile_node(module: &toolchain::Module, node: &parser::Node) {
     module.compiler_state.current_block = compiler::make_block()
 
     if node.kind == parser::NodeKind::DEF {
-        if node.svalue {
-            var mdiags = diagnostics.get_or_default(module.filename, null)
-            if mdiags {
-                mdiags.functions.remove(node.svalue.tpe.type_name)
-            }
+        var mdiags = diagnostics.get_or_default(module.filename, null)
+        if mdiags {
+            mdiags.members.remove(node.signature_hash)
         }
+
         if node.value.def_.name {
-            error("Recompiling function ", parser::identifier_to_str(node.value.def_.name), " ", node.value.def_.name.loc.line, "\n")
+            error("Recompiling function ", parser::identifier_to_str(node.value.def_.name), " ", node !*, "\n")
         }
         node.scope = module.scope
         consteval::walk_Def(node, module.state)
@@ -173,10 +172,37 @@ def recompile_node(module: &toolchain::Module, node: &parser::Node) {
             compiler::create_function(node, node.tpe, node.value.def_.body, node.inner_scope, null, module.compiler_state)
         }
     } else if node.kind == parser::NodeKind::VAR_DECL {
+        var mdiags = diagnostics.get_or_default(module.filename, null)
+        if mdiags {
+            mdiags.members.remove(node.signature_hash)
+        }
+
         consteval::walk_top_VarDecl(node, module.state)
-        typechecking::walk_VarDecl(node, module.state)
+        typechecking::walk_top_VarDecl(node, module.state)
         compiler::walk_top_VarDecl(node, module.compiler_state, false)
     } else if node.kind == parser::NodeKind::TYPE_DECL {
+        // consteval messes with the nodes a bit so we have to restore the original state
+        // all copies of the type declaration have the same hash as the node, we need
+        // to remove all of them
+        if node.parent.body.index_of(node) == -1 {
+            let new_body = vector::make(type &parser::Node)
+            for var i in 0..node.parent.body.length {
+                let n = node.parent.body[i]
+                if n._hash != node._hash {
+                    new_body.push(n)
+                }
+            }
+
+            node.parent.value.program.body = new_body
+            node.parent.body = new_body
+            insert_at_position(node.parent, node)
+        }
+
+        var mdiags = diagnostics.get_or_default(module.filename, null)
+        if mdiags {
+            mdiags.members.remove(node.signature_hash)
+        }
+
         consteval::walk_TypeDecl(node, module.state)
         typechecking::walk_TypeDecl(node, module.state)
         compiler::walk_TypeDecl(node, module.compiler_state)
@@ -211,6 +237,7 @@ def queue_node(module: &toolchain::Module, node: &parser::Node) {
 }
 
 def resolve_dependencies(node: &parser::Node) {
+    if not node { return } 
     if node.kind == parser::NodeKind::VAR_DECL {
         for var i in 0..node.value.var_decl.left.length {
             let left = node.value.var_decl.left[i]
@@ -236,16 +263,37 @@ def resolve_dependencies(value: &scope::Value) {
         let node = dependant.module.node
         for var i in 0..node.value.program.body.length {
             let n = node.value.program.body[i]
-            if n.svalue and n.svalue.ident == dependant {
-                remove(dependant.module, n)
-                queue_node(dependant.module, n)
-                break
+            if n.kind == parser::NodeKind::DEF {
+                if n.svalue and n.svalue.ident == dependant {
+                    remove(dependant.module, n)
+                    queue_node(dependant.module, n)
+                    break
+                }
+            } else if n.kind == parser::NodeKind::VAR_DECL {
+                for var i in 0..n.value.var_decl.left.length {
+                    let left = n.value.var_decl.left[i]
+                    if left and left.svalue and left.svalue.ident == dependant {
+                        remove(dependant.module, n)
+                        queue_node(dependant.module, n)
+                        break
+                    }
+                }
+            } else if n.kind == parser::NodeKind::TYPE_DECL {
+                for var i in 0..n.value.type_decl.left.length {
+                    let left = n.value.type_decl.left[i]
+                    if left and left.svalue and left.svalue.ident == dependant {
+                        remove(dependant.module, n)
+                        queue_node(dependant.module, n)
+                        break
+                    }
+                }
             }
         }
     }
 }
 
 def remove(module: &toolchain::Module, node: &parser::Node) {
+    if not node { return }
     let new_queue = set::make(ToResolve)
     for var to_resolve in @nodes_to_resolve.keys() {
         if to_resolve.node != node {
@@ -259,6 +307,7 @@ def remove(module: &toolchain::Module, node: &parser::Node) {
             let left = node.value.var_decl.left[i]
             if not left { continue }
             if left.svalue {
+                module.unresolved.remove(left.svalue.ident)
                 scope::remove(module.scope, left.svalue)
             }
         } 
@@ -267,19 +316,19 @@ def remove(module: &toolchain::Module, node: &parser::Node) {
             let left = node.value.type_decl.left[i]
             if not left { continue }
             if left.svalue {
+                module.unresolved.remove(left.svalue.ident)
                 scope::remove(module.scope, left.svalue)
             }
-        } 
+        }
     } else {
         let value = node.svalue
         if value {
+            module.unresolved.remove(value.ident)
             scope::remove(module.scope, value)
-            if value.tpe {
-                var mdiags = diagnostics.get_or_default(module.filename, null)
-                if mdiags {
-                    mdiags.functions.remove(value.tpe.type_name)
-                }
-            }
+        }
+        var mdiags = diagnostics.get_or_default(module.filename, null)
+        if mdiags {
+            mdiags.members.remove(node.signature_hash)
         }
     }
 }
@@ -435,7 +484,6 @@ export def recompile(path: &string) {
                         //resolve_dependencies(n2) 
                     }
                     new_body.push(n2)
-                    break
                 }
             }
             if not found {
