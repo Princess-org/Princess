@@ -386,6 +386,23 @@ export type State = struct {
     in_defer: bool
     // If this is set to true, consteval doesn't perform the walk_top
     shallow_walk: bool
+    current_variable: &scope::Value
+}
+
+def current_value(state: &State) -> &scope::Value {
+    if state.current_variable {
+        return state.current_variable
+    }
+    
+    let len = vector::length(state.function_stack)
+    for var i in 0..len {
+        let j = state.function_stack.length - i - 1
+        let fun = state.function_stack[j]
+        if fun.is_global and j + 1 < len { 
+            return state.function_stack[j + 1].value
+        }
+    }
+    return null
 }
 
 export def current_function(state: &State) -> &compiler::Function {
@@ -1879,7 +1896,7 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
             node.svalue = null
             let tpe = scope::get_type(state.scope, node)
             if not tpe {
-                scope::create_dependency(state.current_function().value, scope::make_ident(last_ident_to_str(node)))
+                scope::create_dependency_on_type(state.current_value(), node)
             }
             return tpe
         } else {
@@ -2498,12 +2515,11 @@ def walk_Identifier(node: &parser::Node, state: &State) {
     }
 
     if not value {
-        scope::create_dependency(state.current_function().value, scope::make_ident(last_ident_to_str(node)))
-        errors::errorn(node, "Unknown identifier `", parser::identifier_to_str(node), "`")
+        scope::create_dependency_on_type(state.current_value(), node)
         return
     }
 
-    scope::create_dependency(state.current_function().value, value)
+    scope::create_dependency(state.current_value(), value)
 
     if value.tpe and value.tpe.kind == TypeKind::TYPE {
         let tpe = copy(builtins::Type_)
@@ -2569,7 +2585,11 @@ def infer_struct_type(node: &parser::Node, tpe: &Type) {
     }
 }
 
-def collapse_types(node: &parser::Node, ltypes: &Vector(&Type), right: &Vector(&parser::Node), state: &State) -> &Vector(&Type) {
+def collapse_types(
+    node: &parser::Node, ltypes: &Vector(&Type), 
+    right: &Vector(&parser::Node), state: &State, 
+    left: &Vector(&parser::Node) = null
+) -> &Vector(&Type) {
     let rtypes = vector::make(type &Type)
     var k = 0
     for var i in 0..vector::length(right) {
@@ -2583,7 +2603,15 @@ def collapse_types(node: &parser::Node, ltypes: &Vector(&Type), right: &Vector(&
         }
         
         if not value.is_assign_right {
-            walk(node, value, state)
+            if left and i < left.length and node.parent.kind == parser::NodeKind::PROGRAM {
+                let l = left[i]
+                let current_value = state.current_value
+                state.current_variable = l.value.id_decl.value.svalue
+                walk(node, value, state)
+                state.current_variable = current_value
+            } else {
+                walk(node, value, state)
+            }
         }
         let rtpe = (@value).tpe
         if rtpe and (@rtpe).kind == TypeKind::TUPLE {
@@ -2681,23 +2709,38 @@ export def walk_VarDecl(node: &parser::Node, state: &State, set_constant: bool =
     
     let ltypes = vector::make(type &Type)
     for var i in 0..vector::length(left) {
-        let node = left[i]
-        if node.kind == parser::NodeKind::ID_DECL {
-            let tpe_node = node.value.id_decl.tpe
+        let l = left[i]
+        if l.kind == parser::NodeKind::ID_DECL {
+            let tpe_node = l.value.id_decl.tpe
+            let ident = l.value.id_decl.value
+            let is_underscore = scope::last_path_element(ident) == "_"
+
+            if is_underscore {
+                ident.svalue = scope::create_underscore(state.scope, ident, null)
+            } else {
+                ident.svalue = scope::create_variable(state.scope, ident, share, kw, null, extern, null)
+            }
+
+            let current_variable = state.current_variable
+            if node.parent.kind == parser::NodeKind::PROGRAM {
+                state.current_variable = ident.svalue
+            }
+
             if tpe_node {
                 let tpe = type_lookup(tpe_node, state)
                 ltypes.push(tpe)
             } else {
                 ltypes.push(null)
             }
+            state.current_variable = current_variable
         } else {
-            let n = node.value.expr
-            walk(node, n, state)
+            let n = l.value.expr
+            walk(l, n, state)
             ltypes.push((@n).tpe)
         }
     }
 
-    let rtypes = collapse_types(node, ltypes, right, state)
+    let rtypes = collapse_types(node, ltypes, right, state, left)
     	
     var balanced = true
     if (kw == parser::VarDecl::CONST or 
@@ -2747,16 +2790,12 @@ export def walk_VarDecl(node: &parser::Node, state: &State, set_constant: bool =
 
             ident.scope = state.scope
             ident.tpe = ltpe
-
-            if is_underscore {
-                ident.svalue = scope::create_underscore(state.scope, ident, ltpe)
-            } else {
-                ident.svalue = scope::create_variable(state.scope, ident, share, kw, ltpe, extern, null)
-            }
+            ident.svalue.tpe = ltpe
 
             if parent.kind != parser::NodeKind::PROGRAM {
                 function.locals[ident.svalue.assembly_name] = ltpe
             }
+
         } else {
             let n = node.value.expr
             if not check_is_identifier_assignable(n, state) {
@@ -3403,10 +3442,12 @@ export def walk_Def(node: &parser::Node, state: &State) {
             if np.varargs {
                 if np.tpe {
                     let value = scope::create_variable(inner_scope, np.node, parser::ShareMarker::NONE, parser::VarDecl::VAR, array(np.tpe), null)
+                    np.node.svalue = value
                     function.locals[value.assembly_name] = value.tpe
                 }
             } else {
                 let value = scope::create_variable(inner_scope, np.node, parser::ShareMarker::NONE, parser::VarDecl::VAR, np.tpe, null)
+                np.node.svalue = value
                 function.locals[value.assembly_name] = value.tpe
             }
         }
@@ -3551,7 +3592,7 @@ export def walk_TypeDecl(node: &parser::Node, state: &State) {
                 tpe.type_name = append_module(tpe.name, node.loc.module)
             }
             
-            left.svalue = scope::create_type(state.scope, name, share, tpe, scope::Phase::COMPILED, node, null)
+            left.svalue = node.svalue = scope::create_type(state.scope, name, share, tpe, scope::Phase::COMPILED, node, null)
         }
     }
 }
@@ -3743,7 +3784,7 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
                     errors::errorn(left, msg)
                 }
                 if not function {
-                    scope::create_dependency(state.current_function().value, scope::make_ident(last_ident_to_str(left)))
+                    scope::create_dependency_on_type(state.current_value(), left)
                     return false 
                 }
 
@@ -3756,7 +3797,7 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
                     }
                 }
                 // Dependencies
-                scope::create_dependency(state.current_function().value, function)
+                scope::create_dependency(state.current_value(), function)
                 
                 tpe = copy(function.tpe)
             } else {
@@ -4308,7 +4349,7 @@ def walk_StructLit(node: &parser::Node, state: &State) {
 
     for var i in 0..vector::length(node.value.struct_lit.args) {
         let n = node.value.struct_lit.args[i]
-        if i > (@tpe).fields.size {
+        if i >= (@tpe).fields.size {
             errors::errorn(n, "Too many arguments to struct literal")
             return
         }
@@ -4636,7 +4677,7 @@ export def walk(parent: &parser::Node, node: &parser::Node, state: &State) {
         // Generate copy constructor and destructor
         // TODO Why here you might ask? I have no idea but it works!
         generate_ctor_and_dtor(node.tpe)
-        scope::create_dependency(state.current_function().value, node.tpe.svalue)
+        scope::create_dependency(state.current_value(), node.tpe.svalue)
     }
 
     state.scope = scpe

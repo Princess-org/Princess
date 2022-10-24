@@ -141,45 +141,35 @@ export def offset_errors(path: &string, start: server::Position, end: server::Po
     }
 }
 
-def recompile_node(module: &toolchain::Module, node: &parser::Node) {
-    if not node { return }
-    node.parent = module.node
 
+def reset_state(module: &toolchain::Module) {
     // Reset the state
     module.state.scope = module.scope
     module.state.function_stack = vector::make(type &compiler::Function)
     module.state.function_stack.push(module.node.value.program.function)
 
+    module.compiler_state.no_instructions = true
     module.compiler_state.function_stack = vector::make(type &compiler::Function)
     module.compiler_state.function_stack.push(module.node.value.program.function)
     module.compiler_state.current_block = compiler::make_block()
+}
+
+def consteval_node(module: &toolchain::Module, node: &parser::Node) {
+    if not node { return }
+    node.parent = module.node
+    node.scope = module.scope
+
+    reset_state(module)
+
+    var mdiags = diagnostics.get_or_default(module.filename, null)
+    if mdiags {
+        mdiags.members.remove(node.signature_hash)
+    }
 
     if node.kind == parser::NodeKind::DEF {
-        var mdiags = diagnostics.get_or_default(module.filename, null)
-        if mdiags {
-            mdiags.members.remove(node.signature_hash)
-        }
-
-        if node.value.def_.name {
-            error("Recompiling function ", parser::identifier_to_str(node.value.def_.name), " ", node !*, "\n")
-        }
-        node.scope = module.scope
         consteval::walk_Def(node, module.state)
-        if not typechecking::is_polymorph(node.tpe) {
-            typechecking::walk_Def(node, module.state)
-            compiler::verify_function(node)
-            compiler::predeclare_function(node.tpe, module)
-            compiler::create_function(node, node.tpe, node.value.def_.body, node.inner_scope, null, module.compiler_state)
-        }
     } else if node.kind == parser::NodeKind::VAR_DECL {
-        var mdiags = diagnostics.get_or_default(module.filename, null)
-        if mdiags {
-            mdiags.members.remove(node.signature_hash)
-        }
-
         consteval::walk_top_VarDecl(node, module.state)
-        typechecking::walk_top_VarDecl(node, module.state)
-        compiler::walk_top_VarDecl(node, module.compiler_state, false)
     } else if node.kind == parser::NodeKind::TYPE_DECL {
         // consteval messes with the nodes a bit so we have to restore the original state
         // all copies of the type declaration have the same hash as the node, we need
@@ -198,14 +188,36 @@ def recompile_node(module: &toolchain::Module, node: &parser::Node) {
             insert_at_position(node.parent, node)
         }
 
-        var mdiags = diagnostics.get_or_default(module.filename, null)
-        if mdiags {
-            mdiags.members.remove(node.signature_hash)
-        }
-
         consteval::walk_TypeDecl(node, module.state)
-        typechecking::walk_TypeDecl(node, module.state)
-        compiler::walk_TypeDecl(node, module.compiler_state)
+    }
+}
+
+def recompile_node(module: &toolchain::Module, node: &parser::Node) {
+    if not node { return }
+    node.parent = module.node
+    node.scope = module.scope
+
+    reset_state(module)
+
+    if node.kind == parser::NodeKind::DEF {
+        if not typechecking::is_polymorph(node.tpe) {
+            typechecking::walk_Def(node, module.state)
+            compiler::verify_function(node)
+            compiler::predeclare_function(node.tpe, module)
+            compiler::create_function(node, node.tpe, node.value.def_.body, node.inner_scope, null, module.compiler_state)
+        }
+    } else if node.kind == parser::NodeKind::VAR_DECL {
+        typechecking::walk_top_VarDecl(node, module.state)
+        let assign = compiler::walk_top_VarDecl(node, module.compiler_state, false)
+        compiler::walk_Assign(assign, module.compiler_state)
+    } else if node.kind == parser::NodeKind::TYPE_DECL {
+        for var i in 0..node.value.type_decl.children.length {
+            let child = node.value.type_decl.children[i]
+            if not child.svalue {
+                typechecking::walk_TypeDecl(child, module.state)
+            }
+            compiler::walk_TypeDecl(child, module.compiler_state)
+        }
     }
 }
 
@@ -226,6 +238,10 @@ export def != (this: ToResolve, other: ToResolve) -> bool {
 var nodes_to_resolve = set::make(ToResolve)
 
 def recompile_nodes {
+    for var key in @nodes_to_resolve.keys() {
+        clear_types(key.node)
+        consteval_node(key.module, key.node)
+    }
     for var key in @nodes_to_resolve.keys() {
         recompile_node(key.module, key.node)
     }
@@ -301,6 +317,11 @@ def remove(module: &toolchain::Module, node: &parser::Node) {
         }
     }
     nodes_to_resolve = new_queue
+    
+    var mdiags = diagnostics.get_or_default(module.filename, null)
+    if mdiags {
+        mdiags.members.remove(node.signature_hash)
+    }
 
     if node.kind == parser::NodeKind::VAR_DECL {
         for var i in 0..node.value.var_decl.left.length {
@@ -325,10 +346,6 @@ def remove(module: &toolchain::Module, node: &parser::Node) {
         if value {
             module.unresolved.remove(value.ident)
             scope::remove(module.scope, value)
-        }
-        var mdiags = diagnostics.get_or_default(module.filename, null)
-        if mdiags {
-            mdiags.members.remove(node.signature_hash)
         }
     }
 }
@@ -437,6 +454,7 @@ export def recompile(path: &string) {
         error("Compiling ", path, "\n")
         // Do a full compile
         module = toolchain::consteval_file(path, toolchain::extract_module_name(path))
+        module.compiler_state.no_instructions = true
         typechecking::typecheck(module)
         compiler::compile(module)
     } else {
@@ -457,12 +475,18 @@ export def recompile(path: &string) {
         module.scope.imports = null
         consteval::import_stdlib(module.state)
 
+        let node = module.node
+        let new_body = vector::make(type &parser::Node)
+
+        parser::offset(node, new_node)
+
         module.state.shallow_walk = true
         consteval::consteval(new_node, module.state)
         module.state.shallow_walk = false
 
-        let node = module.node
-        let new_body = vector::make(type &parser::Node)
+        // compile top level code
+        typechecking::typecheck(new_node, module.state)
+        compiler::compile(new_node, module.compiler_state)
 
         // Iterate top level functions
         for var i in 0..new_node.value.program.body.length {
@@ -533,12 +557,6 @@ export def recompile(path: &string) {
         
         node.value.program.body = new_body
         node.body = new_body
-
-        parser::offset(node, new_node)
-
-        // compile top level code
-        typechecking::typecheck(node, module.state)
-        compiler::compile(node, module.compiler_state)
 
         var new_imports = module.scope.imports
         if not new_imports {

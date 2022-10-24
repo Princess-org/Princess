@@ -523,6 +523,25 @@ export type State = struct {
     // Destructor function
     finalizer: &Function
     consteval: bool
+    current_variable: &scope::Value
+    // This is set by the language server to not store instructions
+    no_instructions: bool
+}
+
+def current_value(state: &State) -> &scope::Value {
+    if state.current_variable {
+        return state.current_variable
+    }
+    
+    let len = vector::length(state.function_stack)
+    for var i in 0..len {
+        let j = state.function_stack.length - i - 1
+        let fun = state.function_stack[j]
+        if fun.is_global and j + 1 < len { 
+            return state.function_stack[j + 1].value
+        }
+    }
+    return null
 }
 
 export def current_function(state: &State) -> &Function {
@@ -665,6 +684,7 @@ export def push_label(label_: Label, state: &State) {
 }
 
 export def push_insn(insn: &Insn, state: &State) {
+    if state.no_instructions { return }
     let insns = state.current_block.insn
     insns.push(insn)
 }
@@ -672,6 +692,8 @@ export def push_insn(insn: &Insn, state: &State) {
 // TODO We must use make_insn directly because the values go into the alloca vector
 // There might be a better way of handling this
 def push_alloca(insn: &Insn, state: &State) {
+    if state.no_instructions { return }
+    
     assert insn.kind == InsnKind::ALLOCA
     let current_function = state.current_function
     let allocas = current_function.allocas
@@ -1766,7 +1788,10 @@ def convert_to(loc: &Value, value: Value, tpe: &typechecking::Type, state: &Stat
 }
 
 def walk_Cast(node: &parser::Node, state: &State) -> Value {
-    let value = walk_and_load_expression(node.value.expr, state)
+    let tpe = node.value.bin_op.right
+    scope::create_dependency_on_type(state.current_value(), tpe)
+
+    let value = walk_and_load_expression(node.value.bin_op.left, state)
     import_structures(node.tpe, state.module)
     return convert_to(node, value, node.tpe, state)
 }
@@ -3246,7 +3271,7 @@ def assign_post(n: &parser::Node, l: &parser::Node, value_type: &typechecking::T
     return true
 }
 
-def walk_Assign(node: &parser::Node, state: &State) -> Value {
+export def walk_Assign(node: &parser::Node, state: &State) -> Value {
     // TODO Make this possible: a, b = c, d = e, f
     // Right now we can only return one value
 
@@ -3259,21 +3284,29 @@ def walk_Assign(node: &parser::Node, state: &State) -> Value {
     for var i in 0..vector::length(right) {
         let n = right[i]
         if not n { break }
+
+        if j >= vector::length(left) { return NO_VALUE }
+        let l = left[j]
+
         var is_undef = false
         var value: &Value = NO_VALUE
         if n.kind == parser::NodeKind::UNDEF { 
             is_undef = true
         } else {
+            let current_variable = state.current_variable
+            if node.parent.kind == parser::NodeKind::PROGRAM {
+                state.current_variable = l.svalue
+            }
+
             value = walk_and_load_expression(n, state)
+            state.current_variable = current_variable
         }
         let tpe = (@n).tpe
         if not tpe { continue }
         if tpe.kind == typechecking::TypeKind::TUPLE {
             for var k in 0..vector::length(tpe.return_t) {
                 let t = tpe.return_t[k]
-                if j >= vector::length(left) { return NO_VALUE }
-                let l = left[j]
-
+                
                 if l.svalue and l.svalue.name == "_" {
                     let alloca = make_insn_dbg(InsnKind::ALLOCA, loc)
                     alloca.value.alloca = {
@@ -3315,7 +3348,6 @@ def walk_Assign(node: &parser::Node, state: &State) -> Value {
             }
         } else {
             if j >= vector::length(left) { return NO_VALUE }
-            let l = left[j]
             if not l.is_initializer and is_undef {
                 errors::errorn(n, "Undef used outside of initializer")
             }
@@ -3378,7 +3410,8 @@ def walk_AssignEq(node: &parser::Node, state: &State) -> Value {
     let assign_eq_node = {
         kind = parser::NodeKind::ASSIGN,
         loc = node.loc,
-        scope = node.scope
+        scope = node.scope,
+        parent = node.parent
     } !&parser::Node
     
     assign_eq_node.value.assign = {
@@ -5061,12 +5094,17 @@ export def walk_VarDecl(node: &parser::Node, state: &State, set_constant: bool =
         let n = left[i]
         if (@n).kind == parser::NodeKind::ID_DECL {
             let v = (@n).value.id_decl.value
+            let type_lit = (@n).value.id_decl.tpe
             let tpe = (@v).tpe
             import_structures(tpe, state.module)
 
+            if type_lit and (type_lit.kind == parser::NodeKind::STRUCT_T or
+                type_lit.kind == parser::NodeKind::UNION_T) {
+                verify_struct(state.current_value(), type_lit)
+            }
+
             let value = v.svalue
-            if not value { continue }
-            if value.name != "_" {
+            if value and value.name != "_" {
                 let ret = {
                     kind = ValueKind::LOCAL,
                     name = value.assembly_name,
@@ -5113,7 +5151,8 @@ export def walk_VarDecl(node: &parser::Node, state: &State, set_constant: bool =
         let assign = {
             kind = parser::NodeKind::ASSIGN,
             loc = node.loc,
-            scope = node.scope
+            scope = node.scope,
+            parent = node.parent
         } !&parser::Node
         
         (@assign).value.assign = {
@@ -6359,6 +6398,14 @@ export def create_function(
             block = make_block()
         }
 
+        if node and node.value.def_.params { 
+            errors::current_signature = node.signature_hash 
+            for var i in 0..vector::length(node.value.def_.params) {
+                let param = node.value.def_.params[i].value.param.name
+                scope::create_dependency(state.current_value(), param.svalue)
+            }
+        }
+
         function.block = block
         let previous_block = state.current_block
         state.current_block = block
@@ -6648,12 +6695,27 @@ export def walk_TypeDecl(node: &parser::Node, state: &State) {
     }
 
     let left = node.value.type_decl.left
+    let right = node.value.type_decl.right
     for var i in 0..vector::length(left) {
         let n = left[i]
         if not n { continue }
+
         let tpe = n.tpe
-        check_for_dependency(n.svalue, tpe)
         if not tpe { continue }
+
+        let current_variable = state.current_variable
+        if node.parent.kind == parser::NodeKind::PROGRAM {
+            state.current_variable = n.svalue
+        }
+
+        if i < vector::length(right) {
+            let r = right[i]
+            if r and (r.kind == parser::NodeKind::STRUCT_T or
+                r.kind == parser::NodeKind::UNION_T) {
+                verify_struct(state.current_value(), r)
+            }
+        }
+
         if typechecking::is_struct(tpe) {
             import_structures(tpe, state.module)
         } else if typechecking::is_enum(tpe) {
@@ -6736,6 +6798,8 @@ export def walk_TypeDecl(node: &parser::Node, state: &State) {
             state.module.result.functions[(@function).name] = function
             state.function_stack.pop()
         }
+
+        state.current_variable = current_variable
     }
 }
 
@@ -6762,6 +6826,12 @@ export def walk_top_VarDecl(node: &parser::Node, state: &State, set_constant: bo
         let n = node.value.var_decl.left[i]
         if (@n).kind == parser::NodeKind::ID_DECL {
             let v = (@n).value.id_decl.value
+            let t = n.value.id_decl.tpe
+
+            if t and (t.kind == parser::NodeKind::STRUCT_T or
+                t.kind == parser::NodeKind::UNION_T) {
+                verify_struct(n.svalue, t)
+            }
             
             let value = scope::get(node.scope, v)
             if not value { continue }
@@ -6780,8 +6850,9 @@ export def walk_top_VarDecl(node: &parser::Node, state: &State, set_constant: bo
             state.module.result.globals[(@global).name] = global
             state.module.imported.add(global.name)
 
-            if state.current_function {
-                state.current_function.function_locals.add(value.assembly_name)
+            let current_function = state.current_function
+            if current_function.function_locals {
+                current_function.function_locals.add(value.assembly_name)
             }
         
             v.is_initializer = true
@@ -6794,7 +6865,8 @@ export def walk_top_VarDecl(node: &parser::Node, state: &State, set_constant: bo
         let node_assign = {
             kind = parser::NodeKind::ASSIGN,
             loc = node.loc,
-            scope = node.scope
+            scope = node.scope,
+            parent = node.parent
         } !&parser::Node
 
         node_assign.value.assign = {
@@ -8243,6 +8315,19 @@ def check_for_dependency(svalue: &scope::Value, tpe: &typechecking::Type, resolv
         }
     } else if typechecking::is_stub(tpe) {
         scope::create_dependency(svalue, scope::make_ident(tpe.name))
+    }
+}
+
+def verify_struct(value: &scope::Value, node: &parser::Node) {
+    for var i in 0..node.value.body.length {
+        let member = node.value.body[i]
+        if member.kind == parser::NodeKind::STRUCT_T or
+            member.kind == parser::NodeKind::ENUM_T {
+            verify_struct(value, member)
+        } else {
+            let tpe = member.value.id_decl_struct.tpe
+            scope::create_dependency_on_type(value, tpe)
+        }
     }
 }
 
