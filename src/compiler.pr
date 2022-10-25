@@ -463,6 +463,7 @@ export type Function = struct {
     value: &scope::Value
 
     // Closures
+    is_closure: bool
     state: &typechecking::Type
     scope: weak_ref(scope::Scope)
     inner_scope: weak_ref(scope::Scope)
@@ -693,7 +694,7 @@ export def push_insn(insn: &Insn, state: &State) {
 // There might be a better way of handling this
 def push_alloca(insn: &Insn, state: &State) {
     if state.no_instructions { return }
-    
+
     assert insn.kind == InsnKind::ALLOCA
     let current_function = state.current_function
     let allocas = current_function.allocas
@@ -6710,7 +6711,7 @@ export def walk_TypeDecl(node: &parser::Node, state: &State) {
 
         if i < vector::length(right) {
             let r = right[i]
-            if r and (r.kind == parser::NodeKind::STRUCT_T or
+            if r and n.kind != NodeKind::TYPE_CONSTRUCTOR and (r.kind == parser::NodeKind::STRUCT_T or
                 r.kind == parser::NodeKind::UNION_T) {
                 verify_struct(state.current_value(), r)
             }
@@ -8076,6 +8077,9 @@ export def create_type(tpe: &typechecking::Type, module: &toolchain::Module) -> 
             toolchain::types.scope, 
             ident, parser::ShareMarker::NONE, parser::VarDecl::CONST, 
             builtins::Type_, do_create_type(tpe, svalue, module))
+
+        //FIXME
+        svalue.identifier = ident
     }
 
     if not toolchain::types_state.consteval and 
@@ -8279,42 +8283,20 @@ def generate_vtable_function(function: &Function, tpe: &typechecking::Type, stat
     
 }
 
-def do_check_for_dependency(svalue: &scope::Value, tpe: &typechecking::Type, resolved: &SSet) {
-    if tpe and tpe.node {
-        scope::create_dependency(svalue, tpe.node.svalue)
-    }
-    check_for_dependency(svalue, tpe, resolved)
-}
-
-def check_for_dependency(svalue: &scope::Value, tpe: &typechecking::Type, resolved: &SSet = null) {
-    if not tpe or not svalue { return }
-    if not resolved { resolved = set::make() }
-    let name = debug::type_to_str(tpe, full_name = true)
-    if set::contains(resolved, name) { return }
-    resolved.add(name)
-    
-    if typechecking::is_box(tpe) {
-        do_check_for_dependency(svalue, tpe.tpe, resolved)
-    } else if typechecking::is_struct(tpe) {
-        for var i in 0..tpe.fields.size {
-            let field = tpe.fields[i]
-            if not field.tpe and field.node and field.node.kind == parser::NodeKind::ID_DECL_STRUCT {
-                let value = field.node.value.id_decl_struct.tpe
-                if value {
-                    var ident = value
-                    if value.kind == parser::NodeKind::TYPE_CONSTRUCTOR {
-                        ident = value.value.type_constructor.name
-                    }
-                    if ident {
-                        scope::create_dependency(svalue, scope::make_ident(parser::identifier_to_str(ident)))
-                    }
-                }
+def check_for_dependency(svalue: &scope::Value, node: &parser::Node) {
+    if node.kind == parser::NodeKind::STRUCT_T or node.kind == parser::NodeKind::UNION_T {
+        for var i in 0..node.value.body.length {
+            let iddecl = node.value.body[i]
+            if iddecl.kind == parser::NodeKind::ID_DECL_STRUCT {
+                let tpe = node.value.id_decl_struct.tpe
+                check_for_dependency(svalue, tpe)
             } else {
-                do_check_for_dependency(svalue, field.tpe, resolved)
+                check_for_dependency(svalue, iddecl)
             }
         }
-    } else if typechecking::is_stub(tpe) {
-        scope::create_dependency(svalue, scope::make_ident(tpe.name))
+    } else if node.kind == parser::NodeKind::IDENTIFIER {
+        // TODO This could also refer to functions and other complex types
+        scope::create_dependency_on_type(svalue, node)
     }
 }
 
@@ -8332,6 +8314,7 @@ def verify_struct(value: &scope::Value, node: &parser::Node) {
 }
 
 export def verify_function(node: &parser::Node) {
+    if not node or not node.tpe { return }
     let params = node.value.def_.params
     for var i in 0..params.length {
         let param = params[i]
@@ -8340,18 +8323,16 @@ export def verify_function(node: &parser::Node) {
         if not ptpe { continue }
 
         if ptpe.kw == parser::VarDecl::TYPE { continue }
-        let tpe = ptpe.tpe
-        if not tpe or tpe.kind == typechecking::TypeKind::STUB {
-            scope::create_dependency(node.svalue, scope::make_ident(tpe.name))
-            let current_function = errors::current_function
-            let current_signature = errors::current_signature
-            errors::current_function = node.tpe.type_name
-            errors::current_signature = node.signature_hash
-            errors::errorn(ptpe, "Invalid parameter, can't accept stub type")
-            errors::current_function = current_function
-            errors::current_signature = current_signature
-        }
-        check_for_dependency(node.svalue, tpe)
+    
+        let current_function = errors::current_function
+        let current_signature = errors::current_signature
+        errors::current_function = node.tpe.type_name
+        errors::current_signature = node.signature_hash
+
+        check_for_dependency(node.svalue, ptpe)
+
+        errors::current_function = current_function
+        errors::current_signature = current_signature
     }
 }
 
