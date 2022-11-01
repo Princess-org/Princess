@@ -1,8 +1,9 @@
 # Princess 
 ![Build Status](https://github.com/Princess-org/Princess/actions/workflows/build-and-test.yml/badge.svg)
+![Build on Windows](https://github.com/Princess-org/Princess/actions/workflows/winderps.yml/badge.svg)
 
 ## Goals
-- The language should be at least as fast to compile as C, it should be possible to have a compiler for it run on an embedded device
+- <s>The language should be at least as fast to compile as C, it should be possible to have a compiler for it run on an embedded device</s>
 - The language should provide direct access to the underlying hardware, so it should be possible to write a bootloader without using any 
 stand alone assembly files
 - The language is specifically meant to not perform dead code elimination but instead give a warning on such ocurrance - No surprises
@@ -16,7 +17,7 @@ stand alone assembly files
 ### Keywords:
 ```
 export, type, struct, interface, def, in, null, return, break, go_to, 
-case, switch, label, if, else, for, while, continue, 
+case, switch, label, if, else, for, while, continue, yield,
 const, do, word, unsigned, enum, size_of, offset_of, import, defined, 
 type_of, align_of, as, loop, this, and, or, not, defer, is
 ```
@@ -52,9 +53,14 @@ import <file_name> [as <module_name>]
 ```
 If no module name is specified the file name is chosen.
 
-Imports are relative to the main file location.
+Imports are relative to the current file.
 ```
 import <folder>::<file_name>
+```
+Specify an absolute path by prefixing it with `::`.
+These get searched for in the include directories, or relative to the main file.
+```
+import ::<folder>::<file_name>
 ```
 
 #### Example:
@@ -152,9 +158,11 @@ uint and int are platform dependent, i.e 16/32/64 bit
 ## Overview
 ```
 // Function types:
-(->)               // No parameters, no return value
-A -> B             // Takes A, returns B
-(A, B) -> (C, D)   // Takes A and B, returns C and D
+// Prefix with def to have a raw function pointer, without the def it is a closure type
+// Raw function pointers may be assigned to closure types but not the other way around
+def (->)               // No parameters, no return value
+def A -> B             // Takes A, returns B
+def (A, B) -> (C, D)   // Takes A and B, returns C and D
 
 // Array types:
 [N; let T]  == [N; let T]   == struct {let e1: T; ...; let eN: T}   // immutable static array with N elements of type T
@@ -196,8 +204,25 @@ The `_` means "discard value"
 def add_i(par: int, par2: int) -> int = par + par2;
 ```
 
-Functions can be nested but they don't increase the lifetime
-of the parent function.
+### Nested functions:
+
+Inner functions are of closure type. They may capture variables from the enclosing function(s).
+A regular capture is always by value but you can refer to the address of a capture explicitly.
+```
+def outer_function {
+    var a = 20
+    def inner_function(par: int) {
+       print(a, "\n")
+       a = 40 // Error, can't assign a constant
+       let ref = *a
+       @ref = 40 + par // This works as expected
+    }
+    inner_function(10)
+    print(a, "\n") // This is now 50
+}
+```
+Be careful when returning a closure with captures, the lifetimes of the enclosing function
+are not extended. Captures by value are safe tho, as they get copied implicitly and stored together with the function.
 
 ### Functions that return types:
 TBD
@@ -214,12 +239,12 @@ def polymorph(type A, b: A, c: type C) -> C {
 }
 ```
 
-A accepts a type as argument, so you can pass in "i8" for example
+A accepts a type as argument, so you can pass in `int8` for example
 b is an argument that has to be specified to have the same type as passed in by A
 c has the type C, this additionally defines the type C for the function
 
 Polymorphic functions get compiled when they are called, and as such the body of a
-polymorphic function can only be checked for syntax erros and erros involving any concrete types
+polymorphic function can only be checked for syntax erros and errors involving any concrete types
 Any #if directives are executed when the function is fully parameterized
 
 ### Polymorphic types:
@@ -496,6 +521,36 @@ type MyStruct = struct {
 }
 ```
 
+#### Destructor and Copy-Constructor
+You may define two special functions related to structs,
+one is `destruct` which looks like this:
+
+```
+// The export is mandatory
+export def destruct(this: *MyStruct) {
+    // Clean up code here, this gets run whenever:
+    // a) A value gets popped off the stack
+    // b) You call delete() on a pointer to the type
+    // c) A reference to the type gets destroyed
+    // d) You explicitly call __destruct__(*value)
+}
+```
+The other one is called `construct` and it takes two pointers:
+
+```
+// Export still mandatory
+export def construct(copy: *MyStruct, this: *MyStruct) {
+    // Use this to copy the contents of this into copy
+    // Do note that when this copy constructor is defined,
+    // no initialization is performed on the copy, you need
+    // to copy all the state over explicitly
+    // This gets run whenever a new value is constructed:
+    // a) By assignment
+    // b) As a return value from a function
+    // c) Passing a value to a function
+}
+```
+
 ### Enums:
 ```
 enum [: <type>] [#flags] { }
@@ -570,18 +625,48 @@ label <label>
 go_to <label>
 ```
 
+### Generators
+Any function can be turned into a Generator by using the `yield` keyword.
+Whenever a yield is reached, the function is "paused" and the value gets returned.
+You can use a regular return from the function also, this indicates that the last value was reached
+and the function will not resume after this.
+
+```
+// Generators are part of the runtime module which gets imported automatically
+def generate_some_values -> int {
+    yield 10
+    yield 20
+    yield 30
+}
+
+let gen = generate_some_values()
+var next = gen.next()
+while next.exists {
+    print(next.get(), " ")
+    next = gen.next()
+}
+print("\n")
+```
+
 ### For loop:
 
 ```
-for var a: *int in array { 
-    // Can capture by reference, pointer or by value
+def range(start: int, end: int) -> int {
+    while start < end {
+        yield start
+        start += 1
+    }
 }
+
 for var i in 0..10 {
     // i goes from 0 to 9
 }
+for var i in range(0, 10) {
+    // Same as before, using a generator
+}
 ```
-
-It's simplified from the C++ version, for everything else use
+You can also define a function called `iterate` which will get picked if you
+try to iterate over a value that is not a generator.
 
 ### While loop:
 
@@ -716,7 +801,7 @@ may be read from.
 
 ```
 // "file_a.pr":
-export const a: bool = true;
+export const a: bool = true
 
 // "file_b.pr":
 import file_c
@@ -731,21 +816,3 @@ export def my_fun {
     print(b)
 }
 ```
-
-### Extensions:
-```
-#<name>
-#<name> (...)
-```
-
-reserved by the language for future
-use, meant to aid optimization. The compiler may
-or may not implement these *according to standard*
-
-### Compiler extensions:
-```
-##<name>
-##<name> (...)
-```
-
-reserved for the compiler, non-standard

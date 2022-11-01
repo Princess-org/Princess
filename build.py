@@ -102,7 +102,7 @@ def download():
 
     shutil.unpack_archive(archive, "princess")
     if sys.platform == "win32":
-        shutil.copy(Path("princess") / os.listdir(Path("princess"))[0] / "bin/princess.exe", "bin")
+        shutil.copy(Path("princess") / "bin/princess.exe", "bin")
     else:
         shutil.copy(Path("princess") / "bin/princess", "bin")
     
