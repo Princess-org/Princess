@@ -47,8 +47,8 @@ export type TextDocumentIdentifier = struct {
 }
 
 export type Range = struct {
-	start: Position
-	end: Position
+	start: U16Position
+	end: U16Position
 }
 
 export type Location = struct {
@@ -56,10 +56,16 @@ export type Location = struct {
 	range: Range
 }
 
-export type Position = struct {
+export type U16Position = struct {
     line: int
     character: int
 }
+
+export type U8Position = struct {
+    line: int
+    character: int
+}
+
 
 type WorkspaceFolder = struct {
     uri: DocumentUri
@@ -112,7 +118,7 @@ def did_save(id: int, params: DidSaveTextDocumentParams) {
 
 type HoverParams = struct {
     textDocument: TextDocumentIdentifier
-    position: Position
+    position: U16Position
 }
 
 const PlainText = "plaintext"
@@ -168,11 +174,12 @@ def hover(id: int, params: HoverParams) {
 
 type DefinitionParams = struct {
     textDocument: TextDocumentIdentifier
-    position: Position
+    position: U16Position
 }
 
-def find_value_at(module: &toolchain::Module, position: Position) -> &scope::Value {
-    let node = parser::find(module.node, position.line, position.character)
+def find_value_at(module: &toolchain::Module, position: U16Position) -> &scope::Value {
+    let u8pos = document::u16_pos_to_u8(module.filename, position)
+    let node = parser::find(module.node, u8pos.line, u8pos.character)
     if not node { return null }
     if node.kind != parser::NodeKind::IDENTIFIER { return null }
     let svalue = node.svalue
@@ -180,7 +187,8 @@ def find_value_at(module: &toolchain::Module, position: Position) -> &scope::Val
 }
 
 def go_to_definition(id: int, params: DefinitionParams) {
-    let module = toolchain::find_module_by_path(uri_to_path(params.textDocument.uri))
+    let path = uri_to_path(params.textDocument.uri)
+    let module = toolchain::find_module_by_path(path)
     if not module { send_reply(id, null); return }	
     let svalue = find_value_at(module, params.position)
     if not svalue { send_reply(id, null); return }
@@ -192,11 +200,173 @@ def go_to_definition(id: int, params: DefinitionParams) {
     let loc = {
         uri = path_to_uri(sloc.filename),
         range = {
-            start = { sloc.line, sloc.column } !Position,
-            end = { sloc.end_line, sloc.end_column } !Position
+            start = document::u8_pos_to_u16(sloc.filename, { sloc.line, sloc.column } !U8Position),
+            end = document::u8_pos_to_u16(sloc.filename, { sloc.end_line, sloc.end_column } !U8Position)
         } !Range
     } !Location
     send_reply(id, json::serialize(*loc))
+}
+
+type CompletionParams = struct {
+    textDocument: TextDocumentIdentifier
+    position: U16Position
+    // TODO context?
+}
+
+type CompletionItemKind = enum {
+    Text = 1
+	Method = 2
+	Function = 3
+	Constructor = 4
+	Field = 5
+	Variable = 6
+	Class = 7
+	Interface = 8
+	Module = 9
+	Property = 10
+	Unit = 11
+	Value = 12
+	Enum = 13
+	Keyword = 14
+	Snippet = 15
+	Color = 16
+	File = 17
+	Reference = 18
+	Folder = 19
+	EnumMember = 20
+	Constant = 21
+	Struct = 22
+	Event = 23
+	Operator = 24
+	TypeParameter = 25
+}
+
+type CompletionItemTag = enum {
+    Deprecated = 1
+}
+
+type CompletionItemLabelDetails = struct {
+    detail: &string
+    description: &string
+}
+
+type CompletionItem = struct {
+    _label: &string
+    labelDetails: CompletionItemLabelDetails
+    kind: int
+    tags: &[int]
+    sortText: &string
+}
+
+def push_members(node: &parser::Node, completions: &Vector(CompletionItem)) {
+    let left = node.value.bin_op.left
+    if left {
+        let scpe = left.scope
+        let tpe = left.tpe
+        if typechecking::is_struct(tpe) {
+            for var field in @tpe.fields {
+                completions.push({
+                    _label = field.name,
+                    labelDetails = {
+                        description = debug::type_to_str(field.tpe)
+                    } !CompletionItemLabelDetails,
+                    kind = CompletionItemKind::Field !int,
+                } !CompletionItem)
+            }
+        }
+        let functions = scope::find_functions(scpe, tpe)
+        for var i in 0..functions.length {
+            let function = functions[i]
+            completions.push({
+                _label = function.name,
+                kind = CompletionItemKind::Function !int
+            } !CompletionItem)
+        }
+    }
+}
+
+def complete(id: int, params: CompletionParams) {
+    let module = toolchain::find_module_by_path(uri_to_path(params.textDocument.uri))
+    if not module { send_reply(id, null); return }
+    let position = params.position
+
+    let completions = vector::make(CompletionItem)
+
+    var node = parser::find(module.node, position.line, position.character)
+    if node {
+        if node.kind == parser::NodeKind::MEMBER_ACCESS {
+            push_members(node, completions)
+        } else if node.kind == parser::NodeKind::IDENTIFIER {
+            let parent = node.parent
+            if parent and parent.kind == parser::NodeKind::MEMBER_ACCESS {
+                push_members(parent, completions)
+            } else {
+                var scpe = node.scope
+                var check_export = false
+                if node.value.identifier.path.length > 1 {
+                    let prefix = vector::make(type &string)
+                    for var i in 0..(node.value.identifier.path.length - 1) {
+                        prefix.push(node.value.identifier.path[i])
+                    }
+
+                    let ns_ident = typechecking::copy_node(node)
+                    ns_ident.value.identifier.path = prefix
+                    let ns = scope::get(scpe, ns_ident, force_compile = false, dry_run = true)
+                    if ns { 
+                        scpe = ns._module 
+                        check_export = true
+                    }
+                }
+
+                let values = scope::find_all(scpe, check_export)
+                for var i in 0..values.length {
+                    let value = values[i]
+                    var kind = CompletionItemKind::Variable
+                    var detail: &string = null
+                    if value.modifier == parser::VarDecl::TYPE {
+                        let value_tpe = value.value.value_tpe
+                        if typechecking::is_struct(value_tpe) {
+                            kind = CompletionItemKind::Struct
+                        } else if typechecking::is_interface(value_tpe) {
+                            kind = CompletionItemKind::Interface 
+                        } else if typechecking::is_enum(value_tpe) {
+                            kind = CompletionItemKind::Enum
+                        } else {
+                            kind = CompletionItemKind::Interface
+                        }
+                    } else if value.modifier == parser::VarDecl::CONST {
+                        if value.tpe.kind == typechecking::TypeKind::FUNCTION {
+                            kind = CompletionItemKind::Function
+                        } else if value.tpe.kind == typechecking::TypeKind::NAMESPACE {
+                            kind = CompletionItemKind::Module
+                        } else {
+                            kind = CompletionItemKind::Constant
+                            detail = debug::type_to_str(value.tpe)
+                        }
+                    } else {
+                        detail = debug::type_to_str(value.tpe)
+                    }
+
+                    var smod: &string
+                    if value.ident.module and value.ident.module != module {
+                        smod = value.ident.module.module
+                    }
+
+                    completions.push({
+                        _label = value.name,
+                        labelDetails = {
+                            detail = detail,
+                            description = smod
+                        } !CompletionItemLabelDetails,
+                        kind = kind !int,
+                    } !CompletionItem)
+                }
+            }
+        }
+    }
+
+    let arr = completions.to_array()
+    send_reply(id, json::serialize(*arr))
 }
 
 export type DiagnosticSeverity = enum {
@@ -268,7 +438,7 @@ def initialize(id: int, params: InitializeParams) {
     let result = json::make_object()
 
     let capabilities = json::make_object()
-    capabilities["positionEncoding"] = "utf-8"
+    capabilities["positionEncoding"] = "utf-16" // TODO Also support utf-8
 
     let sync_options = json::make_object()
     sync_options["change"] = 2 // Incremental
@@ -278,7 +448,19 @@ def initialize(id: int, params: InitializeParams) {
     save_options["includeText"] = true
     sync_options["save"] = save_options
 
+    let completion_options = json::make_object()
+
+    let trigger_characters = json::make_array()
+    trigger_characters.push(".")
+    trigger_characters.push(":")
+    completion_options["triggerCharacters"] = trigger_characters
+    
+    let completion_item = json::make_object()
+    completion_item["labelDetailsSupport"] = true
+    completion_options["completionItem"] = completion_item
+
     capabilities["textDocumentSync"] = sync_options
+    capabilities["completionProvider"] = completion_options
     capabilities["definitionProvider"] = true
     capabilities["hoverProvider"] = true
 
@@ -533,6 +715,10 @@ export def main -> int {
                     let p = json::deserialize(params, HoverParams)
                     if not p.exists { send_error(id, ParseError, "Couldn't parse parameters") }
                     else { hover(id, p.get()) }
+                } else if method == "textDocument/completion" {
+                    let p = json::deserialize(params, CompletionParams)
+                    if not p.exists { send_error(id, ParseError, "Couldn't parse parameters") }
+                    else { complete(id, p.get()) }
                 } else if method == "textDocument/didOpen" {
                     let p = json::deserialize(params, DidOpenTextDocumentParams)
                     if not p.exists { send_error(id, ParseError, "Couldn't parse parameters") }
