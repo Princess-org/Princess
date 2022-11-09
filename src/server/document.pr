@@ -11,6 +11,8 @@ export def setup_file_loader {
     toolchain::file_loader = *load_file
 }
 
+export let open_documents = set::make()
+
 export def load_file(filename: &string) -> &string {
     let module = toolchain::find_module_by_path(filename)
     if module {
@@ -21,6 +23,7 @@ export def load_file(filename: &string) -> &string {
 }
 
 export def open_document(uri: server::DocumentUri, text: &string) {
+    open_documents.add(uri)
     let path = uri_to_path(uri)
     cache::recompile(path)
 }
@@ -76,6 +79,8 @@ export def u16_pos_to_u8(filename: &string, pos: server::U16Position) -> server:
     var u8_column = 0
     var u16_column = 0
     while u8_column < line.length {
+        if u16_column == pos.character { break }
+
         let c = line[u8_column]
         if c & 0xF0 == 0xC0 or c & 0xF0 == 0xD0 {
             u8_column += 2
@@ -90,16 +95,17 @@ export def u16_pos_to_u8(filename: &string, pos: server::U16Position) -> server:
             u8_column += 1
             u16_column += 1
         }
-        if u16_column == pos.character { break }
     }
     return { pos.line, u8_column } !server::U8Position 
-}
+} 
 
 export def u8_pos_to_u16(filename: &string, pos: server::U8Position) -> server::U16Position {
     let line = toolchain::find_module_by_path(filename).lines[pos.line]
     var u8_column = 0
     var u16_column = 0
     while u8_column < line.length {
+        if u8_column == pos.character { break }
+
         let c = line[u8_column]
         if c & 0xF0 == 0xC0 or c & 0xF0 == 0xD0 {
             u8_column += 2
@@ -114,15 +120,34 @@ export def u8_pos_to_u16(filename: &string, pos: server::U8Position) -> server::
             u8_column += 1
             u16_column += 1
         }
-        if u8_column == pos.character { break }
     }
     return { pos.line, u16_column } !server::U16Position 
+}
+
+def count_new_lines(text: &string) -> int {
+    var new_lines = 0
+    for var i in 0..text.length {
+        if text[i] == '\n' {
+            new_lines += 1
+        }
+    }
+    return new_lines
+}
+
+def get_last_line_length(text: &string) -> size_t {
+    let last_nl = last_index_of(text, "\n")
+    if last_nl < 0 { return text.length }
+    else {
+        return text.length - last_nl - 1
+    }
 }
 
 export def change_document(uri: server::DocumentUri, changes: &[server::TextDocumentContentChangeEvent]) {
     let path = uri_to_path(uri)
     let module = toolchain::find_module_by_path(path)
     let text = module.text
+
+    let recompile_changes = vector::make(server::TextDocumentChangeEvent)
 
     for var change in @changes {
         if change.range {
@@ -143,22 +168,32 @@ export def change_document(uri: server::DocumentUri, changes: &[server::TextDocu
                 module.text += change.text
             }
 
-            cache::offset_errors(
-                path, 
-                u16_pos_to_u8(path, range.start),
-                u16_pos_to_u8(path, range.end), 
-                change.text
-            )
+            let end = u16_pos_to_u8(path, range.end)
+            let start = u16_pos_to_u8(path, range.start)
+            cache::offset_errors(path, start, end, change.text)
+
+            let last_line_length = get_last_line_length(change.text)
+
+            let event = {
+                end = end,
+                lines = start.line - end.line + count_new_lines(change.text),
+                characters = (start.character - end.character + last_line_length 
+                    if start.line == end.line 
+                    else last_line_length - end.character) !int
+            } !server::TextDocumentChangeEvent
+            
+            recompile_changes.push(event)
+
         } else {
             module.text = change.text
         }
     }
 
-    cache::recompile(path)
+    cache::recompile(path, recompile_changes.to_array())
 }
 
 export def close_document(uri: server::DocumentUri) {
-    // TODO
+    set::remove(open_documents, uri)
 }
 
 // File system events
@@ -170,6 +205,7 @@ export def on_created(uri: server::DocumentUri) {
 }
 
 export def on_changed(uri: server::DocumentUri) {
+    if set::contains(open_documents, uri) { return }
     let path = uri_to_path(uri)
     if toolchain::find_module_by_path(path) {
         cache::recompile(path)

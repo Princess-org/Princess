@@ -8,6 +8,7 @@ import scope
 import errors
 import debug
 import compiler
+import server::server as server
 
 export type NodeKind = enum {
     PROGRAM
@@ -369,7 +370,10 @@ export type SourceLoc = struct {
     column: int
     end_line: int
     end_column: int
-    lines: &[&string]
+}
+
+export def lines(loc: SourceLoc) -> &[&string] {
+    return toolchain::modules[loc.filename].lines 
 }
 
 export let invalid_loc: SourceLoc = {
@@ -645,134 +649,136 @@ export def construct(copy: *Node, node: *Node) {
     }
 }
 
-def offset(left: &Vector(&Node), right: &Vector(&Node)) {
-    if not left or not right { return }
-    if left.length != right.length { return }
+def offset(left: &Vector(&Node), changes: &[server::TextDocumentChangeEvent]) {
+    if not left { return }
     for var i in 0..left.length {
         let l = left[i]
-        if not l { continue }
-        for var j in 0..right.length {
-            let r = right[i]
-            if not r { continue }
-            if l._hash == r._hash {
-                offset(l, r)
-                break
-            }
-        }
+        offset(l, changes)
     }
 }
 
-export def offset(node: &Node, node2: &Node) {
-    if not node or not node2 { return }
-    if node.kind != node2.kind { return }
-    if node.kind != NodeKind::PROGRAM and 
-        node._hash != node2._hash { return }
+export def offset(node: &Node, changes: &[server::TextDocumentChangeEvent]) {
+    if not node { return }
 
-    node.loc = node2.loc
+    for var change in @changes {
+        if change.end.line <= node.loc.line {
+            node.loc.line += change.lines
+            if change.end.line == node.loc.line and change.end.character < node.loc.column {
+                node.loc.column += change.characters
+            }
+        }
+        if change.end.line <= node.loc.end_line {
+            node.loc.end_line += change.lines
+            if change.end.line == node.loc.end_line and change.end.character < node.loc.end_column {
+                node.loc.end_column += change.characters
+            }
+        }
+    }
+
     switch node.kind {
         case NodeKind::LOOP, NodeKind::ELSE, NodeKind::DEFER, 
             NodeKind::RETURN, NodeKind::YIELD, NodeKind::IMPORT, NodeKind::ARRAY_LIT,
             NodeKind::STRUCT_T, NodeKind::UNION_T, NodeKind::STRUCTURAL_T:
-            offset(node.value.body, node2.value.body)
+            offset(node.value.body, changes)
         case NodeKind::PROGRAM:
-            offset(node.value.program.body, node2.value.program.body)
+            offset(node.value.program.body, changes)
         case NodeKind::ASSERT:
-            offset(node.value.assert_.cond, node2.value.assert_.cond)
-            offset(node.value.assert_.message, node2.value.assert_.message)
+            offset(node.value.assert_.cond, changes)
+            offset(node.value.assert_.message, changes)
         case NodeKind::IF, NodeKind::STATIC_IF:
-            offset(node.value.if_.cond, node2.value.if_.cond)
-            offset(node.value.if_.else_if, node2.value.if_.else_if)
-            offset(node.value.if_.else_, node2.value.if_.else_)
-            offset(node.value.if_.body, node2.value.if_.body)
+            offset(node.value.if_.cond, changes)
+            offset(node.value.if_.else_if, changes)
+            offset(node.value.if_.else_, changes)
+            offset(node.value.if_.body, changes)
         case NodeKind::ELSE_IF:
-            offset(node.value.else_if.cond, node2.value.else_if.cond)
-            offset(node.value.else_if.body, node2.value.else_if.body)
+            offset(node.value.else_if.cond, changes)
+            offset(node.value.else_if.body, changes)
         case NodeKind::IF_EXPR:
-            offset(node.value.if_expr.cond, node2.value.if_expr.cond)
-            offset(node.value.if_expr.if_true, node2.value.if_expr.if_true)
-            offset(node.value.if_expr.if_false, node2.value.if_expr.if_false)
+            offset(node.value.if_expr.cond, changes)
+            offset(node.value.if_expr.if_true, changes)
+            offset(node.value.if_expr.if_false, changes)
         case NodeKind::WHILE:
-            offset(node.value.while_loop.expr, node2.value.while_loop.expr)
-            offset(node.value.while_loop.body, node2.value.while_loop.body)
+            offset(node.value.while_loop.expr, changes)
+            offset(node.value.while_loop.body, changes)
         case NodeKind::FOR:
-            offset(node.value.for_loop.iddecl, node2.value.for_loop.iddecl)
-            offset(node.value.for_loop.expr, node2.value.for_loop.expr)
-            offset(node.value.for_loop.body, node2.value.for_loop.body)
+            offset(node.value.for_loop.iddecl, changes)
+            offset(node.value.for_loop.expr, changes)
+            offset(node.value.for_loop.body, changes)
         case NodeKind::FOR_ID_DECL:
-            offset(node.value.for_id_decl.ident, node2.value.for_id_decl.ident)
+            offset(node.value.for_id_decl.ident, changes)
         case NodeKind::DEF:
-            offset(node.value.def_.params, node2.value.def_.params)
-            offset(node.value.def_.name, node2.value.def_.name)
-            offset(node.value.def_.returns, node2.value.def_.returns)
-            offset(node.value.def_.body, node2.value.def_.body)
+            offset(node.value.def_.params, changes)
+            offset(node.value.def_.name, changes)
+            offset(node.value.def_.returns, changes)
+            offset(node.value.def_.body, changes)
         case NodeKind::CASE:
-            offset(node.value.case_.expr, node2.value.case_.expr)
-            offset(node.value.case_.body, node2.value.case_.body)
+            offset(node.value.case_.expr, changes)
+            offset(node.value.case_.body, changes)
         case NodeKind::SWITCH:
-            offset(node.value.switch_.expr, node2.value.switch_.expr)
-            offset(node.value.switch_.body, node2.value.switch_.body)
+            offset(node.value.switch_.expr, changes)
+            offset(node.value.switch_.body, changes)
         case NodeKind::STRING:
         case NodeKind::IDENTIFIER:
         case NodeKind::STRUCT_LIT:
-            offset(node.value.struct_lit.args, node2.value.struct_lit.args)
-            offset(node.value.struct_lit.kwargs, node2.value.struct_lit.kwargs)
+            offset(node.value.struct_lit.args, changes)
+            offset(node.value.struct_lit.kwargs, changes)
         case NodeKind::IMPORT_MODULE:
-            offset(node.value.import_module.name, node2.value.import_module.name)
-            offset(node.value.import_module.alias, node2.value.import_module.alias)
+            offset(node.value.import_module.name, changes)
+            offset(node.value.import_module.alias, changes)
         case NodeKind::ASSIGN:
-            offset(node.value.assign.left, node2.value.assign.left)
-            offset(node.value.assign.right, node2.value.assign.right)
+            offset(node.value.assign.left, changes)
+            offset(node.value.assign.right, changes)
         case NodeKind::PARAMETER:
-            offset(node.value.param.name, node2.value.param.name)
-            offset(node.value.param.tpe, node2.value.param.tpe)
-            offset(node.value.param.value, node2.value.param.value)
+            offset(node.value.param.name, changes)
+            offset(node.value.param.tpe, changes)
+            offset(node.value.param.value, changes)
         case NodeKind::FUNC_CALL:
-            offset(node.value.func_call.left, node2.value.func_call.left)
-            offset(node.value.func_call.args, node2.value.func_call.args)
-            offset(node.value.func_call.kwargs, node2.value.func_call.kwargs)
+            offset(node.value.func_call.left, changes)
+            offset(node.value.func_call.args, changes)
+            offset(node.value.func_call.kwargs, changes)
         case NodeKind::TYPE_DECL:
-            offset(node.value.type_decl.left, node2.value.type_decl.left)
-            offset(node.value.type_decl.right, node2.value.type_decl.right)
+            offset(node.value.type_decl.left, changes)
+            offset(node.value.type_decl.right, changes)
         case NodeKind::VAR_DECL:
-            offset(node.value.var_decl.left, node2.value.var_decl.left)
-            offset(node.value.var_decl.right, node2.value.var_decl.right)
+            offset(node.value.var_decl.left, changes)
+            offset(node.value.var_decl.right, changes)
         case NodeKind::ID_DECL:
-            offset(node.value.id_decl.value, node2.value.id_decl.value)
-            offset(node.value.id_decl.tpe, node2.value.id_decl.tpe)
+            offset(node.value.id_decl.value, changes)
+            offset(node.value.id_decl.tpe, changes)
         case NodeKind::NAMED_ARG:
-            offset(node.value.named_arg.name, node2.value.named_arg.name)
-            offset(node.value.named_arg.value, node2.value.named_arg.value)
+            offset(node.value.named_arg.name, changes)
+            offset(node.value.named_arg.value, changes)
         case NodeKind::ID_DECL_STRUCT:
-            offset(node.value.id_decl_struct.ident, node2.value.id_decl_struct.ident)
-            offset(node.value.id_decl_struct.tpe, node2.value.id_decl_struct.tpe)
+            offset(node.value.id_decl_struct.ident, changes)
+            offset(node.value.id_decl_struct.tpe, changes)
         case NodeKind::ID_DECL_ENUM:
-            offset(node.value.id_decl_enum.ident, node2.value.id_decl_enum.ident)
-            offset(node.value.id_decl_enum.value, node2.value.id_decl_enum.value)
+            offset(node.value.id_decl_enum.ident, changes)
+            offset(node.value.id_decl_enum.value, changes)
         case NodeKind::ENUM_T:
-            offset(node.value.t_enum.tpe, node2.value.t_enum.tpe)
-            offset(node.value.t_enum.body, node2.value.t_enum.body)
+            offset(node.value.t_enum.tpe, changes)
+            offset(node.value.t_enum.body, changes)
         case NodeKind::FUNCTION_T, NodeKind::CLOSURE_T:
-            offset(node.value.t_func.args, node2.value.t_func.args)
-            offset(node.value.t_func.ret, node2.value.t_func.ret)
+            offset(node.value.t_func.args, changes)
+            offset(node.value.t_func.ret, changes)
         case NodeKind::REF_T, NodeKind::PTR_T, NodeKind::ARRAY_T, NodeKind::WEAK_REF_T:
-            offset(node.value.t_parr.tpe, node2.value.t_parr.tpe)
+            offset(node.value.t_parr.tpe, changes)
         case NodeKind::ARRAY_STATIC_T:
-            offset(node.value.t_arrs.tpe, node2.value.t_arrs.tpe)
+            offset(node.value.t_arrs.tpe, changes)
         case NodeKind::STRUCTURAL_T_MEMBER:
-            offset(node.value.structural_member.name, node2.value.structural_member.name)
-            offset(node.value.structural_member.params, node2.value.structural_member.params)
-            offset(node.value.structural_member.returns, node2.value.structural_member.returns)
+            offset(node.value.structural_member.name, changes)
+            offset(node.value.structural_member.params, changes)
+            offset(node.value.structural_member.returns, changes)
         case NodeKind::ERROR, NodeKind::DEFINED, NodeKind::SIZE_OF, NodeKind::ALIGN_OF, NodeKind::TYPE_OF_T,
             NodeKind::UADD..=NodeKind::NOT, NodeKind::ID_ASSIGN, NodeKind::UNSIGNED_T, NodeKind::TYPE_T:
-            offset(node.value.expr, node2.value.expr)
+            offset(node.value.expr, changes)
         case NodeKind::RANGE, NodeKind::RANGE_INC, NodeKind::MEMBER_ACCESS,
             NodeKind::CAST, NodeKind::ADD..=NodeKind::OR,
             NodeKind::BAND..=NodeKind::SHR_EQ, NodeKind::ARRAY_SUBSCRIPT:
-            offset(node.value.bin_op.left, node2.value.bin_op.left)
-            offset(node.value.bin_op.right, node2.value.bin_op.right)
+            offset(node.value.bin_op.left, changes)
+            offset(node.value.bin_op.right, changes)
         case NodeKind::TYPE_CONSTRUCTOR:
-            offset(node.value.type_constructor.name, node2.value.type_constructor.name)
-            offset(node.value.type_constructor.args, node2.value.type_constructor.args)
+            offset(node.value.type_constructor.name, changes)
+            offset(node.value.type_constructor.args, changes)
         case NodeKind::INTEGER, NodeKind::CHAR, NodeKind::FLOAT,
             NodeKind::BOOLEAN, NodeKind::NULL, NodeKind::UNDEF, NodeKind::BREAK, NodeKind::CONTINUE,
             NodeKind::WORD_T:
@@ -1338,8 +1344,7 @@ def make_node(kind: NodeKind, line: int, column: int, state: &ParseState) -> &No
             line,
             column,
             current_token.line,
-            current_token.column,
-            state.lines
+            current_token.column
         } !SourceLoc
     } !Node
 }
@@ -2376,8 +2381,7 @@ def parse_term(parse_state: &ParseState) -> &Node {
         token.line,
         token.column,
         current_token.end_line,
-        current_token.end_column,
-        parse_state.lines
+        current_token.end_column
     } !SourceLoc
     return node
 }
