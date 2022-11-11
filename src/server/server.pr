@@ -295,9 +295,10 @@ def push_members(node: &parser::Node, completions: &Vector(CompletionItem)) {
 }
 
 def complete(id: int, params: CompletionParams) {
-    let module = toolchain::find_module_by_path(uri_to_path(params.textDocument.uri))
+    let path = uri_to_path(params.textDocument.uri)
+    let module = toolchain::find_module_by_path(path)
     if not module { send_reply(id, null); return }
-    let position = params.position
+    let position = document::u16_pos_to_u8(path, params.position)
 
     let completions = vector::make(CompletionItem)
 
@@ -406,6 +407,166 @@ export def publish_diagnostics(params: PublishDiagnosticsParams) {
     send_notification("textDocument/publishDiagnostics", json::serialize(*params))
 }
 
+type SignatureHelpTriggerKind = enum {
+    Invoked = 1
+    TriggerCharacter = 2
+    ContentChange = 3
+}
+
+type SignatureHelpContext = struct {
+    triggerKind: int
+    triggerCharacter: &string
+    isRetrigger: bool
+    activeSignatureHelp: &Json // TODO Allow optionals
+}
+
+type ParameterInformation = struct {
+    _label: &[uint]
+    documentation: &string
+}
+
+type SignatureInformation = struct {
+    _label: &string
+    documentation: &string
+    parameters: &[ParameterInformation]
+}
+
+type SignatureHelp = struct {
+    signatures: &[SignatureInformation]
+    activeSignature: uint
+    activeParameter: uint
+}
+
+type SignatureHelpParams = struct {
+    textDocument: TextDocumentIdentifier
+    position: U16Position
+    context: SignatureHelpContext
+}
+
+def create_signature(value: &scope::Value) -> SignatureInformation {
+    var name = value.name + "("
+    var parameters = vector::make(ParameterInformation)
+    for var i in 0..value.tpe.parameter_t.length {
+        let start_index = name.length() !uint
+        let param = value.tpe.parameter_t[i]
+        name += param.name
+        name += ": "
+        name += debug::type_to_str(param.tpe)
+        let end_index = name.length() !uint
+        if i < value.tpe.parameter_t.length - 1 {
+            name += ", "
+        }
+        parameters.push({
+            _label = [start_index, end_index]
+        } !ParameterInformation)
+    }
+    name += ")"
+    if value.tpe.return_t.length > 0 {
+        name += " -> "
+        for var i in 0..value.tpe.return_t.length {
+            name += debug::type_to_str(value.tpe.return_t[i])
+            if i < value.tpe.return_t.length - 1 {
+                name += ", "
+            }
+        }
+    }
+
+    return {
+        _label = name,
+        parameters = parameters.to_array(),
+        documentation = ""
+    } !SignatureInformation
+}
+
+def signature_help(id: int, params: SignatureHelpParams) {
+    let path = uri_to_path(params.textDocument.uri)
+    let module = toolchain::find_module_by_path(path)
+    if not module { send_reply(id, null); return }
+    let position = document::u16_pos_to_u8(path, params.position)
+    var node = parser::find(module.node, position.line, position.character)
+
+    var param = node
+    var is_parameter = false
+    var active_par = 0
+
+    if not node { 
+        send_reply(id, null); return
+    }
+    if node.kind != parser::NodeKind::FUNC_CALL {
+        is_parameter = true
+        node = node.parent
+    }
+    if not node or not node.scope or node.kind != parser::NodeKind::FUNC_CALL {
+        send_reply(id, null); return
+    }
+    if is_parameter {
+        for var i in 0..node.value.func_call.args.length {
+            if node.value.func_call.args[i] == param {
+                active_par = i
+                break
+            }
+        }
+    } else {
+        active_par = max(0, node.value.func_call.args.length - 1) !uint
+    }
+    
+    let left = node.value.func_call.left
+    if not left {
+        send_reply(id, null); return
+    }
+    if left.kind != parser::NodeKind::IDENTIFIER {
+        // TODO
+        send_reply(id, null); return
+    }
+
+    var name: &string
+    if vector::length(left.value.identifier.path) > 1 {
+        // TODO
+        send_reply(id, null); return
+    }
+
+    name = parser::identifier_to_str(left)
+    let functions = scope::find_functions(node.scope, name)
+    if functions.length == 0 { send_reply(id, null); return }
+
+    let args = vector::make(typechecking::NamedParameter)
+    for var i in 0..node.value.func_call.args.length {
+        let arg = node.value.func_call.args[i]
+        if not arg { continue }
+        args.push({ tpe = arg.tpe } !typechecking::NamedParameter)
+    }
+    for var i in 0..node.value.func_call.kwargs.length {
+        let kwarg = node.value.func_call.kwargs[i]
+        if not kwarg { continue }
+        args.push({ 
+            name = parser::identifier_to_str(kwarg.value.named_arg.name),
+            tpe = kwarg.value.named_arg.value.tpe 
+        } !typechecking::NamedParameter)
+    }
+
+    var active_sig = 0
+    var smallest_score = std::MAX_INT32
+
+    let infos = vector::make(SignatureInformation)
+    for var i in 0..functions.length {
+        let fun = functions[i]
+        let score = typechecking::overload_score(fun.tpe, args, module, false, partial = true)
+        error(debug::type_to_str(fun.tpe), " ", score, "\n")
+        if score >= 0 and score < smallest_score { 
+            active_sig = i
+            smallest_score = score 
+        }
+        infos.push(create_signature(functions[i]))
+    }
+
+    let help = {
+        signatures = infos.to_array(),
+        activeSignature = active_sig,
+        activeParameter = active_par
+    } !SignatureHelp
+    send_reply(id, json::serialize(*help))
+}
+
 type FileChangeType = enum {
     Created = 1
     Changed = 2
@@ -474,8 +635,16 @@ def initialize(id: int, params: InitializeParams) {
     completion_item["labelDetailsSupport"] = true
     completion_options["completionItem"] = completion_item
 
+    let signature_help_options = json::make_object()
+
+    let sh_trigger_characters = json::make_array()
+    sh_trigger_characters.push("(")
+    sh_trigger_characters.push(",")
+    signature_help_options["triggerCharacters"] = sh_trigger_characters
+
     capabilities["textDocumentSync"] = sync_options
     capabilities["completionProvider"] = completion_options
+    capabilities["signatureHelpProvider"] = signature_help_options
     capabilities["definitionProvider"] = true
     capabilities["hoverProvider"] = true
 
@@ -734,6 +903,10 @@ export def main -> int {
                     let p = json::deserialize(params, CompletionParams)
                     if not p.exists { send_error(id, ParseError, "Couldn't parse parameters") }
                     else { complete(id, p.get()) }
+                } else if method == "textDocument/signatureHelp" {
+                    let p = json::deserialize(params, SignatureHelpParams)
+                    if not p.exists { send_error(id, ParseError, "Couldn't parse parameters") }
+                    else { signature_help(id, p.get()) }
                 } else if method == "textDocument/didOpen" {
                     let p = json::deserialize(params, DidOpenTextDocumentParams)
                     if not p.exists { send_error(id, ParseError, "Couldn't parse parameters") }
