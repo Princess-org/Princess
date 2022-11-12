@@ -592,6 +592,168 @@ def signature_help(id: int, params: SignatureHelpParams) {
     send_reply(id, json::serialize(*help))
 }
 
+type DocumentSymbolParams = struct {
+    textDocument: TextDocumentIdentifier
+}
+
+type SymbolKind = enum {
+	File = 1
+	Module = 2
+	Namespace = 3
+	Package = 4
+	Class = 5
+	Method = 6
+	Property = 7
+	Field = 8
+	Constructor = 9
+	Enum = 10
+	Interface = 11
+	Function = 12
+	Variable = 13
+	Constant = 14
+	String = 15
+	Number = 16
+	Boolean = 17
+	Array = 18
+	Object = 19
+	Key = 20
+	Null = 21
+	EnumMember = 22
+	Struct = 23
+	Event = 24
+	Operator = 25
+	TypeParameter = 26
+}
+
+type SymbolTag = enum {
+    Deprecated = 1
+}
+
+type DocumentSymbol = struct {
+    name: &string
+    //detail: &string
+    kind: int // TODO SymbolKind
+    //tags: &[SymbolTag]
+    deprecated: bool
+    range: Range
+    selectionRange: Range
+    children: &[DocumentSymbol]
+}
+
+def source_loc_to_range(path: &string, loc: parser::SourceLoc) -> Range {
+    return {
+        start = document::u8_pos_to_u16(path, { loc.line, loc.column } !U8Position),
+        end = document::u8_pos_to_u16(path, { loc.end_line, loc.end_column } !U8Position)
+    } !Range
+}
+
+def type_children(path: &string, node: &parser::Node) -> &Vector(DocumentSymbol) {
+    let children = vector::make(DocumentSymbol)
+    if node.kind == parser::NodeKind::STRUCT_T {
+        for var i in 0..node.value.body.length {
+            let child = node.value.body[i]
+            // TODO anonymous structs
+            if not child or child.kind != parser::NodeKind::ID_DECL_STRUCT { continue }
+
+            let tpe = child.value.id_decl_struct.tpe
+            let name = child.value.id_decl_struct.ident
+
+            if not tpe or not name { continue }
+
+            var sub_children = vector::make(DocumentSymbol)
+            if child.kind == parser::NodeKind::STRUCT_T {
+                sub_children = type_children(path, tpe)
+            }
+            children.push({
+                name = parser::identifier_to_str(name),
+                kind = SymbolKind::Field !int,
+                range = source_loc_to_range(path, child.loc),
+                selectionRange = source_loc_to_range(path, name.loc),
+                children = sub_children.to_array()
+            } !DocumentSymbol)
+        }
+    } else if node.kind == parser::NodeKind::ENUM_T {
+        // TODO Implement this
+    } else if node.kind == parser::NodeKind::STRUCTURAL_T {
+        // TODO Implement this
+    }
+    return children
+}
+
+def document_symbol(id: int, params: DocumentSymbolParams) {
+    let path = uri_to_path(params.textDocument.uri)
+    let module = toolchain::find_module_by_path(path)
+    if not module { send_reply(id, null); return }
+
+    let symbols = vector::make(DocumentSymbol)
+
+    for var i in 0..module.node.value.program.body.length {
+        let node = module.node.value.program.body[i]
+        if not node { continue }
+        if node.kind == parser::NodeKind::TYPE_DECL {
+            for var i in 0..node.value.type_decl.left.length {
+                var name = node.value.type_decl.left[i]
+                if name.kind == parser::NodeKind::TYPE_CONSTRUCTOR {
+                    name = name.value.type_constructor.name
+                }
+                let tpe = name.tpe
+                if not tpe { continue } 
+
+                var range_loc = source_loc_to_range(path, name.loc)
+
+                var children = vector::make(DocumentSymbol)
+                if i < vector::length(node.value.type_decl.right) {
+                    let right = node.value.type_decl.right[i]
+                    children = type_children(path, right)
+                    range_loc = source_loc_to_range(path, right.loc)
+                }
+
+                var kind = SymbolKind::Constant
+                if typechecking::is_struct(tpe) {
+                    kind = SymbolKind::Struct
+                } else if typechecking::is_enum(tpe) {
+                    kind = SymbolKind::Enum
+                } else if typechecking::is_interface(tpe) {
+                    kind = SymbolKind::Interface
+                }
+
+                symbols.push({
+                    name = parser::identifier_to_str(name),
+                    kind = kind !int,
+                    range = range_loc,
+                    selectionRange = range_loc,
+                    children = children.to_array()
+                } !DocumentSymbol)
+            }
+        } else if node.kind == parser::NodeKind::DEF {
+            if not node.value.def_.name or not node.tpe { continue }
+            
+            let tpe = node.tpe
+            var name: &string = parser::identifier_to_str(node.value.def_.name) + "("
+            for var i in 0..tpe.parameter_t.length {
+                let param = tpe.parameter_t[i]
+                name += debug::type_to_str(param.tpe)
+                if i < tpe.parameter_t.length - 1 {
+                    name += ", "
+                }
+            }
+            name += ")"
+
+            symbols.push({
+                name = name,
+                kind = SymbolKind::Function !int,
+                range = source_loc_to_range(path, node.loc),
+                selectionRange = source_loc_to_range(path, node.value.def_.name.loc),
+                children = allocate_ref(DocumentSymbol, 0)
+            } !DocumentSymbol)
+        } else if node.kind == parser::NodeKind::VAR_DECL {
+
+        }
+    }
+
+    send_reply(id, json::serialize(*symbols.to_array()))
+}
+
 type FileChangeType = enum {
     Created = 1
     Changed = 2
@@ -672,6 +834,7 @@ def initialize(id: int, params: InitializeParams) {
     capabilities["signatureHelpProvider"] = signature_help_options
     capabilities["definitionProvider"] = true
     capabilities["hoverProvider"] = true
+    capabilities["documentSymbolProvider"] = true
 
     let serverInfo = json::make_object()
     serverInfo["name"] = "Princess Language Server"
@@ -746,7 +909,7 @@ def read_header -> Header {
 def send_message(payload: &Json) {
     let message = to_string(payload)
     print("Content-Length: ", message.length, "\r\n")
-    print("Content-Type: application/vscode-jsonrpc; charset=utf-8\r\n")
+    print("Content-Type: application/vscode-jsonrpc charset=utf-8\r\n")
     print("\r\n")
     print(message)
     fflush(std::stdout())
@@ -823,8 +986,8 @@ def read_message -> &Json {
     }
     let encoding = header.get("Content-Type")
     if encoding {
-        if encoding != "application/vscode-jsonrpc; charset=utf-8" and
-            encoding != "application/vscode-jsonrpc; charset=utf8" {
+        if encoding != "application/vscode-jsonrpc charset=utf-8" and
+            encoding != "application/vscode-jsonrpc charset=utf8" {
             
             send_error(0, ParseError, "Incalid Content-Type")
             return null
@@ -897,7 +1060,7 @@ export def main -> int {
 
             if method == "shutdown" {
                 is_shutdown = true
-                send_reply(id, null)
+                send_reply(id, null);
                 continue
             }
 
@@ -932,6 +1095,10 @@ export def main -> int {
                     let p = json::deserialize(params, SignatureHelpParams)
                     if not p.exists { send_error(id, ParseError, "Couldn't parse parameters") }
                     else { signature_help(id, p.get()) }
+                } else if method == "textDocument/documentSymbol" {
+                    let p = json::deserialize(params, DocumentSymbolParams)
+                    if not p.exists { send_error(id, ParseError, "Couldn't parse parameters") }
+                    else { document_symbol(id, p.get()) }
                 } else if method == "textDocument/didOpen" {
                     let p = json::deserialize(params, DidOpenTextDocumentParams)
                     if not p.exists { send_error(id, ParseError, "Couldn't parse parameters") }
