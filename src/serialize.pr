@@ -1,0 +1,306 @@
+import typechecking
+import toolchain
+import parser
+import debug
+import vector
+import map
+import scope
+import compiler
+
+type TypeEntry = struct {
+    index: int64
+    _hash: size_t   // Hash of the node for this type
+    tpe: &typechecking::Type
+}
+
+type State = struct {
+    module: &toolchain::Module
+    types: &SMap(TypeEntry)
+    deserialized: &Vector(&typechecking::Type)
+}
+
+const MAGIC = "PRNCSVI"
+
+def loc_to_source_lines(loc: parser::SourceLoc) -> &string {
+    let lines = loc.lines()
+    var buf: &string = ""
+    if loc.line == loc.end_line {
+        buf += lines[loc.line].substring(loc.column, max(0, loc.end_column - 1) !size_t)
+    } else {
+        buf += lines[loc.line].substring(loc.column) + '\n'
+        for var i in (loc.line + 1)..loc.end_line {
+            buf += lines[i] + '\n'
+        }
+        buf += lines[loc.end_line].substring(0, max(0, loc.end_column - 1) !size_t)
+    }
+    return  buf
+}
+
+def add_type(tpe: &typechecking::Type, state: &State) -> TypeEntry {
+    if not tpe { return {} !TypeEntry }
+    assert tpe.kind != typechecking::TypeKind::TYPE and
+        tpe.kind != typechecking::TypeKind::TYPE_DEF and 
+        tpe.kind != typechecking::TypeKind::GENERIC
+
+    let name = debug::type_to_str(tpe, full_name = true)
+    if state.types.contains(name) { return state.types[name] }
+    let entry = {
+        state.types.size + 1, // Offset by one, 0 means no type
+        _hash = tpe.node._hash if tpe.node else 0,
+        tpe = tpe
+    } !TypeEntry
+    
+    state.types[name] = entry
+
+    if typechecking::is_box(tpe) or typechecking::is_enum(tpe) {
+        add_type(tpe.tpe, state)
+    } else if typechecking::is_struct(tpe) {
+        for var field in @tpe.fields {
+            add_type(field.tpe, state)
+        }
+    } else if tpe.kind == typechecking::TypeKind::FUNCTION or
+        tpe.kind == typechecking::TypeKind::CLOSURE {
+        for var i in 0..tpe.parameter_t.length {
+            let np = tpe.parameter_t[i]
+            add_type(np.tpe, state)
+        }
+        for var i in 0..tpe.return_t.length {
+            add_type(tpe.return_t[i], state)
+        }
+    } else if tpe.kind == typechecking::TypeKind::STRUCTURAL {
+        for var i in 0..tpe.members.length {
+            let member = tpe.members[i]
+            for var i in 0..member.parameter_t.length {
+                let np = member.parameter_t[i]
+                add_type(np.tpe, state)
+            }
+            for var i in 0..member.return_t.length {
+                add_type(member.return_t[i], state)
+            }
+        }
+    }
+
+    return entry
+}
+
+let TYPE_MOD: byte = -1
+let TYPE_REF: byte = -2
+
+def add_type_or_serialize(fp: File, tpe: &typechecking::Type, state: &State, force_serialize: bool) {
+    if force_serialize {
+        serialize_type(fp, { tpe = tpe } !TypeEntry, state, true)
+    } else {
+        let mtpe = add_type(tpe, state)
+        fp.write(*TYPE_REF)
+        fp.write(*mtpe.index)
+    }
+}
+
+def serialize_type(fp: File, entry: TypeEntry, state: &State, force_serialize: bool = false) {
+    let tpe = entry.tpe
+    if tpe.module != state.module and tpe.name {
+        // Type reference
+        fp.write(*TYPE_MOD)
+        fp.write_str(tpe.module.module if tpe.module else null)
+        fp.write_str(tpe.name)
+    } else {
+        let id = tpe.kind !byte
+        fp.write(*id)
+        fp.write(*entry._hash)
+        fp.write_str(tpe.name)
+        fp.write_str(tpe.type_name)
+
+        if tpe.kind == typechecking::TypeKind::WORD {
+            fp.write(*tpe.unsig)
+            fp.write(*tpe.size)
+        } else if tpe.kind == typechecking::TypeKind::STATIC_ARRAY {
+            let len = tpe.length
+            fp.write(*len)
+            add_type_or_serialize(fp, tpe.tpe, state, force_serialize)
+        } else if typechecking::is_box(tpe) or tpe.kind == typechecking::TypeKind::TYPE or
+            tpe.kind == typechecking::TypeKind::TYPE_DEF {
+
+            add_type_or_serialize(fp, tpe.tpe, state, force_serialize)
+        } else if typechecking::is_struct(tpe) {
+            let sz = tpe.fields.size
+            fp.write(*sz)
+            for var field in @tpe.fields {
+                add_type_or_serialize(fp, field.tpe, state, force_serialize)
+                fp.write(*field.line)
+                fp.write(*field.is_bitfield)
+                fp.write(*field.bit_size)
+                fp.write_str(field.name)
+            }
+        } else if tpe.kind == typechecking::TypeKind::FUNCTION or
+            tpe.kind == typechecking::TypeKind::CLOSURE {
+            fp.write(*tpe.parameter_t.length)
+            for var i in 0..tpe.parameter_t.length {
+                let np = tpe.parameter_t[i]
+                add_type_or_serialize(fp, np.tpe, state, force_serialize)
+                fp.write_str(np.name)
+            }
+            fp.write(*tpe.return_t.length)
+            for var i in 0..tpe.return_t.length {
+                let mtpe = add_type(tpe.return_t[i], state)
+                fp.write(*mtpe.index)
+            }
+        } else if tpe.kind == typechecking::TypeKind::STRUCTURAL {
+            fp.write(*tpe.members.length)
+            for var i in 0..tpe.members.length {
+                let member = tpe.members[i]
+                fp.write_str(member.name)
+                fp.write(*member.parameter_t.length)
+                for var i in 0..member.parameter_t.length {
+                    let np = member.parameter_t[i]
+                    add_type_or_serialize(fp, np.tpe, state, force_serialize)
+                    fp.write_str(np.name)
+                }
+                fp.write(*member.return_t.length)
+                for var i in 0..member.return_t.length {
+                    add_type_or_serialize(fp, member.return_t[i], state, force_serialize)
+                }
+            }
+        } else if tpe.kind == typechecking::TypeKind::STUB {
+            // nothing here
+        } else if tpe.kind == typechecking::TypeKind::ENUM {
+            let mtpe = add_type(tpe.tpe, state)
+            fp.write(*mtpe.index)
+
+            let scpe = tpe.scope
+            let ekeys = scpe.fields.keys()
+            let sz = ekeys.size
+            fp.write(*sz)
+            for var key in @ekeys {
+                let value = scpe.fields[key]
+                assert value.modifier == parser::VarDecl::CONST
+                fp.write(*value.value.i)
+            }
+        } else if tpe.kind == typechecking::TypeKind::TYPE_CONSTRUCTOR {
+            fp.write(*tpe.parameter_t.length)
+            for var i in 0..tpe.parameter_t.length {
+                let np = tpe.parameter_t[i]
+                fp.write_str(np.name)
+            }
+            fp.write_str(loc_to_source_lines(tpe.tc_node.loc))
+        } else if tpe.kind == typechecking::TypeKind::GENERIC {
+            fp.write(*tpe.tc_args.length)
+            for var arg in 0..tpe.tc_args.length {
+                let tc_arg = tpe.tc_args[0]
+                add_type_or_serialize(fp, tc_arg, state, tpe.tc_incomplete or force_serialize)
+            }
+        } else {
+            error(tpe.kind, "\n")
+            assert
+        }
+    }
+}
+
+def write_type(fp: File, tpe: &typechecking::Type, state: &State) {
+    var type_kind: byte = tpe.kind !byte
+    let generic = typechecking::get_generic(tpe) 
+    let serialize = generic and generic.tc_incomplete or
+        tpe.kind == typechecking::TypeKind::TYPE or
+        tpe.kind == typechecking::TypeKind::TYPE_DEF
+
+    add_type_or_serialize(fp, tpe, state, serialize)
+}
+
+def serialize_function(fp: File, value: &scope::Value, state: &State) {
+    let tpe = value.tpe
+    let hash = value.node.signature_hash if value.node else 0
+    fp.write(*hash)
+    fp.write_str(tpe.type_name)
+    fp.write(*tpe.parameter_t.length)
+    for var i in 0..tpe.parameter_t.length {
+        let np = tpe.parameter_t[i]
+        if not np.tpe and np.varargs {
+            let varargs: byte = -2
+            fp.write(*varargs)
+        } else {
+            write_type(fp, np.tpe, state)
+        }
+        fp.write_str(np.name)
+    }
+    fp.write(*tpe.return_t.length)
+    for var i in 0..tpe.return_t.length {
+        let tpe = tpe.return_t[i]
+        let entry = add_type(tpe, state)
+        fp.write(*entry.index)
+    }
+    let is_polymorph = typechecking::is_polymorph(tpe)
+    fp.write(*is_polymorph)
+    if is_polymorph {
+        let loc = value.node.loc
+        fp.write_str(loc_to_source_lines(loc))
+    }
+}
+
+def serialize_variable(fp: File, value: &scope::Value, state: &State) {
+    fp.write_str(value.name)
+}
+
+def serialize_value(fp: File, value: &compiler::Value, state: &State) {
+
+}
+
+export def serialize(module: &toolchain::Module) {
+    let cache_file = module.filename.substring(0, module.filename.length - 4) + ".prc"
+
+    let fp = open(@cache_file, "w")
+    defer close(fp)
+    fp.write(MAGIC)
+
+    let state = {
+        types = map::make(TypeEntry),
+        module = module
+    } !&State
+
+    let functions = scope::all_functions(module.scope)
+    let exported_functions = vector::make(type &scope::Value)
+    for var i in 0..functions.length {
+        let value = functions[i]
+        if value.share !int & parser::ShareMarker::EXPORT !int { 
+            exported_functions.push(value)
+        }
+    }
+
+    fp.write(*exported_functions.length) // Number of functions
+    for var i in 0..exported_functions.length {
+        let value = exported_functions[i]
+        serialize_function(fp, value, state)
+    }
+
+    let variables = vector::make(type &scope::Value)
+    for var key in @module.scope.fields.keys() {
+        let value = module.scope.fields[key]
+        if value.share !int & parser::ShareMarker::EXPORT !int {
+            if value.modifier == parser::VarDecl::TYPE {
+                add_type(value.value.value_tpe, state)
+            } else if value.modifier == parser::VarDecl::CONST {
+                if value.tpe.kind != typechecking::TypeKind::FUNCTION {
+                    variables.push(value)
+                }
+            } else {
+                variables.push(value)
+            }
+        }
+    }
+
+    fp.write(*state.types.size) // Number of types
+    for var key in @state.types.keys() {
+        serialize_type(fp, state.types[key], state)
+    }
+
+    fp.write(*variables.length)
+    for var i in 0..variables.length {
+        serialize_variable(fp, variables[i], state)
+    }
+}
+
+export def deserialize(module: &toolchain::Module) {
+    let cache_file = module.filename.substring(0, module.filename.length - 4) + ".prc"
+
+    let fp = open(@cache_file, "r")
+    if not fp { return }
+
+}
