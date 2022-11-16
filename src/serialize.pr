@@ -4,8 +4,11 @@ import parser
 import debug
 import vector
 import map
+import set
 import scope
 import compiler
+import consteval
+import scope
 
 type TypeEntry = struct {
     index: int64
@@ -13,30 +16,15 @@ type TypeEntry = struct {
     tpe: &typechecking::Type
 }
 
-type State = struct {
-    module: &toolchain::Module
+type Serialize = struct {
+    module: weak_ref(toolchain::Module)
     types: &SMap(TypeEntry)
-    deserialized: &Vector(&typechecking::Type)
+    dependencies: &Set(scope::Ident)
 }
 
 const MAGIC = "PRNCSVI"
 
-def loc_to_source_lines(loc: parser::SourceLoc) -> &string {
-    let lines = loc.lines()
-    var buf: &string = ""
-    if loc.line == loc.end_line {
-        buf += lines[loc.line].substring(loc.column, max(0, loc.end_column - 1) !size_t)
-    } else {
-        buf += lines[loc.line].substring(loc.column) + '\n'
-        for var i in (loc.line + 1)..loc.end_line {
-            buf += lines[i] + '\n'
-        }
-        buf += lines[loc.end_line].substring(0, max(0, loc.end_column - 1) !size_t)
-    }
-    return  buf
-}
-
-def add_type(tpe: &typechecking::Type, state: &State) -> TypeEntry {
+def add_type(tpe: &typechecking::Type, state: &Serialize) -> TypeEntry {
     if not tpe { return {} !TypeEntry }
     assert tpe.kind != typechecking::TypeKind::TYPE and
         tpe.kind != typechecking::TypeKind::TYPE_DEF and 
@@ -86,7 +74,7 @@ def add_type(tpe: &typechecking::Type, state: &State) -> TypeEntry {
 let TYPE_MOD: byte = -1
 let TYPE_REF: byte = -2
 
-def add_type_or_serialize(fp: File, tpe: &typechecking::Type, state: &State, force_serialize: bool) {
+def add_type_or_serialize(fp: File, tpe: &typechecking::Type, state: &Serialize, force_serialize: bool) {
     if force_serialize {
         serialize_type(fp, { tpe = tpe } !TypeEntry, state, true)
     } else {
@@ -96,7 +84,7 @@ def add_type_or_serialize(fp: File, tpe: &typechecking::Type, state: &State, for
     }
 }
 
-def serialize_type(fp: File, entry: TypeEntry, state: &State, force_serialize: bool = false) {
+def serialize_type(fp: File, entry: TypeEntry, state: &Serialize, force_serialize: bool = false) {
     let tpe = entry.tpe
     if tpe.module != state.module and tpe.name {
         // Type reference
@@ -181,7 +169,11 @@ def serialize_type(fp: File, entry: TypeEntry, state: &State, force_serialize: b
                 let np = tpe.parameter_t[i]
                 fp.write_str(np.name)
             }
-            fp.write_str(loc_to_source_lines(tpe.tc_node.loc))
+            let loc = tpe.tc_node.loc
+            fp.write(*loc.line)
+            fp.write(*loc.column)
+            fp.write(*loc.end_line)
+            fp.write(*loc.end_column)
         } else if tpe.kind == typechecking::TypeKind::GENERIC {
             fp.write(*tpe.tc_args.length)
             for var arg in 0..tpe.tc_args.length {
@@ -195,7 +187,7 @@ def serialize_type(fp: File, entry: TypeEntry, state: &State, force_serialize: b
     }
 }
 
-def write_type(fp: File, tpe: &typechecking::Type, state: &State) {
+def write_type(fp: File, tpe: &typechecking::Type, state: &Serialize) {
     var type_kind: byte = tpe.kind !byte
     let generic = typechecking::get_generic(tpe) 
     let serialize = generic and generic.tc_incomplete or
@@ -205,11 +197,19 @@ def write_type(fp: File, tpe: &typechecking::Type, state: &State) {
     add_type_or_serialize(fp, tpe, state, serialize)
 }
 
-def serialize_function(fp: File, value: &scope::Value, state: &State) {
+def serialize_function(fp: File, value: &scope::Value, state: &Serialize) {
     let tpe = value.tpe
     let hash = value.node.signature_hash if value.node else 0
+    let share = value.share !byte
     fp.write(*hash)
+    fp.write(*share)
+    fp.write(*value.extern)
+    fp.write(*value.dllimport)
+    fp.write_str(value.name)
     fp.write_str(tpe.type_name)
+
+    state.dependencies.add_all(value.dependencies)
+
     fp.write(*tpe.parameter_t.length)
     for var i in 0..tpe.parameter_t.length {
         let np = tpe.parameter_t[i]
@@ -217,7 +217,12 @@ def serialize_function(fp: File, value: &scope::Value, state: &State) {
             let varargs: byte = -2
             fp.write(*varargs)
         } else {
+            let has_value = np.value !bool
             write_type(fp, np.tpe, state)
+            fp.write(*has_value)
+            if has_value {
+                serialize_value(fp, np.value, state)
+            }
         }
         fp.write_str(np.name)
     }
@@ -231,15 +236,35 @@ def serialize_function(fp: File, value: &scope::Value, state: &State) {
     fp.write(*is_polymorph)
     if is_polymorph {
         let loc = value.node.loc
-        fp.write_str(loc_to_source_lines(loc))
+        fp.write(*loc.line)
+        fp.write(*loc.column)
+        fp.write(*loc.end_line)
+        fp.write(*loc.end_column)
     }
 }
 
-def serialize_variable(fp: File, value: &scope::Value, state: &State) {
+def serialize_variable(fp: File, value: &scope::Value, state: &Serialize) {
+    let hash = value.node._hash if value.node else 0
+    let share = value.share !byte
+    let is_constant = value.modifier == typechecking::VarDecl::CONST
+
+    fp.write(*hash)
+    fp.write(*share)
+    fp.write(*value.extern)
+    fp.write(*value.dllimport)
     fp.write_str(value.name)
+
+    state.dependencies.add_all(value.dependencies)
+
+    let mtpe = add_type(value.tpe, state)
+    fp.write(*mtpe.index)
+    fp.write(*is_constant)
+    if is_constant {
+        serialize_value(fp, value.value, state)
+    }
 }
 
-def serialize_value(fp: File, value: &compiler::Value, state: &State) {
+def serialize_value(fp: File, value: &compiler::Value, state: &Serialize) {
 
 }
 
@@ -252,9 +277,23 @@ export def serialize(module: &toolchain::Module) {
 
     let state = {
         types = map::make(TypeEntry),
-        module = module
-    } !&State
+        module = module,
+        dependencies = set::make(scope::Ident)
+    } !&Serialize
 
+    // Write imports
+    let imports = module.scope.imports
+    if imports {
+        fp.write(*imports.length)
+        for var i in 0..imports.length {
+            let imp = imports[i]
+            fp.write_str(imp.filename)
+        }
+    } else {
+        let zero: uint64 = 0
+        fp.write(*zero)
+    }
+    
     let functions = scope::all_functions(module.scope)
     let exported_functions = vector::make(type &scope::Value)
     for var i in 0..functions.length {
@@ -276,6 +315,7 @@ export def serialize(module: &toolchain::Module) {
         if value.share !int & parser::ShareMarker::EXPORT !int {
             if value.modifier == parser::VarDecl::TYPE {
                 add_type(value.value.value_tpe, state)
+                state.dependencies.add_all(value.dependencies)
             } else if value.modifier == parser::VarDecl::CONST {
                 if value.tpe.kind != typechecking::TypeKind::FUNCTION {
                     variables.push(value)
@@ -286,6 +326,7 @@ export def serialize(module: &toolchain::Module) {
         }
     }
 
+
     fp.write(*state.types.size) // Number of types
     for var key in @state.types.keys() {
         serialize_type(fp, state.types[key], state)
@@ -295,12 +336,108 @@ export def serialize(module: &toolchain::Module) {
     for var i in 0..variables.length {
         serialize_variable(fp, variables[i], state)
     }
+
+    // Filter out local stuff
+    let dependencies = set::make(scope::Ident)
+    for var ident in @state.dependencies.keys() {
+        if ident.module != module {
+            dependencies.add(ident)
+        }
+    }
+
+    fp.write(*dependencies.size)
+    for var ident in @dependencies.keys() {
+        fp.write(*ident._hash)
+        fp.write_str(ident.name)
+        fp.write_str(ident.signature)
+        fp.write_str(ident.module.module if ident.module else null)
+    }
 }
 
-export def deserialize(module: &toolchain::Module) {
+export type Deserialize = struct {
+    module: weak_ref(toolchain::Module)
+    types: &Vector(&typechecking::Type)
+    imports: &[&string]
+    dependencies: &[scope::Ident]
+}
+
+export def resolver_pass(module: &toolchain::Module) {
+    if module.is_dirty { return }
     let cache_file = module.filename.substring(0, module.filename.length - 4) + ".prc"
 
-    let fp = open(@cache_file, "r")
-    if not fp { return }
+    let deserialize = {
+        module = module
+    } !&Deserialize
 
+    module.deserialize = deserialize
+
+    let fp = open(@cache_file, "rb")
+    defer close(fp)
+    
+    if not fp { module.is_dirty = true; return }
+
+    let source_fp = open(@module.filename, "rb")
+    defer close(source_fp)
+
+    if modified_time(source_fp) > modified_time(fp) {
+        module.is_dirty = true
+        return
+    }
+    
+    var magic: [8; char] // TODO use MAGIC.size here
+    fp.read(magic)
+    if magic != MAGIC { module.is_dirty = true; return }
+
+    var imported_size: size_t
+    fp.read(*imported_size)
+    deserialize.imports = allocate_ref(type &string, imported_size)
+    for var i in 0..imported_size {
+        deserialize.imports[i] = fp.read_str()
+    }
+
+    module.is_dirty = true // TODO Remove
+}
+
+export def dependency_pass(module: &toolchain::Module) {
+    if module.stage !int >= toolchain::Stage::RESOLVE_DEPENDENCIES { return } 
+    module.stage = toolchain::Stage::RESOLVE_DEPENDENCIES
+    
+    if module.is_dirty { return }
+    if module.node {
+        let node = module.node
+        assert node.kind == parser::NodeKind::PROGRAM
+        for var i in 0..node.body.length {
+            let n = node.body[i]
+            if not n or n.kind != parser::NodeKind::IMPORT { continue }
+            // IMPORT
+            let imports = n.value.body
+            for var i in 0..vector::length(imports) {
+                let imprt = imports[i]
+                var name = (@imprt).value.import_module.name
+                if not name { continue }
+                toolchain::resolve_dependencies(name, module)
+            }
+        }
+        return
+    }
+
+    let deserialize = module.deserialize
+    for var imprt in @deserialize.imports {
+        if imprt == "runtime.pr" { continue }
+        dependency_pass(toolchain::modules[imprt])
+    }
+
+    // Check if any of the dependencies are out of date
+    for var dep in @deserialize.dependencies {
+        let value = scope::find(dep)
+        if not value or value.ident._hash != dep._hash { 
+            module.is_dirty = true
+            break 
+        }
+    }
+
+    if module.is_dirty and module.stage !int < toolchain::Stage::PREPROCESS !int {
+        module.stage = toolchain::Stage::PREPROCESS
+        consteval::consteval(module)
+    }
 }

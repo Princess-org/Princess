@@ -53,6 +53,7 @@ export var link_flags = vector::make(type &string)
 
 export var time_report = false
 export var dependency_graph = false
+export var no_incremental = false
 
 let include: &string = util::exe_folder() + "/../include"
 let stdlib: &string = util::exe_folder() + "/../std"
@@ -147,7 +148,9 @@ export def add_define(define: &string) {
 }
 
 export type Stage = enum {
+    INITIAL
     PREPROCESS
+    RESOLVE_DEPENDENCIES
     TYPECHECKING
     COMPILING
 }
@@ -177,6 +180,11 @@ export type Module = struct {
     compiler_state: &compiler::State
     state: &typechecking::State
     unresolved: &Map(scope::Ident, weak_ref(scope::Value))
+    // Incremental compilation
+    // This is set to true if the source file is newer than the cache or 
+    // any of the dependencies changed
+    is_dirty: bool
+    deserialize: &serialize::Deserialize
 }
 
 export def hash(this: &Module) -> uint64 {
@@ -210,7 +218,8 @@ export def make_module(
         imports = set::make(type &string),
         dependants = set::make(type weak_ref(Module)),
         dyn_dispatch = vector::make(type &typechecking::Type),
-        unresolved = map::make(scope::Ident, type weak_ref(scope::Value))
+        unresolved = map::make(scope::Ident, type weak_ref(scope::Value)),
+        is_dirty = no_incremental
     } !&Module
     module.compiler_state = compiler::make_state(module)
     module.file = util::replace_all(module.module, "::", ".")
@@ -315,8 +324,13 @@ export def load_file(filename: &string) -> &string {
 }
 
 export def consteval_file(filename: &string, modulename: &string) -> &Module {
+    var module: &Module
     if modules.contains(filename) {
-        let module = modules[filename]
+        module = modules[filename]
+        if module.is_dirty and module.stage !int < Stage::PREPROCESS !int {
+            module.stage = Stage::PREPROCESS
+            consteval::consteval(module)
+        }
         return module
     }
 
@@ -327,6 +341,18 @@ export def consteval_file(filename: &string, modulename: &string) -> &Module {
     }
     let lines = util::split_lines(buf)
 
+    var sc = scope::enter_function_scope(builtins::builtins, null)
+    module = make_module(filename, modulename, null, sc)
+    sc.module = module
+    modules[filename] = module
+    module.text = buf
+    module.lines = lines
+    
+    serialize::resolver_pass(module)
+    if not module.is_dirty { return module }
+
+    module.stage = Stage::PREPROCESS
+
     debug::trace("Lexing ", modulename)
     let tokens = lexer::lex(buf)
     let node = parser::parse(tokens, lines, filename, modulename)
@@ -335,18 +361,26 @@ export def consteval_file(filename: &string, modulename: &string) -> &Module {
         debug::print_node(node)
     }
     
-    var sc = scope::enter_function_scope(builtins::builtins, null)
-    var module = make_module(filename, modulename, node, sc)
-    module.text = buf
-    module.lines = lines
-    let state = compiler::make_state(module)
-    sc.module = module
-
-    module.compiler_state = state
-    modules[filename] = module
+    module.node = node
+    module.compiler_state = compiler::make_state(module)
 
     consteval::consteval(module)
 
+    return module
+}
+
+export def resolve_dependencies(name: &parser::Node, calling_module: &Module) -> &Module {
+    let modulename = parser::identifier_to_str(name)
+    if modulename == "runtime" or modulename == "builtin" {
+        return modules[modulename] // This module is special
+    }
+
+    let filename = find_module_file(name, calling_module)
+    if not filename { return null }
+    let module = modules.get_or_default(filename, null)
+    if not module { return null }
+
+    serialize::dependency_pass(module) 
     return module
 }
 
@@ -359,14 +393,9 @@ export def consteval_module(name: &parser::Node, calling_module: &Module) -> &Mo
     }
 
     let filename = find_module_file(name, calling_module)
-    if not filename { return null}
+    if not filename { return null }
 
-    var module = modules.get_or_default(filename, null)
-    if not module {
-        module = consteval_file(filename, modulename)
-    }
-
-    return module
+    return consteval_file(filename, modulename)
 }
 
 def generate_runtime_source -> string {
@@ -509,6 +538,9 @@ export def compile_main_file(filename: &string) {
     main_module_file = filename
     var module = consteval_file(filename, "main") 
     if not module { exit(1) }
+
+    module.stage = Stage::RESOLVE_DEPENDENCIES
+    serialize::dependency_pass(module)
 
     module.stage = Stage::TYPECHECKING
     typechecking::typecheck(module)

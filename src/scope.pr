@@ -14,40 +14,51 @@ import consteval
 // This is used to uniquely identify a value
 export type Ident = struct {
     name: &string
+    signature: &string
     _hash: uint64
     module: weak_ref(toolchain::Module)
 }
 
-export def make_ident(name: &string, module: &toolchain::Module = null) -> Ident {
+export def make_ident(name: &string, module: &toolchain::Module = null, hash: uint64 = 0, signature: &string = null) -> Ident {
+    if not signature { signature = name }
     return {
         name = name,
-        _hash = hash(name),
-        module = module
+        signature = signature,
+        module = module,
+        _hash = hash
     } !Ident
 }
 
 export def hash(ident: Ident) -> uint64 {
-    return combine_hashes(ident._hash, hash(ident.module.module) if ident.module else 0)
+    return combine_hashes(hash(ident.signature), hash(ident.module.module) if ident.module else 0)
 }
 export def == (this: Ident, other: Ident) -> bool {
     if not other.module {
-        return this.name == other.name
+        return this.signature == other.signature
     } else {
-        return this.name == other.name and 
+        return this.signature == other.signature and 
             this.module == other.module
     }
 }
 export def != (this: Ident, other: Ident) -> bool {
     return not (this == other)
 }
+export def fuzzy_equals(this: Ident, other: Ident) -> bool {
+    if not other.module {
+        return this.name == other.name
+    } else {
+        return this.signature == other.signature and
+            this.module == other.module
+    }
+}
 
 export def find(ident: Ident) -> &Value {
     if not ident.module { return null }
 
     let scope = ident.module.scope
-    let functions = scope.all_functions()
-    for var i in 0..functions.length {
-        let fun = functions[i]
+    let values = scope.all_values()
+    for var i in 0..values.length {
+        let fun = values[i]
         if fun.ident == ident {
             return fun
         }
@@ -280,6 +291,19 @@ export def all_functions(scope: &Scope) -> &Vector(&Value) {
                 ret.push(value)
                 value = value.next
             }
+        }
+    }
+    return ret
+}
+
+// TODO This should also be a generator
+export def all_values(scope: &Scope) -> &Vector(&Value) {
+    let ret = vector::make(type &Value)
+    for var key in @scope.fields.keys() {
+        var value = scope.fields[key]
+        while value {
+            ret.push(value)
+            value = value.next
         }
     }
     return ret
@@ -1049,6 +1073,21 @@ export def last_path_element(node: &parser::Node) -> string {
     return @((@node).value.identifier.path[length - 1])
 }
 
+// This overwrites value with the changes from other,
+// while preserving some of the contents
+def merge(value: &Value, other: &Value) {
+    let dependencies = value.dependencies
+    let dependants = value.dependants
+    let unresolved = value.unresolved
+    let ident = value.ident
+
+    @value = @other
+    value.dependencies = dependencies
+    value.dependants = dependants
+    value.unresolved = unresolved
+    value.ident = ident
+}
+
 // TODO These following functions grew organically, they are in need of a rewrite
 
 export def create_function(scope: &Scope, name_node: &parser::Node, v: &Value) -> &Value {
@@ -1077,7 +1116,7 @@ export def create_function(scope: &Scope, name_node: &parser::Node, v: &Value) -
                     // TODO This is quite dodgy but its apparently needed for some reason
                     next.tpe = v.tpe
                     v.next = next.next
-                    @next = @v
+                    merge(next, v)
                 }
                 return next
             }
@@ -1119,7 +1158,7 @@ export def create_function(
         global = global,
         node = node,
         state = state,
-        ident = make_ident(name, scope.module)
+        ident = make_ident(name, scope.module, node.signature_hash if node else 0)
     } !&Value
 
     if global {
@@ -1166,8 +1205,9 @@ export def create_variable(
         phase = phase,
         node = node,
         state = state,
-        ident = make_ident(name, scope.module)
+        ident = make_ident(name, scope.module, node._hash if node else 0)
     } !&Value
+
     if global {
         v.unresolved = set::make(Ident)
         v.dependencies = set::make(Ident)
@@ -1190,8 +1230,7 @@ export def create_variable(
 
             errors::errorn(name_node, "Redeclaration of `", name, "`")
         } else {
-            val.tpe = v.tpe
-            val.phase = v.phase
+            merge(val, v)
             return val
         }
     } else {
@@ -1262,7 +1301,7 @@ export def create_type(
             if not no_svalue { tpe.svalue = value }
             @tpe2.value_tpe = @tpe
             v.value = tpe2
-            @value = @v
+            merge(value, v)
         }
         return value
     } else {
