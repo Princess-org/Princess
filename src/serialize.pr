@@ -269,7 +269,7 @@ def serialize_value(fp: File, value: &compiler::Value, state: &Serialize) {
 }
 
 export def serialize(module: &toolchain::Module) {
-    let cache_file = module.filename.substring(0, module.filename.length - 4) + ".prc"
+    let cache_file = module.filename.substring(0, module.filename.length - 3) + ".prc"
 
     let fp = open(@cache_file, "w")
     defer close(fp)
@@ -287,7 +287,9 @@ export def serialize(module: &toolchain::Module) {
         fp.write(*imports.length)
         for var i in 0..imports.length {
             let imp = imports[i]
-            fp.write_str(imp.filename)
+            fp.write_str(parser::identifier_to_str(imp.alias))
+            fp.write_str(imp.module.module)
+            fp.write_str(imp.module.filename)
         }
     } else {
         let zero: uint64 = 0
@@ -357,13 +359,13 @@ export def serialize(module: &toolchain::Module) {
 export type Deserialize = struct {
     module: weak_ref(toolchain::Module)
     types: &Vector(&typechecking::Type)
-    imports: &[&string]
     dependencies: &[scope::Ident]
 }
 
 export def resolver_pass(module: &toolchain::Module) {
     if module.is_dirty { return }
-    let cache_file = module.filename.substring(0, module.filename.length - 4) + ".prc"
+    if module.stage !int >= toolchain::Stage::READ_CACHE { return }
+    let cache_file = module.filename.substring(0, module.filename.length - 3) + ".prc"
 
     let deserialize = {
         module = module
@@ -372,9 +374,8 @@ export def resolver_pass(module: &toolchain::Module) {
     module.deserialize = deserialize
 
     let fp = open(@cache_file, "rb")
-    defer close(fp)
-    
     if not fp { module.is_dirty = true; return }
+    defer close(fp)
 
     let source_fp = open(@module.filename, "rb")
     defer close(source_fp)
@@ -390,16 +391,20 @@ export def resolver_pass(module: &toolchain::Module) {
 
     var imported_size: size_t
     fp.read(*imported_size)
-    deserialize.imports = allocate_ref(type &string, imported_size)
     for var i in 0..imported_size {
-        deserialize.imports[i] = fp.read_str()
+        let ident = parser::identifier_from_str(fp.read_str())
+        let modulename = fp.read_str()
+        let filename = fp.read_str()
+
+        let imprt = toolchain::create_module_if_absent(modulename, filename)
+        scope::insert_module(module.scope, ident, imprt)
     }
 
     module.is_dirty = true // TODO Remove
 }
 
 export def dependency_pass(module: &toolchain::Module) {
-    if module.stage !int >= toolchain::Stage::RESOLVE_DEPENDENCIES { return } 
+    if module.stage !int >= toolchain::Stage::RESOLVE_DEPENDENCIES !int { return } 
     module.stage = toolchain::Stage::RESOLVE_DEPENDENCIES
     
     if module.is_dirty { return }
@@ -422,9 +427,11 @@ export def dependency_pass(module: &toolchain::Module) {
     }
 
     let deserialize = module.deserialize
-    for var imprt in @deserialize.imports {
-        if imprt == "runtime.pr" { continue }
-        dependency_pass(toolchain::modules[imprt])
+
+    let imports = module.scope.imports
+    for var i in 0..imports.length {
+        let imprt = imports[i]
+        dependency_pass(imprt.module)
     }
 
     // Check if any of the dependencies are out of date
