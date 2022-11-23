@@ -13,4 +13,5 @@
     #include <termios.h>
     #include <stdlib.h>
     #include <dlfcn.h>
+    #include <elf.h>
 #endif
