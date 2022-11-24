@@ -1,6 +1,20 @@
 import cstd
 import std
 import runtime
+import vector
+import optional
+
+export type SymbolKind = enum {
+    OBJECT
+    FUNCTION
+}
+
+export type Symbol = struct {
+    kind: SymbolKind
+    name: &string
+    value: *
+}
+
 
 #if defined WIN32 {
     import windows
@@ -10,6 +24,20 @@ import runtime
 
     const RTLD_NOW = 2
     const ET_DYN = 3
+    const SHT_SYMTAB = 2
+    const SHT_STRTAB = 3
+
+    const STB_LOCAL = 0
+    const STB_GLOBAL = 1
+    const STB_WEAK = 2
+
+    const STT_NOTYPE = 0
+    const STT_OBJECT = 1
+    const STT_FUNC = 2
+    const STT_SECTION = 3
+    const STT_FILE = 4
+    const STT_COMMON = 5
+    const STT_TLS = 6
 
     export type Library = struct {
         path: &string
@@ -17,22 +45,20 @@ import runtime
         symbols: &[Symbol]
     }
 
-    export type SymbolKind = enum {
-        OBJECT
-        FUNCTION
-    }
-
-    export type Symbol = struct {
-        kind: SymbolKind
-        name: &string
-        value: *
-    }
-
-    export def destruct(this: *Library) {
+    // TODO We can't use this because the return value can't be moved yet
+    /*export def destruct(this: *Library) {
         close_library(this)
+    }*/
+
+    def elf_st_bind(x: byte) -> byte {
+        return x >> 4 !byte
     }
 
-    export def load_library(path: &string) -> Library {
+    def elf_st_type(x: byte) -> byte {
+        return x & 0xF !byte
+    }
+
+    export def load(path: &string) -> Library {
         let fh = open(path, "rb")
         defer close(fh)
 
@@ -44,30 +70,93 @@ import runtime
         defer linux::munmap(bytes, size)
         
         // Read elf header
-        var elf_hdr: linux::Elf64_Ehdr
-        memmove(*elf_hdr, bytes, size_of linux::Elf64_Ehdr)
+        var elf_hdr = bytes !*linux::Elf64_Ehdr
 
-        print(elf_hdr, "\n")
-        
         // TODO Actually use the elf magic values here
         assert (elf_hdr.e_ident[1] == 'E' and
             elf_hdr.e_ident[2] == 'L' and 
             elf_hdr.e_ident[3] == 'F'), "Not an ELF file"
-        assert elf_hdr.e_type == ET_DYN, "Not a shared object"
+        assert elf_hdr.e_type == ET_DYN, "Not a shared library"
 
         let handle = linux::dlopen(path.value, RTLD_NOW)
         if not handle { abort("Couldn't open shared library " + path + "\n") }
-        return {
+
+        let symbols = vector::make(Symbol)
+
+        var symbol_shdr = (bytes ++ elf_hdr.e_shoff) !*linux::Elf64_Shdr
+        for var i in 0..elf_hdr.e_shnum {
+            var elf_sym: *linux::Elf64_Sym
+            var symcount: uint
+            var strtab: *char
+
+            if symbol_shdr.sh_type == SHT_SYMTAB {
+                elf_sym = (bytes ++ symbol_shdr.sh_offset) !*linux::Elf64_Sym
+			    symcount = (symbol_shdr.sh_size / size_of linux::Elf64_Sym) !uint
+
+                var strtab_shdr = (bytes ++ elf_hdr.e_shoff) !*linux::Elf64_Shdr
+                for var j in 0..elf_hdr.e_shnum {
+                    if j == symbol_shdr.sh_link and strtab_shdr.sh_type == SHT_STRTAB {
+                        strtab = (bytes ++ strtab_shdr.sh_offset) !*char
+                        break
+                    }
+                    strtab_shdr ++= 1
+                }
+
+                for var i in 0..symcount {
+                    let name = strtab ++ elf_sym.st_name
+
+                    if elf_sym.st_shndx > 0 and elf_st_bind(elf_sym.st_info) == STB_GLOBAL {
+                        let sym_type = elf_st_type(elf_sym.st_info)
+                        if sym_type == STT_FUNC or sym_type == STT_OBJECT {
+                            let kind = SymbolKind::FUNCTION if sym_type == STT_FUNC else SymbolKind::OBJECT
+                            symbols.push({
+                                kind = kind,
+                                name = make_string(name),
+                                value = dlsym(handle, name)
+                            } !Symbol)
+                        }
+                    }
+                    
+                    elf_sym ++= 1
+                }
+            }
+
+            symbol_shdr ++= 1
+        }
+
+        let library = {
             path,
-            handle
+            handle,
+            symbols.to_array()
         } !Library
+
+        let main_sym = find_symbol(*library, "main::__main__::([[char]])")
+        if main_sym.exists {
+            let main = main_sym.get().value !def ([[char]]) -> ()
+            // FIXME Pass in actual command line arguments
+            let args = zero_allocate(type [char], 0)
+            main(args)
+            delete(args)
+        }
+
+        return library
     }
 
-    export def close_library(library: *Library) {
+    export def close(library: *Library) {
+        let finalizer_sym = find_symbol(library, "main::__finalizer__::()")
+        if finalizer_sym.exists {
+            let finalizer = finalizer_sym.get().value !def () -> ()
+            finalizer()
+        }
         linux::dlclose(library.handle)
     }
 
-    export def find_symbol(library: Library, name: &string) -> Symbol {
-
+    export def find_symbol(library: *Library, name: &string) -> Optional(Symbol) {
+        for var symbol in @library.symbols {
+            if symbol.name == name {
+                return optional::some(symbol)
+            }
+        }
+        return optional::none(Symbol)
     }
 }
