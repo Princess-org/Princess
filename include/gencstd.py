@@ -696,7 +696,7 @@ def main():
     process_module("ffi")
 
     if sys.platform == "win32":
-        process_module("windows", "User32.lib", "Kernel32.lib")
+        process_module("windows", "User32.lib", "Kernel32.lib", "Dbghelp.lib")
 
 if __name__ == "__main__":
     main()
