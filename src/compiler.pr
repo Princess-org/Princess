@@ -332,7 +332,7 @@ export def call(state: &State, name: &string, tpe: &typechecking::Type, args: &[
         name = { kind = ValueKind::GLOBAL, name = name } !Value,
         ret = ret,
         args = args
-    }
+    } !InsnCall
     push_insn(call, state)
     return ret
 }
@@ -5462,6 +5462,52 @@ def walk_Assert(node: &parser::Node, state: &State) {
     let cond = node.value.assert_.cond
     let msg = node.value.assert_.message
 
+    if state.current_function().test {
+        // Call assertion_handler
+        let env = state.load(builtins::TestEnvironment_, {
+            kind = ValueKind::LOCAL,
+            tpe = pointer(builtins::TestEnvironment_),
+            name = "__env"
+        } !Value)
+        let handler_fun_type = builtins::TestEnvironment_.fields[2].tpe
+        let assertion_handler = state.extract_value(handler_fun_type, env, [2])
+        if not cond {
+            let handler_call = make_insn(InsnKind::CALL)
+            handler_call.value.call = {
+                name = assertion_handler,
+                ret = NO_VALUE,
+                args = [
+                    { kind = ValueKind::BOOL, tpe = builtins::bool_, i = 0 } !Value,
+                    { kind = ValueKind::NULL, tpe = pointer(builtins::char_) } !Value
+                ]
+            } !InsnCall
+            push_insn(handler_call, state)
+        } else {
+            let expr = convert_to(cond, walk_expression(cond, state), builtins::bool_, state)
+
+            if not msg {
+                let handler_call = make_insn(InsnKind::CALL)
+                handler_call.value.call = {
+                    name = assertion_handler,
+                    ret = NO_VALUE,
+                    args = [expr, { kind = ValueKind::NULL, tpe = pointer(builtins::char_) } !Value]
+                } !InsnCall
+                push_insn(handler_call, state)
+            } else {
+                let msg_charp = charp_str(walk_and_load_expression(msg, state), state)
+
+                let handler_call = make_insn(InsnKind::CALL)
+                handler_call.value.call = {
+                    name = assertion_handler,
+                    ret = NO_VALUE,
+                    args = [expr, msg_charp]
+                } !InsnCall
+                push_insn(handler_call, state)
+            }
+        }
+        return
+    }
+
     import_structures(scope::get(state.module.scope, parser::make_identifier("fprintf")).tpe, state.module)
 
     let std_module = toolchain::find_module("std")
@@ -6438,6 +6484,22 @@ export def create_function(
         state.local_counter = 0
         let previous_scope = state.scope
         state.scope = scpe
+
+        if function.test {
+            let env_addr = { kind = ValueKind::LOCAL, tpe = builtins::TestEnvironment_, name = "__env" } !Value
+            let env_alloca = make_insn(InsnKind::ALLOCA)
+            env_alloca.value.alloca.ret = env_addr
+            push_alloca(env_alloca, state)
+            env_addr.tpe = pointer(env_addr.tpe)
+
+            let env_val_ptr = state.load(pointer(builtins::TestEnvironment_), {
+                kind = ValueKind::LOCAL,
+                tpe = pointer(pointer(builtins::TestEnvironment_)),
+                name = scope::get(scpe, parser::make_identifier("env")).assembly_name
+            } !Value)
+            let env_val = state.load(builtins::TestEnvironment_, env_val_ptr)
+            state.store(env_addr, env_val)
+        }
 
         if is_closure {
             let context_ptr_i8 = state.extract_value(pointer(null), {
