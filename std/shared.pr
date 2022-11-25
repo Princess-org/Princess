@@ -32,7 +32,99 @@ export def find_symbol(library: *Library, name: &string) -> Optional(Symbol) {
 
 #if defined WIN32 {
     import windows
-    // TODO
+
+    const SYMOPT_UNDNAME = 0x2
+
+    type EnumerateParams = struct {
+        symbols: &Vector(Symbol)
+        process: *
+        dll: *
+        sym_handle: uint64
+    }
+
+    def enumerate_symbols(info: *windows::SYMBOL_INFO, size: ulong, user: *) -> int {
+        let params = @(user !*EnumerateParams)
+
+        let name = zero_allocate(char, info.MaxNameLen)
+        memcopy(info.Name.value, name.value, info.NameLen)
+        let name_str = make_string(name.value)
+
+        var kind = SymbolKind::OBJECT
+        if name_str.index_of("::(") > 0 {
+            kind = SymbolKind::FUNCTION
+        }
+        
+        params.symbols.push({
+            kind = kind,
+            name = name_str,
+            value = windows::GetProcAddress(params.dll !*windows::s_HINSTANCE__, name.value)
+        } !Symbol)
+
+        delete(name)
+        return 1
+    }
+
+    export def load(path: &string) -> Library {
+        windows::SymSetOptions(windows::SymGetOptions() & ~SYMOPT_UNDNAME)
+
+        let dll = windows::LoadLibraryA(path.value)
+        if not dll {
+            abort("Couldn't open shared library " + path + "\n")
+        }
+
+        let process = windows::GetCurrentProcess()
+        if not windows::SymInitialize(process, null, 0) {
+            abort("Couldn't initialize symbols\n")
+        }
+        defer windows::SymCleanup(process)
+
+        let fh = open(path, "rb")
+        defer close(fh)
+
+        let osfh = cstd::_get_osfhandle(cstd::fileno(fh)) !*
+        let dll_size = windows::GetFileSize(osfh, null)
+        let sym_handle = windows::SymLoadModule64(process, osfh, null, null, dll !uint64, dll_size)
+        if not sym_handle {
+            abort("Couldn't load symbol information for " + path + "\n")
+        }
+
+        let symbols = vector::make(Symbol)
+        let params = {
+            symbols = symbols,
+            process = process,
+            dll = dll,
+            sym_handle = sym_handle
+        } !EnumerateParams
+        windows::SymEnumSymbols(process, sym_handle, null, *enumerate_symbols, *params)
+
+        let library = {
+            path = path,
+            handle = dll,
+            symbols = symbols.to_array()
+        } !Library
+    
+        let main_sym = find_symbol(*library, "main::__main__::([[char]])")
+        if main_sym.exists {
+            let main = main_sym.get().value !def ([[char]]) -> ()
+            // FIXME Pass in actual command line arguments
+            let args = zero_allocate(type [char], 0)
+            main(args)
+            delete(args)
+        }
+
+        return library
+    }
+
+    export def close(library: *Library) {
+        let finalizer_sym = find_symbol(library, "main::__finalizer__::()")
+        if finalizer_sym.exists {
+            let finalizer = finalizer_sym.get().value !def () -> ()
+            finalizer()
+        }
+
+        windows::FreeLibrary(library.handle !*windows::s_HINSTANCE__)
+    }
+
 } else {
     import linux
 
