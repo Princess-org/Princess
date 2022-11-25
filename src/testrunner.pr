@@ -3,6 +3,7 @@ import shared
 import vector
 import util
 import stdio
+import process
 
 #if defined WIN32 {
     import windows
@@ -13,6 +14,7 @@ import stdio
 let options = [
     option('f', "--filter", "*").set_help("Filter test cases, wildcards * and ? are allowed"),
     option('r', "--recursive", false).set_help("Run directories recursively"),
+    option("--no-compile", false).set_help("Don't recompile test cases"),
     option("--runner", false),
     option("--runner-file", ""),
     option("--runner-test", ""),
@@ -61,8 +63,10 @@ if runner {
     let lib = shared::load(file)
     for var symbol in @lib.symbols {
         if symbol.name != test { continue }
+        let last_index = symbol.name.last_index_of("::(")
+        let fun_name = symbol.name.substring(8, last_index)
         
-        print(">", symbol.name)
+        print(">", file, "::", fun_name)
         let tmpfolder = util::tmpfolder("princess")
         stdout_file = tmpfolder + "/stdout.txt"
         stderr_file = tmpfolder + "/stderr.txt"
@@ -87,6 +91,7 @@ if runner {
 
 var filter_str = parser.get_value("--filter").str
 var recursive = parser.get_value("--recursive").b
+var no_compile = parser.get_value("--no-compile").b
 var files_to_test = parser.get_value_as_vec("files")
 
 #if defined WIN32 {
@@ -104,16 +109,47 @@ for var i in 0..files_to_test.length {
 }
 
 print("Collected " + files.length + " test files\n")
+
+if not no_compile {
+    for var i in 0..files.length {
+        let file = files[i]
+        let dll_file = file.substring(0, file.length - 3) + dll_ext
+
+        print("Compiling ", file, " ")
+        // Disable cursor
+        print("\x1B[?25l")
+
+        let stdout = open(dev_null, "w")
+        // TODO It needs to be incremental in the future
+        let proc = *process::spawn(runtime::executable, 
+            [file, "--no-incremental" !&string, "-o" !&string, dll_file] ![&string], // TODO These arrays are clunky
+            stdout = stdout
+        )
+
+        let spinner = ['|', '/', '-', '\\']
+        var index = 0
+        print(spinner[index])
+        while proc.running {
+            proc.wait(100)
+            print("\x1B[1D")
+            print(spinner[index % spinner.size])
+            index += 1
+        }
+        print("\x1B[1D")
+        print(" \n")
+        print("\x1B[?25h")
+
+        close(stdout)
+        if proc.exit_code {
+            abort("Couldn't compile module " + file + "\n")
+        }
+    }
+}
+
 for var i in 0..files.length {
     let file = files[i]
     let dll_file = file.substring(0, file.length - 3) + dll_ext
 
-    print("Compiling ", file, "\n")
-    // TODO It needs to be incremental in the future
-    if system(runtime::executable + " " + file + " --no-incremental -o " + dll_file + " > " + dev_null) {
-        abort("Failed to compile test file, aborting\n")
-    }
-    
     let tests_to_run = vector::make(type &string)
 
     let lib = shared::load(dll_file, init = false) // We only want the symbol information
@@ -126,12 +162,18 @@ for var i in 0..files.length {
 
     for var i in 0..tests_to_run.length {
         let test_function = tests_to_run[i]
-        let exit_code = system(executable_file() + " --runner --runner-file=\"" + dll_file + "\" --runner-test=\"" + test_function + "\"")
-        if exit_code {
-            print(" [FAILED] (", exit_code, ")\n")
+        let proc = *process::spawn(executable_file(), 
+            ["--runner" !&string, "--runner-file=\"" + dll_file + "\"", "--runner-test=\"" + test_function + "\""] ![&string]
+        )
+        proc.wait()
+
+        if proc.exit_code {
+            print(" \x1B[31m[ERROR]\x1B[0m (", proc.exit_code, ")\n")
         } else {
-            print(" [SUCCES]\n")
+            print(" \x1B[32m[OK]\x1B[0m\n")
         }
+
+        proc.dispose()
     }
 }
 
