@@ -1,8 +1,8 @@
 #!/usr/bin/python3.9
 from pathlib import Path
-import sys
 import subprocess
 import build
+import os
 
 
 def main():
@@ -11,12 +11,12 @@ def main():
     build.download()
     print("Building the compiler...")
     build.build([])
-
-    if sys.platform != "win32":
-        print("Building test suite...")
-        build.testsuite([])
-        print("Running test suite")
-        subprocess.check_call(["bin/testsuite"])
+    print("Building test suite...")
+    build.testrunner([])
+    print("Running test suite")
+    
+    os.environ["PRINCESS_COMPILER"] = build.exe_file("bin/princess2")
+    subprocess.check_call(["bin/testrunner", "./test"])
 
 if __name__ == "__main__":
     main()

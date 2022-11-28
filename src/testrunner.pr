@@ -2,7 +2,7 @@ import getopt
 import shared
 import vector
 import util
-import stdio
+import io
 import process
 
 #if defined WIN32 {
@@ -14,6 +14,7 @@ import process
 let options = [
     option('f', "--filter", "*").set_help("Filter test cases, wildcards * and ? are allowed"),
     option('r', "--recursive", false).set_help("Run directories recursively"),
+    option("--compiler", runtime::executable).set_help("Set the compiler for the test cases"),
     option("--no-compile", false).set_help("Don't recompile test cases"),
     option("--runner", false),
     option("--runner-file", ""),
@@ -27,29 +28,31 @@ if not res { exit(1) }
 
 def assertion_handler(result: bool, msg: *char) {
     if not result {
-        fprint(stdio::stdout_orig, "x")
+        fprint(io::stdout_orig, "x")
         if msg {
-            fprint(stdio::stderr_orig, "\nAssertion failure: ", msg, "\n")
+            fprint(io::stderr_orig, "\nAssertion failure: ", msg, "\n")
         }
         abort()
     }
-    fprint(stdio::stdout_orig, ".")
-    fflush(stdio::stdout_orig)
+    fprint(io::stdout_orig, ".")
+    fflush(io::stdout_orig)
 }
 
 var stdout_file: &string
 var stderr_file: &string
 
 def get_stdout() -> &string {
-    let fh = open(stdout_file, "r")
-    let res = util::read_all(fh)
+    fflush(std::stdout())
+    let fh = open(stdout_file, "rb")
+    let res = read_all(fh)
     close(fh)
     return res
 }
 
 def get_stderr() -> &string {
-    let fh = open(stderr_file, "r")
-    let res = util::read_all(fh)
+    fflush(std::stderr())
+    let fh = open(stderr_file, "rb")
+    let res = read_all(fh)
     close(fh)
     return res
 }
@@ -67,11 +70,11 @@ if runner {
         let fun_name = symbol.name.substring(8, last_index)
         
         print(">", file, "::", fun_name)
-        let tmpfolder = util::tmpfolder("princess")
+        let tmpfolder = tmpfolder("princess")
         stdout_file = tmpfolder + "/stdout.txt"
         stderr_file = tmpfolder + "/stderr.txt"
-        stdio::redirect_stdout_to_file(stdout_file)
-        stdio::redirect_stderr_to_file(stderr_file)
+        io::redirect_stdout_to_file(stdout_file)
+        io::redirect_stderr_to_file(stderr_file)
 
         var test_env: runtime::TestEnvironment
         test_env.out = *get_stdout
@@ -81,8 +84,8 @@ if runner {
         let test = symbol.value !def (*runtime::TestEnvironment) -> ()
         test(*test_env)
 
-        stdio::restore_stdout()
-        stdio::restore_stderr()
+        io::restore_stdout()
+        io::restore_stderr()
     }
 
     shared::close(*lib)
@@ -92,6 +95,8 @@ if runner {
 var filter_str = parser.get_value("--filter").str
 var recursive = parser.get_value("--recursive").b
 var no_compile = parser.get_value("--no-compile").b
+var compiler = parser.get_value("--compiler").str
+
 var files_to_test = parser.get_value_as_vec("files")
 
 #if defined WIN32 {
@@ -105,7 +110,7 @@ var files_to_test = parser.get_value_as_vec("files")
 let files = vector::make(type &string)
 for var i in 0..files_to_test.length {
     let file = files_to_test[i]
-    enumerate_dir(file.str, "*.pr", recursive, files)
+    enumerate_dir(file.str, "test*.pr", recursive, files)
 }
 
 print("Collected " + files.length + " test files\n")
@@ -121,9 +126,9 @@ if not no_compile {
 
         let stdout = open(dev_null, "w")
         // TODO It needs to be incremental in the future
-        let proc = *process::spawn(runtime::executable, 
+        let proc = *process::spawn(compiler, 
             [file, "--no-incremental" !&string, "-o" !&string, dll_file] ![&string], // TODO These arrays are clunky
-            stdout = stdout
+            stdout = stdout, stderr = std::stderr()
         )
 
         let spinner = ['|', '/', '-', '\\']
@@ -139,15 +144,18 @@ if not no_compile {
         print(" \n")
         print("\x1B[?25h")
 
+        proc.dispose()
         close(stdout)
         if proc.exit_code {
-            abort("Couldn't compile module " + file + "\n")
+            error("Couldn't compile module " + file + "\n")
+            files[i] = null
         }
     }
 }
 
 for var i in 0..files.length {
     let file = files[i]
+    if not file { continue }
     let dll_file = file.substring(0, file.length - 3) + dll_ext
 
     let tests_to_run = vector::make(type &string)

@@ -73,10 +73,8 @@ def release():
 
     shutil.rmtree(FOLDER)
 
-def testsuite(extra):
-    if not Path(exe_file("bin/princess2")).exists():
-        build([])
-    args = [exe_file("bin/princess2"), "-d", "-Isrc", "--buildfolder=build", "--outfile", exe_file("bin/testsuite"), "src/test/main.pr"]
+def testrunner(extra):
+    args = [exe_file("bin/princess"), "--outfile", exe_file("bin/testrunner"), "src/testrunner.pr"]
     if sys.platform == "win32":
         args += WIN_ARGS
     subprocess.check_call(args + extra)
@@ -129,7 +127,7 @@ def main():
     elif args[1] == "release":
         release()
     elif args[1] == "test":
-        testsuite(args[2:])
+        testrunner(args[2:])
     elif args[1] == "clean":
         clean()
     elif args[1] == "download":
