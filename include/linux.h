@@ -9,9 +9,14 @@
     #include <sys/ioctl.h>
     #include <sys/wait.h>
     #include <sys/mman.h>
+    #include <sys/types.h>
     #include <unistd.h>
     #include <termios.h>
     #include <stdlib.h>
     #include <dlfcn.h>
     #include <elf.h>
+    #include <poll.h>
+    #include <fnmatch.h>
+    #include <dirent.h>
+    #include <errno.h>
 #endif
