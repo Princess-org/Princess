@@ -91,8 +91,11 @@ export const version = create_version_string()
 // Debug stuff 
 export var print_ast = false
 export var print_tokens = false
+export var print_typed_ast = false
+export var continue_on_output = false
 // This flag controls emitting debug information to llvm
 export var debug_sym = false
+export var main_file_name: &string = null
 
 var main_module_file: &string
 
@@ -278,7 +281,7 @@ export def find_module_file(path: &string, calling_module: &Module) -> &string {
     }
 
     if not path.starts_with("/") and calling_module.filename {
-        let base = util::dirname(calling_module.filename)
+        let base = dirname(calling_module.filename)
         let module_path = absolute_path(base + "/" + path + ".pr")
         if util::exists(module_path) {
             return module_path
@@ -352,7 +355,7 @@ export def create_module_if_absent(filename: &string, modulename: &string) -> &M
     return module
 }
 
-export def consteval_file(filename: &string, modulename: &string) -> &Module {
+export def consteval_file(filename: &string, modulename: &string, display_name: &string = null) -> &Module {
     var module: &Module
     if modules.contains(filename) {
         module = modules[filename]
@@ -365,14 +368,29 @@ export def consteval_file(filename: &string, modulename: &string) -> &Module {
 
     module = create_module_if_absent(filename, modulename)
     module.stage = Stage::PREPROCESS
+    if display_name {
+        module.filename = display_name
+    }
 
     debug::trace("Lexing ", modulename)
     let tokens = lexer::lex(module.text)
-    let node = parser::parse(tokens, module.lines, filename, modulename)
+    let node = parser::parse(tokens, module.lines, filename, modulename, display_name = display_name)
     delete(tokens)
     
     module.node = node
     module.compiler_state = compiler::make_state(module)
+
+    let filename_type = typechecking::make_static_array(builtins::char_, filename.size)
+    let exe_global = compiler::make_global_value(
+        filename_type, "__file__", 
+        { kind = compiler::ValueKind::STRING, tpe = filename_type, s = filename } !&compiler::Value,
+        module.compiler_state, private = false
+    )
+    let exe_value = scope::create_variable(
+        module.scope, make_identifier("__file__"), 
+        parser::ShareMarker::EXPORT, parser::VarDecl::LET, filename_type, null
+    )
+    exe_value.assembly_name = exe_global.name
 
     consteval::consteval(module)
 
@@ -558,7 +576,7 @@ export def compile_main_file(filename: &string) {
         error("File ", filename, " is not a Princess source file\n")
         exit(1)
     }
-    include_path.push(absolute_path(util::dirname(filename)))
+    include_path.push(absolute_path(dirname(filename)))
 
     if print_ast or print_tokens {
         let buf = file_loader(filename)
@@ -571,13 +589,14 @@ export def compile_main_file(filename: &string) {
         let tokens = lexer::lex(buf)
         if print_tokens {
             print(json::to_string(lexer::token_list_to_json(tokens)), "\n")
-            exit(0)
+            if not continue_on_output { exit(0) }
         }
 
         let node = parser::parse(tokens, lines, filename, "main")
         delete(tokens)
+        if error_count > 0 { exit(1) }
         print(json::to_string(debug::node_to_json(node)), "\n")
-        exit(0)
+        if not continue_on_output { exit(0) }
     }
 
 
@@ -587,7 +606,7 @@ export def compile_main_file(filename: &string) {
     create_types_main()
 
     main_module_file = filename
-    var module = consteval_file(filename, "main") 
+    var module = consteval_file(filename, "main", display_name = main_file_name) 
     if not module { exit(1) }
 
     module.stage = Stage::RESOLVE_DEPENDENCIES
@@ -595,6 +614,12 @@ export def compile_main_file(filename: &string) {
 
     module.stage = Stage::TYPECHECKING
     typechecking::typecheck(module)
+
+    if print_typed_ast {
+        if error_count > 0 { exit(1) }
+        print(json::to_string(debug::node_to_json(module.node, types = true)), "\n")
+        if not continue_on_output { exit(0) }
+    }
 
     load_file_type()
 

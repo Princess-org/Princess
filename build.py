@@ -32,7 +32,7 @@ def release():
     build([])
 
     print("Second compilation step")
-    subprocess.check_call([exe_file("bin/princess2"), "-d", "-Isrc", "--buildfolder=build", "--outfile", exe_file("bin/princess3"), "src/main.pr"])
+    subprocess.check_call([exe_file("bin/princess2"), "--no-incremental", "-d", "-Isrc", "--buildfolder=build", "--outfile", exe_file("bin/princess3"), "src/main.pr"])
     
     print("Creating archive")
     FOLDER.mkdir(exist_ok=True)
@@ -74,7 +74,7 @@ def release():
     shutil.rmtree(FOLDER)
 
 def testrunner(extra):
-    args = [exe_file("bin/princess"), "--outfile", exe_file("bin/testrunner"), "src/testrunner.pr"]
+    args = [exe_file("bin/princess"), "--no-incremental", "--outfile", exe_file("bin/testrunner"), "src/testrunner.pr"]
     if sys.platform == "win32":
         args += WIN_ARGS
     subprocess.check_call(args + extra)
@@ -108,7 +108,7 @@ def download():
     Path(archive).unlink()
 
 def build(extra):
-    args = [exe_file("bin/princess"), "-d", "-Isrc", "--buildfolder=build", "--outfile", exe_file("bin/princess2"), "src/main.pr"]
+    args = [exe_file("bin/princess"), "--no-incremental", "-d", "-Isrc", "--buildfolder=build", "--outfile", exe_file("bin/princess2"), "src/main.pr"]
     if sys.platform == "win32":
         args += WIN_ARGS
     subprocess.check_call(args + extra)
