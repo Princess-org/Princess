@@ -32,7 +32,10 @@ def release():
     build([])
 
     print("Second compilation step")
-    subprocess.check_call([exe_file("bin/princess2"), "--no-incremental", "-d", "-Isrc", "--buildfolder=build", "--outfile", exe_file("bin/princess3"), "src/main.pr"])
+    args = [exe_file("bin/princess2"), "--no-incremental", "-d", "-Isrc", "--buildfolder=build", "--outfile", exe_file("bin/princess3"), "src/main.pr"]
+    if sys.platform == "win32":
+        args += WIN_ARGS
+    subprocess.check_call(args)
     
     print("Creating archive")
     FOLDER.mkdir(exist_ok=True)
@@ -40,6 +43,8 @@ def release():
     (FOLDER / "include").mkdir(exist_ok=True)
 
     shutil.copy(Path(exe_file("bin/princess2")), FOLDER / exe_file("bin/princess"))
+    if sys.platform == "win32":
+        shutil.copy(Path("bin/princess2.pdb"), FOLDER / "bin/princess.pdb")
     shutil.copy(Path("version"), FOLDER)
 
     for path in glob.glob("include/*.h"):
@@ -101,6 +106,7 @@ def download():
     shutil.unpack_archive(archive, "princess")
     if sys.platform == "win32":
         shutil.copy(Path("princess") / "bin/princess.exe", "bin")
+        shutil.copy(Path("princess") / "bin/princess.pdb", "bin")
     else:
         shutil.copy(Path("princess") / "bin/princess", "bin")
     
