@@ -31,11 +31,11 @@ def release():
     print("First compilation step")
     build([])
 
-    print("Second compilation step")
-    args = [exe_file("bin/princess2"), "--no-incremental", "-d", "-Isrc", "--buildfolder=build", "--outfile", exe_file("bin/princess3"), "src/main.pr"]
-    if sys.platform == "win32":
-        args += WIN_ARGS
-    subprocess.check_call(args)
+    #print("Second compilation step")
+    #args = [exe_file("bin/princess2"), "--no-incremental", "-d", "-Isrc", "--buildfolder=build", "--outfile", exe_file("bin/princess3"), "src/main.pr"]
+    #if sys.platform == "win32":
+    #    args += WIN_ARGS
+    #subprocess.check_call(args)
     
     print("Creating archive")
     FOLDER.mkdir(exist_ok=True)
