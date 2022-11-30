@@ -19,4 +19,5 @@
     #include <fnmatch.h>
     #include <dirent.h>
     #include <errno.h>
+    #include <execinfo.h>
 #endif
