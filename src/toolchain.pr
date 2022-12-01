@@ -166,6 +166,7 @@ export type Stage = enum {
 }
 
 export type Module = struct {
+    display_name: &string
     filename: &string
     file: &string
     module: &string
@@ -212,12 +213,14 @@ export def != (this: &Module, other: &Module) -> bool {
 export def make_module(
     filename: &string, modulename: &string, 
     node: &parser::Node, scpe: &scope::Scope, 
-    text: &string = null, lines: &[&string] = null
+    text: &string = null, lines: &[&string] = null,
+    display_name: &string = null
 ) -> &Module {
 
     let module = {
         text = text,
         lines = lines,
+        display_name = display_name,
         filename = filename,
         module = modulename,
         node = node,
@@ -295,16 +298,33 @@ export def find_module_file(path: &string, calling_module: &Module) -> &string {
         }
     }
     return null
-}
+} 
 
-// name is an identifier
 export def typecheck_module(name: &parser::Node, calling_module: &Module) -> &Module {
     let filename = find_module_file(name, calling_module)
     if not filename { return null }
     var module = modules.get_or_default(filename, null)
+    if module {
+        return typecheck_module(module)
+    }
+    return module
+}
+
+// name is an identifier
+export def typecheck_module(module: &Module) -> &Module {
     if module and module.stage < Stage::TYPECHECKING {
         module.stage = Stage::TYPECHECKING
-        typechecking::typecheck(module)
+        if module.is_dirty {
+            typechecking::typecheck(module)
+        } else {
+            let imports = module.scope.imports
+            if imports {
+                for var i in 0..imports.length {
+                    let imprt = imports[i]
+                    typecheck_module(imprt.module)
+                }
+            }
+        }
         return module
     }
     return null
@@ -314,9 +334,26 @@ export def compile_module(name: &parser::Node, calling_module: &Module) -> &Modu
     let filename = find_module_file(name, calling_module)
     if not filename { return null }
     var module = modules.get_or_default(filename, null)
+    if module {
+        return compile_module(module)
+    }
+    return module
+}
+
+export def compile_module(module: &Module) -> &Module {
     if module and module.stage < Stage::COMPILING {
         module.stage = Stage::COMPILING
-        compiler::compile(module)
+        if module.is_dirty {
+            compiler::compile(module)
+        } else {
+            let imports = module.scope.imports
+            if imports {
+                for var i in 0..imports.length {
+                    let imprt = imports[i]
+                    compile_module(imprt.module)
+                } 
+            }
+        }
         return module
     }
     return null
@@ -333,7 +370,10 @@ export def load_file(filename: &string) -> &string {
     return buf
 }
 
-export def create_module_if_absent(filename: &string, modulename: &string) -> &Module {
+export def create_module_if_absent(filename: &string, modulename: &string, display_name: &string = null) -> &Module {
+    if modulename == "runtime" {
+        return runtime_
+    }
     if modules.contains(filename) {
         return modules[filename]     
     }
@@ -346,7 +386,7 @@ export def create_module_if_absent(filename: &string, modulename: &string) -> &M
     let lines = util::split_lines(buf)
 
     let sc = scope::enter_function_scope(builtins::builtins, null)
-    let module = make_module(filename, modulename, null, sc)
+    let module = make_module(filename, modulename, null, sc, display_name = display_name)
     sc.module = module
     modules[filename] = module
     module.text = buf
@@ -356,35 +396,23 @@ export def create_module_if_absent(filename: &string, modulename: &string) -> &M
     return module
 }
 
-export def consteval_file(filename: &string, modulename: &string, display_name: &string = null) -> &Module {
-    var module: &Module
-    if modules.contains(filename) {
-        module = modules[filename]
-        if module.is_dirty and module.stage !int < Stage::PREPROCESS !int {
-            module.stage = Stage::PREPROCESS
-            consteval::consteval(module)
-        }
-        return module
-    }
-
-    module = create_module_if_absent(filename, modulename)
+export def consteval_module(module: &Module, display_name: &string = null) {
+    if not module.is_dirty or module.stage !int >= Stage::PREPROCESS !int { return }
+    let modulename = module.module
     module.stage = Stage::PREPROCESS
-    if display_name {
-        module.filename = display_name
-    }
 
-    debug::trace("Lexing ", modulename)
+    debug::trace("Lexing ", module.module)
     let tokens = lexer::lex(module.text)
-    let node = parser::parse(tokens, module.lines, filename, modulename, display_name = display_name)
+    let node = parser::parse(tokens, module.lines, module.filename, module.module, display_name = display_name)
     delete(tokens)
     
     module.node = node
     module.compiler_state = compiler::make_state(module)
 
-    let filename_type = typechecking::make_static_array(builtins::char_, filename.size)
+    let filename_type = typechecking::make_static_array(builtins::char_, module.filename.size)
     let exe_global = compiler::make_global_value(
         filename_type, "__file__", 
-        { kind = compiler::ValueKind::STRING, tpe = filename_type, s = filename } !&compiler::Value,
+        { kind = compiler::ValueKind::STRING, tpe = filename_type, s = module.filename } !&compiler::Value,
         module.compiler_state, private = false
     )
     let exe_value = scope::create_variable(
@@ -394,7 +422,20 @@ export def consteval_file(filename: &string, modulename: &string, display_name: 
     exe_value.assembly_name = exe_global.name
 
     consteval::consteval(module)
+}
 
+export def consteval_file(filename: &string, modulename: &string, display_name: &string = null) -> &Module {
+    var module: &Module
+    if modules.contains(filename) {
+        module = modules[filename]
+        if not module.is_dirty or module.stage !int >= Stage::PREPROCESS !int {
+            return module
+        }
+    } else {
+        module = create_module_if_absent(filename, modulename, display_name)
+    }
+    
+    consteval_module(module, display_name)
     return module
 }
 
@@ -460,8 +501,10 @@ def create_runtime_module {
         filename = "runtime.pr",
         modulename = "runtime",
         node = node,
-        scpe = scope::enter_function_scope(builtins::builtins, null)
+        scpe = scope::enter_function_scope(builtins::builtins, null),
+        text = runtime_source, lines = lines
     )
+    runtime_module.is_dirty = true
     runtime_module.scope.module = runtime_module 
 
     let exe_file = executable_file()
@@ -500,6 +543,7 @@ def create_types_module {
         node = null,
         scpe = scope::enter_scope(null, types)
     )
+    types.is_dirty = true
     modules["type"] = types
 
     types_state = compiler::make_state(types)
@@ -610,11 +654,12 @@ export def compile_main_file(filename: &string) {
     var module = consteval_file(filename, "main", display_name = main_file_name) 
     if not module { exit(1) }
 
-    module.stage = Stage::RESOLVE_DEPENDENCIES
     serialize::dependency_pass(module)
 
     module.stage = Stage::TYPECHECKING
-    typechecking::typecheck(module)
+    if module.is_dirty {
+        typechecking::typecheck(module)
+    }
 
     if print_typed_ast {
         if error_count > 0 { exit(1) }
@@ -626,7 +671,10 @@ export def compile_main_file(filename: &string) {
 
     module.stage = Stage::COMPILING
     reset_types()
-    compiler::compile(module)
+
+    if module.is_dirty {
+        compiler::compile(module)
+    }
 
     debug::trace("Resolving types")
     compiler::resolve_types()
@@ -703,7 +751,7 @@ export def compile_main_file(filename: &string) {
 
         for var filename in @modules.keys() {
             let module = modules[filename]
-            if module.module == "builtin" { continue }
+            if module.module == "builtin" or not module.is_dirty { continue }
             codegen::gen(module)
 
             build_command += module.file + ".ll "
