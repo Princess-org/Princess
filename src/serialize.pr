@@ -77,24 +77,35 @@ def add_type(tpe: &typechecking::Type, state: &Serialize) -> TypeEntry {
 let TYPE_MOD: byte = -1
 let TYPE_REF: byte = -2
 let VARARGS: byte = -3
+let NO_TYPE: byte = -4
 
 def add_type_or_serialize(fp: File, tpe: &typechecking::Type, state: &Serialize, force_serialize: bool) {
-    if not tpe { return }
     if force_serialize {
         serialize_type(fp, { tpe = tpe } !TypeEntry, state, true)
-    } else {
+    } else if tpe {
         let mtpe = add_type(tpe, state)
         fp.write(*TYPE_REF)
         fp.write(*mtpe.index)
+    } else {
+        fp.write(*NO_TYPE)
     }
 }
 
 def serialize_type(fp: File, entry: TypeEntry, state: &Serialize, force_serialize: bool = false) {
     let tpe = entry.tpe
-    if tpe.module != state.module and tpe.name {
+    if not tpe {
+        fp.write(*NO_TYPE)
+        return
+    }
+    if tpe.module and tpe.module != state.module and tpe.name {
         // Type reference
         fp.write(*TYPE_MOD)
-        fp.write_str(tpe.module.filename if tpe.module else null)
+        if tpe.module !* == builtins::builtins_module !* {
+            fp.write_str("builtins")
+        } else {
+            assert tpe.module.filename != null
+            fp.write_str(tpe.module.filename if tpe.module else null)
+        }
         fp.write_str(tpe.name)
     } else {
         let id = tpe.kind !byte
@@ -179,6 +190,7 @@ def serialize_type(fp: File, entry: TypeEntry, state: &Serialize, force_serializ
             fp.write(*loc.end_line)
             fp.write(*loc.end_column)
         } else if tpe.kind == typechecking::TypeKind::GENERIC {
+            add_type_or_serialize(fp, tpe.tpe, state, force_serialize)
             fp.write(*tpe.tc_args.length)
             for var arg in 0..tpe.tc_args.length {
                 let tc_arg = tpe.tc_args[0]
@@ -269,14 +281,29 @@ def deserialize_node(deserialize: &Deserialize, loc: parser::SourceLoc) -> &pars
     return node
 }
 
+def deserialize_type_node(deserialize: &Deserialize, loc: parser::SourceLoc) -> &parser::Node {
+    let tokens = lexer::lex(deserialize.module.text, loc.line, loc.column, loc.end_line, loc.end_column)
+    let parse_state = parser::make_state(deserialize.module.filename, deserialize.module.display_name, deserialize.module.module, deserialize.module.lines, tokens)
+    let node = parser::parse_type(parse_state)
+    delete(tokens)
+
+    deserialize.nodes.push(node)
+    return node
+}
+
 def deserialize_type(deserialize: &Deserialize, fp: File) -> &typechecking::Type {
     var kind: byte
     fp.read(*kind)
+    error(kind, "\n")
+    if kind == NO_TYPE { return null }
     if kind == VARARGS { return null }
     if kind == TYPE_MOD {
         let module = fp.read_str()
         let name = fp.read_str()
-        let tpe = create_type_if_absent(toolchain::modules[module], name)
+        if module == "builtins" {
+            return builtins::builtins_module.scope.get_type(parser::make_identifier(name))
+        }
+        return create_type_if_absent(toolchain::modules[module], name)
     } else if kind == TYPE_REF {
         var index: int64
         fp.read(*index)
@@ -292,7 +319,18 @@ def deserialize_type(deserialize: &Deserialize, fp: File) -> &typechecking::Type
         return tpe
     } else {
         var tpekind = kind !typechecking::TypeKind
-        var tpe = { kind = tpekind } !&typechecking::Type
+
+        var hash: uint64
+        fp.read(*hash)
+        var name = fp.read_str()
+        var type_name = fp.read_str()
+
+        var tpe = { 
+            kind = tpekind, 
+            name = name, 
+            type_name = type_name,
+            _hash = hash
+        } !&typechecking::Type
 
         switch tpekind !int {
         case typechecking::TypeKind::WORD:
@@ -431,10 +469,11 @@ def deserialize_type(deserialize: &Deserialize, fp: File) -> &typechecking::Type
             fp.read(*loc.column)
             fp.read(*loc.end_line)
             fp.read(*loc.end_column)
-            let node = deserialize_node(deserialize, loc)
+            let node = deserialize_type_node(deserialize, loc)
             deserialize.nodes.push(node)
         case typechecking::TypeKind::GENERIC:
             var size: size_t
+            tpe.tpe = deserialize_type(deserialize, fp)
             fp.read(*size)
             tpe.tc_args = vector::make(type &typechecking::Type)
             for var arg in 0..size {
