@@ -92,10 +92,13 @@ def add_type_or_serialize(fp: File, tpe: &typechecking::Type, state: &Serialize,
 }
 
 def serialize_type(fp: File, entry: TypeEntry, state: &Serialize, force_serialize: bool = false) {
-    let tpe = entry.tpe
+    var tpe = entry.tpe
     if not tpe {
         fp.write(*NO_TYPE)
         return
+    }
+    if tpe.kind == typechecking::TypeKind::BOX {
+        tpe = tpe.weak
     }
     if tpe.module and tpe.module != state.module and tpe.name {
         // Type reference
@@ -190,6 +193,7 @@ def serialize_type(fp: File, entry: TypeEntry, state: &Serialize, force_serializ
             fp.write(*loc.end_line)
             fp.write(*loc.end_column)
         } else if tpe.kind == typechecking::TypeKind::GENERIC {
+            assert tpe.tpe != null
             add_type_or_serialize(fp, tpe.tpe, state, force_serialize)
             fp.write(*tpe.tc_args.length)
             for var arg in 0..tpe.tc_args.length {
@@ -312,7 +316,7 @@ def deserialize_type(deserialize: &Deserialize, fp: File) -> &typechecking::Type
             return deserialize.types[index]
         }
 
-        let tpe = { kind = typechecking::TypeKind::STUB } !&typechecking::Type
+        let tpe = { kind = typechecking::TypeKind::STUB, is_in_type_cache = true } !&typechecking::Type
         deserialize.types.resize(index + 1)
         vector::set_item(deserialize.types, index, tpe) // TODO Why do we have to do this??
 
@@ -338,7 +342,7 @@ def deserialize_type(deserialize: &Deserialize, fp: File) -> &typechecking::Type
             fp.read(*tpe.size)
         case typechecking::TypeKind::STATIC_ARRAY:
             fp.read(*tpe.length)
-            tpe.tpe = deserialize_type(deserialize, fp)
+            tpe._tpe = deserialize_type(deserialize, fp)
         case typechecking::TypeKind::TYPE, 
             typechecking::TypeKind::TYPE_DEF,
             typechecking::TypeKind::POINTER,
@@ -346,7 +350,12 @@ def deserialize_type(deserialize: &Deserialize, fp: File) -> &typechecking::Type
             typechecking::TypeKind::WEAK_REF,
             typechecking::TypeKind::ARRAY:
 
-            tpe.tpe = deserialize_type(deserialize, fp)
+            let ptpe = deserialize_type(deserialize, fp)
+            if ptpe.is_in_type_cache {
+                tpe._tpe = typechecking::box(ptpe)
+            } else {
+                tpe._tpe = ptpe
+            }
         case typechecking::TypeKind::STRUCT,
             typechecking::TypeKind::UNION:
             
@@ -397,7 +406,7 @@ def deserialize_type(deserialize: &Deserialize, fp: File) -> &typechecking::Type
             fp.read(*size)
             for var i in 0..size {
                 var np: typechecking::NamedParameter
-                np.tpe = deserialize_type(deserialize, fp)
+                np._tpe =  deserialize_type(deserialize, fp)
                 np.name = fp.read_str()
                 parameter_t.push(np)
             }
@@ -416,11 +425,16 @@ def deserialize_type(deserialize: &Deserialize, fp: File) -> &typechecking::Type
                 member.name = fp.read_str()
 
                 var size: size_t
-                member.parameter_t = vector::make(Typechecking::NamedParameter)
+                member.parameter_t = vector::make(typechecking::NamedParameter)
                 fp.read(*size)
                 for var i in 0..size {
                     var np: typechecking::NamedParameter
-                    np.tpe = deserialize_type(deserialize, fp)
+                    let ftpe = deserialize_type(deserialize, fp)
+                    if ftpe.is_in_type_cache {
+                        np._tpe =  typechecking::box(ftpe)
+                    } else {
+                        np._tpe =  ftpe
+                    }
                     np.name = fp.read_str()
                     member.parameter_t.push(np)
                 }
@@ -434,7 +448,7 @@ def deserialize_type(deserialize: &Deserialize, fp: File) -> &typechecking::Type
         case typechecking::TypeKind::STUB:
             // nothing here
         case typechecking::TypeKind::ENUM:
-            tpe.tpe = deserialize_type(deserialize, fp)
+            tpe._tpe = deserialize_type(deserialize, fp)
 
             let scpe = scope::enter_scope(deserialize.module.scope)
             deserialize.scopes.push(scpe)
@@ -459,7 +473,7 @@ def deserialize_type(deserialize: &Deserialize, fp: File) -> &typechecking::Type
             for var i in 0..size {
                 let name = fp.read_str()
                 var np: typechecking::NamedParameter
-                np.tpe = builtins::type_
+                np._tpe =  builtins::type_
                 np.name = name
                 tpe.parameter_t.push(np)
             }
@@ -470,10 +484,10 @@ def deserialize_type(deserialize: &Deserialize, fp: File) -> &typechecking::Type
             fp.read(*loc.end_line)
             fp.read(*loc.end_column)
             let node = deserialize_type_node(deserialize, loc)
-            deserialize.nodes.push(node)
+            tpe.tc_node = node
         case typechecking::TypeKind::GENERIC:
             var size: size_t
-            tpe.tpe = deserialize_type(deserialize, fp)
+            tpe._tpe = deserialize_type(deserialize, fp)
             fp.read(*size)
             tpe.tc_args = vector::make(type &typechecking::Type)
             for var arg in 0..size {
@@ -519,7 +533,7 @@ def deserialize_function(deserialize: &Deserialize, fp: File) {
         if has_value {
             let value = deserialize_value(deserialize, fp)
         }
-        parameter_t.push({ name = name, tpe = tpe, varargs = varargs } !typechecking::NamedParameter)
+        parameter_t.push({ name = name, _tpe = tpe, varargs = varargs } !typechecking::NamedParameter)
     }
 
     let return_t = vector::make(type &typechecking::Type)

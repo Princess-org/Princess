@@ -60,6 +60,7 @@ export type TypeKind = enum {
     VARIANT
     // References to structs are using a weak reference, ie. Type::weak instead of Type::_tpe
     // This is because references to structs can cause cycles
+    // TODO I think we don't really need this because we can just use weak directly
     BOX
     VOID
 }
@@ -143,6 +144,10 @@ export type Type = struct {
     variants: &Vector(&Type)
     _hash: uint64
     svalue: weak_ref(scope::Value)
+
+    // This is used by deserialization to check if a type is in the
+    // type cache, so that structs can keep a weak reference to the type
+    is_in_type_cache: bool
 }
 
 export def hash(tpe: &Type) -> uint64 {
@@ -219,8 +224,8 @@ export def get_builtin_destructor(tpe: &Type) -> &scope::Value {
         return tm.builtin_destructor
     }
 
-    let args = vector::make(typechecking::NamedParameter)
-    args.push({ tpe = pointer(tpe) } !typechecking::NamedParameter)
+    let args = vector::make(NamedParameter)
+    args.push({ _tpe = pointer(tpe) } !NamedParameter)
     let destructor = scope::get_function(builtins::builtins, parser::make_identifier("__destruct__"), args, true)
     tm.builtin_destructor = destructor
     tm.has_builtin_destructor = 1 if destructor else -1
@@ -235,7 +240,7 @@ export def get_user_defined_destructor(tpe: &Type) -> &scope::Value {
     if tpe.module {
         let args = vector::make(NamedParameter)
         args.push({
-            tpe = pointer(tpe)
+            _tpe = pointer(tpe)
         } !NamedParameter)
         let destructor = scope::get_function(tpe.module.scope, parser::make_identifier("destruct"), args, true)
         if destructor { 
@@ -273,7 +278,7 @@ export def has_user_defined_copy_constructor(tpe: &Type) -> bool {
     else if tpe.module {
         let args = vector::make(NamedParameter)
         let arg = {
-            tpe = pointer(tpe)
+            _tpe = pointer(tpe)
         } !NamedParameter
         args.push(arg)
         args.push(arg)
@@ -325,9 +330,9 @@ export def has_copy_constructor(tpe: &Type, lookup: bool = true) -> bool {
     }
 
     if not tm.constructor and lookup {
-        let args = vector::make(typechecking::NamedParameter)
-        vector::push(args, { tpe = pointer(tpe) } !typechecking::NamedParameter)
-        vector::push(args, { tpe = pointer(tpe) } !typechecking::NamedParameter)
+        let args = vector::make(NamedParameter)
+        vector::push(args, { _tpe = pointer(tpe) } !NamedParameter)
+        vector::push(args, { _tpe = pointer(tpe) } !NamedParameter)
         tm.constructor = scope::get_function(builtins::builtins, parser::make_identifier("__construct__"), args)
     }
 
@@ -349,27 +354,30 @@ export def get_module(tpe: &Type) -> &toolchain::Module {
     return tpe.module
 }
 
-export def box(kind: TypeKind, tpe: &Type) -> &Type {
+export def box(tpe: &Type) -> &Type {
     if not tpe { return null }
-    if tpe.kind == kind {
-        let box = make_type_raw(TypeKind::BOX)
-        box.weak = tpe
-        return box
-    }
-    if not is_box(tpe) { return tpe }
-    tpe._tpe = box(kind, tpe._tpe)
-    return tpe
+    let box = make_type_raw(TypeKind::BOX)
+    box.weak = tpe
+    return box
 }
 
 export type NamedParameter = struct {
     // Might be empty for positional parameters
     name: &string
-    tpe: &Type
+    _tpe: &Type
     varargs: bool
     node: &parser::Node
     value: &compiler::Value
     kw: parser::VarDecl
     type_node: &parser::Node
+}
+
+export def tpe(np: NamedParameter) -> &Type {
+    if not np._tpe { return null }
+    if np._tpe.kind == TypeKind::BOX {
+        return np._tpe.weak
+    }
+    return np._tpe
 }
 
 export type State = struct {
@@ -790,7 +798,7 @@ export def copy_parameter_t(parameter_t: &Vector(NamedParameter)) -> &Vector(Nam
     let new = vector::make(NamedParameter)
     for var i in 0..vector::length(parameter_t) {
         let np = parameter_t[i]
-        np.tpe = copy(np.tpe)
+        np._tpe =  copy(np.tpe)
         new.push(np)
     }
     return new
@@ -967,9 +975,9 @@ def has_function(entry: &TypeEntry, mb: StructuralTypeMember, module: &toolchain
         if vector::length(function.parameter_t) != vector::length(mb.parameter_t) + 1 { continue }
         var mismatch = false
         for var k in 0..vector::length(mb.parameter_t) {
-            let npa = function.parameter_t[k + 1]
-            let npb = mb.parameter_t[k]
-            if not equals(npa.tpe, npb.tpe) {
+            let npa = function.parameter_t[k + 1].tpe
+            let npb = mb.parameter_t[k].tpe
+            if not equals(npa, npb) {
                 mismatch = true
                 break
             }
@@ -979,7 +987,10 @@ def has_function(entry: &TypeEntry, mb: StructuralTypeMember, module: &toolchain
         if vector::length(function.return_t) != vector::length(mb.return_t) { continue }
         for var k in 0..vector::length(mb.return_t) {
             let ta = function.return_t[k]
-            let tb = mb.return_t[k]
+            var tb = mb.return_t[k]
+            if tb.kind == TypeKind::BOX {
+                tb = tb.weak
+            }
             if not equals(ta, tb) {
                 mismatch = true
                 break
@@ -1014,9 +1025,9 @@ export def implements(a: &Type, b: &Type, module: &toolchain::Module) -> bool {
 
                 var mismatch = false
                 for var k in 0..vector::length(ma.parameter_t) {
-                    let npa = ma.parameter_t[k]
-                    let npb = mb.parameter_t[k]
-                    if not equals(npa.tpe, npb.tpe) {
+                    let npa = ma.parameter_t[k].tpe
+                    let npb = mb.parameter_t[k].tpe
+                    if not equals(npa, npb) {
                         mismatch = true
                         break
                     }
@@ -1026,8 +1037,10 @@ export def implements(a: &Type, b: &Type, module: &toolchain::Module) -> bool {
                 if vector::length(ma.return_t) != vector::length(mb.return_t) { continue }
                 
                 for var k in 0..vector::length(ma.return_t) {
-                    let ta = ma.return_t[k]
-                    let tb = mb.return_t[k]
+                    var ta = ma.return_t[k]
+                    if ta.kind == TypeKind::BOX { ta = ta.weak }
+                    var tb = mb.return_t[k]
+                    if tb.kind == TypeKind::BOX { ta = tb.weak }
                     if not equals(ta, tb) {
                         mismatch = true
                         break
@@ -1095,13 +1108,13 @@ def infer_interface_types(a: &Type, b: &Type, module: &toolchain::Module) -> &Ty
         function.return_t = vector::make(type &Type)
         function.type_name = function.name = parser::identifier_to_str(member.value.structural_member.name)
  
-        function.parameter_t.push({ tpe = b } !NamedParameter)
+        function.parameter_t.push({ _tpe = b } !NamedParameter)
 
         for var j in 0..vector::length(member.value.structural_member.params) {
             let param = member.value.structural_member.params[j]
             function.parameter_t.push({
                 name = parser::identifier_to_str(param.value.param.name),
-                tpe = type_lookup(param.value.param.tpe, state)
+                _tpe = type_lookup(param.value.param.tpe, state)
             } !NamedParameter)
         }
         for var j in 0..vector::length(member.value.structural_member.returns) {
@@ -1447,7 +1460,7 @@ def replace_parameter(tpe: &Type, types: &SMap(&Type)) -> &Type {
     } else if tpe.kind == TypeKind::FUNCTION or tpe.kind == TypeKind::CLOSURE or tpe.kind == TypeKind::TUPLE {
         for var i in 0..vector::length(tpe.parameter_t) {
             let np = tpe.parameter_t[i]
-            np.tpe = replace_parameter(np.tpe, types)
+            np._tpe =  replace_parameter(np.tpe, types)
         }
     } else if tpe.kind != TypeKind::TYPE_DEF and tpe.name {
         let ntpe = types.get_or_default(tpe.name, null)
@@ -1516,7 +1529,7 @@ export def replace_type_defs(
         for var j in (i + 1)..vector::length(param_a) {
             let np = param_a.get(j)
             if np.tpe {
-                np.tpe = replace_parameter(np.tpe, types_map)
+                np._tpe =  replace_parameter(np.tpe, types_map)
             }
         }
         for var j in 0..vector::length(return_t) {
@@ -1776,7 +1789,7 @@ def lookup_type_constructor(tc: &parser::Node, node: &parser::Node, state: &Stat
         assert arg.kind == parser::NodeKind::PARAMETER
         tpe.parameter_t.push({ 
             name = parser::identifier_to_str(arg.value.param.name), 
-            tpe = builtins::type_ 
+            _tpe = builtins::type_ 
         } !NamedParameter)
     }
     tpe.tc_node = node
@@ -1794,7 +1807,7 @@ export def generate_concrete_functions(type_constructor: &Type, tpe: &Type, stat
         let ftpe = copy(function.function)
 
         let pars = vector::make(NamedParameter)
-        pars.push({ tpe = tpe } !NamedParameter)
+        pars.push({ _tpe = tpe } !NamedParameter)
         
         replace_type_defs(ftpe.parameter_t, ftpe.return_t, pars, null, state.module)
         ftpe.type_name = mangle_function_name(append_module(ftpe.name, ftpe.module.module), ftpe.parameter_t)
@@ -2106,7 +2119,7 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
         } else {
             fun = make_function_type()
             fun.parameter_t = vector::make(NamedParameter)
-            fun.parameter_t.push({ name = "__data", tpe = reference(null) } !NamedParameter)
+            fun.parameter_t.push({ name = "__data", _tpe = reference(null) } !NamedParameter)
             fun.return_t = vector::make(type &Type)
 
             let types = allocate_ref(StructMember, 2)
@@ -2126,7 +2139,7 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
 
             let arg = node.value.t_func.args[i]
             let np = {
-                tpe = type_lookup(arg, state, arg_type, lookup_default, cache),
+                _tpe = type_lookup(arg, state, arg_type, lookup_default, cache),
                 node = arg
             } !NamedParameter
             tpe.parameter_t.push(np)
@@ -2202,10 +2215,10 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
             for var i in 0..vector::length(member.value.structural_member.params) {
                 let parameter_node = member.value.structural_member.params[i]
                 let current_parameter_type = (current_member.parameter_t[i]).tpe if current_member else null !&Type
-                var ntpe = box(TypeKind::STRUCTURAL, type_lookup(parameter_node.value.param.tpe, state, current_parameter_type, false, cache))
+                var ntpe = box(type_lookup(parameter_node.value.param.tpe, state, current_parameter_type, false, cache))
                 parameter_t.push({
                     name = parser::identifier_to_str(parameter_node.value.param.name),
-                    tpe = ntpe
+                    _tpe = ntpe
                 } !NamedParameter)
             }
 
@@ -2213,7 +2226,7 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
                 let return_node = member.value.structural_member.returns[i]
                 let current_return_type = current_member.return_t[i] if current_member else null !&Type
 
-                var ntpe = box(TypeKind::STRUCTURAL, type_lookup(return_node, state, current_return_type, false, cache))
+                var ntpe = box(type_lookup(return_node, state, current_return_type, false, cache))
                 vector::push(return_t, ntpe)
             }
 
@@ -2483,7 +2496,7 @@ export def lookup_identifier_types(node: &parser::Node, state: &State) {
             let arg = node.value.identifier.args[i]
             let tpe = type_lookup(arg, state, null, true)
             node.value.identifier.types.push({
-                tpe = tpe
+                _tpe = tpe
             } !NamedParameter)
         }
     }
@@ -2863,7 +2876,7 @@ def walk_BNot(node: &parser::Node, state: &State) {
 
     let args = vector::make(NamedParameter)
     args.push({
-        tpe = tpe
+        _tpe = tpe
     } !NamedParameter)
     convert_to_call(node, "__invert__", args, state)
 
@@ -2881,7 +2894,7 @@ def walk_UAdd(node: &parser::Node, state: &State) {
 
     let args = vector::make(NamedParameter)
     args.push({
-        tpe = tpe
+        _tpe = tpe
     } !NamedParameter)
     convert_to_call(node, "__pos__", args, state)
 
@@ -2897,7 +2910,7 @@ def walk_USub(node: &parser::Node, state: &State) {
     if not tpe { return }
 
     let args = vector::make(NamedParameter)
-    args.push({ tpe = tpe } !NamedParameter)
+    args.push({ _tpe = tpe } !NamedParameter)
     convert_to_call(node, "__neg__", args, state)
 
     if node.kind != parser::NodeKind::FUNC_CALL and not is_arithmetic(tpe) {
@@ -2963,8 +2976,8 @@ def convert_to_icall(node: &parser::Node, name: &string, args: &Vector(NamedPara
 
 def create_args(left: &parser::Node, right: &parser::Node) -> &Vector(NamedParameter) {
     let args = vector::make(NamedParameter)
-    args.push({ tpe = left.tpe } !NamedParameter)
-    args.push({ tpe = right.tpe } !NamedParameter)
+    args.push({ _tpe = left.tpe } !NamedParameter)
+    args.push({ _tpe = right.tpe } !NamedParameter)
     return args
 }
 
@@ -3390,7 +3403,7 @@ export def walk_Def(node: &parser::Node, state: &State) {
         }
         
         // State argument
-        parameter_t.push({ name = "__state", tpe = reference(null), node = state_node } !NamedParameter)
+        parameter_t.push({ name = "__state", _tpe = reference(null), node = state_node } !NamedParameter)
 
         for var i in 0..params.length {
             let param = params[i]
@@ -3414,7 +3427,7 @@ export def walk_Def(node: &parser::Node, state: &State) {
             let np = {
                 name = last_ident_to_str(name),
                 node = name,
-                tpe = tpe
+                _tpe = tpe
             } !NamedParameter
             parameter_t.push(np)
             c_parameter_t.push(np)
@@ -3477,7 +3490,7 @@ export def walk_Def(node: &parser::Node, state: &State) {
                 if tpe2.kind == TypeKind::TYPE { continue }
                 if tpe2.kind == TypeKind::TYPE_CONSTRUCTOR {
                     errors::errorn(np.node, "Can't use type constructor as function argument")
-                    np.tpe = null
+                    np._tpe =  null
                 }
             }
             if np.varargs {
@@ -3751,7 +3764,7 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
         if not n { continue }
         walk(node, n, state)
         let np = {
-            tpe = (@n).tpe,
+            _tpe = (@n).tpe,
             varargs = false,
             node = n
         } !NamedParameter
@@ -3778,7 +3791,7 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
             parameter_map.add(name)
             let np = {
                 name = name,
-                tpe = (@(@n).value.named_arg.value).tpe,
+                _tpe = (@(@n).value.named_arg.value).tpe,
                 varargs = false,
                 node = (@n).value.named_arg.name
             } !NamedParameter
@@ -3793,7 +3806,7 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
 
     if not is_function_pointer(tpe) and (not tpe or tpe.kind != TypeKind::CLOSURE) {
         let args = vector::copy(arguments)
-        vector::insert(args, 0, { name = "", tpe = tpe } !NamedParameter)
+        vector::insert(args, 0, { name = "", _tpe = tpe } !NamedParameter)
 
         let ident = parser::make_identifier("apply")
         let fun = scope::get_function(state.scope, ident, args, true)
@@ -4036,7 +4049,7 @@ def walk_While(node: &parser::Node, state: &State) {
 
 def for_setup_generator(expr: &parser::Node, node: &parser::Node, state: &State) {
     let parameter_t = vector::make(NamedParameter)
-    parameter_t.push({ tpe = expr.tpe } !NamedParameter)
+    parameter_t.push({ _tpe = expr.tpe } !NamedParameter)
     let generator_next = state.scope.get_function(
         id = parser::make_identifier("next"),
         parameter_t = parameter_t
@@ -4044,7 +4057,7 @@ def for_setup_generator(expr: &parser::Node, node: &parser::Node, state: &State)
     node.value.for_loop.generator_next = generator_next
 
     let parameter_t2 = vector::make(NamedParameter)
-    parameter_t2.push({ tpe = generator_next.tpe.return_t[0] } !NamedParameter)
+    parameter_t2.push({ _tpe = generator_next.tpe.return_t[0] } !NamedParameter)
     let generator_get = state.scope.get_function(
         id = parser::make_identifier("get"),
         parameter_t = parameter_t2
@@ -4068,7 +4081,7 @@ def walk_For(node: &parser::Node, state: &State) {
         for_setup_generator(expr, node, state)
     } else {
         let args = vector::make(NamedParameter)
-        args.push({ tpe = expr.tpe } !NamedParameter)
+        args.push({ _tpe = expr.tpe } !NamedParameter)
         let ident = parser::make_identifier("iterate")
         let fun = scope::get_function(state.scope, ident, args, true)
         if fun {
@@ -4183,7 +4196,7 @@ def walk_MemberAccess_ucs(node: &parser::Node, state: &State) -> bool {
     } else {
         let parameter_t = vector::make(NamedParameter)
         parameter_t.push({
-            tpe = (@left).tpe
+            _tpe = (@left).tpe
         } !NamedParameter)
 
         let function = scope::get_function(node.scope, right, parameter_t, false, false, only_function = true)
@@ -4223,8 +4236,7 @@ export def lookup_struct_member(member: StructMember, resolved: &SSet = null) {
         tpe.kind == TypeKind::WEAK_REF or
         tpe.kind == TypeKind::ARRAY) {
         if tpe._tpe and tpe._tpe.kind == TypeKind::STUB and tpe._tpe.state {
-            // FIXME Also box function types and unions, they might have self references
-            tpe._tpe = box(TypeKind::STRUCT, type_lookup(tpe._tpe.node, tpe._tpe.state))
+            tpe._tpe = box(type_lookup(tpe._tpe.node, tpe._tpe.state))
         }
     } else if tpe.kind == typechecking::TypeKind::STRUCT {
         for var i in 0..tpe.fields.size {
@@ -4349,9 +4361,9 @@ def walk_ArraySubscript(node: &parser::Node, state: &State) {
             walk(node.parent, value, state)
 
             let args = vector::make(NamedParameter)
-            args.push({ tpe = left.tpe } !NamedParameter)
-            args.push({ tpe = right.tpe } !NamedParameter)
-            args.push({ tpe = value.tpe } !NamedParameter)
+            args.push({ _tpe = left.tpe } !NamedParameter)
+            args.push({ _tpe = right.tpe } !NamedParameter)
+            args.push({ _tpe = value.tpe } !NamedParameter)
 
             let set_item = scope::get_function(state.scope, parser::make_identifier("set_item"), args)
             if set_item {
@@ -4862,11 +4874,11 @@ export def typecheck(state: &State) {
     ident.loc.line = 0
     ident.loc.column = 0
 
-    let args = vector::make(typechecking::NamedParameter)
+    let args = vector::make(NamedParameter)
     args.push({
         name = "args",
-        tpe = string_array_tpe
-    } !typechecking::NamedParameter)
+        _tpe = string_array_tpe
+    } !NamedParameter)
 
     let main_tpe = typechecking::make_function_type_n(ident, args, vector::make(type &typechecking::Type), state.module)
     let value = scope::create_function(node.scope, ident, parser::ShareMarker::EXPORT, main_tpe)
