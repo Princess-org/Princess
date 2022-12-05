@@ -91,13 +91,26 @@ def clean():
 
 def download():
     print("Downloading Princess compiler from Github...")
+    releases = json.loads(requests.get(RELEASES_URL).text)
 
-    latest_version = json.loads(requests.get(RELEASES_URL).text)[0]
-    for asset in latest_version["assets"]:
-        if sys.platform == "win32":
-            if asset["name"].endswith(".zip"): break
-        else:
-            if asset["name"].endswith(".tar.gz"): break
+    asset = None
+    release_index = 0
+    while not asset and release_index < len(releases):
+        latest_version = releases[release_index]
+        for a in latest_version["assets"]:
+            if sys.platform == "win32":
+                if a["name"].endswith(".zip"):
+                    asset = a
+                    break
+            else:
+                if a["name"].endswith(".tar.gz"):
+                    asset = a
+                    break
+        release_index += 1
+    
+    if not asset:
+        print("Couldn't find suitable asset, maybe github is down or something.")
+        exit(1)
     
     archive = "princess.zip" if sys.platform == "win32" else "princess.tar.gz"
     with open(archive, "wb") as fp:
