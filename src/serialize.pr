@@ -34,9 +34,10 @@ def add_type(tpe: &typechecking::Type, state: &Serialize) -> TypeEntry {
         tpe.kind != typechecking::TypeKind::GENERIC
 
     let name = debug::type_to_str(tpe, full_name = true)
+    
     if state.types.contains(name) { return state.types[name] }
     let entry = {
-        state.types.size + 1, // Offset by one, 0 means no type
+        state.types.size,
         _hash = tpe.node._hash if tpe.node else 0,
         tpe = tpe
     } !TypeEntry
@@ -100,11 +101,15 @@ def serialize_type(fp: File, entry: TypeEntry, state: &Serialize, force_serializ
     if tpe.kind == typechecking::TypeKind::BOX {
         tpe = tpe.weak
     }
+    assert tpe.kind != typechecking::TypeKind::BOX
+
     if tpe.module and tpe.module != state.module and tpe.name {
         // Type reference
         fp.write(*TYPE_MOD)
         if tpe.module !* == builtins::builtins_module !* {
             fp.write_str("builtins")
+        } else if tpe.module !* == toolchain::runtime_ {
+            fp.write_str("runtime")
         } else {
             assert tpe.module.filename != null
             fp.write_str(tpe.module.filename if tpe.module else null)
@@ -178,7 +183,7 @@ def serialize_type(fp: File, entry: TypeEntry, state: &Serialize, force_serializ
             for var key in @ekeys {
                 let value = scpe.fields[key]
                 assert value.modifier == parser::VarDecl::CONST
-                fp.write(*value)
+                fp.write_str(value.name)
                 fp.write(*value.value.i)
             }
         } else if tpe.kind == typechecking::TypeKind::TYPE_CONSTRUCTOR {
@@ -194,12 +199,14 @@ def serialize_type(fp: File, entry: TypeEntry, state: &Serialize, force_serializ
             fp.write(*loc.end_column)
         } else if tpe.kind == typechecking::TypeKind::GENERIC {
             assert tpe.tpe != null
+            fp.write(*tpe.tc_incomplete)
             add_type_or_serialize(fp, tpe.tpe, state, force_serialize)
             fp.write(*tpe.tc_args.length)
             for var arg in 0..tpe.tc_args.length {
                 let tc_arg = tpe.tc_args[0]
                 add_type_or_serialize(fp, tc_arg, state, tpe.tc_incomplete or force_serialize)
             }
+        } else if tpe.kind == typechecking::TypeKind::CHAR {
         } else {
             error(tpe.kind, "\n")
             assert
@@ -270,7 +277,7 @@ def create_type_if_absent(module: &toolchain::Module, name: &string) -> &typeche
     if value and value.modifier == parser::VarDecl::TYPE {
         return value.value.value_tpe
     }
-    let tpe = typechecking::make_stub_type(ident, module.state)
+    let tpe = { kind = typechecking::TypeKind::STUB, name = name } !&typechecking::Type
     value = scope::create_type(module.scope, ident, parser::ShareMarker::EXPORT, tpe, scope::Phase::DEFINED, null, module.state)
     value.identifier = ident
     return tpe
@@ -278,7 +285,8 @@ def create_type_if_absent(module: &toolchain::Module, name: &string) -> &typeche
 
 def deserialize_node(deserialize: &Deserialize, loc: parser::SourceLoc) -> &parser::Node {
     let tokens = lexer::lex(deserialize.module.text, loc.line, loc.column, loc.end_line, loc.end_column)
-    let node = parser::parse(tokens, deserialize.module.lines, deserialize.module.filename, deserialize.module.module, deserialize.module.display_name)
+    let parse_state = parser::make_state(deserialize.module.filename, deserialize.module.display_name, deserialize.module.module, deserialize.module.lines, tokens)
+    let node = parser::parse_statement(parse_state)
     delete(tokens)
 
     deserialize.nodes.push(node)
@@ -312,11 +320,12 @@ def deserialize_type(deserialize: &Deserialize, fp: File) -> &typechecking::Type
         fp.read(*index)
 
         if index < deserialize.types.length {
-            return deserialize.types[index]
+            let tpe = deserialize.types[index]
+            if tpe { return tpe }
         }
 
         let tpe = { kind = typechecking::TypeKind::STUB, is_in_type_cache = true } !&typechecking::Type
-        deserialize.types.resize(index + 1)
+        deserialize.types.resize(max(index + 1, deserialize.types.length) !size_t)
         vector::set_item(deserialize.types, index, tpe) // TODO Why do we have to do this??
 
         return tpe
@@ -332,10 +341,14 @@ def deserialize_type(deserialize: &Deserialize, fp: File) -> &typechecking::Type
             kind = tpekind, 
             name = name, 
             type_name = type_name,
-            _hash = hash
+            _hash = hash,
+            is_in_type_cache = false,
+            module = deserialize.module
         } !&typechecking::Type
 
         switch tpekind !int {
+        case typechecking::TypeKind::CHAR:
+            tpe = builtins::char_
         case typechecking::TypeKind::WORD:
             fp.read(*tpe.unsig)
             fp.read(*tpe.size)
@@ -375,6 +388,9 @@ def deserialize_type(deserialize: &Deserialize, fp: File) -> &typechecking::Type
             
             if tpekind == typechecking::TypeKind::STRUCT {
                 tpe = typechecking::make_struct_type(fields)
+                tpe.type_name = type_name
+                tpe.name = name
+                tpe._hash = hash
             } else {
                 var size: size_t = 0
                 var align: size_t = 1
@@ -415,6 +431,8 @@ def deserialize_type(deserialize: &Deserialize, fp: File) -> &typechecking::Type
             for var i in 0..size {
                 return_t.push(deserialize_type(deserialize, fp))
             }
+            tpe.parameter_t = parameter_t
+            tpe.return_t = return_t
         case typechecking::TypeKind::STRUCTURAL:
             let members = vector::make(typechecking::StructuralTypeMember)
             var size: size_t
@@ -444,6 +462,7 @@ def deserialize_type(deserialize: &Deserialize, fp: File) -> &typechecking::Type
                 }
                 members.push(member)
             }
+            tpe.members = members
         case typechecking::TypeKind::STUB:
             // nothing here
         case typechecking::TypeKind::ENUM:
@@ -484,14 +503,18 @@ def deserialize_type(deserialize: &Deserialize, fp: File) -> &typechecking::Type
             fp.read(*loc.end_column)
             let node = deserialize_type_node(deserialize, loc)
             tpe.tc_node = node
+            tpe.cache = map::make(type &typechecking::Type)
         case typechecking::TypeKind::GENERIC:
             var size: size_t
+            var tc_incomplete: bool
+            fp.read(*tc_incomplete)
             tpe._tpe = deserialize_type(deserialize, fp)
             fp.read(*size)
             tpe.tc_args = vector::make(type &typechecking::Type)
             for var arg in 0..size {
                 tpe.tc_args.push(deserialize_type(deserialize, fp))
             }
+            tpe.tc_incomplete = tc_incomplete
         case typechecking::TypeKind::BOOL:
             return builtins::bool_
         case:
@@ -515,8 +538,6 @@ def deserialize_function(deserialize: &Deserialize, fp: File) {
     fp.read(*extern)
     name = fp.read_str()
     type_name = fp.read_str()
-
-    debug::trace("Deserializing function ", type_name)
 
     var size: size_t
     fp.read(*size)
@@ -573,16 +594,19 @@ def deserialize_function(deserialize: &Deserialize, fp: File) {
 
     let name_node = parser::make_identifier(name)
     let value = scope::create_function(deserialize.module.scope, name_node, parser::ShareMarker::EXPORT, ftpe, scope::Phase::COMPILED, node, state)
+    value.ident = scope::make_ident(name, deserialize.module, hash, type_name)
     value.identifier = name_node
 }
 
 def serialize_variable(fp: File, value: &scope::Value, state: &Serialize) {
     let hash = value.node._hash if value.node else 0
     let share = value.share !byte
+    let modifier = value.modifier !byte
     let is_constant = value.modifier == typechecking::VarDecl::CONST
 
     fp.write(*hash)
     fp.write(*share)
+    fp.write(*modifier)
     fp.write(*value.extern)
     fp.write(*value.dllimport)
     fp.write(*value.dllexport)
@@ -590,12 +614,45 @@ def serialize_variable(fp: File, value: &scope::Value, state: &Serialize) {
 
     state.dependencies.add_all(value.dependencies)
 
-    let mtpe = add_type(value.tpe, state)
-    fp.write(*mtpe.index)
+    write_type(fp, value.tpe, state)
     fp.write(*is_constant)
     if is_constant {
         serialize_value(fp, value.value, state)
     }
+}
+
+def deserialize_variable(deserialize: &Deserialize, fp: File) {
+    var hash: uint64
+    var share: byte
+    var modifier: byte
+    var extern: bool
+    var dllimport: bool
+    var dllexport: bool
+    
+    fp.read(*hash)
+    fp.read(*share)
+    fp.read(*modifier)
+    fp.read(*extern)
+    fp.read(*dllimport)
+    fp.read(*dllexport)
+    let name = fp.read_str()
+
+    let tpe = deserialize_type(deserialize, fp)
+    var is_constant: bool
+    fp.read(*is_constant)
+    var value: &compiler::Value
+    if is_constant {
+        value = deserialize_value(deserialize, fp)
+    }
+
+    let id = parser::make_identifier(name)
+    let val = scope::create_variable(
+        deserialize.module.scope, id, parser::ShareMarker::EXPORT, 
+        modifier !parser::VarDecl, tpe, 
+        extern, dllimport, dllexport, value, 
+        scope::Phase::COMPILED, null, null
+    )
+    val.identifier = id
 }
 
 def serialize_value(fp: File, value: &compiler::Value, state: &Serialize) {
@@ -650,11 +707,12 @@ export def serialize(module: &toolchain::Module) {
     }
 
     let variables = vector::make(type &scope::Value)
+    let types = vector::make(type &scope::Value)
     for var key in @module.scope.fields.keys() {
         let value = module.scope.fields[key]
         if value.share !int & parser::ShareMarker::EXPORT !int {
             if value.modifier == parser::VarDecl::TYPE {
-                add_type(value.value.value_tpe, state)
+                types.push(value)
                 state.dependencies.add_all(value.dependencies)
             } else if value.modifier == parser::VarDecl::CONST {
                 if value.tpe.kind != typechecking::TypeKind::FUNCTION {
@@ -666,10 +724,19 @@ export def serialize(module: &toolchain::Module) {
         }
     }
 
+    fp.write(*types.length)
+    for var i in 0..types.length {
+        let value = types[i]
+        fp.write_str(value.name)
+        serialize_type(fp, add_type(value.value.value_tpe, state), state)
+    }
 
+    var index = 0
     fp.write(*state.types.size) // Number of types
     for var key in @state.types.keys() {
-        serialize_type(fp, state.types[key], state)
+        let entry = state.types[key]
+        serialize_type(fp, entry, state)
+        index += 1
     }
 
     fp.write(*variables.length)
@@ -739,9 +806,9 @@ export def resolver_pass(module: &toolchain::Module) {
     fp.read(magic)
     if magic != MAGIC { module.is_dirty = true; return }
 
-    var imported_size: size_t
-    fp.read(*imported_size)
-    for var i in 0..imported_size {
+    var size: size_t
+    fp.read(*size)
+    for var i in 0..size {
         let ident = parser::identifier_from_str(fp.read_str())
         let modulename = fp.read_str()
         let filename = fp.read_str()
@@ -750,13 +817,56 @@ export def resolver_pass(module: &toolchain::Module) {
         scope::insert_module(module.scope, ident, imprt)
     }
     
-    var functions_size: size_t
-    fp.read(*functions_size)
-    for var i in 0..functions_size {
+    fp.read(*size)
+    for var i in 0..size {
         deserialize_function(deserialize, fp)
     }
 
-    //module.is_dirty = true // TODO Remove
+    fp.read(*size)
+    for var i in 0..size {
+        let name = fp.read_str()
+        let tpe = deserialize_type(deserialize, fp)
+        let name_node = parser::make_identifier(name)
+        let val = scope::create_type(
+            deserialize.module.scope, name_node, parser::ShareMarker::EXPORT, 
+            tpe, scope::Phase::COMPILED, null, null
+        )
+        val.identifier = name_node
+    }
+
+    fp.read(*size)
+    for var i in 0..size {
+        if i >= deserialize.types.length {
+            deserialize.types.resize(i + 1)
+        }
+        let cached = deserialize.types[i]
+        deserialize.types[i] = null
+        let tpe = deserialize_type(deserialize, fp)
+
+        if cached {
+            @cached = @tpe
+            cached.is_in_type_cache = true
+            deserialize.types[i] = cached
+        } else {
+            deserialize.types[i] = tpe
+        }
+    }
+
+    fp.read(*size)
+    for var i in 0..size {
+        deserialize_variable(deserialize, fp)
+    }
+
+    fp.read(*size)
+    deserialize.dependencies = allocate_ref(scope::Ident, size)
+    for var i in 0..size {
+        var hash: uint64
+        fp.read(*hash)
+        let name = fp.read_str()
+        let signature = fp.read_str()
+        let module = fp.read_str()
+        deserialize.dependencies[i] = scope::make_ident(name, toolchain::find_module(module), hash, signature)
+    }
 }
 
 export def dependency_pass(module: &toolchain::Module) {
@@ -785,9 +895,11 @@ export def dependency_pass(module: &toolchain::Module) {
     let deserialize = module.deserialize
 
     let imports = module.scope.imports
-    for var i in 0..imports.length {
-        let imprt = imports[i]
-        dependency_pass(imprt.module)
+    if imports {
+        for var i in 0..imports.length {
+            let imprt = imports[i]
+            dependency_pass(imprt.module)
+        }
     }
 
     // Check if any of the dependencies are out of date
