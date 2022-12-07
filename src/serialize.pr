@@ -15,7 +15,6 @@ import builtins
 
 type TypeEntry = struct {
     index: int64
-    _hash: size_t   // Hash of the node for this type
     tpe: &typechecking::Type
 }
 
@@ -29,16 +28,15 @@ const MAGIC = "PRNCSVI"
 
 def add_type(tpe: &typechecking::Type, state: &Serialize) -> TypeEntry {
     if not tpe { return {} !TypeEntry }
-    assert tpe.kind != typechecking::TypeKind::TYPE and
+    /*assert tpe.kind != typechecking::TypeKind::TYPE and
         tpe.kind != typechecking::TypeKind::TYPE_DEF and 
-        tpe.kind != typechecking::TypeKind::GENERIC
+        tpe.kind != typechecking::TypeKind::GENERIC*/
 
     let name = debug::type_to_str(tpe, full_name = true)
     
     if state.types.contains(name) { return state.types[name] }
     let entry = {
         state.types.size,
-        _hash = tpe.node._hash if tpe.node else 0,
         tpe = tpe
     } !TypeEntry
     
@@ -103,9 +101,10 @@ def serialize_type(fp: File, entry: TypeEntry, state: &Serialize, force_serializ
     }
     assert tpe.kind != typechecking::TypeKind::BOX
 
-    if tpe.module and tpe.module != state.module and tpe.name {
+    if tpe.module and tpe.module != state.module and tpe.name and not tpe.tc_args {
         // Type reference
         fp.write(*TYPE_MOD)
+        fp.write_str(tpe.module.module if tpe.module else null)
         if tpe.module !* == builtins::builtins_module !* {
             fp.write_str("builtins")
         } else if tpe.module !* == toolchain::runtime_ {
@@ -115,10 +114,10 @@ def serialize_type(fp: File, entry: TypeEntry, state: &Serialize, force_serializ
             fp.write_str(tpe.module.filename if tpe.module else null)
         }
         fp.write_str(tpe.name)
+        fp.write_str(tpe.type_name)
     } else {
         let id = tpe.kind !byte
         fp.write(*id)
-        fp.write(*entry._hash)
         fp.write_str(tpe.name)
         fp.write_str(tpe.type_name)
 
@@ -217,9 +216,7 @@ def serialize_type(fp: File, entry: TypeEntry, state: &Serialize, force_serializ
 def write_type(fp: File, tpe: &typechecking::Type, state: &Serialize) {
     var type_kind: byte = tpe.kind !byte
     let generic = typechecking::get_generic(tpe) 
-    let serialize = generic and generic.tc_incomplete or
-        tpe.kind == typechecking::TypeKind::TYPE or
-        tpe.kind == typechecking::TypeKind::TYPE_DEF
+    let serialize = generic and generic.tc_incomplete
 
     add_type_or_serialize(fp, tpe, state, serialize)
 }
@@ -260,7 +257,9 @@ def serialize_function(fp: File, value: &scope::Value, state: &Serialize) {
         let tpe = tpe.return_t[i]
         write_type(fp, tpe, state)
     }
-    let is_polymorph = typechecking::is_polymorph(tpe)
+    // TODO This is because is_polymorph (incorrectly) returns true for TYPE_DEF
+    // This is needed in some other places, hence the workaround
+    let is_polymorph = typechecking::is_polymorph(tpe) and value.node
     fp.write(*is_polymorph)
     if is_polymorph {
         let loc = value.node.loc
@@ -271,14 +270,14 @@ def serialize_function(fp: File, value: &scope::Value, state: &Serialize) {
     }
 }
 
-def create_type_if_absent(module: &toolchain::Module, name: &string) -> &typechecking::Type {
+def create_type_if_absent(module: &toolchain::Module, name: &string, type_name: &string) -> &typechecking::Type {
     let ident = parser::make_identifier(name)
     var value = scope::get(module.scope, ident, force_compile = false, dry_run = true)
     if value and value.modifier == parser::VarDecl::TYPE {
         return value.value.value_tpe
     }
-    let tpe = { kind = typechecking::TypeKind::STUB, name = name } !&typechecking::Type
-    value = scope::create_type(module.scope, ident, parser::ShareMarker::EXPORT, tpe, scope::Phase::DEFINED, null, module.state)
+    let tpe = { kind = typechecking::TypeKind::STUB, name = name, type_name = type_name } !&typechecking::Type
+    value = scope::create_type(module.scope, ident, parser::ShareMarker::EXPORT, tpe, scope::Phase::DECLARED, null, module.state)
     value.identifier = ident
     return tpe
 }
@@ -310,11 +309,13 @@ def deserialize_type(deserialize: &Deserialize, fp: File) -> &typechecking::Type
     if kind == VARARGS { return null }
     if kind == TYPE_MOD {
         let module = fp.read_str()
+        let filename = fp.read_str()
         let name = fp.read_str()
-        if module == "builtins" {
+        let type_name = fp.read_str()
+        if filename == "builtins" {
             return builtins::builtins_module.scope.get_type(parser::make_identifier(name))
         }
-        return create_type_if_absent(toolchain::modules[module], name)
+        return create_type_if_absent(toolchain::create_module_if_absent(filename, module), name, type_name)
     } else if kind == TYPE_REF {
         var index: int64
         fp.read(*index)
@@ -332,8 +333,6 @@ def deserialize_type(deserialize: &Deserialize, fp: File) -> &typechecking::Type
     } else {
         var tpekind = kind !typechecking::TypeKind
 
-        var hash: uint64
-        fp.read(*hash)
         var name = fp.read_str()
         var type_name = fp.read_str()
 
@@ -341,7 +340,6 @@ def deserialize_type(deserialize: &Deserialize, fp: File) -> &typechecking::Type
             kind = tpekind, 
             name = name, 
             type_name = type_name,
-            _hash = hash,
             is_in_type_cache = false,
             module = deserialize.module
         } !&typechecking::Type
@@ -390,7 +388,6 @@ def deserialize_type(deserialize: &Deserialize, fp: File) -> &typechecking::Type
                 tpe = typechecking::make_struct_type(fields)
                 tpe.type_name = type_name
                 tpe.name = name
-                tpe._hash = hash
             } else {
                 var size: size_t = 0
                 var align: size_t = 1
@@ -592,10 +589,13 @@ def deserialize_function(deserialize: &Deserialize, fp: File) {
         } !&compiler::Function
     }
 
-    let name_node = parser::make_identifier(name)
-    let value = scope::create_function(deserialize.module.scope, name_node, parser::ShareMarker::EXPORT, ftpe, scope::Phase::COMPILED, node, state)
-    value.ident = scope::make_ident(name, deserialize.module, hash, type_name)
-    value.identifier = name_node
+    deserialize.functions.push({
+        name = name,
+        hash = hash,
+        node = node,
+        state = state,
+        ftpe = ftpe
+    } !FunctionEntry)
 }
 
 def serialize_variable(fp: File, value: &scope::Value, state: &Serialize) {
@@ -645,14 +645,16 @@ def deserialize_variable(deserialize: &Deserialize, fp: File) {
         value = deserialize_value(deserialize, fp)
     }
 
-    let id = parser::make_identifier(name)
-    let val = scope::create_variable(
-        deserialize.module.scope, id, parser::ShareMarker::EXPORT, 
-        modifier !parser::VarDecl, tpe, 
-        extern, dllimport, dllexport, value, 
-        scope::Phase::COMPILED, null, null
-    )
-    val.identifier = id
+    deserialize.variables.push({
+        name = name,
+        hash = hash,
+        modifier = modifier !parser::VarDecl,
+        extern = extern,
+        dllimport = dllimport,
+        dllexport = dllexport,
+        tpe = tpe,
+        value = value
+    } !VariableEntry)
 }
 
 def serialize_value(fp: File, value: &compiler::Value, state: &Serialize) {
@@ -724,10 +726,16 @@ export def serialize(module: &toolchain::Module) {
         }
     }
 
+    fp.write(*variables.length)
+    for var i in 0..variables.length {
+        serialize_variable(fp, variables[i], state)
+    }
+
     fp.write(*types.length)
     for var i in 0..types.length {
         let value = types[i]
         fp.write_str(value.name)
+        fp.write(*value.ident._hash)
         serialize_type(fp, add_type(value.value.value_tpe, state), state)
     }
 
@@ -737,11 +745,6 @@ export def serialize(module: &toolchain::Module) {
         let entry = state.types[key]
         serialize_type(fp, entry, state)
         index += 1
-    }
-
-    fp.write(*variables.length)
-    for var i in 0..variables.length {
-        serialize_variable(fp, variables[i], state)
     }
 
     // Filter out local stuff
@@ -761,12 +764,33 @@ export def serialize(module: &toolchain::Module) {
     }
 }
 
+type FunctionEntry = struct {
+    name: &string
+    hash: uint64
+    node: &parser::Node
+    state: &typechecking::State
+    ftpe: &typechecking::Type
+}
+
+type VariableEntry = struct {
+    name: &string
+    hash: uint64
+    modifier: parser::VarDecl
+    extern: bool
+    dllimport: bool
+    dllexport: bool
+    tpe: &typechecking::Type
+    value: &compiler::Value
+}
+
 export type Deserialize = struct {
     module: weak_ref(toolchain::Module)
     types: &Vector(&typechecking::Type)
     nodes: &Vector(&parser::Node) // Strong references to nodes
     scopes: &Vector(&scope::Scope) // Strong references to enum scopes
     dependencies: &[scope::Ident]
+    functions: &Vector(FunctionEntry) // Functions get written before the type information so we must delay processing
+    variables: &Vector(VariableEntry)
 }
 
 export def resolver_pass(module: &toolchain::Module) {
@@ -774,7 +798,7 @@ export def resolver_pass(module: &toolchain::Module) {
     if module.stage !int >= toolchain::Stage::READ_CACHE { return }
     let cache_file = module.filename.substring(0, module.filename.length - 3) + ".prc"
 
-    if not util::exists(toolchain::outfolder + "/" + module.module + ".o") {
+    if not util::exists(toolchain::outfolder + "/" + module.file + ".o") {
         module.is_dirty = true
         return
     }
@@ -785,7 +809,9 @@ export def resolver_pass(module: &toolchain::Module) {
         module = module,
         types = vector::make(type &typechecking::Type),
         nodes = vector::make(type &parser::Node),
-        scopes = vector::make(type &scope::Scope)
+        scopes = vector::make(type &scope::Scope),
+        functions = vector::make(FunctionEntry),
+        variables = vector::make(VariableEntry)
     } !&Deserialize
 
     module.deserialize = deserialize
@@ -824,13 +850,21 @@ export def resolver_pass(module: &toolchain::Module) {
 
     fp.read(*size)
     for var i in 0..size {
+        deserialize_variable(deserialize, fp)
+    }
+
+    fp.read(*size)
+    for var i in 0..size {
         let name = fp.read_str()
+        var hash: uint64
+        fp.read(*hash)
         let tpe = deserialize_type(deserialize, fp)
         let name_node = parser::make_identifier(name)
         let val = scope::create_type(
             deserialize.module.scope, name_node, parser::ShareMarker::EXPORT, 
             tpe, scope::Phase::COMPILED, null, null
         )
+        val.ident = scope::make_ident(name, module, hash)
         val.identifier = name_node
     }
 
@@ -852,9 +886,27 @@ export def resolver_pass(module: &toolchain::Module) {
         }
     }
 
-    fp.read(*size)
-    for var i in 0..size {
-        deserialize_variable(deserialize, fp)
+    for var i in 0..deserialize.functions.length {
+        let entry = deserialize.functions[i]
+        let name_node = parser::make_identifier(entry.name)
+        let value = scope::create_function(
+            module.scope, name_node, parser::ShareMarker::EXPORT, 
+            entry.ftpe, scope::Phase::COMPILED, entry.node, entry.state
+        )
+        value.ident = scope::make_ident(entry.name, module, entry.hash, entry.ftpe.type_name)
+        value.identifier = name_node
+    }
+
+    for var i in 0..deserialize.variables.length {
+        let entry = deserialize.variables[i]
+        let id = parser::make_identifier(entry.name)
+        let val = scope::create_variable(
+            module.scope, id, parser::ShareMarker::EXPORT, 
+            entry.modifier, entry.tpe, 
+            entry.extern, entry.dllimport, entry.dllexport, entry.value, 
+            scope::Phase::COMPILED, null, null
+        )
+        val.identifier = id
     }
 
     fp.read(*size)
@@ -904,15 +956,18 @@ export def dependency_pass(module: &toolchain::Module) {
 
     // Check if any of the dependencies are out of date
     for var dep in @deserialize.dependencies {
+        if dep.name == "__destruct__" { continue } // TODO These need to be serialized as well
         let value = scope::find(dep)
-        if not value or value.ident._hash != dep._hash { 
+        if not value or value.ident._hash != dep._hash {
             module.is_dirty = true
             break
         }
     }
 
-    if module.is_dirty and module.stage !int < toolchain::Stage::PREPROCESS !int {
-        module.stage = toolchain::Stage::PREPROCESS
+    if module.is_dirty and module.stage !int < toolchain::Stage::TYPECHECKING !int {
+        module.scope.fields.clear()
+        module.scope.imports = vector::make(scope::ImportedModule)
+        module.stage = toolchain::Stage::READ_CACHE
         toolchain::consteval_module(module)
     }
 }
