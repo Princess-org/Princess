@@ -231,8 +231,7 @@ export def make_module(
         imports = set::make(type &string),
         dependants = set::make(type weak_ref(Module)),
         dyn_dispatch = vector::make(type &typechecking::Type),
-        unresolved = map::make(scope::Ident, type weak_ref(scope::Value)),
-        is_dirty = no_incremental
+        unresolved = map::make(scope::Ident, type weak_ref(scope::Value))
     } !&Module
     module.compiler_state = compiler::make_state(module)
     module.file = util::replace_all(module.module, "::", ".")
@@ -314,7 +313,7 @@ export def typecheck_module(name: &parser::Node, calling_module: &Module) -> &Mo
 export def typecheck_module(module: &Module) -> &Module {
     if module and module.stage < Stage::TYPECHECKING {
         module.stage = Stage::TYPECHECKING
-        if module.is_dirty {
+        if module.is_dirty or no_incremental {
             typechecking::typecheck(module)
         } else {
             let imports = module.scope.imports
@@ -343,7 +342,7 @@ export def compile_module(name: &parser::Node, calling_module: &Module) -> &Modu
 export def compile_module(module: &Module) -> &Module {
     if module and module.stage < Stage::COMPILING {
         module.stage = Stage::COMPILING
-        if module.is_dirty {
+        if module.is_dirty or no_incremental {
             compiler::compile(module)
         } else {
             let imports = module.scope.imports
@@ -397,7 +396,7 @@ export def create_module_if_absent(filename: &string, modulename: &string, displ
 }
 
 export def consteval_module(module: &Module, display_name: &string = null) {
-    if not module.is_dirty or module.stage !int >= Stage::PREPROCESS !int { return }
+    if (not module.is_dirty and not no_incremental) or module.stage !int >= Stage::PREPROCESS !int { return }
     let modulename = module.module
     module.stage = Stage::PREPROCESS
 
@@ -408,19 +407,22 @@ export def consteval_module(module: &Module, display_name: &string = null) {
     
     module.node = node
     module.compiler_state = compiler::make_state(module)
-
-    let filename_type = typechecking::make_static_array(builtins::char_, module.filename.size)
-    let exe_global = compiler::make_global_value(
-        filename_type, "__file__", 
-        { kind = compiler::ValueKind::STRING, tpe = filename_type, s = module.filename } !&compiler::Value,
-        module.compiler_state, private = false
-    )
-    let exe_value = scope::create_variable(
-        module.scope, make_identifier("__file__"), 
-        parser::ShareMarker::EXPORT, parser::VarDecl::LET, filename_type, null
-    )
-    exe_value.assembly_name = exe_global.name
-
+    
+    let ident = make_identifier("__file__")
+    if not scope::get(module.scope, ident) {
+        let filename_type = typechecking::make_static_array(builtins::char_, module.filename.size)
+        let exe_global = compiler::make_global_value(
+            filename_type, "__file__", 
+            { kind = compiler::ValueKind::STRING, tpe = filename_type, s = module.filename } !&compiler::Value,
+            module.compiler_state, private = false
+        )
+        let exe_value = scope::create_variable(
+            module.scope, ident, 
+            parser::ShareMarker::EXPORT, parser::VarDecl::LET, filename_type, null
+        )
+        exe_value.assembly_name = exe_global.name
+        exe_value.identifier = ident
+    }
     consteval::consteval(module)
 }
 
@@ -428,7 +430,7 @@ export def consteval_file(filename: &string, modulename: &string, display_name: 
     var module: &Module
     if modules.contains(filename) {
         module = modules[filename]
-        if not module.is_dirty or module.stage !int >= Stage::PREPROCESS !int {
+        if (not module.is_dirty and not no_incremental) or module.stage !int >= Stage::PREPROCESS !int {
             return module
         }
     } else {
@@ -660,10 +662,7 @@ export def compile_main_file(filename: &string) {
 
     serialize::dependency_pass(module)
 
-    module.stage = Stage::TYPECHECKING
-    if module.is_dirty {
-        typechecking::typecheck(module)
-    }
+    typecheck_module(module)
 
     if print_typed_ast {
         if error_count > 0 { exit(1) }
@@ -673,15 +672,10 @@ export def compile_main_file(filename: &string) {
 
     load_file_type()
 
-    module.stage = Stage::COMPILING
     reset_types()
     compiler::import_structures(builtins::Type_, types)
 
-    if module.is_dirty {
-        compiler::compile(module)
-    } else {
-        compiler::compile(runtime_)
-    }
+    compile_module(module)
 
     for var filename in @modules.keys() {
         let module = modules[filename]
@@ -764,7 +758,7 @@ export def compile_main_file(filename: &string) {
 
         for var filename in @modules.keys() {
             let module = modules[filename]
-            if module.module == "builtin" or not module.is_dirty { continue }
+            if module.module == "builtin" or not (module.is_dirty or no_incremental) { continue }
             codegen::gen(module)
 
             build_command += module.file + ".ll "
