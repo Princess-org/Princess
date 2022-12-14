@@ -395,6 +395,21 @@ export def create_module_if_absent(filename: &string, modulename: &string, displ
     return module
 }
 
+export def reset_and_consteval(module: &Module) {
+    let all_values = scope::all_values(module.scope)
+    for var i in 0..all_values.length {
+        let value = all_values[i]
+        value.phase = scope::Phase::DECLARED // Reset values
+        if value.polymorph {
+            scope::remove(module.scope, value)
+        }
+    }
+    
+    module.scope.imports = vector::make(scope::ImportedModule)
+    module.stage = Stage::READ_CACHE
+    consteval_module(module)
+}
+
 export def consteval_module(module: &Module, display_name: &string = null) {
     if (not module.is_dirty and not no_incremental) or module.stage !int >= Stage::PREPROCESS !int { return }
     let modulename = module.module
@@ -620,6 +635,18 @@ export def extract_module_name(filename: &string) -> &string {
     return filename.substring(folder_sep + 1 if folder_sep > 0 else 0, filename.length() - 3)
 }
 
+def make_build_command -> &string {
+    var build_command: &string = clang + " "
+    for var i in 0..clang_flags.length {
+        build_command += clang_flags[i] + " "
+    }
+
+    if debug::verbose { 
+        build_command += "-v "
+    }
+    return build_command
+}
+
 export def compile_main_file(filename: &string) {
     if not filename.ends_with(".pr") {
         error("File ", filename, " is not a Princess source file\n")
@@ -729,14 +756,7 @@ export def compile_main_file(filename: &string) {
             system(@compile_cstd)
         }
 
-        var build_command: &string = clang + " -c -Wno-override-module "
-        for var i in 0..clang_flags.length {
-            build_command += clang_flags[i] + " "
-        }
-
-        if debug::verbose { 
-            build_command += "-v "
-        }
+        var build_command = make_build_command() + "-Wno-override-module -c "
         
         #if not defined WIN32 {
             if is_shared {
@@ -761,7 +781,31 @@ export def compile_main_file(filename: &string) {
             if module.module == "builtin" or not (module.is_dirty or no_incremental) { continue }
             codegen::gen(module)
 
-            build_command += module.file + ".ll "
+            var combine = false
+            if module.is_dirty and not no_incremental {
+                var file = outfolder + "/" + module.file
+                let old_obj = file + ".o"
+                if exists(old_obj) {
+                    combine = true
+                   
+                    let new_obj = file + "%incr.o"
+                    var compile_new = make_build_command()
+                    compile_new += "-c -o " + new_obj + " " + file + ".ll"
+                    debug::trace(compile_new)
+                    system(compile_new)
+
+                    var compile_combine = make_build_command()
+                    compile_combine += "-nostdlib -Wl,-r,-z,muldefs -o " + file + "%new.o" + " " + new_obj + " " + old_obj
+                    debug::trace(compile_combine)
+                    system(compile_combine)
+
+                    system("cp " + file + "%new.o " + old_obj)
+                }
+            }
+            
+            if not combine {
+                build_command += module.file + ".ll "
+            }
         }
         
         if time_report {

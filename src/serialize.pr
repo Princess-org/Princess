@@ -244,6 +244,8 @@ def serialize_function(fp: File, value: &scope::Value, state: &Serialize) {
     fp.write(*hash)
     fp.write(*share)
     fp.write(*value.extern)
+    fp.write(*value.imported)
+    fp.write(*value.polymorph)
     // TODO Get Function object with dllexport and dllimport
     fp.write_str(value.name)
     fp.write_str(tpe.type_name)
@@ -524,7 +526,7 @@ def deserialize_type(deserialize: &Deserialize, fp: File, tpe: &typechecking::Ty
                 var value: int64
                 fp.read(*value)
                 let v = scope::create_variable(scpe,
-                    name, parser::ShareMarker::EXPORT, parser::VarDecl::CONST, tpe.tpe, 
+                    name, parser::ShareMarker::EXPORT, parser::VarDecl::CONST, tpe, 
                     { kind = compiler::ValueKind::INT, tpe = tpe.tpe, i = value } !compiler::Value
                 )
                 v.identifier = name
@@ -574,12 +576,16 @@ def deserialize_function(deserialize: &Deserialize, fp: File) {
     var hash: uint64
     var share: bool
     var extern: bool
+    var imported: bool
+    var polymorph: bool
     var name: &string
     var type_name: &string
 
     fp.read(*hash)
     fp.read(*share)
     fp.read(*extern)
+    fp.read(*imported)
+    fp.read(*polymorph)
     name = fp.read_str()
     type_name = fp.read_str()
 
@@ -594,10 +600,12 @@ def deserialize_function(deserialize: &Deserialize, fp: File) {
         let tpe = deserialize_type(deserialize, fp)
         var has_value: bool
         fp.read(*has_value)
+
+        var value: &compiler::Value
         if has_value {
-            let value = deserialize_value(deserialize, fp)
+            value = deserialize_value(deserialize, fp)
         }
-        parameter_t.push({ name = name, _tpe = tpe, varargs = varargs } !typechecking::NamedParameter)
+        parameter_t.push({ name = name, _tpe = tpe, varargs = varargs, value = value } !typechecking::NamedParameter)
     }
 
     let return_t = vector::make(type &typechecking::Type)
@@ -641,7 +649,9 @@ def deserialize_function(deserialize: &Deserialize, fp: File) {
         hash = hash,
         node = node,
         state = state,
-        ftpe = ftpe
+        ftpe = ftpe,
+        imported = imported,
+        polymorph = polymorph
     } !FunctionEntry)
 }
 
@@ -704,17 +714,64 @@ def deserialize_variable(deserialize: &Deserialize, fp: File) {
     } !VariableEntry)
 }
 
-def serialize_value(fp: File, value: &compiler::Value, state: &Serialize) {
+let NO_VALUE: byte = -1
 
+def serialize_value(fp: File, value: &compiler::Value, state: &Serialize) {
+    if not value {
+        fp.write(*NO_VALUE)
+        return
+    }
+    let kind = value.kind !byte
+    fp.write(*kind)
+    fp.write(*value.metadata)
+    fp.write(*value.distinct)
+    fp.write_str(value.name)
+    fp.write(*value.i)
+    fp.write(*value.f)
+    fp.write_str(value.s)
+    write_type(fp, value.value_tpe, state)
+    if value.values {
+        let sz = value.values.size
+        fp.write(*sz)
+        for var i in 0..sz {
+            serialize_value(fp, value.values[i], state)
+        }
+    } else {
+        let zero: uint64 = 0
+        fp.write(*zero)
+    }
+    write_type(fp, value.tpe, state)
 }
 
 def deserialize_value(deserialize: &Deserialize, fp: File) -> &compiler::Value {
-    return null
+    var kind: byte
+    fp.read(*kind)
+    if kind == NO_VALUE {
+        return null
+    }
+
+    let value = {} !&compiler::Value
+    value.kind = kind !compiler::ValueKind
+    fp.read(*value.metadata)
+    fp.read(*value.distinct)
+    value.name = fp.read_str()
+    fp.read(*value.i)
+    fp.read(*value.f)
+    value.s = fp.read_str()
+    value.value_tpe = deserialize_type(deserialize, fp)
+    var sz: uint64
+    fp.read(*sz)
+    value.values = allocate_ref(type compiler::Value, sz)
+    for var i in 0..sz {
+        value.values[i] = @deserialize_value(deserialize, fp)
+    }
+    value.tpe = deserialize_type(deserialize, fp)
+
+    return value
 }
 
 export def serialize(module: &toolchain::Module) {
     let cache_file = toolchain::outfolder + "/" + module.file + ".prc"
-    if not toolchain::no_incremental { return } // TODO Remove this
 
     let fp = open(@cache_file, "wb")
     defer close(fp)
@@ -830,6 +887,8 @@ type FunctionEntry = struct {
     node: &parser::Node
     state: &typechecking::State
     ftpe: &typechecking::Type
+    imported: bool
+    polymorph: bool
 }
 
 type VariableEntry = struct {
@@ -955,6 +1014,7 @@ export def resolver_pass(module: &toolchain::Module) {
     for var i in 0..deserialize.rtypes.length {
         let entry = deserialize.rtypes[i]
         let name_node = parser::make_identifier(entry.name)
+        name_node.loc.module = module.module
         let val = scope::create_type(
             deserialize.module.scope, name_node, entry.share, 
             entry.tpe, scope::Phase::COMPILED, null, null
@@ -966,10 +1026,13 @@ export def resolver_pass(module: &toolchain::Module) {
     for var i in 0..deserialize.functions.length {
         let entry = deserialize.functions[i]
         let name_node = parser::make_identifier(entry.name)
+        name_node.loc.module = module.module
         let value = scope::create_function(
             module.scope, name_node, parser::ShareMarker::EXPORT, 
             entry.ftpe, scope::Phase::COMPILED, entry.node, entry.state
         )
+        value.imported = entry.imported
+        value.polymorph = entry.polymorph
         value.ident = scope::make_ident(entry.name, module, entry.hash, entry.ftpe.type_name)
         value.identifier = name_node
     }
@@ -977,6 +1040,7 @@ export def resolver_pass(module: &toolchain::Module) {
     for var i in 0..deserialize.variables.length {
         let entry = deserialize.variables[i]
         let id = parser::make_identifier(entry.name)
+        id.loc.module = module.module
         let val = scope::create_variable(
             module.scope, id, parser::ShareMarker::EXPORT, 
             entry.modifier, entry.tpe, 
@@ -1043,15 +1107,7 @@ export def dependency_pass(module: &toolchain::Module) {
     }
 
     if module.is_dirty and module.stage !int < toolchain::Stage::TYPECHECKING !int {
-        let all_values = scope::all_values(module.scope)
-        for var i in 0..all_values.length {
-            let value = all_values[i]
-            value.phase = scope::Phase::DECLARED // Reset values
-        }
-        
-        module.scope.imports = vector::make(scope::ImportedModule)
-        module.stage = toolchain::Stage::READ_CACHE
-        toolchain::consteval_module(module)
+        toolchain::reset_and_consteval(module)
     }
 }
 
