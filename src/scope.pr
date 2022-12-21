@@ -145,6 +145,11 @@ export def get_scope(value: &Value) -> &Scope {
     return value._scope
 }
 
+type ReExport = struct {
+    module: weak_ref(toolchain::Module)
+    pattern: &parser::Node
+}
+
 export type Scope = struct {
     module: weak_ref(toolchain::Module)
     is_function: bool
@@ -160,6 +165,7 @@ export type Scope = struct {
     // Current underscore
     underscore: &Value
     underscore_count: int
+    re_exports: &Vector(ReExport)
 }
 
 export type Phase = enum {
@@ -835,6 +841,27 @@ export def get_function_check(
     only_function: bool = false
 ) -> bool, &Value {
 
+    def check_for_re_exports(scope: &Scope, value: &Value) -> &Value {
+        if not scope.re_exports { return value }
+        for var i in 0..scope.re_exports.length {
+            let re_export = scope.re_exports[i]
+            if pattern_matches(id, re_export.pattern) {
+                var _, value2 = get_function_check(re_export.module.scope, id, parameter_t, check_export, force_compile, only_function)
+                if value2 and not pattern_matches(id, re_export.pattern, value2.tpe.parameter_t) { continue }
+                if value2 and value2.share !int & parser::ShareMarker::EXPORT !int {
+                    if value and value !* != value2 {
+                        if not dry_run {
+                            errors::errorn(id, "Ambiguous reference")
+                        }
+                        return null
+                    }
+                    value = value2
+                }
+            }
+        }
+        return value
+    }
+
     if not scope { return false, null }
     //if id.svalue { return true, id.svalue }
     
@@ -876,6 +903,16 @@ export def get_function_check(
                 return true, null
             }
         }
+        if scope.re_exports {
+            value = check_for_re_exports(scope, value)
+        }
+        if scope.imports {
+            for var i in 0..scope.imports.length {
+                let scope2 = scope.imports[i].module.scope
+                value = check_for_re_exports(scope2, value)
+            }
+        }
+
         if not value and (@scope).parent and (not first_value or only_function) {
             code, value = get_function_check((@scope).parent, id, parameter_t, check_export, dry_run, force_compile, only_function)
         }
@@ -964,7 +1001,6 @@ export def get(scope: &Scope, id: &parser::Node, force_compile: bool = true, che
                 if value and force_compile and value.phase == Phase::DEFINED {
                     value = typecheck_function(value, id, scope, false, id.value.identifier.types)
                 }
-                id.svalue = value
                 return value
             } else if is_function(value.tpe) and id.parent and id.parent.kind == parser::NodeKind::PTR and value.next {
                 if not dry_run { errors::errorn(id, "Ambiguous reference") }
@@ -1001,6 +1037,23 @@ export def get(scope: &Scope, id: &parser::Node, force_compile: bool = true, che
                         }
                     }
                     value = value2
+                }
+            }
+        }
+        if scope.re_exports and name != "__main__" { // TODO To check for main is a dirty fix to allow wildcards
+            for var i in 0..scope.re_exports.length {
+                let re_export = scope.re_exports[i]
+                if pattern_matches(id, re_export.pattern) {
+                    var value2 = get(re_export.module.scope, id)
+                    if value2 and value2.share !int & parser::ShareMarker::EXPORT !int {
+                        if value and value !* != value2 !* {
+                            if not dry_run {
+                                errors::errorn(id, "Ambiguous reference")
+                            }
+                            return null
+                        }
+                        value = value2
+                    }
                 }
             }
         }
@@ -1397,4 +1450,52 @@ export def insert_module(scope: &Scope, alias: &parser::Node, module: &toolchain
     } !ImportedModule)
 
     return v
+}
+
+export def insert_re_export(scope: &Scope, pattern: &parser::Node, module: &toolchain::Module) {
+    assert scope != null
+    if not scope.re_exports {
+        scope.re_exports = vector::make(ReExport)
+    }
+    scope.re_exports.push({
+        module = module,
+        pattern = pattern
+    } !ReExport)
+}
+
+def pattern_matches(this: &parser::Node, other: &parser::Node) -> bool {
+    if not other { return true }
+    // TODO This is going to fail if we add namespaces
+    let thisname = last_path_element(this)
+    let othername = last_path_element(other)
+    if thisname != othername { return false }
+
+    let this_types = this.value.identifier.types
+    let other_types = other.value.identifier.types
+    if other_types {
+        if not this_types { return true }
+        if this_types.length != other_types.length { return false }
+        for var i in 0..this_types.length {
+            if not typechecking::equals(this_types[i].tpe, other_types[i].tpe) {
+                return false
+            }
+        }
+    }
+    return true
+}
+
+def pattern_matches(this: &parser::Node, other: &parser::Node, parameter_t: &Vector(typechecking::NamedParameter)) -> bool {
+    if not pattern_matches(this, other) { return false }
+    if not other { return true }
+
+    let other_types = other.value.identifier.types
+    if not other_types { return true }
+
+    if other_types.length != parameter_t.length { return false }
+    for var i in 0..other_types.length {
+        if not typechecking::equals(other_types[i].tpe, parameter_t[i].tpe) {
+            return false
+        }
+    }
+    return true
 }

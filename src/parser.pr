@@ -99,6 +99,8 @@ export type NodeKind = enum {
     NAMED_ARG
     ID_DECL_STRUCT
     ID_DECL_ENUM
+    FROM
+    STAR
     ENUM_T
     STRUCT_T
     UNION_T
@@ -328,6 +330,11 @@ export type NodeProgram = struct {
     function: &compiler::Function
 }
 
+export type NodeFrom = struct {
+    module: &Node
+    idents: &Vector(&Node)
+}
+
 export type NodeValue = struct #union {
     bin_op: NodeBinaryOp
     var_decl: NodeVarDecl
@@ -359,6 +366,7 @@ export type NodeValue = struct #union {
     assert_: NodeAssert
     program: NodeProgram
     type_constructor: NodeTypeConstructor
+    from_: NodeFrom
 
     body: &Vector(&Node)
     expr: &Node
@@ -534,9 +542,11 @@ export def destruct(node: *Node) {
             __destruct__(*node.value.bin_op)
         case NodeKind::TYPE_CONSTRUCTOR:
             __destruct__(*node.value.type_constructor)
+        case NodeKind::FROM:
+            __destruct__(*node.value.from_)
         case NodeKind::INTEGER, NodeKind::CHAR, NodeKind::FLOAT,
             NodeKind::BOOLEAN, NodeKind::NULL, NodeKind::UNDEF, NodeKind::BREAK, NodeKind::CONTINUE,
-            NodeKind::WORD_T:
+            NodeKind::WORD_T, NodeKind::STAR:
         case:
             error(node.kind, "\n")
             assert
@@ -645,9 +655,11 @@ export def construct(copy: *Node, node: *Node) {
             copy.value.bin_op = node.value.bin_op
         case NodeKind::TYPE_CONSTRUCTOR:
             copy.value.type_constructor = node.value.type_constructor
+        case NodeKind::FROM:
+            copy.value.from_ = node.value.from_
         case NodeKind::INTEGER, NodeKind::CHAR, NodeKind::FLOAT,
             NodeKind::BOOLEAN, NodeKind::NULL, NodeKind::UNDEF, NodeKind::BREAK, NodeKind::CONTINUE,
-            NodeKind::WORD_T:
+            NodeKind::WORD_T, NodeKind::STAR:
             copy.value = node.value
         case:
             error(node.kind, "\n")
@@ -788,9 +800,12 @@ export def offset(node: &Node, changes: &[server::TextDocumentChangeEvent]) {
         case NodeKind::TYPE_CONSTRUCTOR:
             offset(node.value.type_constructor.name, changes)
             offset(node.value.type_constructor.args, changes)
+        case NodeKind::FROM:
+            offset(node.value.from_.module, changes)
+            offset(node.value.from_.idents, changes)
         case NodeKind::INTEGER, NodeKind::CHAR, NodeKind::FLOAT,
             NodeKind::BOOLEAN, NodeKind::NULL, NodeKind::UNDEF, NodeKind::BREAK, NodeKind::CONTINUE,
-            NodeKind::WORD_T:
+            NodeKind::WORD_T, NodeKind::STAR:
         case:
             error(node.kind, "\n")
             assert
@@ -914,9 +929,12 @@ export def clear(node: &Node) {
         case NodeKind::TYPE_CONSTRUCTOR:
             clear(node.value.type_constructor.name)
             clear(node.value.type_constructor.args)
+        case NodeKind::FROM:
+            clear(node.value.from_.module)
+            clear(node.value.from_.idents)
         case NodeKind::INTEGER, NodeKind::CHAR, NodeKind::FLOAT,
             NodeKind::BOOLEAN, NodeKind::NULL, NodeKind::UNDEF, NodeKind::BREAK, NodeKind::CONTINUE,
-            NodeKind::WORD_T:
+            NodeKind::WORD_T, NodeKind::STAR:
         case:
             error(node.kind, "\n")
             assert
@@ -1114,6 +1132,11 @@ export def find(node: &Node, line: int, column: int) -> &Node {
                 if n2 { return n2 }
                 n2 = find(node.value.bin_op.right, line, column)
                 if n2 { return n2 }
+            case NodeKind::FROM:
+                var n2 = find(node.value.from_.module, line, column)
+                if n2 { return n2 }
+                n2 = find(node.value.from_.idents, line, column)
+                if n2 { return n2 }
             case NodeKind::TYPE_CONSTRUCTOR:
                 var n2 = find(node.value.type_constructor.name, line, column)
                 if n2 { return n2 }
@@ -1121,7 +1144,7 @@ export def find(node: &Node, line: int, column: int) -> &Node {
                 if n2 { return n2 }
             case NodeKind::INTEGER, NodeKind::CHAR, NodeKind::FLOAT,
                 NodeKind::BOOLEAN, NodeKind::NULL, NodeKind::UNDEF, NodeKind::BREAK, NodeKind::CONTINUE,
-                NodeKind::WORD_T:
+                NodeKind::WORD_T, NodeKind::STAR:
                 return node
             case:
                 error(node.kind, "\n")
@@ -1305,12 +1328,15 @@ export def deep_copy_node(node: &Node, clear_svalue: bool = true) -> &Node {
             // Binary op
             copy.value.bin_op.left = deep_copy_node(node.value.bin_op.left, clear_svalue)
             copy.value.bin_op.right = deep_copy_node(node.value.bin_op.right, clear_svalue)
+        case NodeKind::FROM:
+            copy.value.from_.module = deep_copy_node(node.value.from_.module, clear_svalue)
+            copy.value.from_.idents = deep_copy_vector_of_nodes(node.value.from_.idents, clear_svalue)
         case NodeKind::TYPE_CONSTRUCTOR:
             copy.value.type_constructor.name = deep_copy_node(node.value.type_constructor.name, clear_svalue)
             copy.value.type_constructor.args = deep_copy_vector_of_nodes(node.value.type_constructor.args, clear_svalue)
         case NodeKind::INTEGER, NodeKind::CHAR, NodeKind::FLOAT,
             NodeKind::BOOLEAN, NodeKind::NULL, NodeKind::UNDEF, NodeKind::BREAK, NodeKind::CONTINUE,
-            NodeKind::WORD_T:
+            NodeKind::WORD_T, NodeKind::STAR:
         case:
             error(node.kind, "\n")
             assert
@@ -3725,6 +3751,51 @@ def expect_yield_stmt(parse_state: &ParseState) -> &Node {
     return expect_yield_or_return(true, parse_state)
 }
 
+def expect_from(parse_state: &ParseState) -> &Node {
+    var token = expect(parse_state, lexer::TokenType::K_FROM, "Expected from")
+    let line = token.line
+    let column = token.column
+    
+    skip_newline(parse_state)
+    let module = expect_identifier(parse_state)
+    skip_newline(parse_state)
+
+    expect(parse_state, lexer::TokenType::K_EXPORT, "Expected export")
+    skip_newline(parse_state)
+
+    let idents = vector::make(type &Node)
+    loop {
+        token = peek(parse_state)
+        if token.tpe == lexer::TokenType::OP_MUL {
+         idents.push(make_node(NodeKind::STAR, token.line, token.column, parse_state))
+            pop(parse_state)
+        } else if token.tpe == lexer::TokenType::IDENTIFIER or token.tpe == lexer::TokenType::DOUBLE_COLON {
+            let ident = parse_identifier(parse_state)
+            if not ident { break }
+            idents.push(ident)
+        } else {
+            break
+        }
+        token = peek(parse_state)
+        if token.tpe == lexer::TokenType::COMMA {
+            token = pop(parse_state)
+            skip_newline(parse_state)
+            continue
+        } else {
+            break
+        }
+    }
+    if idents.length == 0 {
+        errors::errort(token, parse_state, "Need to define at least one identifier")
+    }
+    let node = make_node(NodeKind::FROM, line, column, parse_state)
+    node.value.from_ = {
+        module = module,
+        idents = idents
+    } !NodeFrom
+    return node
+}
+
 def parse_t_term(parse_state: &ParseState) {
     let token = peek(parse_state)
     if token.tpe == lexer::TokenType::SEMICOLON or token.tpe == lexer::TokenType::NEW_LINE {
@@ -3834,6 +3905,8 @@ export def parse_statement(parse_state: &ParseState) -> &Node {
             errors::errort(peek(parse_state), parse_state, "Expected def, type, var, let, const")
             return null
         }
+    } else if lh.tpe == lexer::TokenType::K_FROM {
+        node = expect_from(parse_state)
     } else if lh.tpe == lexer::TokenType::K_IF {
         node = expect_if_stmt(parse_state, false)
     } else if lh.tpe == lexer::TokenType::PRAGMA and lh.value.str == "#if" {
