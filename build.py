@@ -122,6 +122,7 @@ def download():
     if sys.platform == "win32":
         shutil.copy(Path("princess") / "bin/princess.exe", "bin")
         shutil.copy(Path("princess") / "bin/princess.pdb", "bin")
+        print(os.path.getsize(Path("princess") / "Bbin/princess.exe"))
     else:
         shutil.copy(Path("princess") / "bin/princess", "bin")
     
