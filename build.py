@@ -111,8 +111,6 @@ def download():
     if not asset:
         print("Couldn't find suitable asset, maybe github is down or something.")
         exit(1)
-
-    print(asset["browser_download_url"])
     
     archive = "princess.zip" if sys.platform == "win32" else "princess.tar.gz"
     with open(archive, "wb") as fp:
@@ -122,7 +120,6 @@ def download():
     if sys.platform == "win32":
         shutil.copy(Path("princess") / "bin/princess.exe", "bin")
         shutil.copy(Path("princess") / "bin/princess.pdb", "bin")
-        print(os.path.getsize(Path("princess") / "bin/princess.exe"))
     else:
         shutil.copy(Path("princess") / "bin/princess", "bin")
     
