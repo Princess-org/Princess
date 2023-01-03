@@ -1,6 +1,6 @@
 # Princess 
 ![Build Status](https://github.com/Princess-org/Princess/actions/workflows/build-and-test.yml/badge.svg)
-![Build on Windows](https://github.com/Princess-org/Princess/actions/workflows/winderps.yml/badge.svg)
+![Build on Windows](https://github.com/Princess-org/Princess/actions/workflows/windows.yml/badge.svg)
 
 ## Goals
 - <s>The language should be at least as fast to compile as C, it should be possible to have a compiler for it run on an embedded device</s>
