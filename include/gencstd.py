@@ -458,7 +458,7 @@ class Walker(NodeWalker):
         return Array(self.walk(node.type), int(node.size) if node.size else None)
 
     def walk_Identifier(self, node):
-        return self.file.TYPEDEFS.get(node.ast, Integer(node.ast))
+        return self.file.TYPEDEFS[node.ast]
 
     def walk_Tagged(self, node):
         name = node.ast[1].ast
