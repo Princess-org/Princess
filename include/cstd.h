@@ -3,6 +3,7 @@
 %EXCLUDE timer_create timer_delete timer_settime timer_gettime timer_getoverrun
 %EXCLUDE __builtin_fabsf __builtin_inff __builtin_fabs __builtin_inf __builtin_fabsl __builtin_infl longjmperror
 %EXCLUDE __va_start _sopen_s_nolock
+%EXCLUDE __builtin_bswap32 __builtin_bswap64
 */
 
 #include <stdlib.h>
