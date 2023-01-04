@@ -46,6 +46,64 @@ class File:
 
         self.TAGGED["__va_list_tag"] = VaList()
         self.TYPEDEFS["bool"] = PRIMITIVES["_Bool"]
+        if sys.platform == "darwin":
+            self.TYPEDEFS["__SVInt8_t"] = PRIMITIVES["char"]
+            self.TYPEDEFS["__SVInt16_t"] = PRIMITIVES["short"]
+            self.TYPEDEFS["__SVInt32_t"] = PRIMITIVES["int"]
+            self.TYPEDEFS["__SVInt64_t"] = PRIMITIVES["long"]
+            self.TYPEDEFS["__SVUint8_t"] = PRIMITIVES["char"]
+            self.TYPEDEFS["__SVUint16_t"] = PRIMITIVES["short"]
+            self.TYPEDEFS["__SVUint32_t"] = PRIMITIVES["int"]
+            self.TYPEDEFS["__SVUint64_t"] = PRIMITIVES["long"]
+            self.TYPEDEFS["__SVFloat16_t"] = Integer("__SVFloat16_t") # short float ??
+            self.TYPEDEFS["__SVFloat32_t"] = Integer("__SVFloat32_t")
+            self.TYPEDEFS["__SVFloat64_t"] = Integer("__SVFloat64_t")
+            self.TYPEDEFS["__SVBFloat16_t"] = Integer("__SVBFloat16_t")
+            self.TYPEDEFS["__SVBFloat32_t"] = Integer("__SVBFloat32_t")
+            self.TYPEDEFS["__SVBFloat64_t"] = Integer("__SVBFloat64_t")
+            self.TYPEDEFS["__clang_svint8x2_t"] = Integer("__clang_svint8x2_t")
+            self.TYPEDEFS["__clang_svint16x2_t"] = Integer("__clang_svint16x2_t")
+            self.TYPEDEFS["__clang_svint32x2_t"] = Integer("__clang_svint32x2_t")
+            self.TYPEDEFS["__clang_svint64x2_t"] = Integer("__clang_svint64x2_t")
+            self.TYPEDEFS["__clang_svuint8x2_t"] = Integer("__clang_svuint8x2_t")
+            self.TYPEDEFS["__clang_svuint16x2_t"] = Integer("__clang_svuint16x2_t")
+            self.TYPEDEFS["__clang_svuint32x2_t"] = Integer("__clang_svuint32x2_t")
+            self.TYPEDEFS["__clang_svuint64x2_t"] = Integer("__clang_svuint64x2_t")
+            self.TYPEDEFS["__clang_svfloat16x2_t"] = Integer("__clang_svfloat16x2_t")
+            self.TYPEDEFS["__clang_svfloat32x2_t"] = Integer("__clang_svfloat32x2_t")
+            self.TYPEDEFS["__clang_svfloat64x2_t"] = Integer("__clang_svfloat64x2_t")
+            self.TYPEDEFS["__clang_svbfloat16x2_t"] = Integer("__clang_svbfloat16x2_t")
+            self.TYPEDEFS["__clang_svbfloat32x2_t"] = Integer("__clang_svbfloat32x2_t")
+            self.TYPEDEFS["__clang_svbfloat64x2_t"] = Integer("__clang_svbfloat64x2_t")
+            self.TYPEDEFS["__clang_svint8x3_t"] = Integer("__clang_svint8x3_t")
+            self.TYPEDEFS["__clang_svint16x3_t"] = Integer("__clang_svint16x3_t")
+            self.TYPEDEFS["__clang_svint32x3_t"] = Integer("__clang_svint32x3_t")
+            self.TYPEDEFS["__clang_svint64x3_t"] = Integer("__clang_svint64x3_t")
+            self.TYPEDEFS["__clang_svuint8x3_t"] = Integer("__clang_svuint8x3_t")
+            self.TYPEDEFS["__clang_svuint16x3_t"] = Integer("__clang_svuint16x3_t")
+            self.TYPEDEFS["__clang_svuint32x3_t"] = Integer("__clang_svuint32x3_t")
+            self.TYPEDEFS["__clang_svuint64x3_t"] = Integer("__clang_svuint64x3_t")
+            self.TYPEDEFS["__clang_svfloat16x3_t"] = Integer("__clang_svfloat16x3_t")
+            self.TYPEDEFS["__clang_svfloat32x3_t"] = Integer("__clang_svfloat32x3_t")
+            self.TYPEDEFS["__clang_svfloat64x3_t"] = Integer("__clang_svfloat64x3_t")
+            self.TYPEDEFS["__clang_svbfloat16x3_t"] = Integer("__clang_svbfloat16x3_t")
+            self.TYPEDEFS["__clang_svbfloat32x3_t"] = Integer("__clang_svbfloat32x3_t")
+            self.TYPEDEFS["__clang_svbfloat64x3_t"] = Integer("__clang_svbfloat64x3_t")
+            self.TYPEDEFS["__clang_svint8x4_t"] = Integer("__clang_svint8x4_t")
+            self.TYPEDEFS["__clang_svint16x4_t"] = Integer("__clang_svint16x4_t")
+            self.TYPEDEFS["__clang_svint32x4_t"] = Integer("__clang_svint32x4_t")
+            self.TYPEDEFS["__clang_svint64x4_t"] = Integer("__clang_svint64x4_t")
+            self.TYPEDEFS["__clang_svuint8x4_t"] = Integer("__clang_svuint8x4_t")
+            self.TYPEDEFS["__clang_svuint16x4_t"] = Integer("__clang_svuint16x4_t")
+            self.TYPEDEFS["__clang_svuint32x4_t"] = Integer("__clang_svuint32x4_t")
+            self.TYPEDEFS["__clang_svuint64x4_t"] = Integer("__clang_svuint64x4_t")
+            self.TYPEDEFS["__clang_svfloat16x4_t"] = Integer("__clang_svfloat16x4_t")
+            self.TYPEDEFS["__clang_svfloat32x4_t"] = Integer("__clang_svfloat32x4_t")
+            self.TYPEDEFS["__clang_svfloat64x4_t"] = Integer("__clang_svfloat64x4_t")
+            self.TYPEDEFS["__clang_svbfloat16x4_t"] = Integer("__clang_svbfloat16x4_t")
+            self.TYPEDEFS["__clang_svbfloat32x4_t"] = Integer("__clang_svbfloat32x4_t")
+            self.TYPEDEFS["__clang_svbfloat64x4_t"] = Integer("__clang_svbfloat64x4_t")
+            self.TYPEDEFS["__SVBool_t"] = PRIMITIVES["_Bool"]
 
         self.has_printed = set()
         self.fp = fp
@@ -400,7 +458,7 @@ class Walker(NodeWalker):
         return Array(self.walk(node.type), int(node.size) if node.size else None)
 
     def walk_Identifier(self, node):
-        return self.file.TYPEDEFS[node.ast]
+        return self.file.TYPEDEFS.get(node.ast, Integer(node.ast))
 
     def walk_Tagged(self, node):
         name = node.ast[1].ast
@@ -617,12 +675,21 @@ def process_module(name: str, *libs):
 
 
     folder = Path(__file__).parent
-    platform = folder / ("windows" if sys.platform == "win32" else "linux")
+    platform = folder / ("windows" if sys.platform == "win32" else "macos" if sys.platform == "darwin" else "linux")
 
-    clang_cmd = ["clang" if sys.platform == "win32" else "clang-13", "-Xclang", "-ast-dump=json", "-fsyntax-only"]
+    if sys.platform == "win32":
+        clang_bin = "clang"
+    elif sys.platform == "darwin":
+        clang_bin = "/opt/homebrew//Cellar/llvm@13/13.0.1_2//bin/clang"
+    else: 
+        clang_bin = "clang-13"
+    clang_cmd = [clang_bin, "-Xclang", "-ast-dump=json", "-fsyntax-only"]
     if sys.platform == "win32":
         clang_cmd.append("--include-directory")
         clang_cmd.append(platform)
+    if sys.platform == "darwin":
+        clang_cmd.append("-I/opt/homebrew/opt/libffi/include")
+        clang_cmd.append("-I/opt/homebrew/include")
 
     with open(platform / f"{name}.json", "w") as fp:
         clang_cmd.append(folder / f"{name}.h")

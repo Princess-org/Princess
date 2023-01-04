@@ -4,7 +4,9 @@
 */
 
 #ifndef _WIN32
+#ifndef __APPLE__
     #include <linux/limits.h>
+#endif
     #include <sys/stat.h>
     #include <sys/ioctl.h>
     #include <sys/wait.h>
@@ -14,7 +16,12 @@
     #include <termios.h>
     #include <stdlib.h>
     #include <dlfcn.h>
+#ifdef __APPLE__
+    #include <libelf/libelf.h>
+#endif
+#ifndef __APPLE__
     #include <elf.h>
+#endif
     #include <poll.h>
     #include <fnmatch.h>
     #include <dirent.h>
