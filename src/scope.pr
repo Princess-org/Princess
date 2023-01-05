@@ -91,6 +91,7 @@ export type Value = struct {
     global: bool
     // No mangling if extern
     extern: bool
+    impl: bool
     dllimport: bool
     dllexport: bool
     // Definition of the value
@@ -156,6 +157,7 @@ export type Scope = struct {
     scope_count: int
     parent: weak_ref(Scope)
     fields: &SMap(&Value)
+    implicits: &Vector(&Value)
     // This is a list of imported scopes,
     // for resolving names from other modules without
     // specifying the full path
@@ -264,6 +266,7 @@ export def enter_scope(scope: &Scope, module: &toolchain::Module) -> &Scope {
         module = module,
         parent = scope,
         fields = map::make(type &Value),
+        implicits = vector::make(type &Value),
         underscore_count = scope.underscore_count if scope else 0
     } !&Scope
     let function_parent = get_function_parent(s)
@@ -284,6 +287,7 @@ export def enter_function_scope(scope: &Scope, module: &toolchain::Module) -> &S
         module = module,
         parent = scope,
         fields = map::make(type &Value),
+        implicits = vector::make(type &Value),
         is_function = true,
         scope_count = 0
     } !&Scope
@@ -605,6 +609,69 @@ def find_function(scope: &Scope, node: &parser::Node, v: &Value, parameter_t: &V
     return found != null, found
 }
 
+export def find_implicit_function(scope: &Scope, parameter_t: &Vector(typechecking::NamedParameter), ret: &typechecking::Type) -> &Value {
+    if not scope { return null }
+    assert parameter_t.length == 1
+
+    let r = ret // TODO Capture parameters
+    def find(scope: &Scope, score: *int, check_export: bool) -> &Value {
+        var value: &Value = null
+        var d = false
+        for var i in 0..scope.implicits.length {
+            let v = scope.implicits[i]
+            if v.node and v.state {
+                v.tpe = typechecking::lookup_parameters(v.node, v.state)
+            }
+
+            let retc = typechecking::convert_type_score(v.tpe.return_t[0], r, scope.module)
+            if retc < 0 { continue }
+            let s = typechecking::convert_type_score(v.tpe.parameter_t[0].tpe, parameter_t[0].tpe, scope.module, impl = false)
+            if s == @score {
+                d = true
+            } else if s >= 0 and s < @score {
+                @score = s
+                d = false
+                value = v
+            }
+        }
+        if d { return null }
+        if check_export and value and not (value.share !int & parser::ShareMarker::EXPORT !int) {
+            return null
+        }
+        return value
+    }
+
+    var score = MAX_INT32
+    var value = find(scope, *score, false)
+
+    var parent = scope.parent
+    while parent {
+        let value2 = find(scope.parent, *score, false)
+        if value2 { value = value2 }
+        parent = parent.parent
+    }
+
+    if not value and scope.imports {
+        for var i in 0..scope.imports.length {
+            let imprt = scope.imports[i]
+            let scope2 = imprt.module.scope
+            // TODO See if we can rewrite the other functions to not be recursive
+            let value2 = find(scope2, *score, true)
+            if value2 { value = value2 }
+        }
+    }
+
+    if value and value.phase == Phase::DEFINED and value.state and value.node {
+        // TODO Factor this out
+        if typechecking::is_polymorph(value.tpe) {
+            typechecking::walk_Def_with_type_argument(value.node, parameter_t, value.state)
+        } else {
+            typechecking::walk_Def(value.node, value.state)
+        }
+    }
+    return value
+}
+
 export def has_function(scope: &Scope, ftpe: &typechecking::Type) -> &Value {
     var value = get(scope, parser::make_identifier(ftpe.name), false, false, true)
     if value and is_function(value.tpe) {
@@ -808,6 +875,7 @@ export def typecheck_function(value: &Value, id: &parser::Node, scope: &Scope, d
     let tpe = typechecking::lookup_parameters(value.node, value.state)
     if typechecking::is_polymorph(value.tpe) {
         typechecking::walk_Def_with_type_argument(value.node, parameter_t, value.state)
+        // TODO Do we really need to do that?
         return get_function(scope, id, parameter_t, false, dry_run, false)
     } else {
         value.node.tpe = tpe
@@ -1164,7 +1232,7 @@ def merge(value: &Value, other: &Value) {
 
 // TODO These following functions grew organically, they are in need of a rewrite
 
-export def create_function(scope: &Scope, name_node: &parser::Node, v: &Value) -> &Value {
+export def create_function(scope: &Scope, name_node: &parser::Node, v: &Value, impl: bool = false) -> &Value {
     if not v { return null }
 
     let name = last_path_element(name_node)
@@ -1207,6 +1275,9 @@ export def create_function(scope: &Scope, name_node: &parser::Node, v: &Value) -
     } else {
         (@scope).fields[name] = v
     }
+    if impl {
+        scope.implicits.push(v)
+    }
     return v
 }
 
@@ -1215,7 +1286,7 @@ export def create_function(scope: &Scope, name_node: &parser::Node, v: &Value) -
 export def create_function(
     scope: &Scope, name_node: &parser::Node, share: parser::ShareMarker, 
     tpe: &typechecking::Type, phase: Phase, node: &parser::Node,
-    state: &typechecking::State) -> &Value {
+    state: &typechecking::State, impl: bool = false) -> &Value {
 
     assert((@tpe).kind == typechecking::TypeKind::FUNCTION)
 
@@ -1230,6 +1301,7 @@ export def create_function(
         modifier = parser::VarDecl::CONST,
         name = name,
         assembly_name = name,
+        impl = impl,
         tpe = tpe,
         phase = phase,
         global = global,
@@ -1245,13 +1317,13 @@ export def create_function(
         v.dependants = set::make(Ident)
     }
 
-    return create_function(scope, name_node, v)
+    return create_function(scope, name_node, v, impl)
 }
 
 export def create_function(
     scope: &Scope, name_node: &parser::Node, share: parser::ShareMarker, 
-    tpe: &typechecking::Type) -> &Value {
-    return create_function(scope, name_node, share, tpe, Phase::COMPILED, null, null)
+    tpe: &typechecking::Type, impl: bool = false) -> &Value {
+    return create_function(scope, name_node, share, tpe, Phase::COMPILED, null, null, impl)
 }
 
 def append_scope_count(scope: &Scope, name: &string) -> &string {
