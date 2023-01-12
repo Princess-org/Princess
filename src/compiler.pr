@@ -2623,11 +2623,15 @@ def walk_Call(node: &parser::Node, state: &State) -> Value {
             args[i] = @arg.value
         }
     }
-   
+    
+    var array_val: Value
     if pass_varargs_as_array {
+        for var i in 0..varargs.size {
+            increase_ref_count_of_value(varargs[i], loc, state)
+        }
         let sarray_t = typechecking::make_static_array(last_np.tpe, num_varargs)
-        let value = push_array_lit(sarray_t, null, varargs, state)
-        args[args.size - 1] = convert_to(node, value, typechecking::array(last_np.tpe), state)
+        array_val = push_array_lit(sarray_t, null, varargs, state)
+        args[args.size - 1] = convert_to(node, array_val, typechecking::array(last_np.tpe), state)
     }
 
     var proto: &[typechecking::NamedParameter]
@@ -2743,6 +2747,10 @@ def walk_Call(node: &parser::Node, state: &State) -> Value {
     } else {
         // TODO This should be a closure by all means
         insert_call(node, name_v, args, proto, ret, varargs_loc, addr, loc, multiple_returns, state)
+    }
+
+    if pass_varargs_as_array {
+        insert_destructor(@array_val.addr, loc, state)
     }
 
     var value = NO_VALUE
@@ -2879,6 +2887,7 @@ def insert_destructors(scpe: &scope::Scope, loc: &Value, state: &State) {
 }
 
 def insert_destructor(value: Value, loc: &Value, state: &State) {
+    if state.current_function.has_yield { return }
     if value.tpe.tpe and value.tpe.tpe.kind == typechecking::TypeKind::STATIC_ARRAY and typechecking::has_destructor(value.tpe.tpe) {
         let counter_ptr = state.alloca(builtins::size_t_, loc)
         state.store(counter_ptr, { kind = ValueKind::INT, tpe = builtins::size_t_, i = 0 } !Value, loc)
@@ -4955,10 +4964,7 @@ def walk_For_generator(node: &parser::Node, state: &State) {
     (@break_insn).value.br_unc.label_ = end_label
     pop_loop_state(state)
 
-    // TODO This is really ugly
-    if not state.current_function.has_yield {
-        insert_destructor(gen_ptr, last_loc, state)
-    }
+    insert_destructor(gen_ptr, last_loc, state)
 }
 
 def for_create_var(iddecl: &parser::Node, loc: &Value, state: &State) -> Value {
@@ -6403,10 +6409,11 @@ def create_generator(
     for var i in 0..tpe.parameter_t.length {
         let par = tpe.parameter_t[i]
         let local_ptr = state.gep(pointer(par.tpe), context, context_ptr, [make_int_value(0), make_int_value(i + 1)])
+        state.store(local_ptr, { kind = ValueKind::LOCAL, name = par.name + ".value", tpe = par.tpe } !Value)
+        
         if typechecking::is_ref(par.tpe) {
             increase_ref_count(local_ptr, null, state)
         }
-        state.store(local_ptr, { kind = ValueKind::LOCAL, name = par.name + ".value", tpe = par.tpe } !Value)
     }
 
     let gen_ptr_i8 = state.call("malloc", typechecking::pointer(builtins::int8_), [
