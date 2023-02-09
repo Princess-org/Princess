@@ -289,6 +289,53 @@ def params_to_string(tpe: &typechecking::Type) -> &string {
     return name
 }
 
+def push_completion_value(value: &scope::Value, module: &toolchain::Module, completions: &Vector(CompletionItem)) {
+    if value.is_internal { return }
+
+    var kind = CompletionItemKind::Variable
+    var detail: &string = null
+    var function_type: &string = null
+
+    if value.modifier == parser::VarDecl::TYPE {
+        let value_tpe = value.value.value_tpe
+        if typechecking::is_struct(value_tpe) {
+            kind = CompletionItemKind::Struct
+        } else if typechecking::is_interface(value_tpe) {
+            kind = CompletionItemKind::Interface 
+        } else if typechecking::is_enum(value_tpe) {
+            kind = CompletionItemKind::Enum
+        } else {
+            kind = CompletionItemKind::Interface
+        }
+    } else if value.modifier == parser::VarDecl::CONST {
+        if value.tpe.kind == typechecking::TypeKind::FUNCTION {
+            kind = CompletionItemKind::Function
+            detail = params_to_string(value.tpe)
+        } else if value.tpe.kind == typechecking::TypeKind::NAMESPACE {
+            kind = CompletionItemKind::Module
+        } else {
+            kind = CompletionItemKind::Constant
+            detail = ": " + debug::type_to_str(value.tpe)
+        }
+    } else {
+        detail = ": " + debug::type_to_str(value.tpe)
+    }
+
+    var smod: &string
+    if value.ident.module and value.ident.module != module {
+        smod = value.ident.module.module
+    }
+
+    completions.push({
+        _label = value.name,
+        labelDetails = {
+            detail = detail if detail else "" !&string,
+            description = smod if smod else "" !&string
+        } !CompletionItemLabelDetails,
+        kind = kind !int,
+    } !CompletionItem)
+}
+
 def push_members(node: &parser::Node, completions: &Vector(CompletionItem)) {
     let left = node.value.bin_op.left
     if left {
@@ -309,6 +356,7 @@ def push_members(node: &parser::Node, completions: &Vector(CompletionItem)) {
         let functions = scope::find_functions(scpe, tpe)
         for var i in 0..functions.length {
             let function = functions[i]
+            if function.is_internal { continue }
             completions.push({
                 _label = function.name,
                 labelDetails = {
@@ -334,74 +382,45 @@ def complete(id: int, params: CompletionParams) {
         if node.kind == parser::NodeKind::MEMBER_ACCESS {
             push_members(node, completions)
         } else if node.kind == parser::NodeKind::IDENTIFIER {
+            var scpe = node.scope
+            var check_export = false
+            if node.value.identifier.path.length > 1 {
+                let prefix = vector::make(type &string)
+                for var i in 0..(node.value.identifier.path.length - 1) {
+                    prefix.push(node.value.identifier.path[i])
+                }
+
+                let ns_ident = typechecking::copy_node(node)
+                ns_ident.value.identifier.path = prefix
+                let ns = scope::get(scpe, ns_ident, force_compile = false, dry_run = true)
+                if ns { 
+                    scpe = ns._module 
+                    check_export = true
+                }
+            }
+
             let parent = node.parent
             if parent and parent.kind == parser::NodeKind::MEMBER_ACCESS {
                 push_members(parent, completions)
-            } else {
-                var scpe = node.scope
-                var check_export = false
-                if node.value.identifier.path.length > 1 {
-                    let prefix = vector::make(type &string)
-                    for var i in 0..(node.value.identifier.path.length - 1) {
-                        prefix.push(node.value.identifier.path[i])
-                    }
+            } else if parent and (parent.kind == parser::NodeKind::REF_T or 
+                parent.kind == parser::NodeKind::PTR_T or parent.kind == parser::NodeKind::WEAK_REF_T or
+                parent.kind == parser::NodeKind::ARRAY_STATIC_T or parent.kind == parser::NodeKind::ARRAY_T or
+                parent.kind == parser::NodeKind::ID_DECL and parent.value.id_decl.tpe == node or
+                parent.kind == parser::NodeKind::ID_DECL_STRUCT and parent.value.id_decl_struct.tpe == node) {
 
-                    let ns_ident = typechecking::copy_node(node)
-                    ns_ident.value.identifier.path = prefix
-                    let ns = scope::get(scpe, ns_ident, force_compile = false, dry_run = true)
-                    if ns { 
-                        scpe = ns._module 
-                        check_export = true
+                let values = scope::find_all(parent.scope, check_export)
+                for var i in 0..values.length {
+                    let value = values[i]
+                    if value.modifier == parser::VarDecl::TYPE or 
+                        value.modifier == parser::VarDecl::CONST and value.tpe.kind == typechecking::TypeKind::NAMESPACE {
+                        push_completion_value(value, module, completions)
                     }
                 }
-
+            } else {
                 let values = scope::find_all(scpe, check_export)
                 for var i in 0..values.length {
                     let value = values[i]
-                    if value.is_internal { continue }
-
-                    var kind = CompletionItemKind::Variable
-                    var detail: &string = null
-                    var function_type: &string = null
-
-                    if value.modifier == parser::VarDecl::TYPE {
-                        let value_tpe = value.value.value_tpe
-                        if typechecking::is_struct(value_tpe) {
-                            kind = CompletionItemKind::Struct
-                        } else if typechecking::is_interface(value_tpe) {
-                            kind = CompletionItemKind::Interface 
-                        } else if typechecking::is_enum(value_tpe) {
-                            kind = CompletionItemKind::Enum
-                        } else {
-                            kind = CompletionItemKind::Interface
-                        }
-                    } else if value.modifier == parser::VarDecl::CONST {
-                        if value.tpe.kind == typechecking::TypeKind::FUNCTION {
-                            kind = CompletionItemKind::Function
-                            detail = params_to_string(value.tpe)
-                        } else if value.tpe.kind == typechecking::TypeKind::NAMESPACE {
-                            kind = CompletionItemKind::Module
-                        } else {
-                            kind = CompletionItemKind::Constant
-                            detail = ": " + debug::type_to_str(value.tpe)
-                        }
-                    } else {
-                        detail = ": " + debug::type_to_str(value.tpe)
-                    }
-
-                    var smod: &string
-                    if value.ident.module and value.ident.module != module {
-                        smod = value.ident.module.module
-                    }
-
-                    completions.push({
-                        _label = value.name,
-                        labelDetails = {
-                            detail = detail if detail else "" !&string,
-                            description = smod if smod else "" !&string
-                        } !CompletionItemLabelDetails,
-                        kind = kind !int,
-                    } !CompletionItem)
+                    push_completion_value(value, module, completions)
                 }
             }
         }
@@ -704,6 +723,7 @@ def document_symbol(id: int, params: DocumentSymbolParams) {
                 var children = vector::make(DocumentSymbol)
                 if i < vector::length(node.value.type_decl.right) {
                     let right = node.value.type_decl.right[i]
+                    if not right { continue }
                     children = type_children(path, right)
                     range_loc = source_loc_to_range(path, right.loc)
                 }
