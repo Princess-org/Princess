@@ -672,21 +672,31 @@ export def find_implicit_function(scope: &Scope, parameter_t: &Vector(typechecki
     var score = MAX_INT32
     var value = find(scope, *score, false)
 
-    var parent = scope.parent
-    while parent {
-        let value2 = find(scope.parent, *score, false)
-        if value2 { value = value2 }
-        parent = parent.parent
-    }
-
     if not value and scope.imports {
         for var i in 0..scope.imports.length {
             let imprt = scope.imports[i]
             let scope2 = imprt.module.scope
-            // TODO See if we can rewrite the other functions to not be recursive
             let value2 = find(scope2, *score, true)
             if value2 { value = value2 }
+
+            if scope2.re_exports {
+                for var i in 0..scope2.re_exports.length {
+                    let re_export = scope2.re_exports[i]
+                    let value2 = find(re_export.module.scope, *score, false)
+                    if value2 and pattern_matches(value2.name_node, re_export.pattern) {
+                        if value and value2 !* != value !* {
+                            return null
+                        } else {
+                            value = value2
+                        }
+                    }
+                }
+            }
         }
+    }
+
+    if not value {
+        value = find_implicit_function(scope.parent, parameter_t, ret)
     }
 
     if value and value.phase == Phase::DEFINED and value.state and value.node {
@@ -968,7 +978,7 @@ export def get_function_check(
                 var _, value2 = get_function_check(re_export.module.scope, id, parameter_t, check_export, force_compile, only_function)
                 if value2 and not pattern_matches(id, re_export.pattern, value2.tpe.parameter_t) { continue }
                 if value2 and value2.share !int & parser::ShareMarker::EXPORT !int {
-                    if value and value !* != value2 {
+                    if value and value !* != value2 !* {
                         if not dry_run {
                             errors::errorn(id, "Ambiguous reference")
                         }
@@ -1104,6 +1114,27 @@ export def get(scope: &Scope, id: &parser::Node, force_compile: bool = true, che
     //TODO This optimization screws with incremental compilation
     //if id.svalue { return id.svalue }
 
+    def check_for_re_exports(id: &parser::Node, scope: &Scope, value: &Value) -> &Value {
+        if scope.re_exports {
+            for var i in 0..scope.re_exports.length {
+                let re_export = scope.re_exports[i]
+                if pattern_matches(id, re_export.pattern) {
+                    var value2 = get(re_export.module.scope, id)
+                    if value2 and value2.share !int & parser::ShareMarker::EXPORT !int {
+                        if value and value !* != value2 !* {
+                            if not dry_run {
+                                errors::errorn(id, "Ambiguous reference")
+                            }
+                            return null
+                        }
+                        value = value2
+                    }
+                }
+            }
+        }
+        return value
+    }
+
     if vector::length((@id).value.identifier.path) == 1 {
         let name = @((@id).value.identifier.path[0])
         if name == "_" { 
@@ -1157,26 +1188,23 @@ export def get(scope: &Scope, id: &parser::Node, force_compile: bool = true, che
                 }
             }
         }
-        if scope.re_exports and name != "__main__" { // TODO To check for main is a dirty fix to allow wildcards
-            for var i in 0..scope.re_exports.length {
-                let re_export = scope.re_exports[i]
-                if pattern_matches(id, re_export.pattern) {
-                    var value2 = get(re_export.module.scope, id)
-                    if value2 and value2.share !int & parser::ShareMarker::EXPORT !int {
-                        if value and value !* != value2 !* {
-                            if not dry_run {
-                                errors::errorn(id, "Ambiguous reference")
-                            }
-                            return null
-                        }
-                        value = value2
-                    }
+        
+        if name != "__main__" {
+            if scope.re_exports {
+                value = check_for_re_exports(id, scope, value)
+            }
+            if scope.imports {
+                for var i in 0..scope.imports.length {
+                    let scope2 = scope.imports[i].module.scope
+                    value = check_for_re_exports(id, scope2, value)
                 }
             }
         }
+       
         if not value and (@scope).parent {
             value = get((@scope).parent, id, force_compile, check_export, dry_run, same_module)
         }
+
         if value and check_export and (value.share !int & parser::ShareMarker::EXPORT !int) == 0 {
             value = null
         }
