@@ -1,0 +1,594 @@
+import cstd
+import std
+import runtime
+import optional
+
+export def length(s: [char]) -> size_t {
+    return s.size - 1
+}
+export def length(s: &[char]) -> size_t {
+    return s.size - 1
+}
+export def get_item(s: &[char], i: size_t) -> char {
+    return s.value[i]
+}
+
+type LongString = struct {
+    refcount: *uint64
+    data: *char
+    count: size_t
+} 
+
+const SHORT_STR_LEN = (size_of LongString) - 1
+const LONG_STR_BIT = 1 !size_t << 63
+
+type ShortString = struct {
+    data: [SHORT_STR_LEN; char]
+    count: ubyte
+}
+
+export type Str = struct #union {
+    long_str: LongString
+    short_str: ShortString
+}
+
+export def is_short_str(s: *Str) -> bool {
+    return (s.long_str.count & LONG_STR_BIT) == 0
+}
+
+export def get_internal_buffer(s: *Str) -> *char {
+    if is_short_str(s) {
+        return s.short_str.data.value
+    } else {
+        return s.long_str.data
+    }
+}
+
+export implicit def to_str(s: &string) -> Str {
+    return to_str(@s)
+}
+
+export implicit def to_str(s: string) -> Str {
+    return to_str(s.length(), s.value)
+}
+
+export def to_str(len: size_t, value: *char) -> Str {
+    var res: Str
+    if len <= SHORT_STR_LEN {
+        res.short_str.count = len !ubyte
+        memcopy(value, res.short_str.data.value, len)
+    } else {
+        res.long_str.count = len | LONG_STR_BIT
+        res.long_str.refcount = allocate(uint64)
+        @res.long_str.refcount = 1
+        res.long_str.data = allocate(len) !*char
+        memcopy(value, res.long_str.data, len)
+    }
+    return res
+}
+
+export implicit def to_str(s: String) -> Str {
+    if ref_type(s) == type &Str {
+        return @(s !&Str)
+    } else if ref_type(s) == type &[char] {
+        return to_str(s !&[char])
+    } else if ref_type(s) == type &StringSlice {
+        let slice = s !&StringSlice
+        return to_str(@slice)
+    } else {
+        let len = s.length()
+        var res: Str
+        var data: *char
+        if len <= SHORT_STR_LEN {
+            res.short_str.count = len !ubyte
+            data = res.short_str.data.value
+        } else {
+            res.long_str.count = len | LONG_STR_BIT
+            res.long_str.refcount = allocate(uint64)
+            @res.long_str.refcount = 1
+            res.long_str.data = data = allocate(len) !*char
+        }
+        for var i in 0..len {
+            data[i] = s[i]
+        }
+        return res
+    }
+}
+
+export def length(s: &Str) -> size_t {
+    return length(s !*Str)
+}
+export def length(s: *Str) -> size_t {
+    if is_short_str(s) {
+        return s.short_str.count
+    } else {
+        return s.long_str.count & ~LONG_STR_BIT
+    }
+}
+export def get_item(s: &Str, i: size_t) -> char {
+    return get_internal_buffer(s !*Str)[i]
+}
+
+export def construct(copy: *Str, this: *Str) {
+    if is_short_str(this) {
+        copy.short_str = this.short_str
+    } else {
+        copy.long_str = this.long_str
+        @copy.long_str.refcount += 1
+    }
+}
+
+export def destruct(this: *Str) {
+    if not is_short_str(this) {
+        @this.long_str.refcount -= 1
+        if @this.long_str.refcount == 0 {
+            delete(this.long_str.refcount)
+            delete(this.long_str.data)
+        }
+    }
+}
+
+export type StringBuffer = struct {
+    prev: &StringBuffer
+    data: Str
+    offset: size_t
+}
+
+export implicit def to_str(s: StringBuffer) -> Str {
+    let count = s.offset + s.data.length()
+    let data = allocate(count) !*char
+    defer delete(data)
+    memcopy(get_internal_buffer(*s.data), data ++ s.offset, s.data.length())
+    var prev = s.prev
+    while prev {
+        memcopy(get_internal_buffer(*prev.data), data ++ prev.offset, prev.data.length())
+        prev = prev.prev
+    }
+    return to_str(count, data)
+}
+
+export implicit def to_buffer(s: String) -> StringBuffer {
+    return { null, to_str(s), 0 } !StringBuffer
+}
+
+export implicit def to_buffer(s: Str) -> StringBuffer {
+    return { null, s, 0 } !StringBuffer
+}
+
+export implicit def to_buffer(s: StringSlice) -> StringBuffer {
+    return { null, to_str(s), 0 } !StringBuffer
+}
+
+export implicit def to_buffer(s: &string) -> StringBuffer {
+    return { null, to_str(s), 0 } !StringBuffer
+}
+
+export implicit def to_buffer(s: string) -> StringBuffer {
+    return { null, to_str(s), 0 } !StringBuffer
+}
+
+export def + (s: StringBuffer, o: &ToString) -> StringBuffer {
+    return { s, o.to_string().to_str(), s.offset + s.data.length() } !StringBuffer
+}
+
+export def + (s: &ToString, o: StringBuffer) -> StringBuffer {
+    let str = s.to_string()
+    return { to_buffer(str), to_str(o), str.length() } !StringBuffer
+}
+
+export def + (s: StringBuffer, o: String) -> StringBuffer {
+    return { s, to_str(o), s.offset + s.data.length() } !StringBuffer
+}
+
+/*export def + (s: String, o: StringBuffer) -> StringBuffer {
+    return { to_buffer(s), to_str(o), s.length() } !StringBuffer
+}*/
+
+export def + (s: StringBuffer, o: StringBuffer) -> StringBuffer {
+    return { s, to_str(o), s.offset + s.data.length() } !StringBuffer
+}
+
+export def += (s: StringBuffer, o: &ToString) -> StringBuffer {
+    return s + o.to_string()
+}
+
+export def += (s: StringBuffer, o: String) -> StringBuffer {
+    return s + o
+}
+
+export def += (s: StringBuffer, o: StringBuffer) -> StringBuffer {
+    return s + o
+}
+
+export implicit def to_string(s: StringBuffer) -> String {
+    return to_str(s)
+}
+
+export implicit def to_string(s: &string) -> String {
+    return { data = s.value, count = s.length() } !StringSlice
+}
+
+export type StringSlice = struct {
+    parent: String
+    data: *char
+    offset: size_t
+    count: size_t
+}
+
+export def length(s: &StringSlice) -> size_t {
+    return s.count
+}
+export def get_item(s: &StringSlice, i: size_t) -> char {
+    return s.data[i + s.offset] if s.data else get_item(s.parent, s.offset)
+}
+
+export implicit def to_str(s: StringSlice) -> Str {
+    if s.data {
+        return to_str(s.count, s.data)
+    } else {
+        return to_str(s.parent).substring(s.offset, s.offset + s.count)
+    }
+}
+
+export type IString = interface {
+    def length() -> size_t
+    def get_item(i: size_t) -> char
+}
+
+export type String = &IString
+
+export def == (s1: String, s2: String) -> bool {
+    if not s1 and not s2 { return true }
+    if not s1 or not s2 { return false }
+    if s1.length() != s2.length() { return false }
+    for var i in 0..s1.length() {
+        if s1[i] != s2[i] { return false }
+    }
+    return true
+}
+
+export def != (s1: String, s2: String) -> bool {
+    return not (s1 == s2)
+}
+
+export def slice(s: [char], frm: size_t, to: size_t) -> StringSlice {
+    return { count = to - frm, offset = frm, data = s.value } !StringSlice 
+}
+
+export def slice(s: String, frm: size_t, to: size_t) -> StringSlice {
+    if ref_type(s) == type &[char] {
+        return { parent = s, count = to - frm, offset = frm, data = (s !&[char]).value } !StringSlice 
+    } else if ref_type(s) == type &StringSlice {
+        let slc = s !&StringSlice
+        if slc.data {
+            return { parent = s, count = to - frm, offset = frm, data = slc.data } !StringSlice 
+        } else {
+            return { parent = s, count = to - frm, offset = frm + slc.offset } !StringSlice
+        }
+    } else if ref_type(s) == type &Str {
+        return { parent = s, count = to - frm, data = get_internal_buffer(s !*Str), offset = frm } !StringSlice
+    } else {
+        return { parent = s, count = to - frm, offset = frm} !StringSlice
+    }
+}
+
+// Returns a 0 terminated array
+export def to_array(s: String) -> &[char] {
+    if ref_type(s) == type &[char] {
+        return s !&[char]
+    } else if ref_type(s) == type &Str {
+        let str = s !&Str
+        let res = allocate(char, str.length() + 1)
+        memcopy(get_internal_buffer(str !*Str), res.value, str.length())
+        res[str.length()] = '\0'
+        return res
+    } else if ref_type(s) == type &StringSlice {
+        let slc = s !&StringSlice
+        if slc.data {
+            let res = allocate(char, s.length() + 1)
+            memcopy(slc.data, res.value, s.length())
+            res[s.length()] = '\0'
+            return res
+        } else {
+            return to_str(slc).to_array()
+        }
+    } else {
+        let res = allocate(char, s.length() + 1)
+        for var i in 0..s.length() {
+            res[i] = s[i]
+        }
+        res[s.length()] = '\0'
+        return res
+    }
+}
+
+export def chars(s: String) -> char {
+    for var i in 0..s.length() {
+        yield s[i]
+    }
+}
+
+export def to_string(sign: int, n: uint64) -> String {
+    let digits = "0123456789"
+
+    var str: StringBuffer = ""
+    if n == 0 {
+        str += '0'
+        return str
+    }
+
+    while n {
+        str = digits[n % 10] + str
+        n /= 10
+    }
+
+    if sign < 0 {
+        str = '-' + str
+    }
+
+    return str
+}
+
+export type ToString = interface {
+    def to_string -> String
+}
+
+export def to_string(a: &int64) -> String {
+    let n = -@a if @a < 0 else @a 
+    return to_string(1 if @a >= 0 else -1, n)
+}
+
+export def to_string(a: &int32) -> String {
+    let n = -@a if @a < 0 else @a 
+    return to_string(1 if @a >= 0 else -1, n)
+}
+
+export def to_string(a: &int16) -> String {
+    let n = -@a if @a < 0 else @a 
+    return to_string(1 if @a >= 0 else -1, n)
+}
+
+export def to_string(a: &int8) -> String {
+    let n = -@a if @a < 0 else @a 
+    return to_string(1 if @a >= 0 else -1, n)
+}
+
+export def to_string(a: &uint64) -> String {
+    return to_string(0, @a)
+}
+
+export def to_string(a: &uint32) -> String {
+    return to_string(0, @a)
+}
+
+export def to_string(a: &uint16) -> String {
+    return to_string(0, @a)
+}
+
+export def to_string(a: &uint8) -> String {
+    return to_string(0, @a)
+}
+
+export def to_string(a: &bool) -> String {
+    return "true" if @a else "false"
+}
+
+export def to_string(a: &char) -> String {
+    return to_str([@a])
+}
+
+// TODO Implement these properly
+const DOUBLE_MAX_EXP_10 = 308
+const FLOAT_MAX_EXP_10 = 38
+
+export def to_string(value: &float) -> String {
+    const size = FLOAT_MAX_EXP_10 + 20
+    var buf: [size; char]
+    cstd::snprintf(buf.value, size, "%f".value, @value)
+    return to_str(cstd::strlen(buf.value), buf.value)
+}
+
+export def to_string(value: &double) -> String {
+    const size = DOUBLE_MAX_EXP_10 + 20
+    var buf: [size; char]
+    cstd::snprintf(buf.value, size, "%f".value, @value)
+    return to_str(cstd::strlen(buf.value), buf.value)
+}
+
+export def make_string(ptr: *char) -> Str {
+    var s: string
+    s.value = ptr
+    s.size = strlen(ptr) + 1
+    return to_str(s)
+}
+
+// TODO Optimize the user of substring (it works for every String but it creates a copy of the data)
+export def remove(str: String, i: size_t) -> String {
+    return str.substring(0, i) + str.substring(i + 1, str.length())
+}
+
+export def remove(str: String, start: size_t, count: size_t) -> String {
+    assert start < str.length()
+    assert start + count < str.length()
+
+    if count == 0 { return str }
+    if count == 1 { 
+        return remove(str, start)
+    }
+
+    // TODO Optimize
+    return str.substring(0, start) + str.substring(start + count, str.length())
+}
+
+export def insert(str: String, i: size_t, s: String) -> String {
+    assert i < str.length()
+    return str.substring(0, i) + s + str.substring(i, str.length())
+}
+
+export def insert(str: String, i: size_t, c: char) -> String {
+    assert i < str.length()
+    return str.substring(0, i) + c + str.substring(i, str.length())
+}
+
+export def substring(str: String, start: size_t, end: size_t) -> String {
+    assert start < str.length()
+    assert end <= str.length()
+    assert end >= start
+
+    if ref_type(str) == type &Str {
+        return to_str(end - start, get_internal_buffer(str !*Str) ++ start)
+    } else if ref_type(str) == type &StringSlice {
+        let slc = str !&StringSlice
+        if slc.data {
+            return to_str(end - start, slc.data ++ start ++ slc.offset)
+        } else {
+            return to_str(slc).substring(start, end)
+        }
+    } else if ref_type(str) == type &string {
+        return to_str(end - start, (str !&string).value ++ start)
+    } else {
+        return to_str(str).substring(start, end)
+    }
+}
+
+export def substring(str: String, start: size_t) -> String {
+    return substring(str, start, str.length())
+}
+
+export def index_of(str: &string, substring: &string, start: size_t = 0) -> int64 {
+    assert start < str.length
+    for var i in start..str.length {
+        let c = str[i]
+        if c == substring[0] {
+            var found = true
+            for var j in 0..substring.length {
+                if i + j >= str.length { return -1 }
+                if str[i + j] != substring[j] {
+                    found = false
+                    break 
+                }
+            }
+            if found { return i }
+        }
+    }
+    return -1
+}
+
+export def last_index_of(str: &string, substring: &string) -> int64 {
+    for var i in 0..str.length {
+        var k = str.length - i - 1
+        let c = str[k]
+        if c == substring[0] {
+            var found = true
+            for var j in 0..substring.length {
+                if k + j >= str.length { return -1 }
+                if str[k + j] != substring[j] {
+                    found = false
+                    break 
+                }
+            }
+            if found { return k }
+        }
+    }
+    return -1
+}
+
+export def ends_with(str: &string, suffix: &string) -> bool {
+    let index = last_index_of(str, suffix)
+    if index < 0 { return false }
+    return index == str.length - suffix.length
+}
+
+export def starts_with(str: &string, pre: &string) -> bool {
+    return (cstd::strncmp(pre.value, str.value, cstd::strlen(pre.value)) == 0) !bool
+}
+
+export def strip_margin(s: String) -> String {
+    var res: StringBuffer = ""
+    let len = length(s)
+
+    var i = 0
+    while i < len {
+        var c = s[i]
+        if c == '\n' or i == 0 {
+            if c == '\n' { 
+                res += '\n'
+            }
+            i += 1; c = s[i]
+            while (c == ' ' or c == '\t') and (i + 1) < len {
+                i += 1; c = s[i]
+            }
+            if c == '|' and (i + 1) < len { 
+                i += 1
+                continue
+            }
+        }
+        res += c
+        i += 1
+    }
+    return res
+}
+
+// https://stackoverflow.com/a/23457543/3258949
+// TODO This algorithm is very inefficient
+
+def match(pattern: &string, candidate: &string, p: int, c: int) -> bool {
+    if pattern[p] == '\0' {
+        return candidate[c] == '\0'
+    } else if pattern[p] == '*' {
+        while candidate[c] != '\0' {
+            if match(pattern, candidate, p + 1, c) {
+                return true
+            }
+            c += 1
+        }
+        return match(pattern, candidate, p + 1, c)
+    } else if pattern[p] != '?' and pattern[p] != candidate[c] {
+        return false
+    } else {
+        return match(pattern, candidate, p + 1, c + 1)
+    }
+}
+
+export def match(pattern: &string, candidate: &string) -> bool {
+    return match(pattern, candidate, 0, 0)
+}
+
+export def utf8_encode(code_point: uint64) -> String {
+    var res: StringBuffer = ""
+    if code_point <= 0x007F {
+        res += code_point !char
+    } else if code_point <= 0x07FF {
+        res += ((code_point >> 6) | 0b11000000) !char
+        res += (code_point & 0b00111111 | 0b10000000) !char
+    } else if code_point <= 0xFFFF {
+        res += ((code_point >> 12) | 0b11100000) !char
+        res += ((code_point >> 6 & 0b00111111) | 0b10000000) !char
+        res += (code_point & 0b00111111 | 0b10000000) !char
+    } else if code_point <= 0x10FFFF {
+        res += ((code_point >> 18) | 0b11110000) !char
+        res += ((code_point >> 12 & 0b00111111) | 0b10000000) !char
+        res += ((code_point >> 6 & 0b00111111) | 0b10000000) !char
+        res += (code_point & 0b00111111 | 0b10000000) !char
+    }
+    return res
+}
+
+export def int_to_hex_str(n: uint64, prefix: bool = true) -> String {
+    let digits = "0123456789ABCDEF"
+
+    if n == 0 {
+        return "0x0"
+    }
+
+    var str: StringBuffer = ""
+    while n {
+        str = digits[n % 16] + str
+        n /= 16
+    }
+    if prefix {
+        str = "0x" + str
+    }
+    
+    return str
+}
