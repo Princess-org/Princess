@@ -476,6 +476,7 @@ export type Function = struct {
     captures: &Vector(weak_ref(scope::Value))
 
     is_compiled: bool
+    is_typechecked: bool
 }
 
 // TODO Maybe move this into module
@@ -535,6 +536,7 @@ export type State = struct {
     current_variable: &scope::Value
     // This is set by the language server to not store instructions
     no_instructions: bool
+    // Set in consteval::compiler_state
 }
 
 def current_value(state: &State) -> &scope::Value {
@@ -568,13 +570,15 @@ def add_type_meta(tpe: &typechecking::Type, state: &State) {
     }
 }
 
-export def destruct(state: *State) {
+// TODO We are trying to free stuff that doesn't need to be freed like stdout
+// This is leaking memory
+/*export def destruct(state: *State) {
     if not state.globals { return }
     let keys = state.globals.keys
     for var i in 0..keys.size {
         free(state.globals[keys[i]])
     }
-}
+}*/
 
 export def make_block -> &Block {
     return {
@@ -1039,8 +1043,12 @@ export def import_structures(tpe: &typechecking::Type, module: &toolchain::Modul
 
 def import_cstd_function(name: &string, state: &State) {
     let cstd_module = toolchain::find_module("cstd")
-    let func = scope::get(cstd_module.scope, parser::make_identifier(name)).tpe
-    predeclare_function(func, state.module)
+    var func = scope::get(cstd_module.scope, parser::make_identifier(name))
+    if not func { return }
+    predeclare_function(func.tpe, state.module)
+    if consteval::is_static {
+        consteval::compile_function(func)
+    }
     state.module.imported.add(name)
 }
 
@@ -1866,6 +1874,10 @@ def convert_to(loc: &Value, value: Value, tpe: &typechecking::Type, state: &Stat
         parameter_t.push({_tpe = value.tpe} !NamedParameter)
         let conv = scope::find_implicit_function(state.scope, parameter_t, tpe)
         if conv {
+            if consteval::is_static {
+                consteval::compile_function(conv)
+            }
+
             predeclare_function(conv.tpe, state.module)
             state.module.imported.add(conv.tpe.type_name)
 
@@ -2961,6 +2973,9 @@ def insert_copy_constructor(addr: Value, value: Value, loc: &Value, state: &Stat
         br.value.br.if_true = loop_end
     } else {
         var ctor = typechecking::get_constructor(addr.tpe.tpe)
+        if consteval::is_static {
+            consteval::compile_function(ctor)
+        }
         predeclare_function(ctor.tpe, state.module)
         state.module.imported.add(ctor.tpe.type_name)
 
@@ -5595,7 +5610,7 @@ def walk_Defer(node: &parser::Node, state: &State) {
 
     vector::insert(function.block.insn, 0, function.allocas)
     state.module.imported.add(function.name)
-    state.module.result.functions[function.name] = function
+    insert_function(state.module, function)
 }
 
 def walk_Assert(node: &parser::Node, state: &State) {
@@ -6394,6 +6409,16 @@ def defer_unroll(node: &parser::Node, state: &State) {
     }
 }
 
+export def insert_function(module: &toolchain::Module, function: &Function) {
+    if not function.name { return }
+    if module.result.functions.contains(function.name) { return }
+
+    module.result.functions[function.name] = function
+    if not consteval::const_module.result.functions.contains(function.name) {
+        consteval::const_module.result.functions[function.name] = function
+    }
+} 
+
 export def predeclare_function(tpe: &typechecking::Type, module: &toolchain::Module) -> &Function {
     if not tpe { return null }
     var function = module.result.functions.get_or_default(tpe.type_name, null)
@@ -6415,7 +6440,9 @@ export def predeclare_function(function: &Function, overwrite: bool = false) {
     function.name = tpe.type_name
     function.unmangled = tpe.name
     function.forward_declare = true
-    function.allocas = vector::make(type &Insn)
+    if not function.allocas {
+        function.allocas = vector::make(type &Insn)
+    }
     function.function_locals = set::make()
 
     if vector::length(tpe.parameter_t) > 0 {
@@ -6444,7 +6471,7 @@ export def predeclare_function(function: &Function, overwrite: bool = false) {
         return
     }
 
-    function.module.result.functions[function.name] = function
+    insert_function(function.module, function)
 }
 
 def create_debug_info(node: &parser::Node, function: &Function, tpe: &typechecking::Type, state: &State) {
@@ -7053,7 +7080,7 @@ export def walk_TypeDecl(node: &parser::Node, state: &State) {
             
             import_structures((@svalue).tpe, state.module)
             (@(@state).module).imported.add((@function).name)
-            state.module.result.functions[(@function).name] = function
+            insert_function(state.module, function)
             state.function_stack.pop()
         }
 
@@ -7209,7 +7236,7 @@ def insert_module_main(module: &toolchain::Module, name: &parser::Node, scpe: &s
     } !parser::NodeFuncCall
 
     let fun = module.result.functions.get_or_default(main_value.tpe.type_name, null)
-    state.module.result.functions[main_value.tpe.type_name] = fun
+    insert_function(state.module, fun)
 
     body.push(call)
 }
@@ -7231,6 +7258,16 @@ export def create_builtin_functions {
     create_constructors()
 }
 
+export def create_dyn_dispatch(state: &State) {
+    while state.module.dyn_dispatch.length > 0 {
+        let tpe = state.module.dyn_dispatch[0]
+        state.module.dyn_dispatch.remove(0)
+        let function = predeclare_function(tpe, state.module)
+        generate_vtable_function(function, tpe, state)
+        consteval::const_module.result.functions[function.name] = function
+    }
+}
+
 export let constructors = map::make(type &typechecking::Type)
 def create_constructors {
     let state = toolchain::types_state
@@ -7247,6 +7284,7 @@ def create_constructors {
             if typechecking::is_polymorph(tpe) { continue }
             
             let function = predeclare_function(tpe, state.module)
+            consteval::const_module.result.functions[function.name] = function
             function.forward_declare = false
             state.module.imported.add(tpe.type_name)
             import_structures(tpe, state.module)
@@ -7254,7 +7292,7 @@ def create_constructors {
             state.function_stack.push(function)
             let block = make_block()
             state.current_function.block = block
-            state.current_function.allocas = vector::make(type &Insn)
+            let previous_block = state.current_block
             state.current_block = block
 
             let first_arg = tpe.parameter_t[0].tpe
@@ -7269,6 +7307,7 @@ def create_constructors {
             new_constructors += 1
             done.add(key)
             state.function_stack.pop()
+            state.current_block = previous_block
         }
         if new_constructors == 0 { break }
     }
@@ -7361,6 +7400,7 @@ def create_destructors {
             if typechecking::is_polymorph(tpe) { continue }
             
             let function = predeclare_function(tpe, state.module)
+            consteval::const_module.result.functions[function.name] = function
             function.forward_declare = false
             state.module.imported.add(tpe.type_name)
             import_structures(tpe, state.module)
@@ -7368,7 +7408,7 @@ def create_destructors {
             state.function_stack.push(function)
             let block = make_block()
             state.current_function.block = block
-            state.current_function.allocas = vector::make(type &Insn)
+            let previous_block = state.current_block
             state.current_block = block
 
             let first_arg = (tpe.parameter_t[0]).tpe
@@ -7380,6 +7420,7 @@ def create_destructors {
             new_destructors += 1
             done.add(key)
             state.function_stack.pop()
+            state.current_block = previous_block
         }
         if new_destructors == 0 { break }
     }
@@ -8404,7 +8445,7 @@ export def predeclare_functions(module: &toolchain::Module) {
                                     fun = predeclare_function(value.tpe, imprt.module)
                                     fun.imported = value.imported
                                 }
-                                module.result.functions[value.tpe.type_name] = fun
+                                insert_function(module, fun)
                             }
                         } else if not typechecking::is_type(value.tpe) {
                             let name = value.assembly_name
@@ -8432,6 +8473,7 @@ def generate_vtable_function(function: &Function, tpe: &typechecking::Type, stat
 
     function.block = make_block()
     function.forward_declare = false
+    let previous_block = state.current_block
     state.current_block = function.block
 
     var ret_tpe: &typechecking::Type = null
@@ -8491,6 +8533,10 @@ def generate_vtable_function(function: &Function, tpe: &typechecking::Type, stat
             }
 
             if not function { continue }
+            if consteval::is_static {
+                let fun = scope::get_function(state.module.scope, parser::make_identifier(tpe.name), parameter_t)
+                consteval::compile_function(fun)
+            }
             predeclare_function(function, state.module)
             state.module.imported.add(function.type_name)
 
@@ -8526,7 +8572,7 @@ def generate_vtable_function(function: &Function, tpe: &typechecking::Type, stat
 
     state.module.imported.add(function.name)
     push_insn(make_insn(InsnKind::UNREACHABLE), state)
-    
+    state.current_block = previous_block
 }
 
 def check_for_dependency(svalue: &scope::Value, node: &parser::Node) {
@@ -8785,12 +8831,7 @@ export def compile(state: &State, is_main: bool, no_cleanup: bool = false) {
     // Forward declare functions from other files
     // TODO This doesn't work for functions that return multiple parameters
     predeclare_functions(state.module)
-
-    for var i in 0..vector::length(state.module.dyn_dispatch) {
-        let tpe = state.module.dyn_dispatch[i]
-        let function = predeclare_function(tpe, state.module)
-        generate_vtable_function(function, tpe, state)
-    }
+    create_dyn_dispatch(state)
 
     let ident = parser::make_identifier("__main__")
     ident.loc.module = state.module.module
@@ -8938,7 +8979,7 @@ export def compile(state: &State, is_main: bool, no_cleanup: bool = false) {
         state.finalizer.block = make_block()
     }
 
-    state.module.result.functions[state.finalizer.name] = state.finalizer
+    insert_function(state.module, state.finalizer)
     state.module.imported.add(state.finalizer.name)
     state.function_stack.pop()
 

@@ -163,6 +163,9 @@ export def get(mem: *, tpe: &typechecking::Type) -> compiler::Value {
 export def get_address(loc: compiler::Value, state: &State) -> * {
     if loc.kind == compiler::ValueKind::LOCAL {
         let mem = get_stack_frame(state).locals.get_or_default(loc.name, null)
+        if not mem {
+            errors::errorv("Couldn't find memory for `", loc.name, "`")
+        }
         return mem
     } else if loc.kind == compiler::ValueKind::GLOBAL {
         assert(typechecking::is_pointer(loc.tpe))
@@ -170,10 +173,7 @@ export def get_address(loc: compiler::Value, state: &State) -> * {
         if not mem {
             var ptr: *
 
-            var function = state.cstate.module.result.functions.get_or_default(loc.name, null)
-            if not function {
-                function = consteval::const_module.result.functions.get_or_default(loc.name, null)
-            }
+            var function = consteval::const_module.result.functions.get_or_default(loc.name, null)
             if function {
                 ptr = zero_allocate(FunctionPtr)
                 (ptr !*FunctionPtr).function = function
@@ -183,10 +183,7 @@ export def get_address(loc: compiler::Value, state: &State) -> * {
                 if ffi_global and ffi_global.kind == preload::SymbolKind::VARIABLE {
                     ptr = ffi_global.variable
                 } else {
-                    var global = state.cstate.module.result.globals.get_or_default(loc.name, null)
-                    if not global {
-                        global = consteval::const_module.result.globals.get_or_default(loc.name, null)
-                    }
+                    var global = consteval::const_module.result.globals.get_or_default(loc.name, null)
                     if not global {
                         errors::errorv("Global by the name of `", loc.name, "` not found")
                         return null
@@ -364,7 +361,7 @@ def eval_InsertValue(insn: &compiler::Insn, state: &State) {
             
             to_set = *to_set.values[j]
         } else if to_set.tpe.kind == typechecking::TypeKind::STATIC_ARRAY {
-            if typechecking::equals(to_set.tpe.tpe, builtins::char_) {
+            if typechecking::equals(to_set.tpe.tpe, builtins::char_) and to_set.s {
                 to_set.s[j] = element.i !char
             } else {
                 to_set = *to_set.values[j]
@@ -425,7 +422,7 @@ def eval_GetElementPtr(insn: &compiler::Insn, state: &State) {
             tpe = type_member.tpe
         } else if tpe.kind == typechecking::TypeKind::UNION {
             assert(index == 0)
-            tpe = tpe.fields[0].tpe
+            tpe = typechecking::make_static_array(builtins::int8_, tpe.size)
         } else if tpe.kind == typechecking::TypeKind::STATIC_ARRAY {
             assert(index < tpe.length)
             addr = addr ++ tpe.tpe.size * index
@@ -892,10 +889,7 @@ def eval_Call(insn: &compiler::Insn, state: &State) {
         fp = value.function
     } else if call.kind == compiler::ValueKind::GLOBAL {
         if starts_with(name, "llvm.") { return }
-        var function = state.cstate.module.result.functions.get_or_default(name, null)
-        if not function {
-            function = consteval::const_module.result.functions.get_or_default(name, null)
-        }
+        var function = consteval::const_module.result.functions.get_or_default(name, null)
         if function {
             let functionptr = { is_fp = false } !FunctionPtr
             functionptr.function = function
@@ -1167,13 +1161,15 @@ export def print_block(block: &compiler::Block) {
     for var i in 0..vector::length(block.insn) {
         let insn = block.insn[i]
         if insn.kind == compiler::InsnKind::LOAD {
-            print(insn.kind, " ", insn.value.load.loc.name, "\n")
+            print(insn.value.load.loc.name, " <- ", insn.kind, " ", insn.value.load.loc.name, "\n")
         } else if insn.kind == compiler::InsnKind::ALLOCA {
             print(insn.kind, " ", insn.value.alloca.ret.name, "\n")
         } else if insn.kind == compiler::InsnKind::STORE {
             print(insn.kind, " ", insn.value.store.loc.name, " ", insn.value.store.value.name, "\n")
         } else if insn.kind == compiler::InsnKind::CALL and insn.value.call.name.kind == compiler::ValueKind::GLOBAL {
-            print(insn.kind, " ", insn.value.call.name.name, "\n")
+            print(insn.value.call.ret.name, " <- ", insn.kind, " ", insn.value.call.name.name, "\n")
+        } else if insn.kind == compiler::InsnKind::RET and insn.value.ret.value.kind == compiler::ValueKind::LOCAL {
+            print(insn.kind, " ", insn.value.ret.value.name, "\n")
         } else {
             print(insn.kind, "\n")
         }
@@ -1328,7 +1324,6 @@ def serialize(is_constant: *bool, value: compiler::Value, global: &compiler::Glo
 
 export def eval(cstate: &compiler::State) -> &State {
     var block = cstate.current_function.block
-    vector::insert(block.insn, 0, cstate.current_function.allocas)
 
     let state = {
         cstate = cstate,

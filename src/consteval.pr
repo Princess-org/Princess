@@ -22,6 +22,7 @@ export let const_module = toolchain::make_module(
     scpe = scope::enter_function_scope(builtins::builtins, null),
 )
 
+export var is_static = false
 // This is for compiling expressions
 export let compiler_state = compiler::make_state(const_module)
 
@@ -46,8 +47,13 @@ export def copy_state(state: &typechecking::State) -> &typechecking::State {
     return new_state
 }
 
-def set_current_function {
+def set_current_function -> &compiler::Function {
     let block = compiler::make_block()
+    var is_compiled = false
+    let previous_function = compiler_state.current_function()
+    if previous_function {
+        is_compiled = previous_function.is_compiled
+    }
     let function = {
         name = "main",
         unmangled = "main",
@@ -55,36 +61,45 @@ def set_current_function {
         allocas = vector::make(type &compiler::Insn),
         block = block,
         function_locals = set::make(),
-        used_type_meta = set::make(type &typechecking::Type)
+        used_type_meta = set::make(type &typechecking::Type),
+        is_compiled = is_compiled
     } !&compiler::Function
     compiler_state.function_stack.push(function)
     compiler_state.current_block = block
+
+    return function
 }
 
 export def expr(node: &parser::Node, state: &typechecking::State) -> compiler::Value {
     if not node { return compiler::NO_VALUE }
     walk(node.parent, node, state)
-    set_current_function()
+    let previous_block = compiler_state.current_block
+    let function = set_current_function()
     typechecking::walk(node.parent, node, state)
     walk(node.parent, node, state)
     var result = compiler::walk_expression(node, compiler_state)
+    vector::insert(function.block.insn, 0, function.allocas)
     let estate = eval::eval(compiler_state)
     result = eval::get_value(result, estate)
     compiler_state.function_stack.pop()
+    compiler_state.current_block = previous_block
     return result
 }
 
 export def boolean_expr(node: &parser::Node, state: &typechecking::State) -> compiler::Value {
     if not node { return compiler::NO_VALUE }
     walk(node.parent, node, state)
-    set_current_function()
+    let previous_block = compiler_state.current_block
+    let function = set_current_function()
     typechecking::walk(node.parent, node, state)
     walk(node.parent, node, state)
     var result = compiler::walk_expression(node, compiler_state)
     result = compiler::convert_to(node, result, builtins::bool_, compiler_state)
+    vector::insert(function.block.insn, 0, function.allocas)
     let estate = eval::eval(compiler_state)
     result = eval::get_value(result, estate)
     compiler_state.function_stack.pop()
+    compiler_state.current_block = previous_block
     return result
 }
 
@@ -101,10 +116,10 @@ def walk_IfExpr(node: &parser::Node, state: &typechecking::State) {
 }
 
 def walk_StaticIf(node: &parser::Node, state: &typechecking::State) {
-    let is_static = state.is_static
-    state.is_static = true
+    let prev_is_static = is_static
+    is_static = true
     var result = boolean_expr(node.value.if_.cond, state)
-    state.is_static = is_static
+    is_static = prev_is_static
 
     var body: &Vector(&parser::Node) = null
     if result.i {
@@ -113,10 +128,10 @@ def walk_StaticIf(node: &parser::Node, state: &typechecking::State) {
         for var i in 0..vector::length(node.value.if_.else_if) {
             let else_if = node.value.if_.else_if[i]
             
-            let is_static = state.is_static
-            state.is_static = true
+            let prev_is_static = is_static
+            is_static = true
             result = boolean_expr(else_if.value.else_if.cond, state)
-            state.is_static = is_static
+            is_static = prev_is_static
 
             if result.i { 
                 body = else_if.value.else_if.body
@@ -184,9 +199,11 @@ def walk_From(node: &parser::Node, state: &typechecking::State) {
 export def evaluate_parameter(node: &parser::Node, param: &parser::Node, tpe: &typechecking::Type, state: &typechecking::State) -> &compiler::Value {
     var value: &compiler::Value = null
     if param.value.param.value {
-        set_current_function()
+        let previous_block = compiler_state.current_block
+        let function = set_current_function()
         typechecking::walk(node, param.value.param.value, state)
         var result = compiler::walk_expression(param.value.param.value, compiler_state)
+        vector::insert(function.block.insn, 0, function.allocas)
         let gvalue = compiler::make_global_value(result.tpe, "default_param", null, compiler_state)
         let estate = eval::eval(compiler_state)
         result = eval::get_value(result, estate)
@@ -224,6 +241,7 @@ export def evaluate_parameter(node: &parser::Node, param: &parser::Node, tpe: &t
             }
         }
         compiler_state.function_stack.pop()
+        compiler_state.current_block = previous_block
     }
     return value
 }
@@ -517,31 +535,31 @@ export def walk_top_VarDecl(node: &parser::Node, state: &typechecking::State) {
     defer errors::current_signature = current_signature
 
     if kw == parser::VarDecl::CONST {
-        let is_static = state.is_static
-        state.is_static = true
+        let prev_is_static = is_static
+        is_static = true
 
         for var i in 0..vector::length(right) {
             walk(node, right[i], state)
         }
-
-        typechecking::walk_VarDecl(node, state, true)
 
         // We need to walk twice to catch static function calls
         for var i in 0..vector::length(right) {
             walk(node, right[i], state)
         }
 
-        set_current_function()
+        let previous_block = compiler_state.current_block
+        let function = set_current_function()
+        typechecking::walk_VarDecl(node, state, true)
         let assign = compiler::walk_top_VarDecl(node, compiler_state, true)
         compiler::walk_expression(assign, compiler_state)
+        vector::insert(function.block.insn, 0, function.allocas)
         eval::eval(compiler_state)
 
         for var i in 0..vector::length(left) {
             let n = left[i]
             if n.kind != parser::NodeKind::ID_DECL {
                 errors::errorn(n, "Can't assign in const statement")
-                compiler_state.function_stack.pop()
-                return
+                break
             }
             let ident = n.value.id_decl.value
             let global = eval::serialize_value(ident.svalue.assembly_name, state.module, compiler_state)
@@ -549,8 +567,9 @@ export def walk_top_VarDecl(node: &parser::Node, state: &typechecking::State) {
                 ident.svalue.value = global.value
             }
         }
-        state.is_static = is_static
+        is_static = prev_is_static
         compiler_state.function_stack.pop()
+        compiler_state.current_block = previous_block
 
         return
     }
@@ -583,31 +602,38 @@ def walk_VarDecl(node: &parser::Node, state: &typechecking::State) {
     let right = node.value.var_decl.right
 
     if kw == parser::VarDecl::CONST {
-        let is_static = state.is_static
-        state.is_static = true
-
-        for var i in 0..vector::length(right) {
-            walk(node, right[i], state)
-        }
-
-        set_current_function()
-        typechecking::walk_VarDecl(node, state, true)
-
-        // We need to walk twice to catch static function calls
-        for var i in 0..vector::length(right) {
-            walk(node, right[i], state)
-        }
-
-        compiler::walk_VarDecl(node, compiler_state, true)
-        let estate = eval::eval(compiler_state)
-        let locals = eval::get_stack_frame(estate).locals
-
         for var i in 0..vector::length(left) {
             let n = left[i]
             if n.kind != parser::NodeKind::ID_DECL {
                 errors::errorn(n, "Can't assign in const statement")
                 return
             }
+            let ident = n.value.id_decl.value
+            if ident.svalue { return }
+        }
+
+        let prev_is_static = is_static
+        is_static = true
+
+        for var i in 0..vector::length(right) {
+            walk(node, right[i], state)
+        }
+
+        let previous_block = compiler_state.current_block
+        let function = set_current_function()
+        typechecking::walk_VarDecl(node, state, true)
+        // We need to walk twice to catch static function calls
+        for var i in 0..vector::length(right) {
+            walk(node, right[i], state)
+        }
+
+        compiler::walk_VarDecl(node, compiler_state, true)
+        vector::insert(function.block.insn, 0, function.allocas)
+        let estate = eval::eval(compiler_state)
+        let locals = eval::get_stack_frame(estate).locals
+
+        for var i in 0..vector::length(left) {
+            let n = left[i]
             let name = n.value.id_decl.value
             let value = scope::get(state.scope, name)
             // TODO We need to serialize these ones as well, move them out of the function
@@ -617,7 +643,9 @@ def walk_VarDecl(node: &parser::Node, state: &typechecking::State) {
             value.value = constant
         }
 
-        state.is_static = is_static
+        is_static = prev_is_static
+        compiler_state.current_block = previous_block
+        compiler_state.function_stack.pop()
         return
     }
 
@@ -635,6 +663,8 @@ def walk_VarDecl(node: &parser::Node, state: &typechecking::State) {
     for var i in 0..vector::length(right) {
         walk(node, right[i], state)
     }
+
+    recompile_functions(state)
 }
 
 def walk_UnaryOp(node: &parser::Node, state: &typechecking::State) {
@@ -683,39 +713,57 @@ def walk_Yield(node: &parser::Node, state: &typechecking::State) {
 def load_function(value: &scope::Value) {
     let module = value.ident.module
     if not module { return }
-    if not module.is_dirty {
+    if not module.is_dirty and not module.node {
         module.is_dirty = true
         toolchain::reset_and_consteval(module)
     }
 }
 
-// This function compiles a function that is called in constant evaluation
-export def compile_function(node: &parser::Node, state: &typechecking::State, args: &Vector(typechecking::NamedParameter) = null) {
-    if not node { return }
+def recompile_functions(state: &typechecking::State) {
+    compiler::create_builtin_functions()
+    let previous_is_static = is_static
+    is_static = true
+    compiler::create_dyn_dispatch(state.module.compiler_state)
+    is_static = previous_is_static
+}
 
-    let function = node.value.def_.function
+// This function compiles a function that is called in constant evaluation
+export def compile_function(value: &scope::Value, arguments: &Vector(typechecking::NamedParameter) = null) -> &scope::Value {
+    value.phase = scope::Phase::COMPILED
+    var node = value.node
+    let state = value.state
+    
+    if not node { return value }
+
+    var function = node.value.def_.function
     compiler::predeclare_function(function, overwrite = true)
 
-    state.module.result.functions[function.name] = function
     const_module.result.functions[function.name] = function
-    
-    if function.is_compiled { return }
-    function.is_compiled = true
-    if not node.value.def_.body { return }
-
-    var copy = parser::deep_copy_node(node, clear_svalue = false)
-    let scpe = state.scope
-    state.scope = node.inner_scope
-    for var i in 0..vector::length(copy.value.def_.body) {
-        let n = copy.value.def_.body[i]
-        walk(copy, n, state)
+    if not state { return value }
+    state.module.result.functions[function.name] = function
+    if function.is_compiled { return value }
+    if not node.value.def_.body { return value }
+    if not typechecking::is_polymorph(function.tpe) {
+        function.is_compiled = true
     }
-    state.scope = scpe
     
+    let prev_static = is_static
+    is_static = true
+    
+    if arguments and typechecking::is_polymorph(function.tpe) {
+        node = typechecking::walk_Def_with_type_argument(node, arguments, state)
+        function = node.value.def_.function
+    } else {
+        if not function.is_typechecked {
+            walk_Def(node, state)
+            typechecking::walk_Def(node, state)
+        }
+    }
+
     // This is a big ugly but what can we do
     let debug = toolchain::debug_sym
     toolchain::debug_sym = false
-    compiler::create_function(copy, copy.tpe, copy.value.def_.body, copy.inner_scope, null, compiler_state)
+    compiler::create_function(node, node.tpe, node.value.def_.body, node.inner_scope, null, compiler_state)
     toolchain::debug_sym = debug
 
     if function.defer_functions {
@@ -724,28 +772,16 @@ export def compile_function(node: &parser::Node, state: &typechecking::State, ar
             const_module.result.functions[deferf.name] = deferf
         }
     }
+    
+    recompile_functions(state)
+    is_static = prev_static
+
+    return function.value
 }
 
-def walk_Call(node: &parser::Node, state: &typechecking::State) {
+export def walk_Call(node: &parser::Node, state: &typechecking::State) {
     let left = node.value.func_call.left
     walk(node, left, state)
-
-    if state.is_static {
-        if not left.svalue { return }
-        if not left.svalue.imported and not left.svalue.node {
-            load_function(left.svalue)
-        }
-        left.svalue = scope::get_function(state.scope, left, node.value.func_call.arguments)
-        if not left.svalue {
-            errors::errorn(left, "Couldn't find function `", 
-                parser::identifier_to_str(left), "`. ", 
-                typechecking::append_arguments(node.value.func_call.arguments)
-            )
-            return
-        }
-        let func = left.svalue.node
-        compile_function(func, state)
-    }
     
     for var i in 0..vector::length(node.value.func_call.args) {
         walk(node, node.value.func_call.args[i], state)
@@ -759,15 +795,9 @@ def walk_Call(node: &parser::Node, state: &typechecking::State) {
 
 def walk_Ptr(node: &parser::Node, state: &typechecking::State) {
     walk(node, node.value.expr, state)
-    if state.is_static {
-        let suppress_errors = errors::suppress_errors
-        errors::suppress_errors = true
-        typechecking::walk(node.parent, node, state)
-        errors::suppress_errors = suppress_errors
-
+    if is_static {
         if not node.value.expr.svalue { return }
-        let func = node.value.expr.svalue.node
-        compile_function(func, state)
+        compile_function(node.value.expr.svalue)
     }
 }
 
@@ -913,16 +943,18 @@ def walk_Defined(node: &parser::Node, state: &typechecking::State) {
 
 def walk_Error(node: &parser::Node, state: &typechecking::State) {
     let expr = node.value.expr
-    let is_static = state.is_static
-    state.is_static = true
+    let prev_is_static = is_static
+    is_static = true
     walk(node, expr, state)
 
-    set_current_function()
+    let previous_block = compiler_state.current_block
+    let function = set_current_function()
     typechecking::walk(node, expr, state)
     walk(node, expr, state)
-    state.is_static = is_static
+    is_static = prev_is_static
 
     var result = compiler::walk_expression(expr, compiler_state)
+    vector::insert(function.block.insn, 0, function.allocas)
     let estate = eval::eval(compiler_state)
     result = eval::get_value(result, estate)
     if not typechecking::equals(result.tpe, builtins::string_) {
@@ -944,6 +976,8 @@ def walk_Error(node: &parser::Node, state: &typechecking::State) {
         parent = node.parent,
         loc = node.loc
     } !parser::Node
+    compiler_state.current_block = previous_block
+    compiler_state.function_stack.pop()
 }
 
 def walk_Assert(node: &parser::Node, state: &typechecking::State) {
