@@ -247,7 +247,7 @@ export def get_user_defined_destructor(tpe: &Type) -> &scope::Value {
         args.push({
             _tpe = pointer(tpe)
         } !NamedParameter)
-        let destructor = scope::get_function(tpe.module.scope, parser::make_identifier("destruct"), args, true)
+        let destructor = scope::get_function(tpe.module.scope, parser::make_identifier("destruct"), args, false, true)
         if destructor { 
             tm.has_destructor = 1
             tm.destructor = destructor
@@ -467,15 +467,18 @@ export def is_float(tpe: &Type) -> bool {
 }
 
 // TODO Also allow arrays and strings
-export def is_boolean(tpe: &Type) -> bool {
+export def is_boolean(tpe: &Type, module: &Module) -> bool {
     if not tpe { return false }
-    return (@tpe).kind == TypeKind::BOOL or
+    if (@tpe).kind == TypeKind::BOOL or
         (@tpe).kind == TypeKind::WORD or
         (@tpe).kind == TypeKind::FLOAT or
         (@tpe).kind == TypeKind::POINTER or
         (@tpe).kind == TypeKind::REFERENCE or
         (@tpe).kind == TypeKind::WEAK_REF or
-        tpe.kind == TypeKind::CHAR
+        tpe.kind == TypeKind::CHAR {
+        return true
+    }
+    return is_assignable(builtins::bool_, tpe, module)
 }
 
 export def is_pointer(tpe: &Type) -> bool {
@@ -814,6 +817,7 @@ export type TypeEntryMember = struct {
 }
  
 export def create_type_entry(tpe: &Type) -> &TypeEntry {
+    if is_polymorph(tpe) { return null }
     let name = debug::type_to_str(tpe, full_name = true)
     var type_entry = types_map.get_or_default(name, null)
     if not type_entry {
@@ -829,6 +833,7 @@ export def create_type_entry(tpe: &Type) -> &TypeEntry {
 
 export def create_type_entry(tpe: &Type, exported: bool, entry: &Type, module: &toolchain::Module, overwrite: bool = false) -> bool {
     let type_entry = create_type_entry(tpe)
+    if not type_entry { return false }
 
     let member_function = {
         function = shallow_copy(entry),
@@ -1087,6 +1092,7 @@ export def implements(a: &Type, b: &Type, module: &toolchain::Module) -> bool {
     }
 
     var type_entry = create_type_entry(a)
+    if not type_entry { return false }
     let nameb = debug::type_to_str(b, full_name = true)
     if type_entry.cached.contains(nameb) {
         return type_entry.cached[nameb] == CacheEntry::CONTAINS
@@ -1710,7 +1716,7 @@ export def overload_score(
         }
         var lvalue = left.tpe
         if i == vector::length(param_a) - 1 and 
-            left.varargs and left.tpe and
+            left.varargs and not right.varargs and left.tpe and
             convert_type_score(array(left.tpe), right.tpe, module, impl = impl) >= 0 {
 
             lvalue = array(left.tpe)
@@ -1923,6 +1929,7 @@ def lookup_type_constructor(tc: &parser::Node, node: &parser::Node, state: &Stat
 
 // This generates concrete functons when refering to type constructors
 export def generate_concrete_functions(type_constructor: &Type, tpe: &Type, state: &State) {
+    if consteval::is_static { return }
     let functions = get_member_functions(tpe)
     for var j in 0..vector::length(functions) {
         let function = functions[j]
@@ -1944,9 +1951,14 @@ export def generate_concrete_functions(type_constructor: &Type, tpe: &Type, stat
                 if state.function_stack.length > 0 {
                     state2.function_stack.push(state.function_stack[0])
                 }
-
+                
                 if not scope::has_function(state.scope, ftpe) {
-                    walk_Def_with_type_argument(ftpe.node, pars, state2)
+                    if consteval::is_static {
+                        let value = scope::get_function(state2.scope, parser::make_identifier(ftpe.name), pars, false, true, force_compile = false)
+                        consteval::compile_function(value, pars)
+                    } else {
+                        walk_Def_with_type_argument(ftpe.node, pars, state2)
+                    }
                 }
             }
         }
@@ -3012,7 +3024,7 @@ def walk_Not(node: &parser::Node, state: &State) {
     walk(node, node.value.expr, state)
     let tpe = (@node.value.expr).tpe
     if not tpe { return }
-    if not is_boolean(tpe) {
+    if not is_boolean(tpe, state.module) {
         errors::errorn(node, "Incompatible type ", debug::type_to_str(tpe), ", must be boolean type")
     }
     node.tpe = tpe
@@ -3090,7 +3102,7 @@ def make_function_call(node: &parser::Node, ident: &parser::Node) -> &parser::No
 
 def convert_to_call(node: &parser::Node, name: String, args: &Vector(NamedParameter), state: &State) {
     let ident = parser::make_identifier(name)
-    let fun = scope::get_function(state.scope, ident, args, true, true, force_compile = not consteval::is_static)
+    let fun = scope::get_function(state.scope, ident, args, false, true, force_compile = not consteval::is_static)
     if fun {
         compile_function(*fun, args)
         let parent = node.parent
@@ -3102,7 +3114,7 @@ def convert_to_call(node: &parser::Node, name: String, args: &Vector(NamedParame
 
 def convert_to_icall(node: &parser::Node, name: String, args: &Vector(NamedParameter), state: &State) {
     let ident = parser::make_identifier(name)
-    let fun = scope::get_function(state.scope, ident, args, true, true, force_compile = not consteval::is_static)
+    let fun = scope::get_function(state.scope, ident, args, false, true, force_compile = not consteval::is_static)
     if fun { 
         compile_function(*fun, args)
 
@@ -3207,7 +3219,7 @@ def walk_BooleanOp(node: &parser::Node, state: &State) {
     walk(node, right, state)
 
     if not (@left).tpe or not (@right).tpe { return }
-    if not is_boolean((@left).tpe) or not is_boolean((@right).tpe) {
+    if not is_boolean((@left).tpe, state.module) or not is_boolean((@right).tpe, state.module) {
         errors::errorn(node, "Invalid operands of type ", debug::type_to_str((@left).tpe), " and ", debug::type_to_str((@right).tpe), " to boolean operator")
     }
 
@@ -3525,7 +3537,12 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
     let imported = (share !int & parser::ShareMarker::IMPORT !int) !bool
 
     if not name or not params or not returns { return }
-    
+    var function = node.value.def_.function
+    if function {
+        if function.is_typechecked { return }
+        function.is_typechecked = true
+    }
+
     let is_closure = state.function_stack.length > 1 // Main function is 0
 
     var tpe: &Type
@@ -3612,7 +3629,6 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
         check_is_valid_function(name, node.tpe.parameter_t, state)
     } 
 
-    var function = node.value.def_.function
     if not function {
         function = {
             tpe = tpe,
@@ -3627,7 +3643,8 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
             dllexport = dllexport,
             test = test,
             imported = imported,
-            has_yield = node.value.def_.has_yield
+            has_yield = node.value.def_.has_yield,
+            is_typechecked = true
         } !&compiler::Function
         node.value.def_.function = function
     } else {
@@ -3671,7 +3688,7 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
         errors::current_function = tpe.type_name
         errors::current_signature = node.signature_hash
         if not function.value {
-            function.value = scope::create_function(outer_scope, name, share, tpe, phase, node, state)
+            function.value = scope::create_function(outer_scope, name, share, tpe, phase, node, consteval::copy_state(state))
             function.value.polymorph = polymorph
             function.value.imported = imported
         }
@@ -4162,7 +4179,7 @@ def walk_If(node: &parser::Node, state: &State) {
     walk(node, cond, state)
     let tpe = (@cond).tpe
     if not tpe { return }
-    if not is_boolean(tpe) {
+    if not is_boolean(tpe, state.module) {
         errors::errorn(node, "Incompatible type ", debug::type_to_str(tpe), ", must be boolean type")
     }
     
@@ -4178,7 +4195,7 @@ def walk_If(node: &parser::Node, state: &State) {
         walk(node, cond, state)
         let tpe = (@cond).tpe
         
-        if not is_boolean(tpe) {
+        if not is_boolean(tpe, state.module) {
             errors::errorn(n, "Incompatible type ", debug::type_to_str(tpe), ", must be boolean type")
         }
 
@@ -4203,7 +4220,7 @@ def walk_IfExpr(node: &parser::Node, state: &State) {
 
     let tpe = cond.tpe
     if not tpe { return }
-    if not is_boolean(tpe) {
+    if not is_boolean(tpe, state.module) {
         errors::errorn(node, "Incompatible type ", debug::type_to_str(tpe), ", must be boolean type")
     }
 
@@ -4214,9 +4231,9 @@ def walk_IfExpr(node: &parser::Node, state: &State) {
 
     if is_arithmetic(if_true.tpe) and is_arithmetic(if_false.tpe) {
         node.tpe = common_type(if_true.tpe, if_false.tpe)
-    } else if if_true.tpe.kind == TypeKind::NULL and (is_ref_or_weak(if_false.tpe) or is_pointer(if_false.tpe)) {
+    } else if if_true.tpe and if_true.tpe.kind == TypeKind::NULL and (is_ref_or_weak(if_false.tpe) or is_pointer(if_false.tpe)) {
         node.tpe = if_false.tpe
-    } else if if_false.tpe.kind == TypeKind::NULL and (is_ref_or_weak(if_true.tpe) or is_pointer(if_true.tpe)) {
+    } else if if_false.tpe and if_false.tpe.kind == TypeKind::NULL and (is_ref_or_weak(if_true.tpe) or is_pointer(if_true.tpe)) {
         node.tpe = if_true.tpe
     } else if not equals(if_true.tpe, if_false.tpe) {
         errors::errorn(node, "If expression needs to have a single type")
@@ -4236,7 +4253,7 @@ def walk_While(node: &parser::Node, state: &State) {
     let expr = node.value.while_loop.expr
     if not expr { return }
     walk(node, expr, state)
-    if not is_boolean((@expr).tpe) {
+    if not is_boolean((@expr).tpe, state.module) {
         errors::errorn(node, "Incompatible type ", debug::type_to_str((@expr).tpe), ", must be boolean type")
     }
 
@@ -4346,6 +4363,10 @@ def walk_Deref(node: &parser::Node, state: &State) {
     if not tpe { return }
     if not is_pointer(tpe) and not is_ref_or_weak(tpe) {
         errors::errorn(node, "Needs to be a pointer or reference type, got ", debug::type_to_str(tpe))
+        return
+    }
+    if is_interface(tpe.tpe) {
+        errors::errorn(node, "Can't dereference a structural type")
         return
     }
     node.tpe = tpe.tpe
@@ -4786,7 +4807,7 @@ def walk_Assert(node: &parser::Node, state: &State) {
     walk(node, cond, state)
     walk(node, msg, state)
 
-    if cond and not is_boolean(cond.tpe) {
+    if cond and not is_boolean(cond.tpe, state.module) {
         errors::errorn(cond, "Incompatible type ", debug::type_to_str(cond.tpe), ", must be boolean type")
     }
     if msg and not equals(msg.tpe, builtins::string_) {

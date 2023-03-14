@@ -1811,6 +1811,34 @@ def convert_to(loc: &Value, value: Value, tpe: &typechecking::Type, state: &Stat
         return load_value(value, loc, state)
     }
 
+    if value.tpe.kind != typechecking::TypeKind::NULL {
+        let parameter_t = vector::make(NamedParameter)
+        parameter_t.push({_tpe = value.tpe} !NamedParameter)
+        let conv = scope::find_implicit_function(state.scope, parameter_t, tpe)
+        if conv {
+            if consteval::is_static {
+                consteval::compile_function(conv)
+            }
+
+            predeclare_function(conv.tpe, state.module)
+            state.module.imported.add(conv.tpe.type_name)
+
+            value = convert_to(loc, value, conv.tpe.parameter_t[0].tpe, state)
+
+            if typechecking::has_copy_constructor(value.tpe) {
+                let ret = state.alloca(value.tpe, loc, no_yield_capture = true)
+                insert_copy_constructor(ret, value, loc, state)
+                value = state.load(value.tpe, ret, loc)
+            }
+            
+            let addr = state.alloca(tpe, loc)
+            let value = call(state, conv.tpe.type_name, tpe, [value], loc)
+            state.store(addr, value, loc)
+            create_temporary(addr, value, loc, state)
+            return value
+        }
+    }
+
     if typechecking::is_ref_or_weak(tpe) and typechecking::equals(value.tpe, builtins::Ref_) {
         return convert_ref_to_ref(tpe, load_value(value, loc, state), loc, state)
     }
@@ -1868,33 +1896,6 @@ def convert_to(loc: &Value, value: Value, tpe: &typechecking::Type, state: &Stat
                 return convert_to(InsnKind::FPEXT, loc, value, tpe, state)
             }
         }
-    } 
-    if value.tpe.kind != typechecking::TypeKind::NULL {
-        let parameter_t = vector::make(NamedParameter)
-        parameter_t.push({_tpe = value.tpe} !NamedParameter)
-        let conv = scope::find_implicit_function(state.scope, parameter_t, tpe)
-        if conv {
-            if consteval::is_static {
-                consteval::compile_function(conv)
-            }
-
-            predeclare_function(conv.tpe, state.module)
-            state.module.imported.add(conv.tpe.type_name)
-
-            value = convert_to(loc, value, conv.tpe.parameter_t[0].tpe, state)
-
-            if typechecking::has_copy_constructor(value.tpe) {
-                let ret = state.alloca(value.tpe, loc, no_yield_capture = true)
-                insert_copy_constructor(ret, value, loc, state)
-                value = state.load(value.tpe, ret, loc)
-            }
-            
-            let addr = state.alloca(tpe, loc)
-            let value = call(state, conv.tpe.type_name, tpe, [value], loc)
-            state.store(addr, value, loc)
-            create_temporary(addr, value, loc, state)
-            return value
-        }
     }
     if typechecking::is_pointer(tpe) {
         if (@value.tpe).kind == typechecking::TypeKind::NULL {
@@ -1946,18 +1947,9 @@ def walk_StructLitUnion(node: &parser::Node, state: &State) -> Value {
         errors::errorn(node, "Union initalizer can only have one argument")
         return NO_VALUE
     } else if largs == 0 and lkwargs == 0 {
-        let arraytpe = typechecking::make_static_array(builtins::char_, tpe.size)
-
-        let values = allocate_ref(Value, 1)
-        values[0] = {
-            kind = ValueKind::ZEROINITIALIZER,
-            tpe = arraytpe
-        } !Value
-
         return {
-            kind = ValueKind::STRUCT,
-            tpe = tpe,
-            values = values
+            kind = ValueKind::ZEROINITIALIZER,
+            tpe = tpe
         } !Value
     }
 
@@ -1987,11 +1979,10 @@ def walk_StructLitUnion(node: &parser::Node, state: &State) -> Value {
 
     let alloca_ret = state.alloca(tpe, loc)
 
-    let index = allocate_ref(Value, 3)
+    let index = allocate_ref(Value, 2)
     index[0] = make_int_value(0)
     index[1] = make_int_value(0)
-    index[2] = make_int_value(0)
-    let gep_ret = make_local_value(typechecking::pointer(builtins::char_), null, state)
+    let gep_ret = make_local_value(typechecking::pointer({ typechecking::TypeKind::WORD, size = tpe.align } !&typechecking::Type), null, state)
     let gep = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
     (@gep).value.gep = {
         ret = gep_ret,
@@ -3680,12 +3671,11 @@ def walk_MemberAccess_struct(node: &parser::Node, tpe: &typechecking::Type, memb
     
     if tpe.kind == typechecking::TypeKind::UNION {
 
-        let index = allocate_ref(Value, 3)
+        let index = allocate_ref(Value, 2)
         index[0] = make_int_value(0)
         index[1] = make_int_value(0)
-        index[2] = make_int_value(0)
 
-        let gep_ret = make_local_value(typechecking::pointer(builtins::char_), null, state)
+        let gep_ret = make_local_value(typechecking::pointer({ typechecking::TypeKind::WORD, size = tpe.align } !&typechecking::Type), null, state)
         let gep = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
         (@gep).value.gep = {
             ret = gep_ret,
@@ -6412,6 +6402,7 @@ def defer_unroll(node: &parser::Node, state: &State) {
 }
 
 export def insert_function(module: &toolchain::Module, function: &Function) {
+    if not function.name { return }
     if module.result.functions.contains(function.name) { return }
 
     module.result.functions[function.name] = function
@@ -7081,7 +7072,7 @@ export def walk_TypeDecl(node: &parser::Node, state: &State) {
             
             import_structures((@svalue).tpe, state.module)
             (@(@state).module).imported.add((@function).name)
-            insert_function(state.module, function)
+            state.module.result.functions[function.name] = function
             state.function_stack.pop()
         }
 
@@ -7465,7 +7456,7 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
         structure_type = tpe.tpe.tpe
 
         // Free arrays
-        if is_array(structure_type) and has_destructor(structure_type.tpe) {
+        if is_array(structure_type) and has_destructor(structure_type.tpe) and not is_polymorph(structure_type.tpe) {
             var size = NO_VALUE
             var data = NO_VALUE
             if structure_type.kind == typechecking::TypeKind::ARRAY {
@@ -7656,6 +7647,7 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
         if structure_type.field_types { // TODO This should never be null
             for var i in 0..structure_type.field_types.length {
                 let field = structure_type.field_types[i]
+                if typechecking::is_polymorph(field.tpe) { continue }
                 let ptpe = pointer(field.tpe)
                 let name = debug::type_to_str(ptpe, full_name = true)
                 let destructor = destructors.get_or_default(name, null)
@@ -7663,7 +7655,7 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
                 if destructor {
                     let field_value = state.gep(ptpe, structure_type, obj, [make_int_value(0), make_int_value(i)])
                     state.call(destructor.type_name, null, [field_value])
-                } else if typechecking::has_destructor(field.tpe) {
+                } else if typechecking::has_destructor(field.tpe) and not typechecking::is_polymorph(field.tpe) {
                     let field_value = state.gep(ptpe, structure_type, obj, [make_int_value(0), make_int_value(i)])
 
                     let args = vector::make(typechecking::NamedParameter)
