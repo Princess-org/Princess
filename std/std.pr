@@ -3,6 +3,106 @@ import runtime
 import optional
 import vector
 
+#if defined DEBUG_REF_CYCLES {
+    import set
+    import map
+    
+    type Root = struct {
+        file: string
+        line: int
+    }
+
+    var lock = false
+    var ref_roots: *&map::Map(&, Root) = null // This is so that we keep the memory around
+
+    export def hash(ref: &) -> uint64 {
+        return ref !* !uint64
+    }
+
+    // Internal methods
+    def add_root(ref: runtime::Ref, file: *char, line: int) {
+        if lock { return } // This is because otherwise we stack overflow because adding a reference creates new roots
+        var l = lock
+        lock = true
+        if not ref_roots {
+            ref_roots = zero_allocate(type &map::Map(&, Root))
+            @ref_roots = map::make(type &, Root)
+        }
+        (@ref_roots)[ref] = { make_string(file), line } !Root
+        lock = l
+    }
+
+    def remove_root(ref: runtime::Ref) {
+        if lock { return }
+        if not ref_roots { return }
+        var l = lock
+        lock = true
+        (@ref_roots).remove(ref)
+        lock = l
+    }
+
+    def find_cycle_root(ref: &, n: int, all: &Set(&)) -> bool {
+        let root = (@ref_roots)[ref]
+        let visited = set::make(type &)
+        visited.add(ref)
+        let cycle = find_cycle(n, root, ref, visited, all)
+        if cycle {
+            error("Cycle root: ", root.file + "@" + root.line, " (", ref !*, ") \n")
+        }
+        return cycle
+    }
+
+    def find_cycle(n: int, root: Root, cur: &, visited: &Set(&), all: &Set(&)) -> bool {
+        if all.contains(cur) { return false }
+        all.add(cur)
+        let tpe = ref_type(cur).tpe
+        if tpe.kind == runtime::TypeKind::STRUCT {
+            for var i in 0..tpe.fields.size {
+                let field = tpe.fields[i]
+                if field.tpe.kind == runtime::TypeKind::REFERENCE {
+                    let ref = @(((cur !*) ++ field.offset) !*&)
+                    let new_cycle = visited.contains(ref)
+                    visited.add(ref)
+                    if new_cycle {
+                        error(">>> Cycle " + n, "\n")
+                        return true
+                    }
+                    if find_cycle(n, root, ref, visited, all) {
+                        error("-> ", tpe.name + "::", field.name, " (", ref !*, ")\n")
+                        return true
+                    }
+                }
+            }
+        }
+        return false
+    }
+
+    def find_cycles_impl {
+        error("Starting cycle finder...\n")
+        let keys = (@ref_roots).keys()
+        let all = set::make(type &)
+        var n = 1
+        for var i in 0..keys.size {
+            let root = keys[i]
+            if find_cycle_root(root, n, all) {
+                n += 1
+            }
+        }
+        if n == 1 {
+            error("No cycles found!\n")
+        } else {
+            error(n - 1, " cycles found!\n")
+        }
+    }
+
+    export def find_cycles {
+        var l = lock
+        lock = true
+        find_cycles_impl() // This is to prevent the lock from being reset before calling the destructors
+        lock = l
+    }
+}
+
 #if defined WIN32 {
     import windows
     export type File = *cstd::FILE

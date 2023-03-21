@@ -537,6 +537,7 @@ export type State = struct {
     // This is set by the language server to not store instructions
     no_instructions: bool
     // Set in consteval::compiler_state
+    file_name_value: Value
 }
 
 def current_value(state: &State) -> &scope::Value {
@@ -565,7 +566,7 @@ export def current_function(state: &State) -> &Function {
 def add_type_meta(tpe: &typechecking::Type, state: &State) {
     if not tpe { return }
     let cf = current_function(state)
-    if cf {
+    if cf and cf.used_type_meta {
         cf.used_type_meta.add(tpe)
     }
 }
@@ -934,7 +935,7 @@ export def charp_static(global: &Value, state: &State) -> Value {
     return local
 }
 
-export def charp(str: &string, state: &State) -> Value {
+export def create_global_string(str: &string, state: &State) -> Value {
     let tpe = typechecking::make_type_raw(typechecking::TypeKind::STATIC_ARRAY)
     tpe._tpe = builtins::char_
     tpe.length = str.size
@@ -947,8 +948,11 @@ export def charp(str: &string, state: &State) -> Value {
         tpe = tpe
     } !&Value
 
-    let global = make_global_value(tpe, "str", value, state)
-    return charp_static(global, state)
+    return make_global_value(tpe, "str", value, state)
+}
+
+export def charp(str: &string, state: &State) -> Value {
+    return charp_static(create_global_string(str, state), state)
 }
 
 def push_scope(node: &parser::Node, state: &State) {
@@ -1580,6 +1584,21 @@ def convert_value_to_ref(tpe: &typechecking::Type, value: Value, loc: &Value, st
         state.store(ptr, ret_insert3)
         insert_destructor(ptr, loc, state)
     }*/
+
+    if builtins::builtins.fields.contains("DEBUG_REF_CYCLES") {
+        var line = -1
+        if loc {
+            let di = state.module.result.metadata[loc.name]
+            line = di.debug_values[0].value.i !int
+        }
+        let linev = make_int_value(line) 
+        let filev = charp_static(state.file_name_value, state)
+        let fun = toolchain::find_module("std").scope.get(parser::make_identifier("add_root")).tpe
+        predeclare_function(fun, state.module)
+        state.module.imported.add(fun.type_name)
+        import_structure(builtins::Ref_, state.module)
+        state.call(fun.type_name, null, [convert_ref_to_ref(builtins::Ref_, ret_insert3, loc, state), filev, linev], loc)
+    }
 
     return ret_insert3
 }
@@ -7678,6 +7697,14 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
     }
 
     if typechecking::is_ref(tpe.tpe) and tpe.tpe.tpe and not is_interface(tpe.tpe.tpe) {
+        if builtins::builtins.fields.contains("DEBUG_REF_CYCLES") {
+            let fun = toolchain::find_module("std").scope.get(parser::make_identifier("remove_root")).tpe
+            predeclare_function(fun, state.module)
+            state.module.imported.add(fun.type_name)
+            import_structure(builtins::Ref_, state.module)
+            state.call(fun.type_name, null, [convert_ref_to_ref(builtins::Ref_, ref, null, state)])
+        }
+
         let ref_count_i8_ptr = state.bitcast(pointer(builtins::int8_), ref_count_ptr)
         state.call("free", null, [ref_count_i8_ptr])
 
@@ -8649,6 +8676,10 @@ export def compile(state: &State, is_main: bool, no_cleanup: bool = false) {
     state.finalizer.block = finalizer_start_block
     state.finalizer.dllexport = true
 
+    if builtins::builtins.fields.contains("DEBUG_REF_CYCLES") {
+        state.file_name_value = create_global_string(state.module.module, state)
+    }
+
     import_structures(builtins::Type_, state.module)
 
     let body = vector::make(type &parser::Node)
@@ -8963,6 +8994,13 @@ export def compile(state: &State, is_main: bool, no_cleanup: bool = false) {
 
         // Create destructor
         insert_destructor({ kind = ValueKind::GLOBAL, tpe = pointer(value.tpe), name = value.assembly_name } !Value, null, state)
+    }
+
+    if builtins::builtins.fields.contains("DEBUG_REF_CYCLES") and state.module.module == "main" {
+        let fun = toolchain::find_module("std").scope.get(parser::make_identifier("find_cycles")).tpe
+        predeclare_function(fun, state.module)
+        state.module.imported.add(fun.type_name)
+        state.call(fun.type_name, null, [] ![Value])
     }
 
     state.ret(NO_VALUE)
