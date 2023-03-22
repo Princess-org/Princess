@@ -11,21 +11,38 @@ from strings export *
     import map
     
     type Root = struct {
+        ref: runtime::Ref
         file: Str
         line: int
     }
 
-    var lock = false
-    var ref_roots: *&map::Map(runtime::Ref, Root) = null // This is so that we keep the memory around
+    type RefEntry = struct {
+        is_weak: bool
+    }
 
-    export def hash(ref: runtime::Ref) -> uint64 {
-        return ref.value !* !uint64
-    }
-    export def == (a: runtime::Ref, b: runtime::Ref) -> bool {
-        return a.value == b.value
-    }
-    export def != (a: runtime::Ref, b: runtime::Ref) -> bool {
-        return not (a == b)
+    var lock = false
+    var ref_roots: *&map::Map(uint64, Root) = null // This is so that we keep the memory around
+    var malloc_roots: *&set::Set(uint64) = null
+
+    #if not defined WIN32 {
+        def #extern __libc_malloc(size: size_t) -> *
+        def #extern __libc_free(ptr: *)
+
+        def #extern malloc(size: size_t) -> * {
+            if not malloc_roots {
+                malloc_roots = allocate(type &set::Set(uint64))
+                @malloc_roots = set::make(uint64)
+            }
+
+            let ptr = __libc_malloc(size)
+            (@malloc_roots).add(ptr !uint64)
+            return ptr
+        }
+
+        def #extern free(ptr: *) {
+            __libc_free(ptr)
+            (@malloc_roots).remove(ptr !uint64)
+        }
     }
 
     // Internal methods
@@ -34,10 +51,10 @@ from strings export *
         var l = lock
         lock = true
         if not ref_roots {
-            ref_roots = zero_allocate(type &map::Map(runtime::Ref, Root))
-            @ref_roots = map::make(type runtime::Ref, Root)
+            ref_roots = zero_allocate(type &map::Map(uint64, Root))
+            @ref_roots = map::make(uint64, Root)
         }
-        (@ref_roots)[ref] = { make_string(file), line } !Root
+        (@ref_roots)[ref.value !uint64] = { ref, make_string(file), line } !Root
         lock = l
     }
 
@@ -46,56 +63,129 @@ from strings export *
         if not ref_roots { return }
         var l = lock
         lock = true
-        (@ref_roots).remove(ref)
+        (@ref_roots).remove(ref.value !uint64)
         lock = l
     }
 
-    def find_cycle_root(ref: runtime::Ref, n: int, all: &Set(runtime::Ref)) -> bool {
+    def find_cycle_root(ref: uint64, n: *int, all: &Set(uint64)) -> uint64 {
         let root = (@ref_roots)[ref]
-        let visited = set::make(runtime::Ref)
-        visited.add(ref)
-        let cycle = find_cycle(n, root, ref, visited, all)
+        let visited = map::make(uint64, RefEntry)
+        let cycle, new = find_cycle(n, root, root.ref, false, visited, all)
         if cycle {
-            error("Cycle root: ", root.file + "@" + root.line, " (", ref.value, ") \n")
+            error("Cycle root: ", root.file + "@" + root.line, " (", ref !*, ") \n")
         }
         return cycle
     }
 
-    def find_cycle(n: int, root: Root, cur: runtime::Ref, visited: &Set(runtime::Ref), all: &Set(runtime::Ref)) -> bool {
-        if all.contains(cur) { return false }
-        all.add(cur)
-        let tpe = ref_type(cur).tpe
-        if tpe.kind == runtime::TypeKind::STRUCT {
-            for var i in 0..tpe.fields.size {
-                let field = tpe.fields[i]
-                if field.tpe.kind == runtime::TypeKind::REFERENCE {
-                    let ref = @((cur.value ++ field.offset) !*runtime::Ref)
-                    let new_cycle = visited.contains(ref)
-                    visited.add(ref)
-                    if new_cycle {
-                        error(">>> Cycle " + n, "\n")
-                        return true
+    def copy(cur: &Map(uint64, RefEntry)) -> &Map(uint64, RefEntry) {
+        let new_map = map::make(uint64, RefEntry)
+        let keys = cur.keys()
+        for var i in 0..keys.size {
+            let key = keys[i]
+            new_map[key] = cur[key]
+        }
+        return new_map
+    }
+
+    def find_cycle(tpe: *runtime::Type, n: *int, root: Root, cur: *, visited: &Map(uint64, RefEntry), all: &Set(uint64)) -> uint64, bool {
+        for var i in 0..tpe.fields.size {
+            let field = tpe.fields[i]
+            if field.tpe.kind == runtime::TypeKind::REFERENCE or field.tpe.kind == runtime::TypeKind::WEAK_REF {
+                let ref = @((cur ++ field.offset) !*runtime::Ref)
+                if ref.value == null { continue }
+                if field.tpe.kind == runtime::TypeKind::WEAK_REF and not (@ref_roots).contains(ref.value !uint64) { continue }
+                let cycle, new = find_cycle(n, root, ref, field.tpe.kind == runtime::TypeKind::WEAK_REF, copy(visited), all)
+                if cycle == ref.value !uint64 and not new {
+                    let root = (@ref_roots)[ref.value !uint64]
+                    error("Cycle root: ", root.file + "@" + root.line, " (", ref.value, ") \n")
+                    return 0, false
+                } else if cycle {
+                    error("-> ", tpe.name + "::", field.name)
+                    if ref_roots.contains(ref.value !uint64) {
+                        let root = (@ref_roots)[ref.value !uint64]
+                        error(":", root.file, "@" + root.line)
                     }
-                    if find_cycle(n, root, ref, visited, all) {
-                        error("-> ", tpe.name + "::", field.name, " (", ref.value, ")\n")
-                        return true
+                    error(" (", ref.value, ")")
+                    if field.tpe.kind == runtime::TypeKind::WEAK_REF {
+                        error(" WEAK")
+                    }
+                    error("\n")
+                    return cycle, false
+                }
+            } else if field.tpe.kind == runtime::TypeKind::STRUCT {
+                let value = cur ++ field.offset
+                let cycle, _ = find_cycle(field.tpe, n, root, value, copy(visited), all)
+                if cycle {
+                    error("-> ", field.tpe.name, "::", field.name, "\n")
+                    return cycle, false
+                }
+            } else if field.tpe.kind == runtime::TypeKind::STATIC_ARRAY {
+                for var i in 0..field.tpe.length {
+                    let child = cur ++ field.offset ++ (i * field.tpe.tpe.size)
+                    let cycle, _ = find_cycle(field.tpe.tpe, n, root, child, copy(visited), all)
+                    if cycle {
+                        error("-> ", field.tpe.name, "::", field.name + ":", i, "\n")
+                        return cycle, false
+                    }
+                }
+            } else if field.tpe.kind == runtime::TypeKind::ARRAY and field.tpe.tpe.kind == runtime::TypeKind::REFERENCE {
+                let value = @((cur ++ field.offset) !*[*uint8])
+                for var i in 0..value.size {
+                    let child = (value.value ++ (i * field.tpe.tpe.size)) !*
+                    let cycle, _ = find_cycle(field.tpe.tpe, n, root, child, copy(visited), all)
+                    if cycle {
+                        error("-> ", field.tpe.name, "::", field.name + ":", i, "\n")
+                        return cycle, false
                     }
                 }
             }
         }
-        return false
+        return 0, false
+    }
+
+    def find_cycle(n: *int, root: Root, cur: runtime::Ref, is_weak: bool, visited: &Map(uint64, RefEntry), all: &Set(uint64)) -> uint64, bool {
+        if cur.value == null { return 0, false }
+        
+        if visited.contains(cur.value !uint64) {
+            if is_weak { return 0, false }
+            let keys = visited.reverse_keys()
+            var ref: uint64 = 0
+            var i = 0
+            while ref != cur.value {
+                ref = keys[i]
+                if visited[ref].is_weak { return 0, false }
+                i += 1
+            }
+
+            error(">>> Cycle ", @n, "\n")
+            @n += 1
+            return cur.value !uint64, true
+        }
+        visited[cur.value !uint64] = {is_weak} !RefEntry
+
+        if all.contains(cur.value !uint64) { return 0, false }
+        all.add(cur.value !uint64)
+
+        let rtpe = ref_type(cur)
+        if not rtpe { return 0, false }
+        let tpe = rtpe.tpe
+        if tpe and tpe.kind == runtime::TypeKind::STRUCT {
+            let cycle, _ = find_cycle(tpe, n, root, cur.value, visited, all)
+            return cycle, false
+        }
+        return 0, false
     }
 
     def find_cycles_impl {
         error("Starting cycle finder...\n")
+        error((@ref_roots).size, " roots found\n")
         let keys = (@ref_roots).keys()
-        let all = set::make(runtime::Ref)
+        let all = set::make(uint64)
         var n = 1
         for var i in 0..keys.size {
             let root = keys[i]
-            if find_cycle_root(root, n, all) {
-                n += 1
-            }
+            let prev_n = n
+            find_cycle_root(root, *n, all)
         }
         if n == 1 {
             error("No cycles found!\n")
