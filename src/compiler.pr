@@ -3027,7 +3027,6 @@ def insert_destructors(scpe: &scope::Scope, loc: &Value, state: &State) {
 }
 
 def insert_destructor(value: Value, loc: &Value, state: &State) {
-    if state.current_function.has_yield { return }
     if value.tpe.tpe and value.tpe.tpe.kind == typechecking::TypeKind::STATIC_ARRAY and typechecking::has_destructor(value.tpe.tpe) {
         let counter_ptr = state.alloca(builtins::size_t_, loc)
         state.store(counter_ptr, { kind = ValueKind::INT, tpe = builtins::size_t_, i = 0 } !Value, loc)
@@ -4761,15 +4760,18 @@ def walk_Return(node: &parser::Node, state: &State) {
         defer_unroll(node, state)
     }
 
-    if not current_function.has_yield {
-        var scpe = state.scope
-        while not scpe.is_function {
-            insert_destructors(scpe, loc, state)
-            scpe = scpe.parent 
-        }
+    var scpe = state.scope
+    while not scpe.is_function {
         insert_destructors(scpe, loc, state)
+        scpe = scpe.parent 
     }
+    insert_destructors(scpe, loc, state)
     if current_function.has_yield {
+        state.store(
+            { kind = ValueKind::LOCAL, tpe = pointer(builtins::bool_), name = "__is_at_end" } !Value,
+            { kind = ValueKind::BOOL, tpe = builtins::bool_, i = 1 } !Value
+        )
+
         state.store(
             { kind = ValueKind::LOCAL, tpe = pointer(builtins::int_), name = "__block" } !Value,
             { kind = ValueKind::INT, tpe = builtins::int_, i = -1 } !Value
@@ -5008,6 +5010,7 @@ def walk_For_array(node: &parser::Node, state: &State) {
     } else if has_copy_constructor(expr.tpe.tpe) {
         insert_copy_constructor(locv, value, loc, state)
     }
+    create_temporary(locv, state.load(iddecl.tpe, locv, loc), loc, state)
 
     var last_node = node
     for var i in 0..vector::length(node.value.for_loop.body) {
@@ -5051,7 +5054,6 @@ def walk_For_generator(node: &parser::Node, state: &State) {
     var gen = walk_and_load_expression(expr, state)
     let gen_ptr = state.alloca(expr.tpe, expr_loc)
     state.store(gen_ptr, gen)
-    increase_ref_count(gen_ptr, loc, state)
 
     push_scope(node, state)
     push_insn(continue_insn, state)
@@ -5089,6 +5091,7 @@ def walk_For_generator(node: &parser::Node, state: &State) {
     } else if has_copy_constructor(iddecl.tpe) {
         insert_copy_constructor(locv, next_value, loc, state)
     }
+    create_temporary(locv, state.load(iddecl.tpe, locv, loc), loc, state)
 
     var last_node = node
     for var i in 0..vector::length(node.value.for_loop.body) {
@@ -5108,8 +5111,6 @@ def walk_For_generator(node: &parser::Node, state: &State) {
     (@continue_insn).value.br_unc.label_ = start_label
     (@break_insn).value.br_unc.label_ = end_label
     pop_loop_state(state)
-
-    insert_destructor(gen_ptr, last_loc, state)
 }
 
 def for_create_var(iddecl: &parser::Node, loc: &Value, state: &State) -> Value {
@@ -5132,6 +5133,11 @@ def for_create_var(iddecl: &parser::Node, loc: &Value, state: &State) -> Value {
 
         ret.tpe = typechecking::pointer(tpe)
         push_declare(iddecl.value.for_id_decl.ident, ret, value.name, state)
+
+        let current_function = state.current_function()
+        if current_function and not current_function.is_global {
+            current_function.function_locals.add(value.assembly_name)
+        }
 
         return {
             kind = ValueKind::LOCAL,
@@ -6538,7 +6544,6 @@ def create_free_context(context: &typechecking::Type, state: &State) {
         let local_ptr = state.gep(pointer(field_type), context, context_ptr, [make_int_value(0), make_int_value(i)])
         insert_destructor(local_ptr, null, state)
     }
-    state.call("free", null, [context_ptr_i8])
     state.ret(NO_VALUE)
 }
 
@@ -6550,7 +6555,6 @@ def create_generator(
     context: &typechecking::Type, 
     state: &State
 ) {
-    import_cstd_function("malloc", state)
     import_cstd_function("calloc", state)
 
     let context_ptr_i8 = state.call("calloc", typechecking::pointer(builtins::int8_), [
@@ -6569,7 +6573,8 @@ def create_generator(
         }
     }
 
-    let gen_ptr_i8 = state.call("malloc", typechecking::pointer(builtins::int8_), [
+    let gen_ptr_i8 = state.call("calloc", typechecking::pointer(builtins::int8_), [
+        { kind = ValueKind::INT, tpe = builtins::size_t_, i = 1 } !Value,
         { kind = ValueKind::INT, tpe = builtins::size_t_, i = generator.size } !Value
     ])
     let gen_ptr = state.bitcast(pointer(generator), gen_ptr_i8)
@@ -6688,6 +6693,52 @@ export def create_function(
         let previous_scope = state.scope
         state.scope = scpe
 
+        var generator_type: &typechecking::Type
+        if function.has_yield {
+            let generator_ctor = {
+                kind = parser::NodeKind::TYPE_CONSTRUCTOR
+            } !&parser::Node
+            generator_ctor.value.type_constructor = {
+                name = parser::make_identifier("runtime", "Generator"),
+                args = node.value.def_.returns
+            } !parser::NodeTypeConstructor
+
+            generator_type = reference(typechecking::type_lookup(generator_ctor, state.module.state))
+
+            let generator_ptr = { kind = ValueKind::LOCAL, name = "__generator", tpe = pointer(generator_type.tpe) } !Value
+            let deref = make_insn(InsnKind::EXTRACTVALUE)
+            deref.value.extract_value = {
+                ret = generator_ptr,
+                value = { kind = ValueKind::LOCAL, name = "__context.value", tpe = generator_type } !Value,
+                index = [1]
+            } !InsnExtractValue
+            function.allocas.push(deref)
+
+            let generator = make_local_value(generator_type.tpe, null, state)
+            let load = make_insn(InsnKind::LOAD)
+            load.value.load = {
+                loc = generator_ptr,
+                value = generator
+            } !InsnLoad
+            function.allocas.push(load)
+
+            let context = make_local_value(pointer(null), null, state)
+            let ev = make_insn(InsnKind::EXTRACTVALUE)
+            ev.value.extract_value = {
+                ret = context,
+                value = generator,
+                index = [1]
+            } !InsnExtractValue
+            function.allocas.push(ev)
+
+            let context_cast = make_insn(InsnKind::BITCAST)
+            context_cast.value.convert = {
+                ret = { kind = ValueKind::LOCAL, name = "__context", tpe = pointer(function.context) } !Value,
+                value = context
+            } !InsnConvert
+            function.allocas.push(context_cast)
+        }
+
         if is_closure {
             let context_ptr_i8 = state.extract_value(pointer(null), {
                 kind = ValueKind::LOCAL,
@@ -6740,7 +6791,7 @@ export def create_function(
             let new_name = old_name + ".value"
             // Insert alloca and store instructions
 
-            if state.current_function and not function.has_yield {
+            if state.current_function {
                 state.current_function.function_locals.add(name)
             }
 
@@ -6803,6 +6854,16 @@ export def create_function(
         generate_defer_types(state)
 
         if function.has_yield {
+            // Get is_at_end pointer
+            let is_at_end_gep = make_insn(InsnKind::GETELEMENTPTR)
+            is_at_end_gep.value.gep = {
+                ret = { kind = ValueKind::LOCAL, tpe = pointer(builtins::bool_), name = "__is_at_end" } !Value,
+                tpe = generator_type.tpe,
+                value = { kind = ValueKind::LOCAL, tpe = pointer(generator_type.tpe), name = "__generator" } !Value,
+                index = [make_int_value(0), make_int_value(3)]
+            } !InsnGetElementPtr
+            push_insn(is_at_end_gep, state)
+
             // Create switch
             let gep = make_insn(InsnKind::GETELEMENTPTR)
             gep.value.gep = {
@@ -6836,20 +6897,19 @@ export def create_function(
             last_node = node
         }
 
-        if not no_cleanup and not function.has_yield {
+        if not no_cleanup {
             insert_destructors(scpe, make_location(last_node, state), state)
+        }
+        if function.has_yield {
+            state.store(
+                { kind = ValueKind::LOCAL, tpe = pointer(builtins::bool_), name = "__is_at_end" } !Value,
+                { kind = ValueKind::BOOL, tpe = builtins::bool_, i = 1 } !Value
+            )
         }
 
         vector::insert(function.block.insn, 0, function.allocas)
-
-        if function.has_yield {
-            let context_cast = make_insn(InsnKind::BITCAST)
-            context_cast.value.convert = {
-                ret = { kind = ValueKind::LOCAL, name = "__context", tpe = pointer(function.context) } !Value,
-                value = { kind = ValueKind::LOCAL, name = "__context.value", tpe = pointer(null) } !Value
-            } !InsnConvert
-            vector::insert(function.block.insn, 0, context_cast)
-        } else {
+            
+        if not function.has_yield {
             // TODO Make another compiler pass that checks for missing return statements and dead code
             // Check for missing return statement
             let last_insn = state.current_block.insn.peek() if vector::length(state.current_block.insn) > 0 else null !&Insn
@@ -6875,7 +6935,7 @@ export def create_function(
         if function.has_yield {
             // Implementation
             let parameter_t = vector::make(typechecking::NamedParameter)
-            parameter_t.push({ "__context", typechecking::pointer(null) } !typechecking::NamedParameter)
+            parameter_t.push({ "__context", generator_type } !typechecking::NamedParameter)
             let return_t = vector::make(type &typechecking::Type)
             return_t.push(function.optional)
             let impl_tpe = typechecking::make_function_type_n(parser::make_identifier(tpe.name + ".impl"),
@@ -6917,10 +6977,13 @@ export def create_function(
             var new_block = make_block()
             state.current_block = new_block
             
+            let free_context_parameters = vector::make(typechecking::NamedParameter)
+            free_context_parameters.push({ name = "__context", _tpe = pointer(null) } !typechecking::NamedParameter)
+            
             let parameter_t2 = vector::make(typechecking::NamedParameter)
             parameter_t2.push({ "__context", typechecking::pointer(null) } !typechecking::NamedParameter)
             let free_context_tpe = typechecking::make_function_type_n(parser::make_identifier(tpe.name + ".free_context"),
-                parameter_t, vector::make(type &typechecking::Type), state.module
+                free_context_parameters, vector::make(type &typechecking::Type), state.module
             )
             free_context_tpe.type_name = typechecking::mangle_function_name(free_context_tpe.name, tpe.parameter_t)
 
