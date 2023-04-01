@@ -48,7 +48,7 @@ export type Value = struct {
     name: Str
     i: int64
     f: double
-    s: Str
+    s: &[char]
     // This is the value of a type
     value_tpe: &typechecking::Type
     // Used for both struct and array
@@ -942,7 +942,7 @@ export def create_global_string(str: Str, state: &State) -> Value {
 
     let value = {
         kind = ValueKind::STRING,
-        s = str,
+        s = str.to_array(),
         tpe = tpe
     } !&Value
 
@@ -1125,7 +1125,7 @@ def walk_String(node: &parser::Node, state: &State) -> Value {
     
     let str_value = {
         kind = ValueKind::STRING,
-        s = node.value.str,
+        s = node.value.str.to_array(),
         tpe = tpe
     } !&Value
 
@@ -2993,6 +2993,7 @@ def insert_copy_constructor(addr: Value, value: Value, loc: &Value, state: &Stat
         br.value.br.if_true = loop_end
     } else {
         var ctor = typechecking::get_constructor(addr.tpe.tpe)
+        if not ctor { return }
         if consteval::is_static {
             consteval::compile_function(ctor)
         }
@@ -3065,8 +3066,16 @@ def insert_destructor(value: Value, loc: &Value, state: &State) {
         
     } else if typechecking::has_destructor(value.tpe.tpe) {
         var destructor = typechecking::get_builtin_destructor(value.tpe.tpe)
-        if not destructor { return }
+        if not destructor { return }        
         predeclare_function(destructor.tpe, state.module)
+
+        if consteval::is_static {
+            let udtor = get_user_defined_destructor(value.tpe.tpe)
+            if udtor {
+                consteval::compile_function(udtor)
+            }
+        }
+
         state.module.imported.add(destructor.tpe.type_name)
         state.call(destructor.tpe.type_name, null, [value], loc)
     }
@@ -3951,7 +3960,7 @@ def compare(node: &parser::Node, left: Value, right: Value, state: &State) -> Va
 
     if typechecking::equals(left.tpe, right.tpe) { 
         if typechecking::equals(left.tpe, builtins::string_) {
-            (@(@state).module).imported.add("strcmp")
+            import_cstd_function("strcmp", state)
 
             let args = allocate_ref(Value, 2)
             args[0] = charp_str(left, state)
@@ -3997,7 +4006,10 @@ def compare(node: &parser::Node, left: Value, right: Value, state: &State) -> Va
             return cmp_ret
             // TODO There might be better ways of handling this
         } else if builtins::Type_ and typechecking::equals(left.tpe, typechecking::pointer(builtins::Type_)) {
-            let svalue = scope::get(toolchain::runtime_.scope, parser::make_identifier("equals"))
+            let svalue = scope::get(toolchain::runtime_.scope, parser::make_identifier("equals"), not consteval::is_static)
+            if consteval::is_static {
+                consteval::compile_function(svalue)
+            }
             predeclare_function(svalue.tpe, state.module)
             state.module.imported.add(svalue.tpe.type_name)
 
@@ -7622,7 +7634,11 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
         // We need to call the right destructor based on the ref type
         let ref = state.load(tpe.tpe, value)
         
-        let equals = scope::get(toolchain::runtime_.scope, parser::make_identifier("equals"))
+        let equals = scope::get(toolchain::runtime_.scope, parser::make_identifier("equals"), not consteval::is_static)
+        if consteval::is_static {
+            consteval::compile_function(equals)
+        }
+
         predeclare_function(equals.tpe, state.module)
         state.module.imported.add(equals.tpe.type_name)
 
@@ -8208,8 +8224,9 @@ def do_create_type(tpe: &typechecking::Type, svalue: &scope::Value, module: &too
     let state = toolchain::types_state
     let global = { kind = ValueKind::GLOBAL, tpe = pointer(builtins::Type_), name = svalue.assembly_name } !Value
 
-    let field_type = scope::get_type(toolchain::runtime_.scope, make_identifier("Field"))
-    let enum_type = scope::get_type(toolchain::runtime_.scope, make_identifier("EnumValue"))
+    if not builtins::Field_ { return null }
+    let field_type = builtins::Field_
+    let enum_type = builtins::EnumValue_
 
     let value = {} !&Value
 
@@ -8422,9 +8439,8 @@ export def create_type(tpe: &typechecking::Type, module: &toolchain::Module, cac
         if name {
             let to_resolve = { module, tpe } !ToResolve
             types_to_resolve[name] = to_resolve
-        } else {
-            return null
         }
+        return null
     }
 
     import_structure(builtins::Type_, toolchain::types)
@@ -8624,7 +8640,7 @@ def generate_vtable_function(function: &Function, tpe: &typechecking::Type, stat
 
             if not function { continue }
             if consteval::is_static {
-                let fun = scope::get_function(state.module.scope, parser::make_identifier(tpe.name), parameter_t)
+                let fun = scope::get_function(state.module.scope, parser::make_identifier(tpe.name), parameter_t, false, false, false)
                 consteval::compile_function(fun)
             }
             predeclare_function(function, state.module)
