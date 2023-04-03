@@ -3064,7 +3064,7 @@ def insert_destructor(value: Value, loc: &Value, state: &State) {
         
     } else if typechecking::has_destructor(value.tpe.tpe) {
         var destructor = typechecking::get_builtin_destructor(value.tpe.tpe)
-        if not destructor { return }        
+        if not destructor { return }
         predeclare_function(destructor.tpe, state.module)
 
         if consteval::is_static {
@@ -3701,6 +3701,11 @@ def resolve_member(vec: &Vector(Member), tpe: &typechecking::Type, name: String)
 
 def walk_MemberAccess_struct(node: &parser::Node, tpe: &typechecking::Type, member: &Member, value: Value, state: &State) -> Value {
     let loc = make_location(node, state)
+
+    var member_type = member.tpe
+    if member.tpe.kind == typechecking::TypeKind::BOX {
+        member_type = member.tpe.weak
+    }
     
     if tpe.kind == typechecking::TypeKind::UNION {
 
@@ -3718,7 +3723,7 @@ def walk_MemberAccess_struct(node: &parser::Node, tpe: &typechecking::Type, memb
         } !InsnGetElementPtr
         push_insn(gep, state)
 
-        let bitcast_ret = make_local_value(typechecking::pointer((@member).tpe), null, state)
+        let bitcast_ret = make_local_value(typechecking::pointer(member_type), null, state)
         let bitcast = make_insn_dbg(InsnKind::BITCAST, loc)
         (@bitcast).value.convert = {
             ret = bitcast_ret,
@@ -3726,13 +3731,13 @@ def walk_MemberAccess_struct(node: &parser::Node, tpe: &typechecking::Type, memb
         } !InsnConvert
         push_insn(bitcast, state)
 
-        let ret = make_address_value((@member).tpe, bitcast_ret, state)
+        let ret = make_address_value(member_type, bitcast_ret, state)
         return ret
     } else {
         let index = allocate_ref(Value, 2)
         index[0] = make_int_value(0)
         index[1] = make_int_value((@member).index)
-        return walk_MemberAccess_gep(node, tpe, (@member).tpe, value, index, state)
+        return walk_MemberAccess_gep(node, tpe, member_type, value, index, state)
     }
 }
 
@@ -6166,6 +6171,9 @@ def di_type(tpe: &typechecking::Type, state: &State) -> &Value {
         (@state).ditypes[tpe.type_name] = ditpep
     }
 
+    if tpe.kind == typechecking::TypeKind::BOX {
+        tpe = tpe.weak
+    }
     switch tpe.kind !int {
         // TODO compare with char for special casing
         case typechecking::TypeKind::WORD:
@@ -7358,8 +7366,6 @@ export def create_dyn_dispatch(state: &State) {
 
 export let constructors = map::make(type &typechecking::Type)
 def create_constructors {
-    let state = toolchain::types_state
-
     var done = set::make()
     loop {
         var new_constructors = 0
@@ -7369,36 +7375,43 @@ def create_constructors {
             if set::contains(done, key) { continue }
             let tpe = constructors[key]
 
-            if typechecking::is_polymorph(tpe) { continue }
-            
-            let function = predeclare_function(tpe, state.module)
-            consteval::const_module.result.functions[function.name] = function
-            function.forward_declare = false
-            state.module.imported.add(tpe.type_name)
-            import_structures(tpe, state.module)
-            
-            state.function_stack.push(function)
-            let block = make_block()
-            state.current_function.block = block
-            let previous_block = state.current_block
-            state.current_block = block
-
-            let first_arg = tpe.parameter_t[0].tpe
-            let copy = { kind = ValueKind::LOCAL, tpe = first_arg, name = "__copy.value" } !Value
-            let this = { kind = ValueKind::LOCAL, tpe = first_arg, name = "__this.value" } !Value
-            state.store(copy, state.load(this.tpe.tpe, this))
-            create_constructor(copy, this, state)
-
-            state.ret(NO_VALUE)
-            vector::insert(block.insn, 0, state.current_function.allocas)
+            create_constructor(tpe)
 
             new_constructors += 1
             done.add(key)
-            state.function_stack.pop()
-            state.current_block = previous_block
         }
         if new_constructors == 0 { break }
     }
+}
+
+export def create_constructor(tpe: &typechecking::Type) {
+    if not tpe { return }
+    let state = toolchain::types_state
+    if typechecking::is_polymorph(tpe) { return }
+            
+    let function = predeclare_function(tpe, state.module)
+    consteval::const_module.result.functions[function.name] = function
+    function.forward_declare = false
+    state.module.imported.add(tpe.type_name)
+    import_structures(tpe, state.module)
+    
+    state.function_stack.push(function)
+    let block = make_block()
+    state.current_function.block = block
+    let previous_block = state.current_block
+    state.current_block = block
+
+    let first_arg = tpe.parameter_t[0].tpe
+    let copy = { kind = ValueKind::LOCAL, tpe = first_arg, name = "__copy.value" } !Value
+    let this = { kind = ValueKind::LOCAL, tpe = first_arg, name = "__this.value" } !Value
+    state.store(copy, state.load(this.tpe.tpe, this))
+    create_constructor(copy, this, state)
+
+    state.ret(NO_VALUE)
+    vector::insert(block.insn, 0, state.current_function.allocas)
+    
+    state.function_stack.pop()
+    state.current_block = previous_block
 }
 
 def create_constructor(copy: Value, this: Value, state: &State) {
@@ -7485,33 +7498,40 @@ def create_destructors {
             if map::contains(done, key) { continue }
             let tpe = destructors[key]
 
-            if typechecking::is_polymorph(tpe) { continue }
+            create_destructor(tpe)
             
-            let function = predeclare_function(tpe, state.module)
-            consteval::const_module.result.functions[function.name] = function
-            function.forward_declare = false
-            state.module.imported.add(tpe.type_name)
-            import_structures(tpe, state.module)
-            
-            state.function_stack.push(function)
-            let block = make_block()
-            state.current_function.block = block
-            let previous_block = state.current_block
-            state.current_block = block
-
-            let first_arg = (tpe.parameter_t[0]).tpe
-            create_destructor(first_arg, { kind = ValueKind::LOCAL, tpe = first_arg, name = "__ptr.value" } !Value, state)
-
-            state.ret(NO_VALUE)
-            vector::insert(block.insn, 0, state.current_function.allocas)
-
             new_destructors += 1
             done.add(key)
-            state.function_stack.pop()
-            state.current_block = previous_block
         }
         if new_destructors == 0 { break }
     }
+}
+
+export def create_destructor(tpe: &typechecking::Type) {
+    if not tpe { return }
+    let state = toolchain::types_state
+    if typechecking::is_polymorph(tpe) { return }
+            
+    let function = predeclare_function(tpe, state.module)
+    consteval::const_module.result.functions[function.name] = function
+    function.forward_declare = false
+    state.module.imported.add(tpe.type_name)
+    import_structures(tpe, state.module)
+    
+    state.function_stack.push(function)
+    let block = make_block()
+    state.current_function.block = block
+    let previous_block = state.current_block
+    state.current_block = block
+
+    let first_arg = (tpe.parameter_t[0]).tpe
+    create_destructor(first_arg, { kind = ValueKind::LOCAL, tpe = first_arg, name = "__ptr.value" } !Value, state)
+
+    state.ret(NO_VALUE)
+    vector::insert(block.insn, 0, state.current_function.allocas)
+
+    state.function_stack.pop()
+    state.current_block = previous_block
 }
 
 def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {

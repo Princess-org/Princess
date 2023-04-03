@@ -217,7 +217,7 @@ export def has_destructor(tpe: &Type) -> bool {
     } else if tpe.kind == TypeKind::CLOSURE {
         res = true
     }
-    if not consteval::recompiling_functions {
+    if not consteval::is_static {
         tm.has_destructor = 1 if res else -1
     }
     return res
@@ -232,11 +232,17 @@ export def get_builtin_destructor(tpe: &Type) -> &scope::Value {
         return tm.builtin_destructor
     }
 
+    var destructor = tm.builtin_destructor
     let args = vector::make(NamedParameter)
     args.push({ _tpe = pointer(tpe) } !NamedParameter)
-    let destructor = scope::generate_function(builtins::builtins, parser::make_identifier("__destruct__"), args, true)
-    tm.builtin_destructor = destructor
-    if not consteval::recompiling_functions {
+    if not tm.builtin_destructor {
+        destructor = scope::generate_function(builtins::builtins, parser::make_identifier("__destruct__"), args, true)
+        tm.builtin_destructor = destructor
+        if consteval::is_static and destructor {
+            compiler::create_destructor(destructor.tpe)
+        }
+    }
+    if not consteval::is_static {
         tm.has_builtin_destructor = 1 if destructor else -1
     }
     return destructor
@@ -256,15 +262,14 @@ export def get_user_defined_destructor(tpe: &Type) -> &scope::Value {
         if destructor {
             if consteval::is_static {
                 destructor = consteval::compile_function(destructor, args)
-            }
-            if not consteval::recompiling_functions {
-                tm.has_destructor = 1 // Don't update the cache when recompiling functions!
+            } else {
+                tm.has_destructor = 1
             }
             tm.destructor = destructor
             return destructor 
         }
     }
-    if not consteval::recompiling_functions {
+    if not consteval::is_static {
         tm.has_destructor = -1
     }
     return null
@@ -273,10 +278,7 @@ export def get_user_defined_destructor(tpe: &Type) -> &scope::Value {
 export def get_constructor(tpe: &Type) -> &scope::Value {
     has_copy_constructor(tpe)
     let tm = get_meta(tpe)
-    if tm.has_constructor != 0 {
-        return tm.constructor
-    }
-    return null
+    return tm.constructor
 }
 
 export def has_user_defined_copy_constructor(tpe: &Type) -> bool {
@@ -308,7 +310,7 @@ export def has_user_defined_copy_constructor(tpe: &Type) -> bool {
             res = true 
         }
     }
-    if not consteval::recompiling_functions {
+    if not consteval::is_static {
         tm.has_user_defined_constructor = 1 if res else -1
     }
     return res
@@ -356,9 +358,12 @@ export def has_copy_constructor(tpe: &Type, lookup: bool = true) -> bool {
         vector::push(args, { _tpe = pointer(tpe) } !NamedParameter)
         vector::push(args, { _tpe = pointer(tpe) } !NamedParameter)
         tm.constructor = scope::generate_function(builtins::builtins, parser::make_identifier("__construct__"), args, dry_run = true)
+        if consteval::is_static and tm.constructor {
+            compiler::create_constructor(tm.constructor.tpe)
+        }
     }
 
-    if not consteval::recompiling_functions {
+    if not consteval::is_static {
         tm.has_constructor = 1 if res else -1
     }
     return res
@@ -925,6 +930,7 @@ export def copy(a: &Type) -> &Type {
 
 export def shallow_copy(tpe: &Type) -> &Type {
     let ret: &Type = @tpe
+    ret._hash = 0
     if tpe.kind == TypeKind::FUNCTION {
         ret.return_t = vector::copy(tpe.return_t)
         ret.parameter_t = vector::copy(tpe.parameter_t)
@@ -1610,6 +1616,7 @@ def replace_parameter(tpe: &Type, types: &SMap(&Type)) -> &Type {
         let ntpe = types.get_or_default(tpe.name, null)
         if ntpe { return ntpe }
     }
+    tpe._hash = 0
     return tpe
 }
 
@@ -4514,6 +4521,7 @@ export def lookup_struct_member(member: StructMember, resolved: &SSet = null) {
         if tpe._tpe and tpe._tpe.kind == TypeKind::STUB and tpe._tpe.state {
             tpe._tpe = box(type_lookup(tpe._tpe.node, tpe._tpe.state))
         }
+        tpe._hash = 0
     } else if tpe.kind == typechecking::TypeKind::STRUCT {
         for var i in 0..tpe.fields.size {
             let field = tpe.fields[i]
@@ -4581,13 +4589,16 @@ def walk_MemberAccess_aggregate(node: &parser::Node, ucs: bool, state: &State) -
     if (@tpe).kind == TypeKind::STRUCT or (@tpe).kind == TypeKind::UNION {
         let name = last_ident_to_str(right)
 
-        let rtpe = resolve_member((@tpe).fields, name)
+        var rtpe = resolve_member((@tpe).fields, name)
         if not rtpe {
             if ucs {
                 if walk_MemberAccess_ucs(node, state) { return true }
                 errors::errorn(node, "Unknown field `", name, "`")
             }
             return false
+        }
+        if rtpe.kind == TypeKind::BOX {
+            rtpe = rtpe.weak
         }
         node.tpe = rtpe
     } else if (@tpe).kind == TypeKind::ARRAY or (@tpe).kind == TypeKind::STATIC_ARRAY {
