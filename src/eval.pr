@@ -15,6 +15,7 @@ import errors
 import preload
 import ffi
 import symbol
+import arena
 
 export type StackFrame = struct {
     next: &compiler::Block
@@ -23,13 +24,11 @@ export type StackFrame = struct {
     function_name: Str
     line: int
     ret: compiler::Value
+    mem: &arena::Arena
 }
 
 export def destruct(frame: *StackFrame) {
-    let keys = frame.locals.keys
-    for var i in 0..keys.size {
-        free(frame.locals[keys[i]])
-    }
+    frame.mem.free()
 }
 
 export type State = struct {
@@ -66,12 +65,13 @@ def print_stack_trace(state: &State) {
     }
 }
 
-export def make_stack_frame(block: &compiler::Block, name: String, line: int) -> &StackFrame {
+export def make_stack_frame(block: &compiler::Block, name: Str, line: int) -> &StackFrame {
     let stack_frame = {
         locals = map::make(type *),
         function_name = name,
         line = line,
-        jump_table = map::make(type &compiler::Block)
+        jump_table = map::make(type &compiler::Block),
+        mem = arena::make(1024) // TODO maybe calculate the size based on the local variables...
     } !&StackFrame
 
     while block {
@@ -173,7 +173,7 @@ export def get_address(loc: compiler::Value, state: &State) -> * {
 
             var function = consteval::const_module.result.functions.get_or_default(loc.name, null)
             if function {
-                ptr = zero_allocate(FunctionPtr)
+                ptr = state.cstate.mem.allocate(FunctionPtr)
                 (ptr !*FunctionPtr).function = function
                 //set(ptr, loc.tpe.tpe, { kind = compiler::ValueKind::FUNCTION, tpe = loc.tpe.tpe, function = (ptr !*FunctionPtr) } !compiler::Value)
             } else {
@@ -189,7 +189,7 @@ export def get_address(loc: compiler::Value, state: &State) -> * {
                         errors::errorv("Global by the name of `", loc.name, "` not found")
                         return null
                     } else {
-                        ptr = zero_allocate(loc.tpe.tpe.size)
+                        ptr = state.cstate.mem.allocate(loc.tpe.tpe.size)
                         if global.value {
                             set(ptr, loc.tpe.tpe, @global.value)
                         }
@@ -197,10 +197,7 @@ export def get_address(loc: compiler::Value, state: &State) -> * {
                 }
             }
 
-            // TODO Use something like a linear allocator to store these
-            state.cstate.globals[compiler::make_global_name("__eval_tmp", state.cstate)] = ptr
-
-            mem = allocate(loc.tpe.size)
+            mem = state.cstate.mem.allocate(loc.tpe.size)
             let value = { kind = compiler::ValueKind::POINTER, tpe = loc.tpe, i = ptr !int64 } !compiler::Value
             set(mem, loc.tpe, value)
             state.cstate.globals[loc.name] = mem
@@ -288,21 +285,19 @@ export def set_value(loc: compiler::Value, value: compiler::Value, state: &State
     if loc.kind == compiler::ValueKind::LOCAL {
         var mem = get_stack_frame(state).locals.get_or_default(loc.name, null)
         if not mem {
-            // TODO This shouldn't need to be initialized, we seem to have a bug elsewhere
-            mem = zero_allocate(loc.tpe.size)
-            get_stack_frame(state).locals[loc.name] = mem
+            let frame = get_stack_frame(state)
+            mem = frame.mem.allocate(loc.tpe.size)
+            frame.locals[loc.name] = mem
         }
         set(mem, loc.tpe, value)
     } else if loc.kind == compiler::ValueKind::GLOBAL {
         var mem = state.cstate.globals.get_or_default(loc.name, null)
         var ptr: * = null
         if not mem {
-            mem = allocate(loc.tpe.size)
+            mem = state.cstate.mem.allocate(loc.tpe.size)
             state.cstate.globals[loc.name] = mem
-            ptr = allocate(loc.tpe.tpe.size)
+            ptr = state.cstate.mem.allocate(loc.tpe.tpe.size)
             set(mem, loc.tpe, { kind = compiler::ValueKind::POINTER, tpe = loc.tpe, i = ptr !int64 } !compiler::Value)
-            state.cstate.globals["__eval_tmp::" + to_string(state.cstate.global_counter)] = ptr
-            state.cstate.global_counter += 1
         } else {
             ptr = get(mem, loc.tpe).i !*
         }
@@ -485,13 +480,10 @@ def eval_Alloca(insn: &compiler::Insn, state: &State) {
     let frame = get_stack_frame(state)
     let ret = insn.value.alloca.ret
 
-    let mem = zero_allocate(ret.tpe.size) // TODO: We shouldn't have to initialize this
-    frame.locals["__eval_tmp::" + to_string(state.temp_counter)] = mem // TODO again use a linear allocator
-    state.temp_counter += 1
-
+    let mem = frame.mem.allocate(ret.tpe.size) // TODO: We shouldn't have to initialize this
     ret.tpe = typechecking::pointer(ret.tpe)
     let ptr = { kind = compiler::ValueKind::POINTER, tpe = ret.tpe, i = mem !int64 } !compiler::Value
-    let addr = allocate(ret.tpe.size)
+    let addr = frame.mem.allocate(ret.tpe.size)
     frame.locals[ret.name] = addr
     set(addr, ret.tpe, ptr)
 }
@@ -853,9 +845,10 @@ def ffi_call(args: &[compiler::Value], ret: compiler::Value, parameter_t: &Vecto
         if ret_tpe.size > size {
             size = ret_tpe.size
         }
-        rvalue = allocate(size)
+        let frame = get_stack_frame(state)
+        rvalue = frame.mem.allocate(size)
         // TODO This will fail for function pointers
-        get_stack_frame(state).locals[ret.name] = rvalue
+        frame.locals[ret.name] = rvalue
     }
     
     ffi::ffi_call(ffi_cif, function, rvalue, avalues)
@@ -953,7 +946,7 @@ def eval_Call(insn: &compiler::Insn, state: &State) {
                 let arg = args[i]
                 let np = function.args[i]
                 let arg_value = get_value(arg, state)
-                let mem = allocate(arg.tpe.size)
+                let mem = stack_frame.mem.allocate(arg.tpe.size)
                 
                 let name = np.name + ".value"
                 stack_frame.locals[name] = mem
@@ -1338,7 +1331,7 @@ export def eval(cstate: &compiler::State) -> &State {
     return state
 }
 
-export def serialize_value(key: String, module: &toolchain::Module, cstate: &compiler::State) -> &compiler::Global {
+export def serialize_value(key: Str, module: &toolchain::Module, cstate: &compiler::State) -> &compiler::Global {
     cstate.current_block = module.code
 
     let mem = cstate.globals.get_or_default(key, null) 
