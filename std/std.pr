@@ -3,21 +3,21 @@ import runtime
 import optional
 import vector
 
+import strings
+from strings export *
+
 #if defined DEBUG_REF_CYCLES {
     import set
     import map
     
     type Root = struct {
-        file: string
+        ref: runtime::Ref
+        file: Str
         line: int
     }
 
     var lock = false
-    var ref_roots: *&map::Map(&, Root) = null // This is so that we keep the memory around
-
-    export def hash(ref: &) -> uint64 {
-        return ref !* !uint64
-    }
+    var ref_roots: *&map::Map(uint64, Root) = null // This is so that we keep the memory around
 
     // Internal methods
     def add_root(ref: runtime::Ref, file: *char, line: int) {
@@ -25,10 +25,10 @@ import vector
         var l = lock
         lock = true
         if not ref_roots {
-            ref_roots = zero_allocate(type &map::Map(&, Root))
-            @ref_roots = map::make(type &, Root)
+            ref_roots = zero_allocate(type &map::Map(uint64, Root))
+            @ref_roots = map::make(uint64, Root)
         }
-        (@ref_roots)[ref] = { make_string(file), line } !Root
+        (@ref_roots)[ref.value !uint64] = { ref, make_string(file), line } !Root
         lock = l
     }
 
@@ -37,62 +37,136 @@ import vector
         if not ref_roots { return }
         var l = lock
         lock = true
-        (@ref_roots).remove(ref)
+        (@ref_roots).remove(ref.value !uint64)
         lock = l
     }
 
-    def find_cycle_root(ref: &, n: int, all: &Set(&)) -> bool {
+    def find_cycle_root(ref: uint64, n: *int, all: &Set(uint64), children: &Set(uint64)) -> uint64 {
         let root = (@ref_roots)[ref]
-        let visited = set::make(type &)
-        visited.add(ref)
-        let cycle = find_cycle(n, root, ref, visited, all)
+        let visited = set::make(uint64)
+        let cycle = find_cycle(n, root.ref, visited, all, children)
         if cycle {
-            error("Cycle root: ", root.file + "@" + root.line, " (", ref !*, ") \n")
+            error("Cycle root: ", ref_type(root.ref).tpe.name, " ", root.file + "@" + root.line, " (", ref !*, ") \n")
         }
+        all.add(ref)
         return cycle
     }
 
-    def find_cycle(n: int, root: Root, cur: &, visited: &Set(&), all: &Set(&)) -> bool {
-        if all.contains(cur) { return false }
-        all.add(cur)
-        let tpe = ref_type(cur).tpe
-        if tpe.kind == runtime::TypeKind::STRUCT {
+    def copy(cur: &Set(uint64)) -> &Set(uint64) {
+        let new_map = set::make(uint64)
+        let keys = cur.keys()
+        for var i in 0..keys.size {
+            let key = keys[i]
+            new_map.add(key)
+        }
+        return new_map
+    }
+
+    def find_cycle(tpe: *runtime::Type, n: *int, cur: *, visited: &Set(uint64), all: &Set(uint64), children: &Set(uint64)) -> uint64 {
+        if tpe.kind == runtime::TypeKind::REFERENCE {
+            let ref = @(cur !*runtime::Ref)
+            let cycle = find_cycle(n, ref, copy(visited), all, children)
+            children.add(ref.value !uint64)
+            return cycle
+        } else if tpe.kind == runtime::TypeKind::STRUCT or tpe.kind == runtime::TypeKind::UNION {
             for var i in 0..tpe.fields.size {
                 let field = tpe.fields[i]
-                if field.tpe.kind == runtime::TypeKind::REFERENCE {
-                    let ref = @(((cur !*) ++ field.offset) !*&)
-                    let new_cycle = visited.contains(ref)
-                    visited.add(ref)
-                    if new_cycle {
-                        error(">>> Cycle " + n, "\n")
-                        return true
-                    }
-                    if find_cycle(n, root, ref, visited, all) {
-                        error("-> ", tpe.name + "::", field.name, " (", ref !*, ")\n")
-                        return true
-                    }
+
+                let value = cur ++ field.offset
+                let cycle = find_cycle(field.tpe, n, value, copy(visited), all, children)
+                if cycle {
+                    error("-> ", field.tpe.name, ".", field.name, "\n")
+                    return cycle
+                }
+            }
+        } else if tpe.kind == runtime::TypeKind::STATIC_ARRAY {
+            for var i in 0..tpe.length {
+                let child = cur ++ (i * tpe.tpe.size)
+                let cycle = find_cycle(tpe.tpe, n, child, copy(visited), all, children)
+                if cycle {
+                    error("-> ", tpe.name, "[", i, "]\n")
+                    return cycle
+                }
+            }
+        } else if tpe.kind == runtime::TypeKind::ARRAY {
+            let value = @(cur !*[int8])
+            for var i in 0..value.size {
+                let child = value.value ++ (i * tpe.tpe.size)
+                let cycle = find_cycle(tpe.tpe, n, child, copy(visited), all, children)
+                if cycle {
+                    error("-> ", tpe.name, "[", i, "]\n")
+                    return cycle
                 }
             }
         }
-        return false
+        return 0
+    }
+
+    def find_cycle(n: *int, cur: runtime::Ref, visited: &Set(uint64), all: &Set(uint64), children: &Set(uint64)) -> uint64 {
+        if cur.value == null or not (@ref_roots).contains(cur.value !uint64) { 
+            return 0 
+        }
+        
+        if visited.contains(cur.value !uint64) {
+            error("\n>>> Cycle ", @n, "\n")
+            @n += 1
+            return cur.value !uint64
+        }
+
+        var cycle: uint64 = 0
+        visited.add(cur.value !uint64)
+        if not all.contains(cur.value !uint64) { 
+            let rtpe = ref_type(cur)
+            if rtpe and rtpe.tpe {
+                cycle = find_cycle(rtpe.tpe, n, cur.value, visited, all, children)
+            }
+        }
+        all.add(cur.value !uint64)
+        return cycle
     }
 
     def find_cycles_impl {
+        if not ref_roots { 
+            error("No roots found! No references were leaked\n")
+            return 
+        }
         error("Starting cycle finder...\n")
+        let num_roots = (@ref_roots).size
+        error(num_roots, " roots found\n")
         let keys = (@ref_roots).keys()
-        let all = set::make(type &)
+        let all = set::make(uint64)
+        let children = set::make(uint64)
         var n = 1
         for var i in 0..keys.size {
-            let root = keys[i]
-            if find_cycle_root(root, n, all) {
-                n += 1
-            }
+            let ref = keys[i]
+            if not ref { continue }
+            let root = (@ref_roots)[ref]
+            cstd::printf("[%*d/%d] ".value, 1 + log10(num_roots) !int, i + 1, num_roots)
+            let prev_n = n
+            print(ref !*, ": ", root.ref.tpe.name, " (" , @root.ref.ref_count, ")")
+            fflush(stdout())
+
+            find_cycle_root(ref, *n, all, children)
+            print("\x1B[2K\r")
         }
+        print("\n")
         if n == 1 {
             error("No cycles found!\n")
         } else {
             error(n - 1, " cycles found!\n")
         }
+
+        var m = 0
+        for var i in 0..keys.size {
+            let ref = keys[i]
+            if not ref { continue }
+            if not children.contains(ref) {
+                let root = (@ref_roots)[ref]
+                error("No reference to ", ref !*, ": ", root.ref.tpe.name, " ", root.file, "@", root.line, " (", @root.ref.ref_count, ")\n")
+                m += 1
+            }
+        }
+        error(m, " out of ", keys.size, " references weren't reachable.\n")
     }
 
     export def find_cycles {
@@ -169,9 +243,9 @@ export def combine_hashes(hashes: uint64...) -> uint64 {
     return hash
 }
 
-export def parse_int(str: &string) -> int {
+export def parse_int(str: String) -> int {
     var end: *char
-    return cstd::strtol(str.value, *end, 10) !int
+    return cstd::strtol(str.to_array().value, *end, 10) !int
 }
 
 // Iterate references to array
@@ -189,396 +263,6 @@ export def to_array(gen: &runtime::Generator(type T)) -> &[T] {
         vec.push(v)
     }
     return vec.to_array()
-}
-
-// String functions
-export def make_string(ptr: *char) -> string {
-    var s: string
-    s.value = ptr
-    s.size = strlen(ptr) + 1
-    return s
-}
-
-export def remove(str: &string, i: size_t) {
-    assert i < str.length()
-    if str.size > 0 {
-        cstd::memmove(str.value ++ i, str.value ++ i ++ 1, str.length() - i)
-    }
-    str.size -= 1
-    str.value[str.size - 1] = '\0'
-}
-
-export def remove(str: &string, start: size_t, end: size_t) {
-    if start == end { 
-        remove(str, start)
-        return
-    }
-    assert end > start
-    assert start < str.length()
-    assert end < str.length()
-
-    let len = end - start + 1
-    if str.size > 0 {
-        cstd::memmove(str.value ++ start, str.value ++ end ++ 1, str.length() - len - start)
-    }
-    str.size -= len
-    str.value[str.size - 1] = '\0'
-}
-
-export def insert(str: &string, i: size_t, s: &string) {
-    if s.length() == 0 { return }
-    assert i < str.length()
-
-    let new_size = str.size + length(s) !size_t
-    str.value = reallocate(str.value, (size_of char) * new_size)
-    
-    if str.size >= 1 { 
-        cstd::memmove(str.value ++ i ++ length(s), str.value ++ i, str.size - i) 
-    }
-    memcopy(s.value, str.value ++ i, length(s))
-    str.size = new_size
-}
-
-export def insert(str: &string, i: size_t, c: char) {
-    let new_size = str.size + 1 !size_t
-    str.value = reallocate(str.value, (size_of char) * new_size)
-    
-    if str.size >= 1 { 
-        cstd::memmove(str.value ++ i ++ 1, str.value ++ i, str.size - i) 
-    }
-    str.value[i] = c
-    str.size = new_size
-}
-
-export def substring(str: &string, start: size_t, end: size_t) -> &string {
-    assert end >= start
-    assert end <= str.length
-    assert start >= 0
-
-    var substr: string
-    substr.size = end - start
-    substr.value = str.value ++ start
-    var res: &string = substr
-    res.value = reallocate(res.value, res.size + 1)
-    res.value[res.size] = '\0'
-    res.size += 1
-    return res
-}
-
-export def substring(str: &string, start: size_t) -> &string {
-    return substring(str, start, str.length)
-}
-
-export def index_of(str: &string, substring: &string, start: size_t = 0) -> int64 {
-    assert start < str.length
-    for var i in start..str.length {
-        let c = str[i]
-        if c == substring[0] {
-            var found = true
-            for var j in 0..substring.length {
-                if i + j >= str.length { return -1 }
-                if str[i + j] != substring[j] {
-                    found = false
-                    break 
-                }
-            }
-            if found { return i }
-        }
-    }
-    return -1
-}
-
-export def last_index_of(str: &string, substring: &string) -> int64 {
-    for var i in 0..str.length {
-        var k = str.length - i - 1
-        let c = str[k]
-        if c == substring[0] {
-            var found = true
-            for var j in 0..substring.length {
-                if k + j >= str.length { return -1 }
-                if str[k + j] != substring[j] {
-                    found = false
-                    break 
-                }
-            }
-            if found { return k }
-        }
-    }
-    return -1
-}
-
-export def ends_with(str: &string, suffix: &string) -> bool {
-    let index = last_index_of(str, suffix)
-    if index < 0 { return false }
-    return index == str.length - suffix.length
-}
-
-export def starts_with(str: &string, pre: &string) -> bool {
-    return (cstd::strncmp(pre.value, str.value, cstd::strlen(pre.value)) == 0) !bool
-}
-
-export def strip_margin(s: &string) -> &string {
-    var res: &string = ""
-    let len = length(s)
-
-    var i = 0
-    while i < len {
-        var c = s[i]
-        if c == '\n' or i == 0 {
-            if c == '\n' { 
-                res += '\n'
-            }
-            i += 1; c = s[i]
-            while (c == ' ' or c == '\t') and (i + 1) < len {
-                i += 1; c = s[i]
-            }
-            if c == '|' and (i + 1) < len { 
-                i += 1
-                continue
-            }
-        }
-        res += c
-        i += 1
-    }
-    return res
-}
-
-// https://stackoverflow.com/a/23457543/3258949
-// TODO This algorithm is very inefficient
-
-def match(pattern: &string, candidate: &string, p: int, c: int) -> bool {
-    if pattern[p] == '\0' {
-        return candidate[c] == '\0'
-    } else if pattern[p] == '*' {
-        while candidate[c] != '\0' {
-            if match(pattern, candidate, p + 1, c) {
-                return true
-            }
-            c += 1
-        }
-        return match(pattern, candidate, p + 1, c)
-    } else if pattern[p] != '?' and pattern[p] != candidate[c] {
-        return false
-    } else {
-        return match(pattern, candidate, p + 1, c + 1)
-    }
-}
-
-export def match(pattern: &string, candidate: &string) -> bool {
-    return match(pattern, candidate, 0, 0)
-}
-
-export type ToString = interface {
-    def to_string -> &string
-}
-
-// TODO remove special casing this
-export def == (a: string, b: string) -> bool {
-    return strncmp(a.value, b.value, max(a.size - 1, b.size - 1) !size_t) == 0
-}
-
-export def != (a: string, b: string) -> bool {
-    return not (a == b)
-}
-
-export def == (a: string, b: &string) -> bool {
-    if b { return a == @b }
-    return false
-}
-
-export def != (a: string, b: &string) -> bool {
-    return not (a == b)
-}
-
-export def == (a: &string, b: string) -> bool {
-    if a { return @a == b }
-    return false
-}
-
-export def != (a: &string, b: string) -> bool {
-    return not (a == b)
-}
-
-export def == (a: &string, b: &string) -> bool {
-    if not a and not b { return true }
-    if not a or not b { return false }
-    return @a == @b
-}
-
-export def != (a: &string, b: &string) -> bool {
-    return not (a == b)
-}
-
-export def + (a: &string, b: &string) -> &string {
-    if not b { return a + "null" }
-    let ret = allocate(char, a.size + b.size - 1)
-    defer delete(ret)
-    memcopy(a.value, ret.value, a.size - 1)
-    memcopy(b.value, ret.value ++ (a.size - 1), b.size)
-    return ret !&string
-}
-
-export def += (a: &string, b: &string) -> &string {
-    return a + b
-}
-
-export def + (a: &string, b: &ToString) -> &string {
-    return a + b.to_string()
-}
-
-export def += (a: &string, b: &ToString) -> &string {
-    return a + b
-}
-
-export def + (a: &ToString, b: &string) -> &string {
-    return a.to_string() + b
-}
-
-// These are defined for better performance
-export def + (a: char, b: &string) -> &string {
-    let ret = zero_allocate(char, b.size + 1)
-    defer delete(ret)
-    memcopy(b.value, ret.value ++ 1, b.size)
-    ret[0] = a
-    return ret !&string
-}
-
-export def + (a: &string, b: char) -> &string {
-    let ret = zero_allocate(char, a.size + 1)
-    defer delete(ret)
-    memcopy(a.value, ret.value, a.size)
-    ret[ret.size - 2] = b
-    return ret !&string
-}
-
-export def += (a: &string, b: char) -> &string {
-    return a + b
-}
-
-export def to_string(sign: int, n: uint64) -> &string {
-    let digits = "0123456789"
-
-    var str: &string = ""
-    if n == 0 {
-        str += '0'
-        return str
-    }
-
-    while n {
-        str = digits[n % 10] + str
-        n /= 10
-    }
-
-    if sign < 0 {
-        str = '-' + str
-    }
-
-    return str
-}
-
-export def to_string(a: &int64) -> &string {
-    let n = -@a if @a < 0 else @a 
-    return to_string(1 if @a >= 0 else -1, n)
-}
-
-export def to_string(a: &int32) -> &string {
-    let n = -@a if @a < 0 else @a 
-    return to_string(1 if @a >= 0 else -1, n)
-}
-
-export def to_string(a: &int16) -> &string {
-    let n = -@a if @a < 0 else @a 
-    return to_string(1 if @a >= 0 else -1, n)
-}
-
-export def to_string(a: &int8) -> &string {
-    let n = -@a if @a < 0 else @a 
-    return to_string(1 if @a >= 0 else -1, n)
-}
-
-export def to_string(a: &uint64) -> &string {
-    return to_string(0, @a)
-}
-
-export def to_string(a: &uint32) -> &string {
-    return to_string(0, @a)
-}
-
-export def to_string(a: &uint16) -> &string {
-    return to_string(0, @a)
-}
-
-export def to_string(a: &uint8) -> &string {
-    return to_string(0, @a)
-}
-
-export def to_string(a: &bool) -> &string {
-    return "true" if @a else "false"
-}
-
-export def to_string(a: &char) -> &string {
-    return [@a]
-}
-
-export def utf8_encode(code_point: uint64) -> &string {
-    var res: &string = ""
-    if code_point <= 0x007F {
-        res += code_point !char
-    } else if code_point <= 0x07FF {
-        res += ((code_point >> 6) | 0b11000000) !char
-        res += (code_point & 0b00111111 | 0b10000000) !char
-    } else if code_point <= 0xFFFF {
-        res += ((code_point >> 12) | 0b11100000) !char
-        res += ((code_point >> 6 & 0b00111111) | 0b10000000) !char
-        res += (code_point & 0b00111111 | 0b10000000) !char
-    } else if code_point <= 0x10FFFF {
-        res += ((code_point >> 18) | 0b11110000) !char
-        res += ((code_point >> 12 & 0b00111111) | 0b10000000) !char
-        res += ((code_point >> 6 & 0b00111111) | 0b10000000) !char
-        res += (code_point & 0b00111111 | 0b10000000) !char
-    }
-    return res
-}
-
-export def int_to_hex_str(n: uint64, prefix: bool = true) -> &string {
-    let digits = "0123456789ABCDEF"
-
-    if n == 0 {
-        return "0x0"
-    }
-
-    var str: &string = ""
-    while n {
-        str = digits[n % 16] + str
-        n /= 16
-    }
-    if prefix {
-        str = "0x" + str
-    }
-    
-    return str
-}
-
-// TODO Implement these properly
-const DOUBLE_MAX_EXP_10 = 308
-const FLOAT_MAX_EXP_10 = 38
-
-export def to_string(value: &float) -> &string {
-    const size = FLOAT_MAX_EXP_10 + 20
-    var buf: [size; char]
-    cstd::snprintf(buf.value, size, "%f".value, @value)
-    let str: &string = buf
-    str.size = cstd::strlen(buf.value)
-    return str
-}
-
-export def to_string(value: &double) -> &string {
-    const size = DOUBLE_MAX_EXP_10 + 20
-    var buf: [size; char]
-    cstd::snprintf(buf.value, size, "%f".value, @value)
-    let str: &string = buf
-    str.size = cstd::strlen(buf.value)
-    return str
 }
 
 export def print(args: &...) -> int {
@@ -604,9 +288,27 @@ def print_val(file: File, ref: runtime::Ref) -> int {
     if not tpe or not value {
         return cstd::fprintf(file, "%p".value, value)
     } else if tpe == string {
-        return cstd::fprintf(file, "%s".value, (@(value !*string)).value)
+        let str = value !*string
+        cstd::fputs(str.value, file)
+        return (str.size - 1) !int
     } else if tpe.kind == runtime::TypeKind::STATIC_ARRAY and tpe.tpe == char {
         return cstd::fprintf(file, "%s".value, value !*char)
+    } else if tpe == StringSlice {
+        let slc = ref !&StringSlice
+        if slc.data {
+            cstd::fwrite(slc.data ++ slc.offset, 1, slc.count, file)
+        } else {
+            for var c in slc.chars() {
+                cstd::putc(c, file)
+            }
+        }
+        return slc.count !int
+    } else if tpe == Str {
+        let str = value !*Str
+        cstd::fwrite(get_internal_buffer(str), 1, length(@str), file)
+        return length(@str) !int
+    } else if tpe == StringBuffer {
+        fprint(file, to_string(@(value !*StringBuffer)))
     } else if tpe == type *char {
         return cstd::fprintf(file, "%s".value, @(value !**char))
     } else if tpe == size_t {
@@ -695,7 +397,13 @@ def print_val(file: File, ref: runtime::Ref) -> int {
         return cstd::fprintf(file, "%s".value, str.value)
     } else if runtime::implements(reftpe, ToString) {
         let str = (ref !&ToString).to_string()
-        return cstd::fprintf(file, "%s".value, (@str).value)
+        return print_val(file, str !Ref)
+    } else if runtime::implements(reftpe, IString) {
+        let str = (ref !String)
+        for var c in str.chars() {
+            cstd::putc(c, file)
+        }
+        return str.length() !int
     } else if tpe.kind == runtime::TypeKind::STRUCT or tpe.kind == runtime::TypeKind::UNION {
         let fields = tpe.fields
         var sum = 0
@@ -730,12 +438,14 @@ export def fprint(file: File, args: &...) -> int {
     return sum
 }
 
-export def abort(s: &string) {
-    abort(@s)
+// Optimized version
+export def fprint(file: File, str: Str) -> int {
+    cstd::fwrite(get_internal_buffer(*str), 1, length(str), file)
+    return length(str) !int
 }
 
-export def abort(s: string) {
-    cstd::fprintf(stderr(), "%s\n".value, s.value)
+export def abort(s: String) {
+    fprint(stderr(), s)
     cstd::abort()
 }
 
@@ -743,7 +453,7 @@ export def delete(v: type *T) {
     #if defined __destruct__::(*T) {
         __destruct__(v)
     }
-    free(v)
+    cstd::free(v)
 }
 
 export def delete(v: type [T]) {
@@ -753,7 +463,7 @@ export def delete(v: type [T]) {
             __destruct__(*v[i])
         }
     }
-    free(v.value)
+    cstd::free(v.value)
 }
 
 export def new(t: type T) -> *T {
@@ -765,14 +475,6 @@ export def new(t: type T) -> *T {
 // Deprecated
 export def concat(base: string, to_append: string) {
     cstd::memcpy(base.value ++ strlen(base.value), to_append.value, to_append.size)
-}
-
-export def length(s: string) -> size_t {
-    return s.size - 1
-}
-
-export def length(s: &string) -> size_t {
-    return s.size - 1
 }
 
 // Allocators
@@ -810,7 +512,7 @@ export def allocate_ref(type T, size: size_t) -> &[T] {
     var arr: [T]
     arr.size = size
     arr.value = cstd::calloc(size, T.size) !*T
-    defer free(arr.value)
+    defer cstd::free(arr.value)
     return arr !&[T]
 }
 
@@ -826,12 +528,12 @@ export def free(value: type [T]) {
 
 // File functions
 
-export def open(file_path: &string, mode: &string) -> File {
-    return cstd::fopen(file_path.value, mode.value)
+export def open(file_path: String, mode: String) -> File {
+    return cstd::fopen(file_path.to_array().value, mode.to_array().value)
 }
 
-export def reopen(file_path: &string, mode: &string, file: File) -> File {
-    return cstd::freopen(file_path.value, mode.value, file)
+export def reopen(file_path: String, mode: String, file: File) -> File {
+    return cstd::freopen(file_path.to_array().value, mode.to_array().value, file)
 }
 
 export def close(file: File) -> int {
@@ -851,12 +553,13 @@ export def read(file: File, ptr: type *T) -> size_t {
     return cstd::fread(ptr, T.size, 1, file)
 }
 
-export def read_str(file: File) -> &string {
+export def read_str(file: File) -> Str {
     var len: size_t
     file.read(*len)
-    if len == 0 { return null }
-    let buf = allocate_ref(char, len)
-    read(file, @buf, len)
+    if len == 0 { return {} !Str }
+    let buf = allocate(char, len + 1)
+    defer delete(buf)
+    read(file, buf, len)
     return buf
 }
 
@@ -884,12 +587,12 @@ export def write(file: File, c: char) -> size_t {
     return cstd::fwrite(*c, 1, 1, file)
 }
 
-export def write_str(file: File, str: &string) -> size_t {
+export def write_str(file: File, str: String) -> size_t {
     if not str { 
         let zero: size_t = 0
         return write(file, *zero) 
     }
-    return write(file, *str.size) + write(file, @str)
+    return write(file, *str.length()) + write(file, str.to_array().value)
 }
 
 // Deprecated
@@ -925,51 +628,47 @@ export def memcopy(src: *, dest: *, size: size_t) -> * {
     return cstd::memcpy(dest, src, size)
 }
 
-export def system(command: &string) -> int {
-    return cstd::system(command.value)
+export def system(command: String) -> int {
+    return cstd::system(command.to_array().value)
 }
 
-export def getenv(str: &string) -> &string {
-    let env = cstd::getenv(str.value)
+export def getenv(str: String) -> Str {
+    let env = cstd::getenv(str.to_array().value)
     if env { return make_string(env) }
-    return null
+    return {} !Str
 }
 
-export def mkdir(path: &string) {
+export def mkdir(path: String) {
     #if defined WIN32 {
-        windows::CreateDirectoryA(path.value, null)
+        windows::CreateDirectoryA(path.to_array().value, null)
     } else {
-        linux::mkdir(path.value, 0o755 !ushort) // TODO MACOS
+        linux::mkdir(path.to_array().value, 0o755 !ushort) // TODO MACOS
     }
 }
 
-export def dirname(file: &string) -> &string {
+export def dirname(file: String) -> Str {
     var last_slash = -1
-    for var i in 0..file.size {
+    for var i in 0..file.length() {
         let c = file[i]
         if c == '/' or c == '\\' {
             last_slash = i
         }
     }
-    let ret = allocate_ref(char, last_slash + 2)
-    memcopy(file.value, ret.value, last_slash + 1)
-    return ret
+    return file.substring(0, last_slash + 1)
 }
 
-export def basename(file: &string) -> &string {
+export def basename(file: String) -> Str {
     var last_slash = 0
-    for var i in 0..file.size {
+    for var i in 0..file.length() {
         let c = file[i]
         if c == '/' or c == '\\' {
             last_slash = i
         }
     }
-    let ret = allocate_ref(char, file.size - last_slash)
-    memcopy(file.value ++ last_slash, ret.value, file.size - last_slash)
-    return ret
+    return file.substring(last_slash, file.length())
 }
 
-export def executable_file -> &string {
+export def executable_file -> Str {
     let resolved = zero_allocate(char, PATH_MAX)
     defer delete(resolved)
     #if defined WIN32 {
@@ -986,38 +685,39 @@ export def executable_file -> &string {
     return resolved
 }
 
-export def absolute_path(pathname: &string) -> &string {
+export def absolute_path(pathname: String) -> Str {
     let resolved = zero_allocate(char, PATH_MAX)
     defer delete(resolved)
     #if defined WIN32 {
-        windows::GetFullPathNameA(pathname.value, PATH_MAX, resolved.value, null)
+        windows::GetFullPathNameA(pathname.to_array().value, PATH_MAX, resolved.value, null)
     } else {
-        linux::realpath(pathname.value, resolved.value)
+        linux::realpath(pathname.to_array().value, resolved.value)
     }
     return make_string(resolved.value)
 }
 
-export def tmpfolder(name: &string) -> &string {
+export def tmpfolder(name: String) -> Str {
+    let cstr = name.to_array()
     #if defined WIN32 {
         // TODO We shouldn't ignore the name
         let path = allocate(char, PATH_MAX)
         defer delete(path)
         windows::GetTempPathA(PATH_MAX, path.value)
-        concat(path, @name)
+        concat(path, @cstr)
         windows::CreateDirectoryA(path.value, null)
         return make_string(path.value)
     } else {
         let path = zero_allocate(char, PATH_MAX)
         defer delete(path)
         concat(path, "/tmp/")
-        concat(path, @name)
+        concat(path, @cstr)
         concat(path, ".XXXXXX")
         path.size = strlen(path) + 1
         return make_string(linux::mkdtemp(path.value))
     }
 }
 
-export def read_all(fh: File) -> &string {
+export def read_all(fh: File) -> Str {
     seek(fh, 0, SEEK_END)
     let filesize = tell(fh)
     rewind(fh)
@@ -1029,8 +729,8 @@ export def read_all(fh: File) -> &string {
     return buf
 }
 
-export def read_all_pipe(pipe: File) ->  &string {
-    var res: &string = ""
+export def read_all_pipe(pipe: File) -> Str {
+    var res: StringBuffer = ""
     var c: char
     while read(pipe, *c) {
         res += c

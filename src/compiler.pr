@@ -13,9 +13,10 @@ import errors
 import eval
 import md5
 import optional
+import arena
 
 export type Label = struct {
-    name: &string
+    name: Str
 }
 
 export type DebugValueKind = enum {
@@ -24,13 +25,13 @@ export type DebugValueKind = enum {
 
 export type DebugValue = struct {
     kind: DebugValueKind
-    name: &string
-    s: &string
+    name: Str
+    s: Str
     i: int64
 }
 
 export type DebugParam = struct {
-    name: &string
+    name: Str
     value: DebugValue
 }
 
@@ -45,10 +46,10 @@ export type Value = struct {
     kind: ValueKind
     metadata: bool
     distinct: bool
-    name: &string
+    name: Str
     i: int64
     f: double
-    s: &string
+    s: &[char]
     // This is the value of a type
     value_tpe: &typechecking::Type
     // Used for both struct and array
@@ -325,7 +326,7 @@ export type InsnCall = struct {
     proto: &[typechecking::NamedParameter]
 }
 
-export def call(state: &State, name: &string, tpe: &typechecking::Type, args: &[Value], loc: &Value = null) -> Value {
+export def call(state: &State, name: Str, tpe: &typechecking::Type, args: &[Value], loc: &Value = null) -> Value {
     let ret = make_local_value(tpe, null, state) if tpe else NO_VALUE
     let call = make_insn_dbg(InsnKind::CALL, loc)
     call.value.call = {
@@ -415,7 +416,7 @@ export def destruct(insn: *Insn) {
 
 // Block for CFG
 export type Block = struct {
-    label_: &string
+    label_: Str
     counter: int
     // Vector of Insn
     insn: &Vector(&Insn)
@@ -432,8 +433,8 @@ export type Function = struct {
 
     // True if we have C style varargs
     varargs: bool
-    name: &string
-    unmangled: &string
+    name: Str
+    unmangled: Str
     tpe: &typechecking::Type
     // Vector of typechecking::NamedParameter
     args: &Vector(typechecking::NamedParameter)
@@ -498,7 +499,7 @@ export type Global = struct {
     dllexport: bool
     external: bool
     private: bool
-    name: &string
+    name: Str
     tpe: &typechecking::Type
     value: &Value
     line: int
@@ -529,6 +530,7 @@ export type State = struct {
     discope: &Vector(&Value)
     // Used by eval
     globals: &SMap(*)
+    mem: &arena::Arena
     scope: weak_ref(scope::Scope)
     // Destructor function
     finalizer: &Function
@@ -538,6 +540,10 @@ export type State = struct {
     no_instructions: bool
     // Set in consteval::compiler_state
     file_name_value: Value
+}
+
+export def destruct(state: *State) {
+    state.mem.free()
 }
 
 def current_value(state: &State) -> &scope::Value {
@@ -570,16 +576,6 @@ def add_type_meta(tpe: &typechecking::Type, state: &State) {
         cf.used_type_meta.add(tpe)
     }
 }
-
-// TODO We are trying to free stuff that doesn't need to be freed like stdout
-// This is leaking memory
-/*export def destruct(state: *State) {
-    if not state.globals { return }
-    let keys = state.globals.keys
-    for var i in 0..keys.size {
-        free(state.globals[keys[i]])
-    }
-}*/
 
 export def make_block -> &Block {
     return {
@@ -746,7 +742,7 @@ def push_alloca(insn: &Insn, state: &State, no_yield_capture: bool = false) {
     }
 }
 
-def push_declare_arg(node: &parser::Node, val: Value, name: &string, arg: int, state: &State) {
+def push_declare_arg(node: &parser::Node, val: Value, name: Str, arg: int, state: &State) {
     if not toolchain::debug_sym { return }
     var line = node.loc.line
     let discope = vector::peek(state.discope) if state.discope.length > 0 else null !&Value
@@ -807,7 +803,7 @@ def push_declare_arg(node: &parser::Node, val: Value, name: &string, arg: int, s
     push_insn(call, state)
 }
 
-def push_declare(node: &parser::Node, val: Value, name: &string, state: &State) {
+def push_declare(node: &parser::Node, val: Value, name: Str, state: &State) {
     push_declare_arg(node, val, name, -1, state)
 }
 
@@ -851,13 +847,13 @@ export def make_named_local(tpe: &typechecking::Type, addr: &Value, state: &Stat
     } !Value
 }
 
-export def make_global_name(name: &string, state: &State) -> &string {
+export def make_global_name(name: Str, state: &State) -> Str {
     let ret = state.module.module + "::" + name + '.' + state.global_counter
     state.global_counter += 1
     return ret
 }
 
-export def make_global_value(tpe: &typechecking::Type, name: &string, value: &Value, state: &State, private: bool = true) -> Value {
+export def make_global_value(tpe: &typechecking::Type, name: Str, value: &Value, state: &State, private: bool = true) -> Value {
     name = make_global_name(name, state)
 
     let global = {
@@ -935,23 +931,23 @@ export def charp_static(global: &Value, state: &State) -> Value {
     return local
 }
 
-export def create_global_string(str: &string, state: &State) -> Value {
+export def create_global_string(str: Str, state: &State) -> Value {
     let tpe = typechecking::make_type_raw(typechecking::TypeKind::STATIC_ARRAY)
     tpe._tpe = builtins::char_
-    tpe.length = str.size
+    tpe.length = str.length() + 1
     tpe.size = tpe.length * (size_of char)
     tpe.align = align_of char
 
     let value = {
         kind = ValueKind::STRING,
-        s = str,
+        s = str.to_array(),
         tpe = tpe
     } !&Value
 
     return make_global_value(tpe, "str", value, state)
 }
 
-export def charp(str: &string, state: &State) -> Value {
+export def charp(str: Str, state: &State) -> Value {
     return charp_static(create_global_string(str, state), state)
 }
 
@@ -1021,6 +1017,9 @@ def import_structure(tpe: &typechecking::Type, module: &toolchain::Module) {
 
 export def import_structures(tpe: &typechecking::Type, module: &toolchain::Module) {
     if not tpe { return }
+    if tpe.kind == typechecking::TypeKind::BOX {
+        tpe = tpe.weak
+    }
     switch tpe.kind !int {
         case typechecking::TypeKind::STRUCT..=typechecking::TypeKind::UNION:
             import_structure(tpe, module)
@@ -1046,7 +1045,7 @@ export def import_structures(tpe: &typechecking::Type, module: &toolchain::Modul
     }
 }
 
-def import_cstd_function(name: &string, state: &State) {
+def import_cstd_function(name: Str, state: &State) {
     let cstd_module = toolchain::find_module("cstd")
     var func = scope::get(cstd_module.scope, parser::make_identifier(name))
     if not func { return }
@@ -1118,13 +1117,13 @@ def walk_String(node: &parser::Node, state: &State) -> Value {
 
     let strtpe = typechecking::make_type_raw(typechecking::TypeKind::STATIC_ARRAY)
     (@strtpe)._tpe = builtins::char_
-    (@strtpe).length = node.value.str.size
+    (@strtpe).length = node.value.str.length() + 1
     (@strtpe).size = (@strtpe).length * (size_of char)
     (@strtpe).align = align_of char
     
     let str_value = {
         kind = ValueKind::STRING,
-        s = node.value.str,
+        s = node.value.str.to_array(),
         tpe = tpe
     } !&Value
 
@@ -1154,7 +1153,7 @@ def walk_String(node: &parser::Node, state: &State) -> Value {
     values[0] = {
         kind = ValueKind::INT,
         tpe = builtins::size_t_,
-        i = node.value.str.size
+        i = node.value.str.length() + 1
     } !Value
     values[1] = {
         kind = ValueKind::UNDEF,
@@ -2992,6 +2991,7 @@ def insert_copy_constructor(addr: Value, value: Value, loc: &Value, state: &Stat
         br.value.br.if_true = loop_end
     } else {
         var ctor = typechecking::get_constructor(addr.tpe.tpe)
+        if not ctor { return }
         if consteval::is_static {
             consteval::compile_function(ctor)
         }
@@ -3066,6 +3066,14 @@ def insert_destructor(value: Value, loc: &Value, state: &State) {
         var destructor = typechecking::get_builtin_destructor(value.tpe.tpe)
         if not destructor { return }
         predeclare_function(destructor.tpe, state.module)
+
+        if consteval::is_static {
+            let udtor = get_user_defined_destructor(value.tpe.tpe)
+            if udtor {
+                consteval::compile_function(udtor)
+            }
+        }
+
         state.module.imported.add(destructor.tpe.type_name)
         state.call(destructor.tpe.type_name, null, [value], loc)
     }
@@ -3662,12 +3670,12 @@ type Member = struct {
 }
 
 // This list needs to be reversed to find the actual indices
-def resolve_member(vec: &Vector(Member), tpe: &typechecking::Type, name: &string) -> bool {
+def resolve_member(vec: &Vector(Member), tpe: &typechecking::Type, name: Str) -> bool {
     let fields = tpe.fields
     if not fields { return false }
     for var i in 0..fields.size {
         let field = fields[i]
-        if field.name != null {
+        if field.name {
             if field.name == name {
                 let member = {
                     index = i,
@@ -3693,6 +3701,11 @@ def resolve_member(vec: &Vector(Member), tpe: &typechecking::Type, name: &string
 
 def walk_MemberAccess_struct(node: &parser::Node, tpe: &typechecking::Type, member: &Member, value: Value, state: &State) -> Value {
     let loc = make_location(node, state)
+
+    var member_type = member.tpe
+    if member.tpe.kind == typechecking::TypeKind::BOX {
+        member_type = member.tpe.weak
+    }
     
     if tpe.kind == typechecking::TypeKind::UNION {
 
@@ -3710,7 +3723,7 @@ def walk_MemberAccess_struct(node: &parser::Node, tpe: &typechecking::Type, memb
         } !InsnGetElementPtr
         push_insn(gep, state)
 
-        let bitcast_ret = make_local_value(typechecking::pointer((@member).tpe), null, state)
+        let bitcast_ret = make_local_value(typechecking::pointer(member_type), null, state)
         let bitcast = make_insn_dbg(InsnKind::BITCAST, loc)
         (@bitcast).value.convert = {
             ret = bitcast_ret,
@@ -3718,13 +3731,13 @@ def walk_MemberAccess_struct(node: &parser::Node, tpe: &typechecking::Type, memb
         } !InsnConvert
         push_insn(bitcast, state)
 
-        let ret = make_address_value((@member).tpe, bitcast_ret, state)
+        let ret = make_address_value(member_type, bitcast_ret, state)
         return ret
     } else {
         let index = allocate_ref(Value, 2)
         index[0] = make_int_value(0)
         index[1] = make_int_value((@member).index)
-        return walk_MemberAccess_gep(node, tpe, (@member).tpe, value, index, state)
+        return walk_MemberAccess_gep(node, tpe, member_type, value, index, state)
     }
 }
 
@@ -3950,7 +3963,7 @@ def compare(node: &parser::Node, left: Value, right: Value, state: &State) -> Va
 
     if typechecking::equals(left.tpe, right.tpe) { 
         if typechecking::equals(left.tpe, builtins::string_) {
-            (@(@state).module).imported.add("strcmp")
+            import_cstd_function("strcmp", state)
 
             let args = allocate_ref(Value, 2)
             args[0] = charp_str(left, state)
@@ -3996,7 +4009,10 @@ def compare(node: &parser::Node, left: Value, right: Value, state: &State) -> Va
             return cmp_ret
             // TODO There might be better ways of handling this
         } else if builtins::Type_ and typechecking::equals(left.tpe, typechecking::pointer(builtins::Type_)) {
-            let svalue = scope::get(toolchain::runtime_.scope, parser::make_identifier("equals"))
+            let svalue = scope::get(toolchain::runtime_.scope, parser::make_identifier("equals"), not consteval::is_static)
+            if consteval::is_static {
+                consteval::compile_function(svalue)
+            }
             predeclare_function(svalue.tpe, state.module)
             state.module.imported.add(svalue.tpe.type_name)
 
@@ -5703,7 +5719,7 @@ def walk_Assert(node: &parser::Node, state: &State) {
     import_cstd_function("abort", state)
 
     var br: &Insn
-    var fmt: &string
+    var fmt: Str
     var args: &[Value]
 
     if cond {
@@ -5729,7 +5745,7 @@ def walk_Assert(node: &parser::Node, state: &State) {
             fmt = "%s:%d:%s: Assertion %s failed!\n"
         }
 
-        var msg: &string = ""
+        var msg: StringBuffer = ""
         var line = cond.loc.lines[cond.loc.line]
         if cond.loc.end_line == cond.loc.line {
             msg += line.substring(cond.loc.column, min(line.length, cond.loc.end_column) !size_t) // TODO We get the wrong end_column, this should be fixed in lexer
@@ -5769,7 +5785,7 @@ def walk_Assert(node: &parser::Node, state: &State) {
     args[2] = charp(node.loc.filename, state)
     args[3] = { kind = ValueKind::INT, tpe = builtins::int_, i = node.loc.line + 1 } !Value
 
-    var function_name: &string = "main"
+    var function_name: Str = "main"
     if state.current_function() {
         function_name = state.current_function().unmangled
     }
@@ -5864,7 +5880,7 @@ export def walk(node: &parser::Node, state: &State) {
     state.scope = scpe
 }
 
-def di_basic_type(tpe: &typechecking::Type, name: &string, c: &string, state: &State) -> &Value {
+def di_basic_type(tpe: &typechecking::Type, name: Str, c: Str, state: &State) -> &Value {
     let debug_values = allocate_ref(DebugParam, 4)
     debug_values[0] = {
         name = "name", value = { kind = DebugValueKind::STRING, s = name } !DebugValue
@@ -5886,7 +5902,7 @@ def di_basic_type(tpe: &typechecking::Type, name: &string, c: &string, state: &S
     return di
 }
 
-def di_composite_type(value: &Value, tpe: &typechecking::Type, name: &string, c: &string, state: &State) -> &Value {
+def di_composite_type(value: &Value, tpe: &typechecking::Type, name: Str, c: Str, state: &State) -> &Value {
     let elementsarr = allocate_ref(Value, tpe.fields.size)
     for var i in 0..tpe.fields.size {
         let elem = tpe.fields[i]
@@ -5895,7 +5911,7 @@ def di_composite_type(value: &Value, tpe: &typechecking::Type, name: &string, c:
             name = "tag", value = { kind = DebugValueKind::CONST, name = "DW_TAG_member" } !DebugValue
         } !DebugParam
         debug_values[1] = {
-            name = "name", value = { kind = DebugValueKind::STRING, s = elem.name if elem.name else to_string(i) } !DebugValue
+            name = "name", value = { kind = DebugValueKind::STRING, s = elem.name if elem.name else to_string(i).to_str() } !DebugValue
         } !DebugParam
         debug_values[2] = {
             name = "scope", value = meta_to_debug_value(value)
@@ -5960,7 +5976,7 @@ def di_composite_type(value: &Value, tpe: &typechecking::Type, name: &string, c:
     return di
 }
 
-def di_forward_declare(tpe: &typechecking::Type, name: &string, state: &State) -> &Value {
+def di_forward_declare(tpe: &typechecking::Type, name: Str, state: &State) -> &Value {
     let debug_values = allocate_ref(DebugParam, 5)
     debug_values[0] = {
         name = "tag", value = { kind = DebugValueKind::CONST, name = "DW_TAG_structure_type" } !DebugValue
@@ -6155,6 +6171,9 @@ def di_type(tpe: &typechecking::Type, state: &State) -> &Value {
         (@state).ditypes[tpe.type_name] = ditpep
     }
 
+    if tpe.kind == typechecking::TypeKind::BOX {
+        tpe = tpe.weak
+    }
     switch tpe.kind !int {
         // TODO compare with char for special casing
         case typechecking::TypeKind::WORD:
@@ -7028,11 +7047,11 @@ export def create_function(
     errors::current_signature = current_signature
 }
 
-def make_string(str: &string, state: &State) -> Value {
+def make_string(str: Str, state: &State) -> Value {
     let cp = charp(str, state)
     
     let values = allocate_ref(Value, 2)
-    values[0] = { kind = ValueKind::INT, tpe = builtins::size_t_, i = str.size } !Value
+    values[0] = { kind = ValueKind::INT, tpe = builtins::size_t_, i = str.length() + 1 } !Value
     values[1] = { kind = ValueKind::UNDEF, tpe = typechecking::pointer(builtins::char_) } !Value
     let ret = make_local_value(builtins::string_, null, state)
     let index = allocate_ref(int, 1)
@@ -7288,10 +7307,10 @@ def insert_module_main(module: &toolchain::Module, name: &parser::Node, scpe: &s
     args.push(arg)
 
     let name_size = vector::length(name.value.identifier.path)
-    let array = zero_allocate(type &string, name_size + 1)
+    let array = zero_allocate(type String, name_size + 1)
     defer delete(array)
     for var j in 0..name_size {
-        array[j] = @(name.value.identifier.path[j])
+        array[j] = name.value.identifier.path[j]
     }
     array[array.size - 1] = "__main__"
     let ident = parser::make_identifier(array)
@@ -7347,8 +7366,6 @@ export def create_dyn_dispatch(state: &State) {
 
 export let constructors = map::make(type &typechecking::Type)
 def create_constructors {
-    let state = toolchain::types_state
-
     var done = set::make()
     loop {
         var new_constructors = 0
@@ -7358,36 +7375,43 @@ def create_constructors {
             if set::contains(done, key) { continue }
             let tpe = constructors[key]
 
-            if typechecking::is_polymorph(tpe) { continue }
-            
-            let function = predeclare_function(tpe, state.module)
-            consteval::const_module.result.functions[function.name] = function
-            function.forward_declare = false
-            state.module.imported.add(tpe.type_name)
-            import_structures(tpe, state.module)
-            
-            state.function_stack.push(function)
-            let block = make_block()
-            state.current_function.block = block
-            let previous_block = state.current_block
-            state.current_block = block
-
-            let first_arg = tpe.parameter_t[0].tpe
-            let copy = { kind = ValueKind::LOCAL, tpe = first_arg, name = "__copy.value" } !Value
-            let this = { kind = ValueKind::LOCAL, tpe = first_arg, name = "__this.value" } !Value
-            state.store(copy, state.load(this.tpe.tpe, this))
-            create_constructor(copy, this, state)
-
-            state.ret(NO_VALUE)
-            vector::insert(block.insn, 0, state.current_function.allocas)
+            create_constructor(tpe)
 
             new_constructors += 1
             done.add(key)
-            state.function_stack.pop()
-            state.current_block = previous_block
         }
         if new_constructors == 0 { break }
     }
+}
+
+export def create_constructor(tpe: &typechecking::Type) {
+    if not tpe { return }
+    let state = toolchain::types_state
+    if typechecking::is_polymorph(tpe) { return }
+            
+    let function = predeclare_function(tpe, state.module)
+    consteval::const_module.result.functions[function.name] = function
+    function.forward_declare = false
+    state.module.imported.add(tpe.type_name)
+    import_structures(tpe, state.module)
+    
+    state.function_stack.push(function)
+    let block = make_block()
+    state.current_function.block = block
+    let previous_block = state.current_block
+    state.current_block = block
+
+    let first_arg = tpe.parameter_t[0].tpe
+    let copy = { kind = ValueKind::LOCAL, tpe = first_arg, name = "__copy.value" } !Value
+    let this = { kind = ValueKind::LOCAL, tpe = first_arg, name = "__this.value" } !Value
+    state.store(copy, state.load(this.tpe.tpe, this))
+    create_constructor(copy, this, state)
+
+    state.ret(NO_VALUE)
+    vector::insert(block.insn, 0, state.current_function.allocas)
+    
+    state.function_stack.pop()
+    state.current_block = previous_block
 }
 
 def create_constructor(copy: Value, this: Value, state: &State) {
@@ -7474,33 +7498,40 @@ def create_destructors {
             if map::contains(done, key) { continue }
             let tpe = destructors[key]
 
-            if typechecking::is_polymorph(tpe) { continue }
+            create_destructor(tpe)
             
-            let function = predeclare_function(tpe, state.module)
-            consteval::const_module.result.functions[function.name] = function
-            function.forward_declare = false
-            state.module.imported.add(tpe.type_name)
-            import_structures(tpe, state.module)
-            
-            state.function_stack.push(function)
-            let block = make_block()
-            state.current_function.block = block
-            let previous_block = state.current_block
-            state.current_block = block
-
-            let first_arg = (tpe.parameter_t[0]).tpe
-            create_destructor(first_arg, { kind = ValueKind::LOCAL, tpe = first_arg, name = "__ptr.value" } !Value, state)
-
-            state.ret(NO_VALUE)
-            vector::insert(block.insn, 0, state.current_function.allocas)
-
             new_destructors += 1
             done.add(key)
-            state.function_stack.pop()
-            state.current_block = previous_block
         }
         if new_destructors == 0 { break }
     }
+}
+
+export def create_destructor(tpe: &typechecking::Type) {
+    if not tpe { return }
+    let state = toolchain::types_state
+    if typechecking::is_polymorph(tpe) { return }
+            
+    let function = predeclare_function(tpe, state.module)
+    consteval::const_module.result.functions[function.name] = function
+    function.forward_declare = false
+    state.module.imported.add(tpe.type_name)
+    import_structures(tpe, state.module)
+    
+    state.function_stack.push(function)
+    let block = make_block()
+    state.current_function.block = block
+    let previous_block = state.current_block
+    state.current_block = block
+
+    let first_arg = (tpe.parameter_t[0]).tpe
+    create_destructor(first_arg, { kind = ValueKind::LOCAL, tpe = first_arg, name = "__ptr.value" } !Value, state)
+
+    state.ret(NO_VALUE)
+    vector::insert(block.insn, 0, state.current_function.allocas)
+
+    state.function_stack.pop()
+    state.current_block = previous_block
 }
 
 def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
@@ -7621,7 +7652,11 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
         // We need to call the right destructor based on the ref type
         let ref = state.load(tpe.tpe, value)
         
-        let equals = scope::get(toolchain::runtime_.scope, parser::make_identifier("equals"))
+        let equals = scope::get(toolchain::runtime_.scope, parser::make_identifier("equals"), not consteval::is_static)
+        if consteval::is_static {
+            consteval::compile_function(equals)
+        }
+
         predeclare_function(equals.tpe, state.module)
         state.module.imported.add(equals.tpe.type_name)
 
@@ -7841,10 +7876,10 @@ def push_struct_members(tpe: &typechecking::Type, global: Value, module: &toolch
         if not state.consteval {
             typechecking::lookup_struct_member(field)
         }
-        let fname = field.name if field.name != null else to_string(i)
+        let fname = field.name if field.name else to_string(i).to_str()
 
         let name_values = allocate_ref(Value, 2)
-        name_values[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = fname.size } !Value
+        name_values[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = fname.length() + 1 } !Value
         name_values[1] = { kind = ValueKind::UNDEF, tpe = pointer(builtins::int8_) } !Value
 
         let field_values = allocate_ref(Value, 3)
@@ -7952,7 +7987,7 @@ def push_enum_values(tpe: &typechecking::Type, global: Value, module: &toolchain
         let svalue = tpe.scope.fields[key]
         
         let name_values = allocate_ref(Value, 2)
-        name_values[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = key.size } !Value
+        name_values[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = key.length() + 1 } !Value
         name_values[1] = { kind = ValueKind::UNDEF, tpe = pointer(builtins::int8_) } !Value
 
         let eval_values = allocate_ref(Value, 2)
@@ -8033,7 +8068,7 @@ def push_enum_values(tpe: &typechecking::Type, global: Value, module: &toolchain
 
 def push_type_member(
     exported: bool, 
-    f_name: &string, 
+    f_name: Str, 
     pars: &Vector(typechecking::NamedParameter), 
     rets: &Vector(&typechecking::Type), 
     module: &toolchain::Module, 
@@ -8042,11 +8077,11 @@ def push_type_member(
 ) -> Value {
     
     let name_values = allocate_ref(Value, 2)
-    name_values[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = f_name.size } !Value
+    name_values[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = f_name.length() + 1 } !Value
     name_values[1] = { kind = ValueKind::UNDEF, tpe = pointer(builtins::int8_) } !Value
 
     let module_values = allocate_ref(Value, 2)
-    module_values[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = module.module.size } !Value
+    module_values[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = module.module.length() + 1 } !Value
     module_values[1] = { kind = ValueKind::UNDEF, tpe = pointer(builtins::int8_) } !Value
 
     let parameter_t_values = allocate_ref(Value, 2)
@@ -8207,8 +8242,9 @@ def do_create_type(tpe: &typechecking::Type, svalue: &scope::Value, module: &too
     let state = toolchain::types_state
     let global = { kind = ValueKind::GLOBAL, tpe = pointer(builtins::Type_), name = svalue.assembly_name } !Value
 
-    let field_type = scope::get_type(toolchain::runtime_.scope, make_identifier("Field"))
-    let enum_type = scope::get_type(toolchain::runtime_.scope, make_identifier("EnumValue"))
+    if not builtins::Field_ { return null }
+    let field_type = builtins::Field_
+    let enum_type = builtins::EnumValue_
 
     let value = {} !&Value
 
@@ -8226,11 +8262,11 @@ def do_create_type(tpe: &typechecking::Type, svalue: &scope::Value, module: &too
     let name_str = debug::type_to_str(tpe, true)
 
     let name_values = allocate_ref(Value, 2)
-    name_values[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = name_str.size } !Value
+    name_values[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = name_str.length() + 1 } !Value
     name_values[1] = { kind = ValueKind::UNDEF, tpe = pointer(builtins::int8_) } !Value
 
     let module_values = allocate_ref(Value, 2)
-    module_values[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = module.module.size } !Value
+    module_values[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = module.module.length() + 1 } !Value
     module_values[1] = { kind = ValueKind::UNDEF, tpe = pointer(builtins::int8_) } !Value
 
     let type_names = allocate_ref(Value, 2)
@@ -8421,9 +8457,8 @@ export def create_type(tpe: &typechecking::Type, module: &toolchain::Module, cac
         if name {
             let to_resolve = { module, tpe } !ToResolve
             types_to_resolve[name] = to_resolve
-        } else {
-            return null
         }
+        return null
     }
 
     import_structure(builtins::Type_, toolchain::types)
@@ -8508,7 +8543,8 @@ export def make_state(module: &toolchain::Module) -> &State {
         discope = vector::make(type &Value),
         current_block = make_block(),
         globals = map::make(type *),
-        function_stack = vector::make(type &Function)
+        function_stack = vector::make(type &Function),
+        mem = arena::make()
     } !&State
 
     return state
@@ -8623,7 +8659,7 @@ def generate_vtable_function(function: &Function, tpe: &typechecking::Type, stat
 
             if not function { continue }
             if consteval::is_static {
-                let fun = scope::get_function(state.module.scope, parser::make_identifier(tpe.name), parameter_t)
+                let fun = scope::get_function(state.module.scope, parser::make_identifier(tpe.name), parameter_t, false, false, false)
                 consteval::compile_function(fun)
             }
             predeclare_function(function, state.module)

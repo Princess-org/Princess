@@ -645,7 +645,7 @@ def walk_VarDecl(node: &parser::Node, state: &typechecking::State) {
  
         compiler_state.current_block = previous_block
         compiler_state.function_stack.pop()
-        //recompile_functions(state)
+        compiler::create_dyn_dispatch(state.module.compiler_state)
 
         is_static = prev_is_static
         return
@@ -719,18 +719,6 @@ def load_function(value: &scope::Value) {
     }
 }
 
-export var recompiling_functions = false // TODO This is a hack
-def recompile_functions(state: &typechecking::State) {
-    if recompiling_functions { return }
-    recompiling_functions = true
-    compiler::create_builtin_functions()
-    let previous_is_static = is_static
-    is_static = true
-    compiler::create_dyn_dispatch(state.module.compiler_state)
-    is_static = previous_is_static
-    recompiling_functions = false
-}
-
 // This function compiles a function that is called in constant evaluation
 export def compile_function(value: &scope::Value, arguments: &Vector(typechecking::NamedParameter) = null) -> &scope::Value {
     var node = value.node
@@ -739,38 +727,42 @@ export def compile_function(value: &scope::Value, arguments: &Vector(typecheckin
     if not node { return value }
 
     var function = node.value.def_.function
-    compiler::predeclare_function(function, overwrite = true)
+    if function.is_typechecked { return value }
 
-    const_module.result.functions[function.name] = function
+    let is_polymorph = typechecking::is_polymorph(function.tpe)
+    if not is_polymorph { 
+        compiler::predeclare_function(function, overwrite = true)
+        const_module.result.functions[function.name] = function 
+    }
+
     if not state { return value }
-    state.module.result.functions[function.name] = function
+    if not is_polymorph { state.module.result.functions[function.name] = function }
+
     if function.is_compiled { return value }
     if not node.value.def_.body { return value }
-    if not typechecking::is_polymorph(function.tpe) {
-        function.is_compiled = true
-        value.phase = scope::Phase::COMPILED
-    }
     
     let prev_static = is_static
     is_static = true
     
-    if arguments and typechecking::is_polymorph(function.tpe) {
+    if arguments and is_polymorph {
         node = typechecking::walk_Def_with_type_argument(node, arguments, state)
         function = node.value.def_.function
         compiler::predeclare_function(function)
     } else {
-        if not function.is_typechecked {
-            walk_Def(node, state)
-            typechecking::walk_Def(node, state)
-        }
+        walk_Def(node, state)
+        typechecking::walk_Def(node, state)
     }
+
+    function.is_compiled = true
+
+    //print("Creating function ", function.tpe.type_name, "\n")
 
     // This is a big ugly but what can we do
     let debug = toolchain::debug_sym
     toolchain::debug_sym = false
     compiler::create_function(node, node.tpe, node.value.def_.body, node.inner_scope, null, compiler_state)
     toolchain::debug_sym = debug
-
+    
     if function.defer_functions {
         for var i in 0..vector::length(function.defer_functions) {
             let deferf = function.defer_functions[i]
@@ -778,7 +770,8 @@ export def compile_function(value: &scope::Value, arguments: &Vector(typecheckin
         }
     }
     
-    recompile_functions(state)
+    compiler::create_dyn_dispatch(state.module.compiler_state)
+
     is_static = prev_static
     return function.value
 }
@@ -955,7 +948,7 @@ def walk_Error(node: &parser::Node, state: &typechecking::State) {
     let function = set_current_function()
     typechecking::walk(node, expr, state)
     walk(node, expr, state)
-    recompile_functions(state)
+    compiler::create_dyn_dispatch(state.module.compiler_state)
     is_static = prev_is_static
 
     var result = compiler::walk_expression(expr, compiler_state)
@@ -1105,6 +1098,10 @@ export def consteval(module: &toolchain::Module) {
     let state = typechecking::make_state(module)
     module.state = state
     consteval(state)
+
+    if module.module == "std" {
+        toolchain::load_file_type()
+    }
 }
 
 export var time_spent: int64 = 0

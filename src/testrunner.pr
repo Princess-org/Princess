@@ -47,15 +47,22 @@ def assertion_handler(result: bool, msg: *char) {
     flush(io::stdout_orig)
 }
 
-var stdout_file: &string
-var stderr_file: &string
+signal(2 /*SIGINT*/, *handle_sigint)
+
+def handle_sigint(signal: int) {
+    print("\x1B[?25h\n")
+    exit(0)
+}
+
+var stdout_file: Str
+var stderr_file: Str
 
 def get_stdout() -> &string {
     flush(std::stdout())
     let fh = open(stdout_file, "rb")
     let res = read_all(fh)
     close(fh)
-    return res
+    return res.to_array()
 }
 
 def get_stderr() -> &string {
@@ -63,7 +70,7 @@ def get_stderr() -> &string {
     let fh = open(stderr_file, "rb")
     let res = read_all(fh)
     close(fh)
-    return res
+    return res.to_array()
 }
 
 var runner = parser.get_value("--runner").b
@@ -94,7 +101,7 @@ if runner {
         let test = symbol.value !def (*runtime::TestEnvironment) -> ()
         test(*test_env)
         flush(std::stdout())
-        if is_ci {
+        if not is_ci {
             // TODO This is ugly but apparently the CI wants the newline
             print("\n")
         }
@@ -122,10 +129,14 @@ var files_to_test = parser.get_value_as_vec("files")
     const dev_null = "/dev/null"
 }
 
-let files = vector::make(type &string)
+let files = vector::make(String)
 for var i in 0..files_to_test.length {
     let file = files_to_test[i]
     enumerate_dir(file.str, "test*.pr", recursive, files)
+}
+
+#if not defined WIN32 {
+    cstd::setvbuf(std::stdout(), null, io::_IONBF, 0)
 }
 
 print("Collected " + files.length + " test files\n")
@@ -142,26 +153,26 @@ if not no_compile {
         let stdout = open(dev_null, "w")
         // TODO It needs to be incremental in the future
         let proc = *process::spawn(compiler, 
-            [file, "--no-incremental" !&string, "-o" !&string, dll_file] ![&string], // TODO These arrays are clunky
+            [file, "--no-incremental" !String, "-o" !String, dll_file !String] ![String], // TODO These arrays are clunky
             stdout = stdout, stderr = std::stderr()
         )
 
         let spinner = ['|', '/', '-', '\\']
         var index = 0
-        if not is_ci {
+        if is_ci {
             print(spinner[index])
             flush(std::stdout())
         }
         while proc.running {
             proc.wait(100)
-            if not is_ci {
+            if is_ci {
                 print("\x1B[1D")
                 print(spinner[index % spinner.size])
                 flush(std::stdout())
             }
             index += 1
         }
-        if not is_ci {
+        if is_ci {
             print("\x1B[1D")
             print(" \n")
             print("\x1B[?25h")
@@ -171,7 +182,7 @@ if not no_compile {
         close(stdout)
         if proc.exit_code {
             error("Couldn't compile module " + file + "\n")
-            files[i] = null
+            files[i] = null !String // TODO Compiler bug here
         }
     }
 }
@@ -184,7 +195,7 @@ for var i in 0..files.length {
     if not file { continue }
     let dll_file = file.substring(0, file.length - 3) + dll_ext
 
-    let tests_to_run = vector::make(type &string)
+    let tests_to_run = vector::make(String)
 
     let lib = shared::load(dll_file, init = false) // We only want the symbol information
     for var symbol in @lib.symbols {
@@ -197,7 +208,7 @@ for var i in 0..files.length {
     for var i in 0..tests_to_run.length {
         let test_function = tests_to_run[i]
         let proc = *process::spawn(executable_file(), 
-            ["--runner" !&string, "--runner-file=" + dll_file + "", "--runner-test=" + test_function + ""] ![&string],
+            ["--runner" !String, ("--runner-file=" + dll_file + "") !String, ("--runner-test=" + test_function + "") !String] ![String],
             stdout = std::stdout()
         )
         proc.wait()
@@ -223,9 +234,9 @@ const FILE_ATTRIBUTE_DIRECTORY = 0x10
 const INVALID_HANDLE_VALUE = -1 !uint64
 
 // TODO Use a generator and move it to std
-def enumerate_dir(file_or_dir: &string, pattern: &string, recursive: bool, res: &Vector(&string)) {
+def enumerate_dir(file_or_dir: String, pattern: String, recursive: bool, res: &Vector(String)) {
     #if defined WIN32 {
-        let attrib = windows::GetFileAttributesA(file_or_dir.value)
+        let attrib = windows::GetFileAttributesA(file_or_dir.to_array().value)
         if not (attrib & FILE_ATTRIBUTE_DIRECTORY) {
             res.push(file_or_dir)
             return
@@ -236,7 +247,7 @@ def enumerate_dir(file_or_dir: &string, pattern: &string, recursive: bool, res: 
         var handle: *
 
         if recursive {
-            handle = windows::FindFirstFileA(full_pattern.value, *find_data)
+            handle = windows::FindFirstFileA(full_pattern.to_array().value, *find_data)
             if handle != INVALID_HANDLE_VALUE !* {
                 loop {
                     let folder = make_string(find_data.cFileName.value)
@@ -250,7 +261,7 @@ def enumerate_dir(file_or_dir: &string, pattern: &string, recursive: bool, res: 
         }
 
         full_pattern = file_or_dir + "\\" + pattern
-        handle = windows::FindFirstFileA(full_pattern.value, *find_data)
+        handle = windows::FindFirstFileA(full_pattern.to_array().value, *find_data)
 
         if handle != INVALID_HANDLE_VALUE !* {
             loop {
@@ -265,7 +276,7 @@ def enumerate_dir(file_or_dir: &string, pattern: &string, recursive: bool, res: 
         const DT_DIR = 4
 
         var sres: linux::s_stat
-        if stat(file_or_dir.value, *sres) < 0 {
+        if stat(file_or_dir.to_array().value, *sres) < 0 {
             return
         }
         if sres.st_mode & 0o170000 == 0o100000 {
@@ -274,7 +285,7 @@ def enumerate_dir(file_or_dir: &string, pattern: &string, recursive: bool, res: 
         } else if sres.st_mode & 0o170000 == 0o040000 {
             var dir: *linux::DIR
 
-            if not (dir = linux::opendir(file_or_dir.value)) { return }
+            if not (dir = linux::opendir(file_or_dir.to_array().value)) { return }
 
             var dirent: *linux::s_dirent
             while (dirent = linux::readdir(dir)) {
@@ -284,7 +295,7 @@ def enumerate_dir(file_or_dir: &string, pattern: &string, recursive: bool, res: 
                     if recursive {
                         enumerate_dir(file_or_dir + "/" + name, pattern, recursive, res)
                     }
-                } else if fnmatch(pattern.value, name.value, 0) == 0 {
+                } else if fnmatch(pattern.to_array().value, name.to_array().value, 0) == 0 {
                     res.push(file_or_dir + "/" + name)
                 }
             }
