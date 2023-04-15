@@ -146,6 +146,13 @@ def serialize_type(fp: File, tpe: &typechecking::Type, state: &Serialize) {
     if tpe.defmodule and tpe.defmodule != state.module and tpe.name and not tpe.tc_args {
         write_module_reference(fp, tpe, state)
     } else {
+        let meta = typechecking::get_meta(tpe)
+
+        if not typechecking::is_polymorph(tpe) {
+            typechecking::get_builtin_destructor(tpe)
+            typechecking::get_builtin_constructor(tpe)
+        }
+
         let id = tpe.kind !byte
         fp.write(*id)
         let hash = tpe.hash
@@ -154,6 +161,12 @@ def serialize_type(fp: File, tpe: &typechecking::Type, state: &Serialize) {
         fp.write_str(tpe.type_name)
         fp.write_str(tpe.defmodule.module !String if tpe.defmodule else null)
         fp.write_str(tpe.module.module !String if tpe.module else null)
+        
+        var has_builtin_destructor = meta.has_builtin_destructor == 1
+        var has_constructor = meta.has_constructor == 1
+        fp.write(*has_builtin_destructor)
+        fp.write(*has_constructor)
+
         fp.write(*tpe.tc_incomplete)
         
         let has_tc_tpe = tpe.tc_tpe !bool
@@ -399,6 +412,11 @@ def deserialize_type(deserialize: &Deserialize, fp: File, tpe: &typechecking::Ty
         var type_name = fp.read_str()
         var defmodule_str = fp.read_str()
         var module_str = fp.read_str()
+
+        var has_builtin_destructor: bool
+        fp.read(*has_builtin_destructor)
+        var has_constructor: bool
+        fp.read(*has_constructor)
         
         var defmodule: &toolchain::Module
         if module_str {
@@ -626,6 +644,9 @@ def deserialize_type(deserialize: &Deserialize, fp: File, tpe: &typechecking::Ty
             assert
         }
 
+        let meta = typechecking::get_meta(tpe)
+        meta.has_builtin_destructor = 1 if has_builtin_destructor else 0
+        meta.has_constructor = 1 if has_constructor else 0
         return tpe
     }
 }
@@ -1174,10 +1195,13 @@ export def resolver_pass(module: &toolchain::Module) {
         name_node.loc.module = module.module
 
         let phase = scope::Phase::DEFINED if typechecking::is_polymorph(entry.ftpe) else scope::Phase::COMPILED
-        let value = scope::create_function(
-            module.scope, name_node, parser::ShareMarker::EXPORT, 
-            entry.ftpe, phase, entry.node, entry.state, entry.impl
+        let value = scope::create_function_without_checking(
+            module.scope, name_node, parser::ShareMarker::EXPORT, entry.ftpe, entry.impl
         )
+        value.phase = phase
+        value.node = entry.node
+        value.state = entry.state
+
         if entry.ftpe.parameter_t.length > 0 {
             let first_type = entry.ftpe.parameter_t[0].tpe
             typechecking::create_type_entry(first_type, true, entry.ftpe, module, overwrite = true)
@@ -1276,8 +1300,13 @@ export def generate_ctor_and_dtor(module: &toolchain::Module) {
         tpe.kind == typechecking::TypeKind::TYPE_CONSTRUCTOR { return }
 
         // TODO These functions are weird, we want to generate both
-        typechecking::get_builtin_destructor(tpe)
-        typechecking::has_copy_constructor(tpe)
+        let meta = typechecking::get_meta(tpe)
+        if meta.has_builtin_destructor == 1 {
+            typechecking::get_builtin_destructor(tpe)
+        }
+        if meta.has_constructor == 1 {
+            typechecking::get_builtin_constructor(tpe)
+        }
         compiler::create_type(tpe, module)
     }
 
