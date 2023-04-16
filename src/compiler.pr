@@ -327,15 +327,42 @@ export type InsnCall = struct {
 }
 
 export def call(state: &State, name: Str, tpe: &typechecking::Type, args: &[Value], loc: &Value = null) -> Value {
-    let ret = make_local_value(tpe, null, state) if tpe else NO_VALUE
-    let call = make_insn_dbg(InsnKind::CALL, loc)
-    call.value.call = {
-        name = { kind = ValueKind::GLOBAL, name = name } !Value,
-        ret = ret,
-        args = args
-    } !InsnCall
-    push_insn(call, state)
-    return ret
+    let name_v = { kind = ValueKind::GLOBAL, name = name } !Value
+    return call(state, name_v, tpe, args, parser::InlineSpecifier::NONE, null, loc)
+}
+
+export def call(state: &State, name_v: Value, tpe: &typechecking::Type, args: &[Value], inline: parser::InlineSpecifier, proto: &[typechecking::NamedParameter] = null, loc: &Value = null) -> Value {
+    var node: &Node
+    var func: &Function
+    var do_inline = inline == parser::InlineSpecifier::INLINE
+    if name_v.kind == ValueKind::GLOBAL {
+        let name = name_v.name
+        func = state.module.result.functions.get_or_default(name, null)
+        if func {
+            // TODO Getting the Node like this seems like a terrible idea, maybe give Function a Node instead
+            let value = scope::find(scope::make_ident(name, func.module))
+            if value {
+                node = value.node
+            }
+            if node {
+                do_inline = do_inline or node.value.def_.inline
+            }
+        }
+    }
+    if do_inline and inline != parser::InlineSpecifier::NO_INLINE and node and func {
+        return inline_call(node, func, tpe, args, state)
+    } else {
+        let ret = make_local_value(tpe, null, state) if tpe else NO_VALUE
+        let call = make_insn_dbg(InsnKind::CALL, loc)
+        call.value.call = {
+            name = name_v,
+            ret = ret,
+            args = args,
+            proto = proto
+        } !InsnCall
+        push_insn(call, state)
+        return ret
+    }
 }
 
 export type InsnBrUnc = struct {
@@ -480,6 +507,12 @@ export type Function = struct {
     is_typechecked: bool
 }
 
+def add_local(state: &State, function: &Function, value: &scope::Value, tpe: &typechecking::Type) {
+    if function.locals {
+        function.locals[value.assembly_name(state)] = tpe
+    }
+}
+
 // TODO Maybe move this into module
 export type Result = struct {
     // Map of Function
@@ -540,6 +573,13 @@ export type State = struct {
     no_instructions: bool
     // Set in consteval::compiler_state
     file_name_value: Value
+    // inline_offset gets incremented when a new function gets inlined
+    inline_offset: size_t
+    // prefix gets added in front of every variable
+    prefix: Str
+    return_address: Value // This is used as the return address in inline functions
+    return_br: &Insn // This is used to jump back to the end of the function
+    inline_start_block: &Block // This represents the first block of the current function
 }
 
 export def destruct(state: *State) {
@@ -567,6 +607,10 @@ export def current_function(state: &State) -> &Function {
         return state.function_stack.peek()
     }
     return null
+}
+
+def is_inline(state: &State) -> bool {
+    return state.inline_offset > 0
 }
 
 def add_type_meta(tpe: &typechecking::Type, state: &State) {
@@ -2518,24 +2562,7 @@ def insert_call(
     varargs_loc: &Vector(&Value), addr: Value, loc: &Value, 
     multiple_returns: bool, state: &State) {
     
-    var value = NO_VALUE
-    if ret {
-        if node.parent and not (node.parent.kind == parser::NodeKind::ASSIGN and node.parent.value.assign.left == node) {
-            value = make_local_value(ret, addr, state)
-        } else {
-            value = make_local_value(ret, null, state)
-        }
-    }
-
-    let insn = make_insn_dbg(InsnKind::CALL, loc)
-    (@insn).value.call = {
-        name = name_v,
-        ret = value,
-        args = args,
-        proto = proto
-    } !InsnCall
-
-    push_insn(insn, state)
+    let value = state.call(name_v, ret, args, node.value.func_call.inline, proto, loc)
 
     for var i in 0..vector::length(varargs_loc) {
         let ptr = @(varargs_loc[i])
@@ -2910,14 +2937,14 @@ def walk_Identifier(node: &parser::Node, state: &State) -> Value {
 
     import_structures(tpe, state.module)
     if (@val).global {
-        (@(@state).module).imported.add((@val).assembly_name)
+        (@(@state).module).imported.add((@val).assembly_name(state))
     }
 
     if (@val).value {
         return @val.value
     }
 
-    let name = (@val).assembly_name
+    let name = (@val).assembly_name(state)
     var kind = ValueKind::LOCAL
     if (@val).global {
         kind = ValueKind::GLOBAL
@@ -3012,7 +3039,7 @@ def insert_destructors(scpe: &scope::Scope, loc: &Value, state: &State) {
         let key = keys[i]
         let value = scpe.fields[key]
 
-        let name = value.assembly_name
+        let name = value.assembly_name(state)
         var kind = ValueKind::LOCAL
         if value.global {
             kind = ValueKind::GLOBAL
@@ -3024,7 +3051,7 @@ def insert_destructors(scpe: &scope::Scope, loc: &Value, state: &State) {
         insert_destructor({ 
             kind = ValueKind::LOCAL, 
             tpe = pointer(scpe.underscore.tpe), 
-            name = scpe.underscore.assembly_name 
+            name = scpe.underscore.assembly_name(state) 
         } !Value, loc, state)
     }
 }
@@ -3437,7 +3464,7 @@ def assign_post(n: &parser::Node, l: &parser::Node, value_type: &typechecking::T
                 insert_destructor(@addr, loc, state)
             } else if l.svalue and l.svalue.previous_underscore {
                 let pu = l.svalue.previous_underscore
-                let addr = { kind = ValueKind::LOCAL, name = pu.assembly_name, tpe = pointer(pu.tpe) } !Value
+                let addr = { kind = ValueKind::LOCAL, name = pu.assembly_name(state), tpe = pointer(pu.tpe) } !Value
                 insert_destructor(addr, loc, state)
             }
             
@@ -3498,7 +3525,7 @@ export def walk_Assign(node: &parser::Node, state: &State) -> Value {
                 if l.svalue and l.svalue.name == "_" {
                     let alloca = make_insn_dbg(InsnKind::ALLOCA, loc)
                     alloca.value.alloca = {
-                        ret = { kind = ValueKind::LOCAL, name = l.svalue.assembly_name, tpe = l.svalue.tpe } !Value
+                        ret = { kind = ValueKind::LOCAL, name = l.svalue.assembly_name(state), tpe = l.svalue.tpe } !Value
                     } !InsnAlloca
                     push_alloca(alloca, state)
                 }
@@ -3545,7 +3572,7 @@ export def walk_Assign(node: &parser::Node, state: &State) -> Value {
             if l.svalue and l.svalue.name == "_" {
                 let alloca = make_insn_dbg(InsnKind::ALLOCA, loc)
                 alloca.value.alloca = {
-                    ret = { kind = ValueKind::LOCAL, name = l.svalue.assembly_name, tpe = l.svalue.tpe } !Value
+                    ret = { kind = ValueKind::LOCAL, name = l.svalue.assembly_name(state), tpe = l.svalue.tpe } !Value
                 } !InsnAlloca
                 push_alloca(alloca, state)
             }
@@ -4807,11 +4834,20 @@ def walk_Return(node: &parser::Node, state: &State) {
             state.ret({ kind = ValueKind::ZEROINITIALIZER, tpe = current_function.optional } !Value)
         }
     } else {
-        let ret = make_insn_dbg(InsnKind::RET, loc)
-        (@ret).value.ret.value = @value
-        push_insn(ret, state)
+        if state.is_inline() {
+            if current_function.ret {
+                state.store(state.return_address, @value, loc)
+                push_insn(state.return_br, state)
+            }
+        } else {
+            let ret = make_insn_dbg(InsnKind::RET, loc)
+            (@ret).value.ret.value = @value
+            push_insn(ret, state)
+        }
     }
-    push_label(make_label(state), state)
+    if not state.is_inline() {
+        push_label(make_label(state), state)
+    }
 }
 
 def walk_Yield(node: &parser::Node, state: &State) {
@@ -5135,12 +5171,14 @@ def walk_For_generator(node: &parser::Node, state: &State) {
 def for_create_var(iddecl: &parser::Node, loc: &Value, state: &State) -> Value {
     let tpe = iddecl.tpe
     if iddecl.kind == parser::NodeKind::FOR_ID_DECL {
-        let value = scope::get(iddecl.scope, iddecl.value.for_id_decl.ident)
+        let value = iddecl.value.for_id_decl.ident.svalue
         if not value { return NO_VALUE }
 
+        state.add_local(current_function(state), value, tpe)
+        
         let ret = {
             kind = ValueKind::LOCAL,
-            name = value.assembly_name,
+            name = value.assembly_name(state),
             tpe = tpe
         } !Value
 
@@ -5155,12 +5193,12 @@ def for_create_var(iddecl: &parser::Node, loc: &Value, state: &State) -> Value {
 
         let current_function = state.current_function()
         if current_function and not current_function.is_global {
-            current_function.function_locals.add(value.assembly_name)
+            current_function.function_locals.add(value.assembly_name(state))
         }
 
         return {
             kind = ValueKind::LOCAL,
-            name = value.assembly_name,
+            name = value.assembly_name(state),
             tpe = typechecking::pointer(tpe)
         } !Value
     } else {
@@ -5325,13 +5363,13 @@ export def walk_VarDecl(node: &parser::Node, state: &State, set_constant: bool =
             if value.name != "_" {
                 let ret = {
                     kind = ValueKind::LOCAL,
-                    name = value.assembly_name,
+                    name = value.assembly_name(state),
                     tpe = tpe
                 } !Value
 
                 let current_function = state.current_function()
                 if current_function and not current_function.is_global {
-                    current_function.function_locals.add(value.assembly_name)
+                    current_function.function_locals.add(value.assembly_name(state))
                 }
 
                 let insn = make_insn_dbg(InsnKind::ALLOCA, loc)
@@ -5357,6 +5395,8 @@ export def walk_VarDecl(node: &parser::Node, state: &State, set_constant: bool =
                     state.store(ret, { kind = ValueKind::ZEROINITIALIZER, tpe = tpe } !Value)
                 }
             }
+
+            state.add_local(state.current_function(), value, value.tpe)
 
             v.is_initializer = true
             assign_left.push(v)
@@ -5397,11 +5437,11 @@ def walk_Def(node: &parser::Node, state: &State) {
     
     let ret = {
         kind = ValueKind::LOCAL,
-        name = value.assembly_name,
+        name = value.assembly_name(state),
         tpe = value.tpe
     } !Value
 
-    state.current_function().function_locals.add(value.assembly_name)
+    state.current_function().function_locals.add(value.assembly_name(state))
 
     let insn = make_insn_dbg(InsnKind::ALLOCA, loc)
     insn.value.alloca = {
@@ -5442,9 +5482,9 @@ def walk_Def(node: &parser::Node, state: &State) {
         var value = NO_VALUE
         if capture.name.starts_with("__ref.") and not svalue {
             svalue = scope::get(state.scope, parser::make_identifier(capture.name.substring(6, capture.name.length)))
-            value = { kind = ValueKind::LOCAL, tpe = capture.tpe, name = svalue.assembly_name } !Value
+            value = { kind = ValueKind::LOCAL, tpe = capture.tpe, name = svalue.assembly_name(state) } !Value
         } else {
-            let addr = { kind = ValueKind::LOCAL, tpe = pointer(capture.tpe), name = svalue.assembly_name } !Value
+            let addr = { kind = ValueKind::LOCAL, tpe = pointer(capture.tpe), name = svalue.assembly_name(state) } !Value
             if is_ref(addr.tpe.tpe) {
                 increase_ref_count(addr, loc, state)
                 value = state.load(capture.tpe, addr, loc)
@@ -6221,7 +6261,41 @@ def di_type(tpe: &typechecking::Type, state: &State) -> &Value {
     return ditpep
 }
 
-def generate_defer_types(state: &State) {
+def generate_defer_types_pre(state: &State) {
+    let function = state.current_function
+    if not function.has_defer { return }
+    
+    function.env = {} !&typechecking::Type
+    function.defers = {} !&typechecking::Type
+    let defers = function.defers
+
+    // Generate defer stack
+    if not function.is_global {
+        let alloca = make_insn(InsnKind::ALLOCA)
+        alloca.value.alloca = {
+            ret = { kind = ValueKind::LOCAL, tpe = typechecking::pointer(defers), name = "__defers" } !Value
+        } !InsnAlloca
+        push_insn(alloca, state)
+    } else {
+        let global = {
+            private = true,
+            name = "__defers",
+            tpe = typechecking::pointer(defers)
+        } !&Global
+        state.module.result.globals[global.name] = global
+    }
+
+    let store = make_insn(InsnKind::STORE)
+    store.value.store = {
+        value = { kind = ValueKind::NULL, tpe = typechecking::pointer(defers) } !Value,
+        loc = { kind = ValueKind::GLOBAL if function.is_global else ValueKind::LOCAL, 
+            tpe = typechecking::pointer(typechecking::pointer(defers)), name = "__defers" 
+        } !Value
+    } !InsnStore
+    push_insn(store, state)
+}
+
+def generate_defer_types_post(state: &State) {
     let function = state.current_function
     if not function.has_defer { return }
 
@@ -6240,7 +6314,7 @@ def generate_defer_types(state: &State) {
     env.type_name = env_name
 
     state.module.result.structures[env_name] = env
-    function.env = env
+    @function.env = @env
 
     let defers_name = function.name + ".defers"
     let defers_fields = allocate_ref(typechecking::StructMember, 3)
@@ -6273,32 +6347,8 @@ def generate_defer_types(state: &State) {
     defers.type_name = defers_name
     defersp._tpe = typechecking::box(defers)
     state.module.result.structures[defers_name] = defers
-    function.defers = defers
 
-    // Generate defer stack
-    if not function.is_global {
-        let alloca = make_insn(InsnKind::ALLOCA)
-        alloca.value.alloca = {
-            ret = { kind = ValueKind::LOCAL, tpe = typechecking::pointer(defers), name = "__defers" } !Value
-        } !InsnAlloca
-        push_insn(alloca, state)
-    } else {
-        let global = {
-            private = true,
-            name = "__defers",
-            tpe = typechecking::pointer(defers)
-        } !&Global
-        state.module.result.globals[global.name] = global
-    }
-
-    let store = make_insn(InsnKind::STORE)
-    store.value.store = {
-        value = { kind = ValueKind::NULL, tpe = typechecking::pointer(defers) } !Value,
-        loc = { kind = ValueKind::GLOBAL if function.is_global else ValueKind::LOCAL, 
-            tpe = typechecking::pointer(typechecking::pointer(defers)), name = "__defers" 
-        } !Value
-    } !InsnStore
-    push_insn(store, state)
+    @function.defers = @defers
 }
 
 def defer_unroll(node: &parser::Node, state: &State) {
@@ -6624,7 +6674,94 @@ def create_generator(
 
     state.ret(gen_ref)
 }
- 
+
+def inline_call(node: &parser::Node, function: &Function, tpe: &typechecking::Type, args: &[Value], state: &State) -> Value {
+    let name = node.value.def_.name
+    let body = node.value.def_.body
+
+    for var i in 0..state.function_stack.length {
+        let fun = state.function_stack[i]
+        if fun.tpe.type_name == function.tpe.type_name {
+            errors::errorn(name, "Could not inline function, recursion detected. Try to use #no_inline.")
+            return NO_VALUE
+        }
+    }
+
+    if function.has_yield {
+        errors::errorn(name, "Can't inline function that yields values")
+        return NO_VALUE
+    }
+    if function.is_closure {
+        errors::errorn(name, "Can't inline function that is a closure values")
+        return NO_VALUE
+    }
+
+    let prefix = state.prefix
+    state.prefix = state.prefix + "." + state.inline_offset
+    state.inline_offset += 1
+    let return_address = state.return_address
+    let return_br = state.return_br
+
+    state.return_address = state.alloca(tpe)
+    state.return_br = make_insn(InsnKind::BR_UNC)
+
+    // Set up arguments
+    function.locals = map::make(Str, type &typechecking::Type)
+    if node.value.def_.params {
+        var j = 0
+        for var i in 0..vector::length(node.value.def_.params) {
+            let param = node.value.def_.params[i].value.param.name
+            let svalue = param.svalue
+            if not svalue { continue }
+            state.add_local(function, svalue, svalue.tpe)
+            let loc = make_location(param, state)
+
+            let addr = { kind = ValueKind::LOCAL, name = svalue.assembly_name(state), tpe = svalue.tpe } !Value
+            let alloca = make_insn(InsnKind::ALLOCA)
+            alloca.value.alloca = {
+                ret = addr
+            } !InsnAlloca
+            push_alloca(alloca, state)
+            addr.tpe = pointer(addr.tpe)
+
+            state.store(addr, args[j], loc)
+
+            j += 1
+        }
+    }
+
+    state.function_stack.push(function)
+    function.allocas = vector::make(type &Insn)
+    
+    var last_node: &Node = node
+    for var i in 0..vector::length(body) {
+        let node = body[i]
+        walk(node, state)
+        last_node = node
+    }
+
+    insert_destructors(node.inner_scope, make_location(last_node, state), state)
+
+    vector::insert(state.inline_start_block.insn, 0, function.allocas)
+
+    state.function_stack.pop()
+
+    let at_end = make_label(state)
+    push_label(at_end, state)
+    state.return_br.value.br_unc.label_ = at_end
+
+    var res = NO_VALUE
+    if tpe {
+        res = state.load(tpe, state.return_address)
+    }
+
+    state.prefix = prefix
+    state.return_address = return_address
+    state.return_br = return_br
+
+    return res
+}
+
 // block and body may be null
 export def create_function(
     node: &parser::Node, 
@@ -6641,11 +6778,28 @@ export def create_function(
     if not function { return }
     // TODO Return multiple values via tuple
     if function.has_yield and (not function.ret or function.ret.kind == typechecking::TypeKind::TUPLE) { return }
+    if not block {
+        block = make_block()
+    }
+
 
     function.forward_declare = false
     function.allocas = vector::make(type &Insn)
     let current_function = errors::current_function
     let current_signature = errors::current_signature
+    let previous_inline_offset = state.inline_offset
+    state.inline_offset = 0
+    let previous_inline_start_block = state.inline_start_block
+    state.inline_start_block = block
+
+    function.locals = map::make(Str, type &typechecking::Type)
+    if node.value.def_.params {
+        for var i in 0..vector::length(node.value.def_.params) {
+            let param = node.value.def_.params[i].value.param.name
+            if not param.svalue { continue }
+            state.add_local(function, param.svalue, param.svalue.tpe)
+        }
+    }
 
     if body {
         errors::current_function = tpe.type_name
@@ -6685,9 +6839,6 @@ export def create_function(
         create_debug_info(node, function, tpe, state)
 
         state.function_stack.push(function)
-        if not block {
-            block = make_block()
-        }
 
         // Add metadata for return type and arguments
         for var i in 0..tpe.return_t.length {
@@ -6777,7 +6928,7 @@ export def create_function(
                 let capture = function.captures[i]
                 let ret = {
                     kind = ValueKind::LOCAL,
-                    name = capture.assembly_name,
+                    name = capture.assembly_name(state),
                     tpe = capture.tpe
                 } !Value
 
@@ -6809,7 +6960,7 @@ export def create_function(
             let old_name = np.name
             let svalue = scope::get(scpe, parser::make_identifier(old_name))
             if not svalue { continue }
-            let name = svalue.assembly_name
+            let name = svalue.assembly_name(state)
             let new_name = old_name + ".value"
             // Insert alloca and store instructions
 
@@ -6867,13 +7018,13 @@ export def create_function(
             let env_val_ptr = state.load(pointer(builtins::TestEnvironment_), {
                 kind = ValueKind::LOCAL,
                 tpe = pointer(pointer(builtins::TestEnvironment_)),
-                name = scope::get(scpe, parser::make_identifier("env")).assembly_name
+                name = scope::get(scpe, parser::make_identifier("env")).assembly_name(state)
             } !Value)
             let env_val = state.load(builtins::TestEnvironment_, env_val_ptr)
             state.store(env_addr, env_val)
         }
 
-        generate_defer_types(state)
+        generate_defer_types_pre(state)
 
         if function.has_yield {
             // Get is_at_end pointer
@@ -6910,7 +7061,7 @@ export def create_function(
                 value = { kind = ValueKind::INT, tpe = builtins::int_, i = 0 } !Value, label_ = label_ } !SwitchValue
             )
             push_label(label_, state)
-        }
+        }   
 
         var last_node: &Node = node
         for var i in 0..vector::length(body) {
@@ -6918,6 +7069,8 @@ export def create_function(
             walk(node, state)
             last_node = node
         }
+
+        generate_defer_types_post(state)
 
         if not no_cleanup {
             insert_destructors(scpe, make_location(last_node, state), state)
@@ -7044,6 +7197,8 @@ export def create_function(
         function.is_compiled = true
     }
 
+    state.inline_offset = previous_inline_offset
+    state.inline_start_block = previous_inline_start_block
     errors::current_function = current_function
     errors::current_signature = current_signature
 }
@@ -7227,7 +7382,7 @@ export def walk_top_VarDecl(node: &parser::Node, state: &State, set_constant: bo
             if not value { continue }
             
             import_structures((@v).tpe, state.module)
-            let name = (@value).assembly_name
+            let name = (@value).assembly_name(state)
 
             let global = {
                 external = external,
@@ -7243,7 +7398,7 @@ export def walk_top_VarDecl(node: &parser::Node, state: &State, set_constant: bo
 
             let current_function = state.current_function
             if current_function.function_locals {
-                current_function.function_locals.add(value.assembly_name)
+                current_function.function_locals.add(value.assembly_name(state))
             }
         
             v.is_initializer = true
@@ -8243,7 +8398,7 @@ def do_create_type(tpe: &typechecking::Type, svalue: &scope::Value, module: &too
     if tpe.kind == typechecking::TypeKind::TYPE_DEF { return null }
 
     let state = toolchain::types_state
-    let global = { kind = ValueKind::GLOBAL, tpe = pointer(builtins::Type_), name = svalue.assembly_name } !Value
+    let global = { kind = ValueKind::GLOBAL, tpe = pointer(builtins::Type_), name = svalue.assembly_name(state) } !Value
 
     if not builtins::Field_ { return null }
     let field_type = builtins::Field_
@@ -8253,7 +8408,7 @@ def do_create_type(tpe: &typechecking::Type, svalue: &scope::Value, module: &too
 
     let global2 = {
         private = false,
-        name = svalue.assembly_name,
+        name = svalue.assembly_name(state),
         tpe = svalue.tpe,
         value = value,
         line = -1
@@ -8489,12 +8644,13 @@ export def create_type(tpe: &typechecking::Type, module: &toolchain::Module, cac
         svalue.identifier = ident
     }
 
-    if not toolchain::types_state.consteval and 
-        not map::contains(module.result.globals, svalue.assembly_name) {
+    let state = toolchain::types_state
+    if not state.consteval and 
+        not map::contains(module.result.globals, svalue.assembly_name(state)) {
             
         let global = {
             external = true,
-            name = svalue.assembly_name,
+            name = svalue.assembly_name(state),
             tpe = builtins::Type_,
             line = -1,
             identifier = ident
@@ -8506,7 +8662,7 @@ export def create_type(tpe: &typechecking::Type, module: &toolchain::Module, cac
     let value = {
         kind = ValueKind::GLOBAL,
         tpe = typechecking::pointer(builtins::Type_), 
-        name = svalue.assembly_name
+        name = svalue.assembly_name(state)
     } !&Value
 
     // value.value_tpe = tpe
@@ -8579,7 +8735,7 @@ export def predeclare_functions(module: &toolchain::Module) {
                                 insert_function(module, fun)
                             }
                         } else if not typechecking::is_type(value.tpe) {
-                            let name = value.assembly_name
+                            let name = value._assembly_name
                             let global = {
                                 name = name,
                                 tpe = value.tpe,
@@ -9110,7 +9266,7 @@ export def compile(state: &State, is_main: bool, no_cleanup: bool = false) {
         }
 
         // Create destructor
-        insert_destructor({ kind = ValueKind::GLOBAL, tpe = pointer(value.tpe), name = value.assembly_name } !Value, null, state)
+        insert_destructor({ kind = ValueKind::GLOBAL, tpe = pointer(value.tpe), name = value.assembly_name(state) } !Value, null, state)
     }
 
     if builtins::builtins.fields.contains("DEBUG_REF_CYCLES") and state.module.module == "main" {

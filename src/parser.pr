@@ -142,6 +142,7 @@ export type NodeDef = struct {
     dllexport: bool
     test: bool
     extern: bool
+    inline: bool
     share: ShareMarker
     name: &Node
     params: &Vector(&Node)
@@ -239,7 +240,14 @@ export type NodeNamedArg = struct {
     value: &Node
 }
 
+export type InlineSpecifier = enum {
+    NONE
+    INLINE
+    NO_INLINE
+}
+
 export type NodeFuncCall = struct {
+    inline: InlineSpecifier
     left: &Node
     args: &Vector(&Node)
     kwargs: &Vector(&Node)
@@ -2546,7 +2554,29 @@ def parse_post_expression(parse_state: &ParseState) -> &Node {
 
 def parse_pre_expression(parse_state: &ParseState) -> &Node {
     var token = peek(parse_state)
-    if next_token(parse_state, lexer::TokenType::K_SIZE_OF) {
+    if token.tpe == lexer::TokenType::PRAGMA and (token.value.str == "#inline" or token.value.str == "#no_inline") {
+        let specifier = InlineSpecifier::INLINE if token.value.str == "#inline" else InlineSpecifier::NO_INLINE
+        pop(parse_state)
+        let ident = expect_identifier(parse_state)
+        let open_paren = peek(parse_state)
+        if open_paren.tpe == lexer::TokenType::O_PAREN {
+            pop(parse_state)
+            let node = expect_func_args(parse_state, ident)
+            node.value.func_call.inline = specifier
+            return node
+        } else {
+            let line = ident.loc.line
+            let column = ident.loc.column
+            let call = make_node(NodeKind::FUNC_CALL, line, column, parse_state)
+            call.value.func_call = {
+                inline = specifier,
+                left = ident,
+                args = vector::make(type &Node),
+                kwargs = vector::make(type &Node)
+            } !NodeFuncCall
+            return call
+        }
+    } else if next_token(parse_state, lexer::TokenType::K_SIZE_OF) {
         skip_newline(parse_state)
         return make_un_op(parse_state, token, NodeKind::SIZE_OF, expect_type(parse_state))
     } else if next_token(parse_state, lexer::TokenType::K_ALIGN_OF) {
@@ -2900,6 +2930,7 @@ def parse_def(parse_state: &ParseState, share: ShareMarker, impl: bool = false) 
     var dllimport = false
     var dllexport = false
     var test = false
+    var inline = false
     while token.tpe == lexer::TokenType::PRAGMA {
         pop(parse_state)
         if token.value.str == "#extern" {
@@ -2910,6 +2941,8 @@ def parse_def(parse_state: &ParseState, share: ShareMarker, impl: bool = false) 
             dllexport = true
         } else if token.value.str == "#test" {
             test = true
+        } else if token.value.str == "#inline" {
+            inline = true
         } else {
             errors::errort(token, parse_state, "Invalid pragma")
         }
@@ -3148,7 +3181,8 @@ def parse_def(parse_state: &ParseState, share: ShareMarker, impl: bool = false) 
         name = name,
         params = params,
         returns = returns,
-        body = body
+        body = body,
+        inline = inline
     } !NodeDef
     node.body = body
     node._hash = combine_hashes(node.kind !uint64, signature_hash, hash(body))
