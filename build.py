@@ -127,7 +127,7 @@ def download():
     Path(archive).unlink()
 
 def build(extra):
-    args = [exe_file("bin/princess"), "--no-incremental", "-d", "-Isrc", "--buildfolder=build", "--outfile", exe_file("bin/princess2"), "src/main.pr"]
+    args = [exe_file("bin/princess"), "-d", "-Isrc", "--buildfolder=build", "--outfile", exe_file("bin/princess2"), "src/main.pr"]
     if sys.platform == "win32":
         args += WIN_ARGS
     subprocess.check_call(args + extra)
