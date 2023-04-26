@@ -117,6 +117,9 @@ export type Value = struct {
     is_internal: bool
     // This is true if we have a polymorphic instance
     polymorph: bool
+
+    // References to this value
+    references: &Vector(parser::SourceLoc)
 }
 
 export def assembly_name(value: &Value, state: &compiler::State) -> Str {
@@ -167,6 +170,29 @@ export def get_scope(value: &Value) -> &Scope {
         return value._module
     }
     return value._scope
+}
+
+export def add_reference(value: &Value, reference: &parser::Node) {
+    if not value or not value.references { return }
+    value.references.push(reference.loc)
+}
+
+// This also clears out references that aren't valid anymore.
+// TODO The process to do this is rather expensive, maybe there's a better way to speed this up
+export def find_references_to(value: &Value) -> &Vector(parser::SourceLoc) {
+    let res = vector::make(parser::SourceLoc)
+    if not value.references { return res }
+    for var i in 0..value.references.length {
+        var loc = value.references[i]
+        let module = toolchain::modules.get_or_default(loc.filename, null)
+        if not module { continue }
+        let node = parser::find(module.node, loc.line, loc.column)
+        if node and node.svalue == value {
+            res.push(loc)
+        }
+    }
+    value.references = res
+    return res
 }
 
 export type ReExport = struct {
@@ -550,6 +576,23 @@ def find_all(scope: &Scope, ret: &Vector(&Value), found: &SSet, check_export: bo
         for var i in 0..scope.imports.length {
             let imprt = scope.imports[i]
             find_all(imprt.module.scope, ret, found, check_export = true)
+
+            let scope2 = imprt.module.scope
+            if scope2.re_exports {
+                for var i in 0..scope2.re_exports.length {
+                    let re_export = scope2.re_exports[i]
+                    
+                    let new_values = vector::make(type &Value)
+                    find_all(re_export.module.scope, new_values, found, check_export = true)
+
+                    for var i in 0..new_values.length {
+                        let value2 = new_values[i]
+                        if pattern_matches(value2.name_node, re_export.pattern) {
+                            ret.push(value2)
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -871,6 +914,7 @@ export def generate_function(scope: &Scope, node: &parser::Node, parameter_t: &V
             if fun and fun.phase == Phase::COMPILED { return fun }
 
             let value = create_function_without_checking(scope, name_node, stpe.share, tpe)
+            value.identifier = name_node
             module.dyn_dispatch.push(tpe)
             return value
         } else if vector::length(parameter_t) == 1 and first_parameter.tpe.kind == typechecking::TypeKind::POINTER and 
@@ -892,6 +936,7 @@ export def generate_function(scope: &Scope, node: &parser::Node, parameter_t: &V
                 compiler::predeclare_function(tpe, module)
             }
             compiler::destructors[debug::type_to_str(first_parameter.tpe, full_name = true)] = tpe
+            value.identifier = name_node
             return value
         } else if vector::length(parameter_t) == 2 and first_parameter.tpe.kind == typechecking::TypeKind::POINTER and
             name == "__construct__" and typechecking::has_copy_constructor(first_parameter.tpe.tpe, lookup = false) {
@@ -918,6 +963,7 @@ export def generate_function(scope: &Scope, node: &parser::Node, parameter_t: &V
                     compiler::predeclare_function(tpe, module)
                 }
                 compiler::constructors[debug::type_to_str(first_parameter.tpe, full_name = true)] = tpe
+                value.identifier = name_node
                 return value
             }
         }
@@ -1470,7 +1516,8 @@ export def create_function(
         node = node,
         state = state,
         ident = make_ident(name, scope.module, node.signature_hash if node else 0, tpe.type_name),
-        polymorph = typechecking::is_polymorph(tpe)
+        polymorph = typechecking::is_polymorph(tpe),
+        references = vector::make(parser::SourceLoc)
     } !&Value
 
     if global {
@@ -1513,7 +1560,8 @@ export def create_variable(
         phase = phase,
         node = node,
         state = state,
-        ident = make_ident(name, scope.module, node._hash if node else 0)
+        ident = make_ident(name, scope.module, node._hash if node else 0),
+        references = vector::make(parser::SourceLoc)
     } !&Value
 
     if global {
@@ -1588,7 +1636,8 @@ export def create_type(
         phase = phase,
         node = node,
         state = state,
-        ident = make_ident(name, scope.module)
+        ident = make_ident(name, scope.module),
+        references = vector::make(parser::SourceLoc)
     } !&Value
     if global {
         v.unresolved = set::make(Ident)
