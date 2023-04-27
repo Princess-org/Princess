@@ -140,32 +140,71 @@ type Hover = struct {
     contents: MarkupContent
 }
 
+def find_member(node: &parser::Node) -> &parser::Node, &typechecking::Type {
+    if not node.svalue and node.parent and node.parent.kind == parser::NodeKind::MEMBER_ACCESS and
+        node == node.parent.value.bin_op.right and node.kind == parser::NodeKind::IDENTIFIER { 
+
+        let tpe = node.parent.value.bin_op.left.tpe
+        if not tpe or (tpe.kind != typechecking::TypeKind::STRUCT and tpe.kind != typechecking::TypeKind::UNION) { 
+            return null, null
+        }
+
+        let ident = parser::identifier_to_str(node)
+        var id_decl: &parser::Node
+        var field_tpe: &typechecking::Type
+        for var i in 0..tpe.fields.size {
+            let field = tpe.fields[i]
+            if field.name == ident {
+                id_decl = field.node
+                field_tpe = field.tpe
+                break
+            }
+        }
+        if not id_decl or id_decl.kind != parser::NodeKind::ID_DECL_STRUCT { return null, null }
+        let name = id_decl.value.id_decl_struct.ident
+        if not name or name.kind != parser::NodeKind::IDENTIFIER { return null, null }
+        
+        return name, field_tpe
+    }
+    return null, null
+}
+
 def hover(id: int, params: HoverParams) {
     let module = toolchain::find_module_by_path(uri_to_path(params.textDocument.uri))
     if not module { send_reply(id, null); return }	
-    let svalue = find_value_at(module, params.position)
-    if not svalue or not svalue.tpe { send_reply(id, null); return }
-
+    let node = find_node_at(module, params.position)
+    if not node { send_reply(id, null); return }
+    
     var res: Str
-    if svalue.tpe.kind == typechecking::TypeKind::FUNCTION {
-        res = "(function) " + svalue.name + ": " + debug::type_to_str(svalue.tpe)
-    } else if svalue.tpe.kind == typechecking::TypeKind::NAMESPACE {
-        res = "(module) " + svalue.name
-    } else if svalue.modifier == VarDecl::TYPE {
-        let tpe = svalue.value.value_tpe
-        if tpe.kind == typechecking::TypeKind::STRUCTURAL {
-            res = "(interface) " + svalue.name
-        } else if tpe.kind == typechecking::TypeKind::STRUCT {
-            res = "(struct) " + svalue.name
-        } else if tpe.kind == typechecking::TypeKind::UNION {
-            res = "(union) " + svalue.name 
-        } else {
-            res = "(type) " + svalue.name
-        }
-    } else if svalue.modifier == VarDecl::CONST {
-        res = "(constant) " + svalue.name + ": " + debug::type_to_str(svalue.tpe)
+
+    let name, field_tpe = find_member(node)
+    // Member access is special
+    if name {
+        res = "(member) " + parser::identifier_to_str(name) + ": " + debug::type_to_str(field_tpe)
     } else {
-        res = "(variable) " + svalue.name + ": " + debug::type_to_str(svalue.tpe)
+        let svalue = node.svalue
+        if not svalue or not svalue.tpe { send_reply(id, null); return }
+
+        if svalue.tpe.kind == typechecking::TypeKind::FUNCTION {
+            res = "(function) " + svalue.name + ": " + debug::type_to_str(svalue.tpe)
+        } else if svalue.tpe.kind == typechecking::TypeKind::NAMESPACE {
+            res = "(module) " + svalue.name
+        } else if svalue.modifier == VarDecl::TYPE {
+            let tpe = svalue.value.value_tpe
+            if tpe.kind == typechecking::TypeKind::STRUCTURAL {
+                res = "(interface) " + svalue.name
+            } else if tpe.kind == typechecking::TypeKind::STRUCT {
+                res = "(struct) " + svalue.name
+            } else if tpe.kind == typechecking::TypeKind::UNION {
+                res = "(union) " + svalue.name 
+            } else {
+                res = "(type) " + svalue.name
+            }
+        } else if svalue.modifier == VarDecl::CONST {
+            res = "(constant) " + svalue.name + ": " + debug::type_to_str(svalue.tpe)
+        } else {
+            res = "(variable) " + svalue.name + ": " + debug::type_to_str(svalue.tpe)
+        }
     }
     res = "```princess\n" + res + "\n\n```"
 
@@ -184,22 +223,30 @@ type DefinitionParams = struct {
     position: U16Position
 }
 
-def find_value_at(module: &toolchain::Module, position: U16Position) -> &scope::Value {
+def find_node_at(module: &toolchain::Module, position: U16Position) -> &parser::Node {
     let u8pos = document::u16_pos_to_u8(module.filename, position)
     let node = parser::find(module.node, u8pos.line, u8pos.character)
-    if not node { return null }
-    if node.kind != parser::NodeKind::IDENTIFIER { return null }
-    let svalue = node.svalue
-    return svalue
+    return node
 }
 
 def go_to_definition(id: int, params: DefinitionParams) {
     let path = uri_to_path(params.textDocument.uri)
     let module = toolchain::find_module_by_path(path)
     if not module { send_reply(id, null); return }	
-    let svalue = find_value_at(module, params.position)
-    if not svalue { send_reply(id, null); return }
-    let sloc = svalue.loc
+    let node = find_node_at(module, params.position)
+    if not node { send_reply(id, null); return }
+    
+    var sloc: parser::SourceLoc
+    
+    let name, _ = find_member(node)
+    if name {
+        sloc = name.loc
+    } else {
+        let svalue = node.svalue
+        if not svalue { send_reply(id, null); return }
+        sloc = svalue.loc
+    }
+    
     if parser::is_invalid(sloc) { send_reply(id, null); return }
     //error("Go to: ", svalue !*, " ", sloc.line, " ", sloc.column, "\n")
 
@@ -849,7 +896,9 @@ def references(id: int, params: ReferenceParams) {
     let path = uri_to_path(params.textDocument.uri)
     let module = toolchain::find_module_by_path(path)
     if not module { send_reply(id, null); return }
-    let value = find_value_at(module, params.position)
+    let node = find_node_at(module, params.position)
+    if not node { send_reply(id, null); return }
+    let value = node.svalue
     if not value or not value.references { send_reply(id, null); return }
 
     let result = vector::make(Location)
