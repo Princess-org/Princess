@@ -4008,7 +4008,7 @@ def walk_Yield(node: &parser::Node, state: &State) {
     let current_fun = current_function(state)
     let body = node.value.body
     if current_fun.is_global {
-        errors::errorn(node, "yield outside of a function")
+        errors::errorn(node, "Yield outside of a function")
         return
     }
     let tpe = current_fun.value.tpe
@@ -4021,6 +4021,56 @@ def walk_Yield(node: &parser::Node, state: &State) {
     check_return_arguments(true, node, ltypes, rtypes, state)
     
     node.tpe = tpe
+}
+
+def walk_YieldFrom(node: &parser::Node, state: &State) {
+    let current_fun = current_function(state)
+    if current_fun.is_global {
+        errors::errorn(node, "`yield from` outside of a function")
+        return
+    }
+    if not node.value.expr { return }
+
+    let ftpe = current_fun.value.tpe
+    let generator = ftpe.return_t[0]
+
+    walk(node, node.value.expr, state)
+    var tpe = node.value.expr.tpe
+
+    if not equals(generator, tpe) {
+        let new_expr = wrap_iterable(node.value.expr, state)
+        if not new_expr {
+            errors::errorn(node, "Invalid generator, got ", debug::type_to_str(node.value.expr.tpe), " expected iterable")
+            return
+        }
+        tpe = new_expr.tpe
+        node.value.expr = new_expr
+    }
+
+    if not equals(generator, tpe) {
+        errors::errorn(node, "`yield from` expects a generator of type " + 
+            debug::type_to_str(generator.tc_args[0]) + " but got " + debug::type_to_str(tpe))
+        return
+    }
+
+    let inner_scope = scope::enter_scope(state.scope)
+    
+    let name = "__yfm." + state.counter
+    let ident = parser::make_identifier(name)
+    state.counter += 1
+    let v = scope::create_variable(
+        inner_scope, 
+        ident,
+        parser::ShareMarker::NONE,
+        parser::VarDecl::VAR,
+        tpe.tpe.tc_args[0], true, null // extern so that we don't change the variable name
+    )
+    v.is_internal = true
+    v.identifier = ident
+    ident.tpe = v.tpe
+    ident.svalue = v
+    node.svalue = v
+    node.inner_scope = inner_scope
 }
 
 export def append_arguments(arguments: &Vector(NamedParameter)) -> Str {
@@ -4372,9 +4422,13 @@ def walk_While(node: &parser::Node, state: &State) {
 }
 
 def for_setup_generator(expr: &parser::Node, node: &parser::Node, state: &State) {
+    for_setup_generator(expr, node, state.scope)
+}
+
+export def for_setup_generator(expr: &parser::Node, node: &parser::Node, scpe: &scope::Scope) {
     let parameter_t = vector::make(NamedParameter)
     parameter_t.push({ _tpe = expr.tpe } !NamedParameter)
-    let generator_next = state.scope.get_function(
+    let generator_next = scpe.get_function(
         id = parser::make_identifier("next"),
         parameter_t = parameter_t
     )
@@ -4382,11 +4436,43 @@ def for_setup_generator(expr: &parser::Node, node: &parser::Node, state: &State)
 
     let parameter_t2 = vector::make(NamedParameter)
     parameter_t2.push({ _tpe = generator_next.tpe.return_t[0] } !NamedParameter)
-    let generator_get = state.scope.get_function(
+    let generator_get = scpe.get_function(
         id = parser::make_identifier("get"),
         parameter_t = parameter_t2
     )
     node.value.for_loop.generator_get = generator_get
+}
+
+def wrap_iterable(expr: &parser::Node, state: &State) -> &parser::Node {
+    let args = vector::make(NamedParameter)
+    args.push({ _tpe = expr.tpe } !NamedParameter)
+    let ident = parser::make_identifier("iterate")
+    let fun = scope::get_function(state.scope, ident, args, true)
+    if fun {
+        let args = vector::make(type &parser::Node)
+        args.push(expr)
+
+        let function = {
+            kind = parser::NodeKind::FUNC_CALL,
+            loc = expr.loc
+        } !&parser::Node
+        function.value.func_call = {
+            left = ident,
+            args = args,
+            kwargs = vector::make(type &parser::Node)
+        } !parser::NodeFuncCall
+        function.parent = expr.parent
+        function.scope = expr.scope
+
+        walk(expr.parent, function, state)
+
+        if not (function.tpe.kind == TypeKind::REFERENCE and function.tpe.tpe and function.tpe.tpe.tc_tpe == builtins::Generator_) {        
+            errors::errorn(expr, "Wrong return type for generator, needs to return &Generator(T), got ", debug::type_to_str(expr.tpe))  
+            return null
+        }
+        return function
+    }
+    return null
 }
 
 def walk_For(node: &parser::Node, state: &State) {
@@ -4404,37 +4490,12 @@ def walk_For(node: &parser::Node, state: &State) {
         tpe = expr.tpe.tpe.tc_args[0]
         for_setup_generator(expr, node, state)
     } else {
-        let args = vector::make(NamedParameter)
-        args.push({ _tpe = expr.tpe } !NamedParameter)
-        let ident = parser::make_identifier("iterate")
-        let fun = scope::get_function(state.scope, ident, args, true)
-        if fun {
-            let args = vector::make(type &parser::Node)
-            args.push(expr)
-
-            let function = {
-                kind = parser::NodeKind::FUNC_CALL,
-                loc = node.loc
-            } !&parser::Node
-            function.value.func_call = {
-                left = ident,
-                args = args,
-                kwargs = vector::make(type &parser::Node)
-            } !parser::NodeFuncCall
-            function.parent = node
-            function.scope = node.scope
-
-            walk(node, function, state)
-            node.value.for_loop.expr = expr = function
-
-            if expr.tpe.kind == TypeKind::REFERENCE and expr.tpe.tpe and expr.tpe.tpe.tc_tpe == builtins::Generator_ {
-                tpe = expr.tpe.tpe.tc_args[0]
-                for_setup_generator(expr, node, state)
-            } else {
-                errors::errorn(expr, "Wrong return type for generator, needs to return &Generator(T), got ", debug::type_to_str(expr.tpe))  
-            }
-        } else {
+        let new_expr = wrap_iterable(expr, state)
+        if not new_expr {
             errors::errorn(expr, "Invalid generator, got ", debug::type_to_str(expr.tpe), " expected array, range or iterable")
+        } else {
+            node.value.for_loop.expr = new_expr
+            for_setup_generator(expr, node, state)
         }
     }
 
@@ -5070,8 +5131,8 @@ export def walk(parent: &parser::Node, node: &parser::Node, state: &State) {
             walk_TypeOfT(node, state)
         case parser::NodeKind::FROM:
             // Do nothing
-        case parser::node_kind::YIELD_FROM:
-            walk_Call(node.value.expr, state)
+        case parser::NodeKind::YIELD_FROM:
+            walk_YieldFrom(node, state)
         case:
             error(node.kind, "\n")
             assert
