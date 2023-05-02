@@ -24,7 +24,7 @@ def main():
     # TODO also test on windows
     if sys.platform != "win32":
         os.environ["PRINCESS_COMPILER"] = build.exe_file("bin/princess2")
-        subprocess.check_call(["bin/testrunner", "-r", "./test"])
+        subprocess.check_call(["bin/testrunner", "./test"])
 
     print("Bootstrapping...")
     compile([])
