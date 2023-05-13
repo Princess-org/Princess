@@ -3,39 +3,12 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 import os
-from struct import pack
-import subprocess, json, sys
+import subprocess, sys
 from typing import List
-import tatsu
-from tatsu.walkers import NodeWalker
 from pathlib import Path
 
-GRAMMAR = r"""
-    function_decl = ret: type_1 '(' args: ','.{ type_1 | varargs } ')';
-
-    sign = 'signed' | 'unsigned';
-    modifier = 'long' 'long' @:`'llong'` | 'long' | 'short';
-    specifier = 'int' | 'char' | 'float' | 'double' | '__int128' | '_Bool';
-    winptr = '__ptr32' | '__sptr' | '__uptr';
-
-    identifier::Identifier      = /(?!\d)\w+/;
-    tagged_idenitifier::Tagged  = ('struct' | 'union' | 'enum') identifier;
-    primitive::Primitive        = [sign] [modifier] specifier | [sign] modifier | sign;
-    pointer::Pointer            = type: type '*' {winptr | 'const' | 'volatile' | 'restrict'};
-    array::Array                = type: type '[' size: [/\d+/] ']';
-    function::Function          = ret: type / \(\*\)/ '(' args: ','.{ type_1 | varargs } ')';
-
-    void::Void = 'void';
-    varargs::Varargs = '...';
-
-    type = pointer | function | array | void | primitive | tagged_idenitifier | identifier;
-    type_1 = {winptr | 'const' | 'volatile' | '__unaligned'} @:type;
-"""
-
-PARSER = tatsu.compile(GRAMMAR, asmodel = True)
-
-def parse(s):
-    return PARSER.parse(s, start = "type_1")
+import re
+import clang.cindex as clang
 
 class File:
     def __init__(self, fp) -> None:
@@ -44,68 +17,10 @@ class File:
         self.TAGGED = {}
         self.STRUCT_IDS = {}
 
-        self.TAGGED["__va_list_tag"] = VaList()
-        self.TYPEDEFS["bool"] = PRIMITIVES["_Bool"]
-        if sys.platform == "darwin":
-            self.TYPEDEFS["__SVInt8_t"] = PRIMITIVES["char"]
-            self.TYPEDEFS["__SVInt16_t"] = PRIMITIVES["short"]
-            self.TYPEDEFS["__SVInt32_t"] = PRIMITIVES["int"]
-            self.TYPEDEFS["__SVInt64_t"] = PRIMITIVES["long"]
-            self.TYPEDEFS["__SVUint8_t"] = PRIMITIVES["char"]
-            self.TYPEDEFS["__SVUint16_t"] = PRIMITIVES["short"]
-            self.TYPEDEFS["__SVUint32_t"] = PRIMITIVES["int"]
-            self.TYPEDEFS["__SVUint64_t"] = PRIMITIVES["long"]
-            self.TYPEDEFS["__SVFloat16_t"] = Integer("__SVFloat16_t") # short float ??
-            self.TYPEDEFS["__SVFloat32_t"] = Integer("__SVFloat32_t")
-            self.TYPEDEFS["__SVFloat64_t"] = Integer("__SVFloat64_t")
-            self.TYPEDEFS["__SVBFloat16_t"] = Integer("__SVBFloat16_t")
-            self.TYPEDEFS["__SVBFloat32_t"] = Integer("__SVBFloat32_t")
-            self.TYPEDEFS["__SVBFloat64_t"] = Integer("__SVBFloat64_t")
-            self.TYPEDEFS["__clang_svint8x2_t"] = Integer("__clang_svint8x2_t")
-            self.TYPEDEFS["__clang_svint16x2_t"] = Integer("__clang_svint16x2_t")
-            self.TYPEDEFS["__clang_svint32x2_t"] = Integer("__clang_svint32x2_t")
-            self.TYPEDEFS["__clang_svint64x2_t"] = Integer("__clang_svint64x2_t")
-            self.TYPEDEFS["__clang_svuint8x2_t"] = Integer("__clang_svuint8x2_t")
-            self.TYPEDEFS["__clang_svuint16x2_t"] = Integer("__clang_svuint16x2_t")
-            self.TYPEDEFS["__clang_svuint32x2_t"] = Integer("__clang_svuint32x2_t")
-            self.TYPEDEFS["__clang_svuint64x2_t"] = Integer("__clang_svuint64x2_t")
-            self.TYPEDEFS["__clang_svfloat16x2_t"] = Integer("__clang_svfloat16x2_t")
-            self.TYPEDEFS["__clang_svfloat32x2_t"] = Integer("__clang_svfloat32x2_t")
-            self.TYPEDEFS["__clang_svfloat64x2_t"] = Integer("__clang_svfloat64x2_t")
-            self.TYPEDEFS["__clang_svbfloat16x2_t"] = Integer("__clang_svbfloat16x2_t")
-            self.TYPEDEFS["__clang_svbfloat32x2_t"] = Integer("__clang_svbfloat32x2_t")
-            self.TYPEDEFS["__clang_svbfloat64x2_t"] = Integer("__clang_svbfloat64x2_t")
-            self.TYPEDEFS["__clang_svint8x3_t"] = Integer("__clang_svint8x3_t")
-            self.TYPEDEFS["__clang_svint16x3_t"] = Integer("__clang_svint16x3_t")
-            self.TYPEDEFS["__clang_svint32x3_t"] = Integer("__clang_svint32x3_t")
-            self.TYPEDEFS["__clang_svint64x3_t"] = Integer("__clang_svint64x3_t")
-            self.TYPEDEFS["__clang_svuint8x3_t"] = Integer("__clang_svuint8x3_t")
-            self.TYPEDEFS["__clang_svuint16x3_t"] = Integer("__clang_svuint16x3_t")
-            self.TYPEDEFS["__clang_svuint32x3_t"] = Integer("__clang_svuint32x3_t")
-            self.TYPEDEFS["__clang_svuint64x3_t"] = Integer("__clang_svuint64x3_t")
-            self.TYPEDEFS["__clang_svfloat16x3_t"] = Integer("__clang_svfloat16x3_t")
-            self.TYPEDEFS["__clang_svfloat32x3_t"] = Integer("__clang_svfloat32x3_t")
-            self.TYPEDEFS["__clang_svfloat64x3_t"] = Integer("__clang_svfloat64x3_t")
-            self.TYPEDEFS["__clang_svbfloat16x3_t"] = Integer("__clang_svbfloat16x3_t")
-            self.TYPEDEFS["__clang_svbfloat32x3_t"] = Integer("__clang_svbfloat32x3_t")
-            self.TYPEDEFS["__clang_svbfloat64x3_t"] = Integer("__clang_svbfloat64x3_t")
-            self.TYPEDEFS["__clang_svint8x4_t"] = Integer("__clang_svint8x4_t")
-            self.TYPEDEFS["__clang_svint16x4_t"] = Integer("__clang_svint16x4_t")
-            self.TYPEDEFS["__clang_svint32x4_t"] = Integer("__clang_svint32x4_t")
-            self.TYPEDEFS["__clang_svint64x4_t"] = Integer("__clang_svint64x4_t")
-            self.TYPEDEFS["__clang_svuint8x4_t"] = Integer("__clang_svuint8x4_t")
-            self.TYPEDEFS["__clang_svuint16x4_t"] = Integer("__clang_svuint16x4_t")
-            self.TYPEDEFS["__clang_svuint32x4_t"] = Integer("__clang_svuint32x4_t")
-            self.TYPEDEFS["__clang_svuint64x4_t"] = Integer("__clang_svuint64x4_t")
-            self.TYPEDEFS["__clang_svfloat16x4_t"] = Integer("__clang_svfloat16x4_t")
-            self.TYPEDEFS["__clang_svfloat32x4_t"] = Integer("__clang_svfloat32x4_t")
-            self.TYPEDEFS["__clang_svfloat64x4_t"] = Integer("__clang_svfloat64x4_t")
-            self.TYPEDEFS["__clang_svbfloat16x4_t"] = Integer("__clang_svbfloat16x4_t")
-            self.TYPEDEFS["__clang_svbfloat32x4_t"] = Integer("__clang_svbfloat32x4_t")
-            self.TYPEDEFS["__clang_svbfloat64x4_t"] = Integer("__clang_svbfloat64x4_t")
-            self.TYPEDEFS["__SVBool_t"] = PRIMITIVES["_Bool"]
+        self.TYPEDEFS["__va_list_tag"] = VaList()
 
         self.has_printed = set()
+        self.has_declared = set()
         self.fp = fp
         self.last_record = None
 
@@ -121,9 +36,6 @@ def escape_name(name: str) -> str:
 # Types
 
 class Type:
-    def __init__(self) -> None:
-        self.qualname = None
-
     @abstractmethod
     def to_string(self, file: File) -> str:
         pass
@@ -144,6 +56,11 @@ class Varargs(Type):
         return "..."
 varargs = Varargs()
 
+class String(Type):
+    def to_string(self, file: File) -> str:
+        return "[char]"
+string = String()
+
 class VaList(Type):
     def to_string(self, file: File) -> str:
         return "__va_list_tag"
@@ -151,12 +68,41 @@ class VaList(Type):
 class IncompleteType(Type):
     def __init__(self, name: str):
         self.name = name
+        self.displayname = (name
+                            .replace("struct ", "s_")
+                            .replace("enum ", "e_")
+                            .replace("union ", "u_")
+                            .replace("const ", ""))
 
     def to_string(self, file: File) -> str:
-        return file.TAGGED[self.name].to_string(file)
+        if self.name in file.TAGGED:
+            return file.TAGGED[self.name].to_string(file)
+        else: return self.displayname
     
     def to_definition(self, file: File) -> str:
-        return file.TAGGED[self.name].to_definition(file)
+        if self.name in file.TAGGED:
+            return file.TAGGED[self.name].to_definition(file)
+        else: return self.displayname
+
+    def print_references(self, file: File):
+        if self.displayname in file.has_declared or self.displayname in file.has_printed: return
+        else: file.has_declared.add(self.displayname)
+
+        print(f"export type {self.displayname}", file = file.fp)
+
+class IncompleteTypedef(Type):
+    def __init__(self, name: str):
+        self.name = name
+
+    def to_string(self, file: File) -> str:
+        if self.name in file.TYPEDEFS:
+            return file.TYPEDEFS[self.name].to_string(file)
+        else: return self.name
+    
+    def to_definition(self, file: File) -> str:
+        if self.name in file.TYPEDEFS:
+            return file.TYPEDEFS[self.name].to_definition(file)
+        else: return self.name
 
 class Float(Type):
     def __init__(self, name):
@@ -180,6 +126,11 @@ class Function(Type):
     def to_string(self, file: File) -> str:
         args = ', '.join(map(lambda x: x.to_string(file), filter(lambda x: x != void, self.args)))
         return f"def ({args}) -> ({self.ret.to_string(file) if self.ret != void else ''})"
+    
+    def print_references(self, file: File):
+        self.ret.print_references(file)
+        for type in self.args:
+            type.print_references(file)
 
 class Pointer(Type):
     def __init__(self, tpe: Type):
@@ -189,6 +140,9 @@ class Pointer(Type):
         if self.type == void:
             return "*"
         else: return f"*{self.type.to_string(file)}"
+
+    def print_references(self, file: File):
+        self.type.print_references(file)
 
 
 class Array(Type):
@@ -201,6 +155,9 @@ class Array(Type):
             return f"[{self.length}; {self.type.to_string(file)}]"
         else:
             return f"*{self.type.to_string(file)}"
+        
+    def print_references(self, file: File):
+        self.type.print_references(file)
 
 @dataclass
 class Field:
@@ -213,49 +170,46 @@ class Field:
         res = ""
         if self.is_bitfield:
             res += f"#bits({self.bit_size}) "
-        res += f"{escape_name(self.name)}: {self.type.to_string(file)}"
+        name = f"{escape_name(self.name)}: " if self.name and not is_anonymous(self.name) else ""
+        res += f"{name}{self.type.to_string(file)}"
         return res
 
 class Record(Type):
     def __init__(self) -> None:
-        self.typename = None
         self.fields: List[Field] = []
         self.name = None
+        self.displayname = None
 
     def to_string(self, file: File) -> str:
-        if self.qualname:
-            self = file.TAGGED[self.qualname]
+        if self.name:
+            self = file.TAGGED[self.name]
 
-        name = self.typename or self.name
-        if not name: return self.to_definition(file)
-        else: return name
+        if not self.name: return self.to_definition(file)
+        else: return self.displayname
 
     def print_references(self, file: File):
-        if self.typename:
-            self = file.TYPEDEFS[self.typename]
-        elif self.qualname:
-            self = file.TAGGED[self.qualname]
+        if self.name:
+            self = file.TAGGED[self.name]
         
-        if not self in file.has_printed:
-            file.has_printed.add(self)
-        else: return
-
         for f in self.fields:
             f.type.print_references(file)
 
-        name = self.typename or self.name
-        if name:
-            print(f"export type {name}", file = file.fp, end = "")
+        if not self.fields: return
+        if not self.displayname in file.has_printed:
+            file.has_printed.add(self.displayname)
+        else: return
+
+        if self.name:
+            print(f"export type {self.displayname}", file = file.fp, end = "")
             if self.fields:
                 print(f" = {self.to_definition(file)}", file = file.fp)
-            else: print("", file = file.fp)
+            else: print(file = file.fp)
 
 class Struct(Record):
     def __init__(self, name: str, fields):
-        self.name = ("s_" + name) if name else None
+        self.name = name
         self.fields = fields
-        self.qualname = name
-        self.typename = None
+        self.displayname = self.name.replace("struct ", "s_").replace("const ", "") if self.name else None
 
     def to_definition(self, file: File) -> str:
         if self.fields:
@@ -267,10 +221,9 @@ class Struct(Record):
 
 class Union(Record):
     def __init__(self, name: str, fields):
-        self.name = ("u_" + name) if name else None
+        self.name = name
         self.fields = fields
-        self.qualname = name
-        self.typename = None
+        self.displayname = self.name.replace("union ", "u_").replace("const ", "") if self.name else None
     
     def to_definition(self, file: File) -> str:
         if self.fields:
@@ -282,18 +235,16 @@ class Union(Record):
 
 class Enum(Type):
     def __init__(self, name: str, fields):
-        self.name = ("e_" + name) if name else None
-        self.typename = None
-        self.qualname = name
+        self.name = name
         self.fields = fields
+        self.displayname = self.name.replace("enum ", "e_").replace("const ", "") if self.name else None
     
     def to_string(self, file: File) -> str:
-        if self.qualname:
-            self = file.TAGGED[self.qualname]
+        if self.name:
+            self = file.TAGGED[self.name]
 
-        name = self.typename or self.name
-        if not name: return self.to_definition(file)
-        else: return name
+        if not self.name: return self.to_definition(file)
+        else: return self.displayname
 
     def to_definition(self, file: File) -> str:
         res =  "enum { "
@@ -301,24 +252,21 @@ class Enum(Type):
             res += name
             if value:
                 res += " = "
-                res += value
+                res += str(value)
             res += "; "
         res += "}"
         return res
 
     def print_references(self, file: File):
-        if self.typename:
-            self = file.TYPEDEFS[self.typename]
-        elif self.qualname:
-            self = file.TAGGED[self.qualname]
+        if self.name:
+            self = file.TAGGED[self.name]
         
-        if not self in file.has_printed:
-            file.has_printed.add(self)
+        if not self.displayname in file.has_printed:
+            file.has_printed.add(self.displayname)
         else: return
 
-        name = self.typename or self.name
-        if name:
-            print(f"export type {name}", file = file.fp, end = "")
+        if self.name and not is_anonymous(self.name):
+            print(f"export type {self.displayname}", file = file.fp, end = "")
             if self.fields:
                 print(f" = {self.to_definition(file)}", file = file.fp)
             else: print("", file = file.fp)
@@ -336,7 +284,7 @@ class Declaration(ABC):
         pass
 
 class ConstDecl(Declaration):
-    def __init__(self, name: str, type: Type, value: str) -> None:
+    def __init__(self, name: str, type: Type, value) -> None:
         self.name = name
         self.type = type
         self.value = value
@@ -379,8 +327,8 @@ class FunctionDecl(Declaration):
 
     def to_declaration(self, file: File) -> str:
         args = []
-        for (name, tpe) in self.args:
-            args.append(name + ": " + tpe.to_string(file))
+        for i, (name, tpe) in enumerate(self.args):
+            args.append((name if name else "_" + str(i)) + ": " + tpe.to_string(file))
         if self.variadic:
             args.append("...")
         
@@ -402,147 +350,25 @@ class FunctionDecl(Declaration):
         return ret
 
 PRIMITIVES = {
-    ('char'): Integer("char"),
-    ('signed', 'char'): Integer("char"),
-    ('unsigned', 'char'): Integer("char"),
-    ('short'): Integer("short"),
-    ('short', 'int'): Integer("short"),
-    ('signed', 'short'): Integer("short"),
-    ('signed', 'short', 'int'): Integer("short"),
-    ('unsigned', 'short'): Integer("ushort"),
-    ('unsigned', 'short', 'int'): Integer("ushort"),
-    ('int'): Integer("int"),
-    ('signed'): Integer("int"),
-    ('signed', 'int'): Integer("int"),
-    ('unsigned',): Integer("uint"),
-    ('unsigned', 'int'): Integer("uint"),
-    ('long'): Integer("long"),
-    ('long', 'int'): Integer("long"),
-    ('signed', 'long'): Integer("long"),
-    ('signed', 'long', 'int'): Integer("long"),
-    ('unsigned', 'long'): Integer("ulong"),
-    ('unsigned', 'long', 'int'): Integer("ulong"),
-    ('llong'): Integer("int64"),
-    ('llong', 'int'): Integer("int64"),
-    ('signed', 'llong'): Integer("int64"),
-    ('signed', 'llong', 'int'): Integer("int64"),
-    ('unsigned', 'llong'): Integer("uint64"),
-    ('unsigned', 'llong', 'int'): Integer("uint64"),
-    ('__int128'): Integer("int128"),
-    ('signed', '__int128'): Integer("int128"),
-    ('unsigned', '__int128'): Integer("uint128"),
-    ('float'): Float("float"),
-    ('double'): Float("double"),
-    ('long', 'double'): Float("float80"),
-    ('_Bool'): Integer("uint8")
+    clang.TypeKind.VOID: void,
+    clang.TypeKind.CHAR_S: Integer("char"),
+    clang.TypeKind.SCHAR: Integer("char"),
+    clang.TypeKind.UCHAR: Integer("uint8"),
+    clang.TypeKind.SHORT: Integer("short"),
+    clang.TypeKind.USHORT: Integer("ushort"),
+    clang.TypeKind.INT: Integer("int"),
+    clang.TypeKind.UINT: Integer("uint"),
+    clang.TypeKind.LONG: Integer("long"),
+    clang.TypeKind.ULONG: Integer("ulong"),
+    clang.TypeKind.LONGLONG: Integer("int64"),
+    clang.TypeKind.ULONGLONG: Integer("uint64"),
+    clang.TypeKind.INT128: Integer("int128"),
+    clang.TypeKind.UINT128: Integer("uint128"),
+    clang.TypeKind.FLOAT: Float("float"),
+    clang.TypeKind.DOUBLE: Float("double"),
+    clang.TypeKind.LONGDOUBLE: Float("float80"),
+    clang.TypeKind.BOOL: Integer("uint8")
 }
-
-class Walker(NodeWalker):
-    def __init__(self, file: File) -> None:
-        super().__init__()
-        self.file = file
-
-    def walk_Primitive(self, node):
-        return PRIMITIVES[node.ast]
-    
-    def walk_Void(self, node):
-        return void
-    
-    def walk_Varargs(self, node):
-        return varargs
-    
-    def walk_Pointer(self, node):
-        return Pointer(self.walk(node.type))
-
-    def walk_Array(self, node):
-        return Array(self.walk(node.type), int(node.size) if node.size else None)
-
-    def walk_Identifier(self, node):
-        return self.file.TYPEDEFS[node.ast]
-
-    def walk_Tagged(self, node):
-        name = node.ast[1].ast
-        if name in self.file.TAGGED:
-            return self.file.TAGGED[name]
-        else:
-            return IncompleteType(name)
-    
-    def walk_Function(self, node):
-        return Function(list(map(self.walk, node.args)), self.walk(node.ret))
-
-def get_type(node) -> str:
-    tpe = node["type"]
-    if "desugaredQualType" in tpe:
-        desugared = tpe["desugaredQualType"]
-        if is_anonymous(desugared):
-            return tpe["qualType"]
-        return desugared
-    else: return tpe["qualType"]
-
-def walk_Expression(node):
-    kind = node["kind"]
-    if kind == "ConstantExpr":
-        return walk_Expression(node["inner"][0])
-    elif kind == "IntegerLiteral":
-        return node["value"]
-    elif kind == "UnaryOperator":
-        opcode = node["opcode"]
-        
-        if opcode == "!": opcode = "not"
-
-        return "(" + opcode + " " + walk_Expression(node["inner"][0]) + ")"
-    elif kind == "BinaryOperator":
-        opcode = node["opcode"]
-
-        if opcode == "&&": opcode = "and"
-        elif opcode == "||": opcode = "or"
-
-        return ("(" + walk_Expression(node["inner"][0]) + " " + 
-            opcode + " " + walk_Expression(node["inner"][1]) + ")")
-    elif kind == "ParenExpr":
-        return "(" + walk_Expression(node["inner"][0]) + ")"
-    elif kind == "DeclRefExpr":
-        return node["referencedDecl"]["name"]
-    elif kind == "ConditionalOperator":
-        return (walk_Expression(node["inner"][1]) + " if " +
-            walk_Expression(node["inner"][0]) + " else " +
-            walk_Expression(node["inner"][2]))
-    return ""
-
-def walk_VarDecl(node, file: File):
-    name = node["name"]
-    tpe = parse(get_type(node))
-    tpe = Walker(file).walk(tpe)
-    dllimport = False
-    if "inner" in node:
-        for param in node["inner"]:
-            if param["kind"] == "DLLImportAttr":
-                dllimport = True
-
-    file.GLOBALS[name] = VarDecl(name, tpe, dllimport)
-
-def walk_EnumDecl(node, file: File):
-    name = node["name"] if "name" in node else ""
-    fields = []
-    for decl in node["inner"]:
-        if decl["kind"] == "EnumConstantDecl":
-            field_name = decl["name"]
-            inner = None
-            if "inner" in decl:
-                inner = walk_Expression(decl["inner"][0])
-            
-            fields.append((field_name, inner))
-
-    #if not name:
-    prev = "0"
-    for f in fields:
-        file.GLOBALS[f[0]] = ConstDecl(f[0], PRIMITIVES["int"], f[1] if f[1] else prev)
-        prev = f[0] + " + 1"
-
-    record = Enum(name, fields)
-    if name:
-        file.TAGGED[name] = record
-    file.STRUCT_IDS[node["id"]] = record
 
 def is_anonymous(qual_type):
     return ("unnamed struct at" in qual_type or 
@@ -550,94 +376,6 @@ def is_anonymous(qual_type):
         "unnamed at" in qual_type or
         "anonymous at" in qual_type)
 
-def walk_TypedefDecl(node, file: File):
-    name = node["name"]
-    inner = node["inner"][0]
-    if "ownedTagDecl" in inner:
-        id = inner["ownedTagDecl"]["id"]
-        struct = file.STRUCT_IDS[id]
-        struct.typename = name
-        file.TYPEDEFS[name] = struct
-        if not struct.name:
-            incomplete_type = Walker(file).walk(parse(get_type(inner)))
-            file.TAGGED[incomplete_type.name] = struct
-    else:
-        tpe = get_type(inner)
-        if is_anonymous(tpe):
-            record = file.last_record
-        else:
-            record = Walker(file).walk(parse(tpe))
-        file.TYPEDEFS[name] = record
-
-def walk_RecordDecl(node, file: File):
-    name = node["name"] if "name" in node else ""
-
-    fields = []
-    if "inner" in node:
-        for i, field in enumerate(node["inner"]):
-            if field["kind"] == "FieldDecl":
-                is_bitfield = field.get("isBitfield", False)
-                bit_size = 0
-                if is_bitfield:
-                    bit_size = int(field["inner"][0]["value"])
-
-                qual_type = get_type(field)
-                if is_anonymous(qual_type):
-                    tpe = file.last_record
-                else:
-                    tpe = Walker(file).walk(parse(qual_type))
-                
-                field_name = field.get("name", "" if is_bitfield else "_" + str(i))
-                fields.append(Field(tpe, field_name, is_bitfield, bit_size))
-            elif field["kind"] == "RecordDecl":
-                file.last_record = walk_RecordDecl(field, file)
-    
-    if node["tagUsed"] == "struct":
-        record = Struct(name, fields)
-    else: record = Union(name, fields)
-
-    file.last_record = record
-
-    if name:
-        file.TAGGED[name] = record
-    file.STRUCT_IDS[node["id"]] = record
-
-    return record
-
-def walk_FunctionDecl(node, file: File):
-    name = node["name"]
-    ret = Walker(file).walk(parse(get_type(node)))
-    if node.get("storageClass", None) != "static":
-        variadic = node.get("variadic", False)
-        if node.get("inline", False): return
-        dllimport = False
-        args = []
-        if "inner" in node:
-            for i, param in enumerate(node["inner"]):
-                if param["kind"] == "ParmVarDecl":
-                    argname = escape_name(param.get("name", "_" + str(i)))
-                    tpe = Walker(file).walk(parse(get_type(param)))
-                    args.append((argname, tpe))
-                elif param["kind"] == "DLLImportAttr":
-                    dllimport = True
-
-
-
-        file.GLOBALS[name] = FunctionDecl(name, ret, args, variadic, dllimport)
-
-def walk(node, file: File):
-    if node["kind"] == "VarDecl": 
-        walk_VarDecl(node, file)
-    elif node["kind"] == "TypedefDecl":
-        walk_TypedefDecl(node, file)
-    elif node["kind"] == "FunctionDecl":
-        walk_FunctionDecl(node, file)
-    elif node["kind"] == "RecordDecl":
-        walk_RecordDecl(node, file)
-    elif node["kind"] == "EnumDecl":
-        walk_EnumDecl(node, file)
-
-ALL_DEFINITIONS = {}
 
 def get_symbols(lib: str):
     if sys.platform == "win32":
@@ -667,6 +405,88 @@ def get_symbols(lib: str):
         return symbols
     return []
 
+def parse_struct(name: str, inner: clang.Type, file: File, lookup: bool = False) -> Type:
+    anon = is_anonymous(name)
+
+    if name in file.TAGGED: return file.TAGGED[name]
+    if not anon: 
+        file.TAGGED[name] = IncompleteType(name)
+    else: name = None
+    
+    declaration = inner.get_declaration()
+    children = declaration.get_children()
+
+    fields = []
+    field: clang.Cursor
+    for field in children:
+        if field.kind == clang.CursorKind.STRUCT_DECL: 
+            if len(list(field.get_children())) == 0: continue
+        fields.append(Field(parse_type(field.type, file), field.spelling, field.is_bitfield(), field.get_bitfield_width()))
+
+    res = None
+    if declaration.kind == clang.CursorKind.STRUCT_DECL:
+        res = Struct(name, fields)
+    elif declaration.kind == clang.CursorKind.UNION_DECL:
+        res = Union(name, fields)
+    
+    if not anon: 
+        file.TAGGED[name] = res
+    return res
+
+def parse_enum(name: str, inner: clang.Type, file: File) -> Type:
+    if name in file.TAGGED: return file.TAGGED[name]
+    file.TAGGED[name] = IncompleteType(name)
+    
+    declaration = inner.get_declaration()
+    
+    fields = []
+    child: clang.Cursor
+    for child in declaration.get_children():
+        fields.append((child.spelling, int(child.enum_value)))
+        file.GLOBALS[child.spelling] = ConstDecl(child.spelling, PRIMITIVES[clang.TypeKind.INT], int(child.enum_value))
+
+    res = Enum(name, fields)
+
+    file.TAGGED[name] = res
+    return res
+        
+def parse_type(type: clang.Type, file: File, lookup: bool = False) -> Type:
+    if type.kind in PRIMITIVES:
+        return PRIMITIVES[type.kind]
+    elif type.kind == clang.TypeKind.POINTER:
+        inner = parse_type(type.get_pointee(), file, lookup)
+        if isinstance(inner, Function): return inner
+        return Pointer(inner)
+    elif type.kind == clang.TypeKind.CONSTANTARRAY:
+        return Array(parse_type(type.element_type, file, lookup), type.element_count)
+    elif type.kind == clang.TypeKind.ELABORATED:
+        inner: clang.Type = type.get_named_type()
+        if inner.kind == clang.TypeKind.TYPEDEF:
+            if inner.spelling in file.TYPEDEFS:
+                return file.TYPEDEFS[inner.spelling]
+            else:
+                return IncompleteTypedef(inner.spelling)
+        elif inner.kind == clang.TypeKind.RECORD:
+            if lookup or is_anonymous(type.spelling):
+                return parse_struct(type.spelling, inner, file, lookup)
+            else: return IncompleteType(inner.spelling)
+        elif inner.kind == clang.TypeKind.ENUM:
+            return parse_enum(type.spelling, inner, file)
+    elif type.kind == clang.TypeKind.ENUM:
+        return parse_enum(type.spelling, type, file)
+    elif type.kind == clang.TypeKind.RECORD:
+        return parse_struct(type.spelling, type, file, lookup)
+    elif type.kind == clang.TypeKind.FUNCTIONPROTO:
+        ret = parse_type(type.get_result(), file, lookup)
+        args = [parse_type(tpe, file, lookup) for tpe in type.argument_types()]
+        return Function(args, ret)
+    elif type.kind == clang.TypeKind.INCOMPLETEARRAY:
+        return Pointer(parse_type(type.get_array_element_type(), file, lookup))
+    elif type.kind == clang.TypeKind.TYPEDEF:
+        return file.TYPEDEFS[type.spelling]
+
+    assert False, f"Invalid type! {type.kind}"
+
 def process_module(name: str, *libs):
     included = []
     if len(libs) > 0:
@@ -677,31 +497,6 @@ def process_module(name: str, *libs):
     folder = Path(__file__).parent
     platform = folder / ("windows" if sys.platform == "win32" else "macos" if sys.platform == "darwin" else "linux")
 
-    if sys.platform == "win32":
-        clang_bin = "clang"
-    elif sys.platform == "darwin":
-        clang_bin = "/opt/homebrew//Cellar/llvm@13/13.0.1_2//bin/clang"
-    else: 
-        clang_bin = "clang-13"
-    clang_cmd = [clang_bin, "-Xclang", "-ast-dump=json", "-fsyntax-only"]
-    if sys.platform == "win32":
-        clang_cmd.append("--include-directory")
-        clang_cmd.append(platform)
-    if sys.platform == "darwin":
-        clang_cmd.append("-I/opt/homebrew/opt/libffi/include")
-        clang_cmd.append("-I/opt/homebrew/include")
-
-    with open(platform / f"{name}.json", "w") as fp:
-        clang_cmd.append(folder / f"{name}.h")
-        p = subprocess.Popen(
-            clang_cmd, 
-            stdout = fp)
-        p.wait()
-
-    with open(platform / f"{name}.json", "r") as fp:
-        data = json.load(fp)
-        data = data["inner"]
-    
     excluded = set()
     with open(folder / f"{name}.h", "r") as fp:
         for line in fp:
@@ -715,49 +510,121 @@ def process_module(name: str, *libs):
 
         file = File(fp)
 
-        for top_level in data:
-            walk(top_level, file)
+        def extract(node: clang.Cursor):
+            if node.kind == clang.CursorKind.FUNCTION_DECL:
+                if node.is_static_method(): return
+                
+                for token in node.get_tokens():
+                    if token.spelling == "__inline" or token.spelling == "inline":
+                        return
+
+                dllimport = False #TODO
+                name = node.spelling
+                args = []
+
+                for child in node.get_arguments():
+                    if child.kind == clang.CursorKind.PARM_DECL:
+                        tokens = list(child.get_tokens())
+                        if len(tokens) == 2 and tokens[0].spelling == "size_t": #FIXME This is a hack, see https://github.com/sighingnow/libclang/issues/53
+                            args.append((child.spelling, PRIMITIVES[clang.TypeKind.ULONG]))
+                        else:
+                            args.append((child.spelling, parse_type(child.type, file)))
+                            
+                is_size_t = False #FIXME Same hack
+                for token in node.get_tokens():
+                    if token.kind == clang.TokenKind.KEYWORD and token.spelling == "extern": continue
+                    if token.spelling == "size_t": is_size_t = True
+                    if token.spelling == "(": break
+
+                if is_size_t:
+                    ret = PRIMITIVES[clang.TypeKind.ULONG]
+                else:
+                    ret = parse_type(node.result_type, file)
+
+                file.GLOBALS[name] = FunctionDecl(name, ret, args, node.type.is_function_variadic(), dllimport)
+            elif node.kind == clang.CursorKind.VAR_DECL:
+                if node.storage_class == clang.StorageClass.EXTERN:
+                    type = parse_type(node.type, file)
+                    file.GLOBALS[node.spelling] = VarDecl(node.spelling, type, False)
+            elif node.kind == clang.CursorKind.TYPEDEF_DECL:
+                name = node.spelling
+                underlying = node.underlying_typedef_type
+                if underlying.kind == clang.TypeKind.ELABORATED:
+                    first_child = next(node.get_children())
+                    if first_child.location == underlying.get_declaration().location or underlying.get_named_type().kind == clang.TypeKind.TYPEDEF:
+                        type = parse_type(underlying, file, True)
+                    else:
+                        type = IncompleteType(underlying.spelling)
+                else:
+                    type = parse_type(underlying, file)
+                
+                file.TYPEDEFS[name] = type
+            elif node.kind == clang.CursorKind.STRUCT_DECL:
+                type = node.type
+                name = node.type.spelling
+                if name.startswith("struct") and node.location == type.get_declaration().location:
+                    file.TAGGED[name] = parse_type(type, file, True)
+            elif node.kind == clang.CursorKind.UNION_DECL:
+                type = node.type
+                name = node.type.spelling
+                if name.startswith("union") and node.location == type.get_declaration().location:
+                    file.TAGGED[name] = parse_type(type, file, True)
+            elif node.kind == clang.CursorKind.ENUM_DECL:
+                type = node.type
+                name = node.type.spelling
+                if name.startswith("enum") and node.location == type.get_declaration().location:
+                    file.TAGGED[name] = parse_type(type, file, True)
+            elif node.kind == clang.CursorKind.MACRO_DEFINITION:
+                tokens = list(node.get_tokens())
+                if len(tokens) == 2 and tokens[1].kind == clang.TokenKind.LITERAL:
+                    token = tokens[1]
+                    if token.spelling.startswith('"') and token.spelling.endswith('"'):
+                        s = token.spelling
+                        s = re.sub(r"(?<!\\)\\(\d{1,3})", lambda o: f"\\x{ + int(o.group(1), base = 8):02x}", s)
+                        file.GLOBALS[node.spelling] = ConstDecl(node.spelling, string, s)
+                    elif token.spelling.isdigit():
+                        file.GLOBALS[node.spelling] = ConstDecl(node.spelling, PRIMITIVES[clang.TypeKind.INT], token.spelling)
+                    else:
+                        try: 
+                            float(token.spelling)
+                            file.GLOBALS[node.spelling] = ConstDecl(node.spelling, PRIMITIVES[clang.TypeKind.DOUBLE], token.spelling)
+                        except ValueError: pass        
+
+        index = clang.Index.create()
+        tu = index.parse(folder / f"{name}.h", options = 
+                         clang.TranslationUnit.PARSE_DETAILED_PROCESSING_RECORD
+                         | clang.TranslationUnit.PARSE_SKIP_FUNCTION_BODIES 
+                         | clang.TranslationUnit.PARSE_PRECOMPILED_PREAMBLE 
+                         | clang.TranslationUnit.PARSE_DETAILED_PROCESSING_RECORD)
+        for node in tu.cursor.get_children():
+            extract(node)
         
-        file.GLOBALS = {k:v for k,v in file.GLOBALS.items() if k not in excluded and k not in ALL_DEFINITIONS}
-        ALL_DEFINITIONS.update(file.GLOBALS)
-
-        DEFS = {k:v for k,v in file.GLOBALS.items() if isinstance(v, FunctionDecl)}
-        VARS = {k:v for k,v in file.GLOBALS.items() if isinstance(v, VarDecl)}
-        CONSTS = {k:v for k,v in file.GLOBALS.items() if isinstance(v, ConstDecl)}
-
-        for g in CONSTS.values():
-            print(g.to_declaration(file), file = fp)
+            
+        file.GLOBALS = {k:v for k,v in file.GLOBALS.items() if k not in excluded}
 
         for type in file.TYPEDEFS.values():
             type.print_references(file)
         for type in file.TAGGED.values():
             type.print_references(file)
 
-        for g in DEFS.values():
+        for g in file.GLOBALS.values():
             print(g.to_declaration(file), file = fp)
-        for g in VARS.values():
-            print(g.to_declaration(file), file = fp)
-
-        filtered_defs = {k:v for k,v in DEFS.items() if not included or v.name in included }
-        filtered_vars = {k:v for k,v in VARS.items() if not included or v.name in included }
 
         print(f"import {name}", file = fp2)
         print("import symbol", file = fp2)
-        print(f"export var __SYMBOLS: [{len(filtered_defs) + len(filtered_vars)}; symbol::Symbol]", file = fp2)
 
         num_decls = 0
-        for g in filtered_defs.values():
-            print(g.to_symbol(num_decls, file), file = fp2)
-            num_decls += 1
-        for g in filtered_vars.values():
-            print(g.to_symbol(num_decls, file), file = fp2)
-            num_decls += 1
+        for g in file.GLOBALS.values():
+            if isinstance(g, (VarDecl, FunctionDecl)) and not included or g.name in included:
+                print(g.to_symbol(num_decls, file), file = fp2)
+                num_decls += 1
 
-    return file
+        print(f"export var __SYMBOLS: [{num_decls}; symbol::Symbol]", file = fp2)
 
 def main():
     if sys.platform != "win32":
         process_module("linux")
+        process_module("bfd")
 
     process_module("cstd")
     process_module("ffi")
