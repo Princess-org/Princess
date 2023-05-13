@@ -477,8 +477,14 @@ def current_value(state: &State) -> &scope::Value {
     for var i in 0..len {
         let j = state.function_stack.length - i - 1
         let fun = state.function_stack[j]
-        if fun.is_global and j + 1 < len { 
-            return state.function_stack[j + 1].value
+        if j > 0 {
+            let parent = state.function_stack[j - 1]
+            if parent.is_global {
+                return fun.value
+            }
+        }
+        if fun.is_global { 
+            return fun.value
         }
     }
     return null
@@ -2163,6 +2169,7 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
                 if not tpe {
                     scope::create_dependency_on_type(state.current_value(), node)
                 }
+                scope::create_dependency(state.current_value(), value)
                 return tpe
             }
             
@@ -2175,6 +2182,7 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
                     errors::errorn(node, "`", parser::identifier_to_str(node), "` is not a type")
                     return null
                 }
+                scope::create_dependency(state.current_value(), value)
                 tpe = value.value.value_tpe
             } else {
                 tpe = make_stub_type(node, state)
@@ -2187,6 +2195,7 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
                     share = parser::ShareMarker::NONE
                 }
                 tpe.svalue = scope::create_type(state.scope, node, share, tpe, scope::Phase::DECLARED, null, null)
+                scope::create_dependency(state.current_value(), tpe.svalue)
             }
             return tpe
         }
@@ -4167,7 +4176,7 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
             } !NamedParameter
 
             if equals(np.tpe, builtins::Type_) {
-                np.value = { kind = compiler::ValueKind::TYPE, tpe = builtins::type_, value_tpe = np.tpe.tpe } !&compiler::Value
+                np.value = { kind = compiler::ValueKind::TYPE, tpe = builtins::type_, value_tpe = np.tpe.tpe.tpe } !&compiler::Value
             }
 
             arguments.push(np)
@@ -4238,6 +4247,10 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
                 }
                 // Dependencies
                 scope::create_dependency(state.current_value(), function)
+                if function.polymorph {
+                    // Pull in dependencies of generic function
+                    state.current_value().dependencies.add_all(function.dependencies)
+                }
                 
                 tpe = copy(function.tpe)
             } else {
@@ -5161,6 +5174,36 @@ export def make_state(module: &toolchain::Module) -> &State {
     } !&State
 }
 
+def find_dependencies(type_variables: &Vector(&scope::Value), tpe: &Type) {
+    if not tpe { return }
+    if is_box(tpe) {
+        find_dependencies(type_variables, tpe.tpe)
+    } else if tpe.kind == TypeKind::FUNCTION or tpe.kind == TypeKind::CLOSURE or tpe.kind == TypeKind::VARIANT {
+        if tpe.kind != TypeKind::VARIANT {
+            for var np in tpe.parameter_t {
+                find_dependencies(type_variables, np.tpe)
+            }
+        }
+        for var rtpe in tpe.return_t {
+            find_dependencies(type_variables, rtpe)
+        }
+    } else if is_struct(tpe) and not tpe.tc_args and not tpe.svalue {
+        for var field in @tpe.fields {
+            find_dependencies(type_variables, field.tpe)
+        }
+    }
+    
+    if tpe.tc_args {
+        for var arg in tpe.tc_args {
+            find_dependencies(type_variables, arg)
+        }
+        type_variables.push(tpe.tc_tpe.svalue)
+    }
+    if tpe.svalue {
+        type_variables.push(tpe.svalue)
+    }
+}
+
 export def walk_Def_with_type_argument(node: &parser::Node, parameter_t: &Vector(NamedParameter), state: &State) -> &parser::Node {
     let old_node = node
     node = parser::deep_copy_node(node)
@@ -5207,11 +5250,14 @@ export def walk_Def_with_type_argument(node: &parser::Node, parameter_t: &Vector
         tpe.parameter_t[i] = np
     }
 
+    let type_variables = vector::make(type &scope::Value)
+
     let keys = map::keys(types_map)
     for var i in 0..keys.size {
         let key = keys[i]
         let tpe2 = types_map[key]
-        scope::create_type(node.inner_scope, parser::make_identifier(key), parser::ShareMarker::NONE, tpe2)
+        find_dependencies(type_variables, tpe2)
+        let value = scope::create_type(node.inner_scope, parser::make_identifier(key), parser::ShareMarker::NONE, tpe2, no_svalue = true)
     }
 
     let old_scope = state.scope
@@ -5226,7 +5272,11 @@ export def walk_Def_with_type_argument(node: &parser::Node, parameter_t: &Vector
     
     walk_Def(node, state, polymorph = true)
     state.scope = old_scope
-    node.value.def_.function.value.is_internal = true // So that generic functions don't show up in autocomplete
+    let function = node.value.def_.function
+    function.value.is_internal = true // So that generic functions don't show up in autocomplete
+    for var tvar in type_variables {
+        scope::create_dependency(function.value, tvar)
+    }
 
     // This makes sure that the function is walked by the compiler
     state.module.node.body.push(node)
@@ -5292,6 +5342,8 @@ export def typecheck(state: &State) {
     let main_tpe = typechecking::make_function_type_n(ident, args, vector::make(type &typechecking::Type), state.module)
     let value = scope::create_function(node.scope, ident, parser::ShareMarker::EXPORT, main_tpe)
     value.identifier = ident
+
+    node.value.program.function.value = value
 
     typecheck(node, state)
 

@@ -292,7 +292,9 @@ def serialize_function(fp: File, value: &scope::Value, state: &Serialize) {
     fp.write_str(value.name)
     fp.write_str(tpe.type_name)
 
-    state.dependencies.add_all(value.dependencies)
+    if not value.is_generated and not value.polymorph {
+        state.dependencies.add_all(value.dependencies)
+    }
 
     fp.write(*tpe.parameter_t.length)
     for var i in 0..tpe.parameter_t.length {
@@ -733,6 +735,7 @@ def deserialize_function(deserialize: &Deserialize, fp: File) {
     deserialize.functions.push({
         name = name,
         hash = hash,
+        share = share !parser::ShareMarker,
         node = node,
         state = state,
         ftpe = ftpe,
@@ -756,7 +759,9 @@ def serialize_variable(fp: File, value: &scope::Value, state: &Serialize) {
     fp.write(*value.dllexport)
     fp.write_str(value.name)
 
-    state.dependencies.add_all(value.dependencies)
+    if value.dependencies {
+        state.dependencies.add_all(value.dependencies)
+    }
 
     write_type(fp, value.tpe, state)
     fp.write(*is_constant)
@@ -792,6 +797,7 @@ def deserialize_variable(deserialize: &Deserialize, fp: File) {
     deserialize.variables.push({
         name = name,
         hash = hash,
+        share = share !parser::ShareMarker,
         modifier = modifier !parser::VarDecl,
         extern = extern,
         dllimport = dllimport,
@@ -876,7 +882,11 @@ export def serialize(module: &toolchain::Module) {
         dependencies = set::make(scope::Ident)
     } !&Serialize
 
-    if module.deserialize and not toolchain::no_incremental {
+    if module.deserialize and not toolchain::no_incremental and not module.is_dirty {
+        // Add dependencies
+        for var dep in @module.deserialize.dependencies {
+            state.dependencies.add(dep)
+        }
         // Keep types that have been deserialized for this module
         for var i in 0..module.deserialize.types.length {
             add_type(module.deserialize.types[i], state)
@@ -936,7 +946,7 @@ export def serialize(module: &toolchain::Module) {
                 }
             }
         }
-        if value.share !int & parser::ShareMarker::EXPORT !int and not value.is_generated { 
+        if not value.is_generated { 
             exported_functions.push(value)
         }
     }
@@ -956,9 +966,9 @@ export def serialize(module: &toolchain::Module) {
         if value.modifier == parser::VarDecl::TYPE {
             types.push(value)
             state.dependencies.add_all(value.dependencies)
-        } else if value.share !int & parser::ShareMarker::EXPORT !int {
+        } else {
             if value.modifier == parser::VarDecl::CONST {
-                if value.tpe.kind != typechecking::TypeKind::FUNCTION {
+                if value.tpe.kind != typechecking::TypeKind::FUNCTION and value.tpe.kind != typechecking::TypeKind::NAMESPACE {
                     variables.push(value)
                 }
             } else if value.modifier != parser::VarDecl::TYPE {
@@ -991,6 +1001,12 @@ export def serialize(module: &toolchain::Module) {
     }
     assert types_size == state.types.size // Make sure we don't add any new types on the way
 
+    // Add dependencies from main function
+    let main_fun = scope::get(module.scope, parser::make_identifier("__main__"))
+    if main_fun {
+        state.dependencies.add_all(main_fun.dependencies)
+    }
+
     // Filter out local stuff
     let dependencies = set::make(scope::Ident)
     let keys2 = state.dependencies.keys()
@@ -1016,6 +1032,7 @@ export def serialize(module: &toolchain::Module) {
 type FunctionEntry = struct {
     name: Str
     hash: uint64
+    share: parser::ShareMarker
     node: &parser::Node
     state: &typechecking::State
     ftpe: &typechecking::Type
@@ -1027,6 +1044,7 @@ type FunctionEntry = struct {
 type VariableEntry = struct {
     name: Str
     hash: uint64
+    share: parser::ShareMarker
     modifier: parser::VarDecl
     extern: bool
     dllimport: bool
@@ -1056,6 +1074,8 @@ export type Deserialize = struct {
 export def resolver_pass(module: &toolchain::Module) {
     if toolchain::no_incremental { return }
     if module.stage !int >= toolchain::Stage::READ_CACHE { return }
+    module.stage = toolchain::Stage::READ_CACHE
+
     let cache_file = toolchain::outfolder + "/" + module.file + ".prc"
 
     if not util::exists(toolchain::outfolder + "/" + module.file + ".o") {
@@ -1105,6 +1125,7 @@ export def resolver_pass(module: &toolchain::Module) {
         let filename = fp.read_str()
 
         let imprt = toolchain::create_module_if_absent(filename, modulename)
+        resolver_pass(imprt)
         scope::insert_module(module.scope, ident, imprt)
     }
 
@@ -1199,7 +1220,7 @@ export def resolver_pass(module: &toolchain::Module) {
 
         let phase = scope::Phase::DEFINED if typechecking::is_polymorph(entry.ftpe) else scope::Phase::COMPILED
         let value = scope::create_function_without_checking(
-            module.scope, name_node, parser::ShareMarker::EXPORT, entry.ftpe, entry.impl
+            module.scope, name_node, entry.share, entry.ftpe, entry.impl
         )
         value.phase = phase
         value.node = entry.node
@@ -1221,7 +1242,7 @@ export def resolver_pass(module: &toolchain::Module) {
         let id = parser::make_identifier(entry.name)
         id.loc.module = module.module
         let val = scope::create_variable(
-            module.scope, id, parser::ShareMarker::EXPORT, 
+            module.scope, id, entry.share, 
             entry.modifier, entry.tpe, 
             entry.extern, entry.dllimport, entry.dllexport, entry.value, 
             scope::Phase::COMPILED, null, null
@@ -1231,7 +1252,6 @@ export def resolver_pass(module: &toolchain::Module) {
 
     fp.read(*size)
     deserialize.dependencies = allocate_ref(scope::Ident, size)
-    print("Dependencies: ", size, "\n")
     for var i in 0..size {
         var hash: uint64
         fp.read(*hash)
