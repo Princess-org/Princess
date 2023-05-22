@@ -130,6 +130,9 @@ def build(extra):
     args = [exe_file("bin/princess"), "-d", "-Isrc", "--buildfolder=build", "--outfile", exe_file("bin/princess2"), "src/main.pr"]
     if sys.platform == "win32":
         args += WIN_ARGS
+    else:
+        args.append("-lbfd")
+        
     subprocess.check_call(args + extra)
 
 def main():

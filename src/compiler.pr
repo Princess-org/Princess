@@ -616,7 +616,19 @@ def is_inline(state: &State) -> bool {
 
 def add_type_meta(tpe: &typechecking::Type, state: &State) {
     if not tpe { return }
-    let cf = current_function(state)
+    if tpe.kind == typechecking::TypeKind::NULL { return }
+    var cf = current_function(state)
+
+    let len = vector::length(state.function_stack)
+    for var i in 0..len {
+        let j = state.function_stack.length - i - 1
+        let fun = state.function_stack[j]
+        if fun.is_global {
+            cf = fun
+            break
+        }
+    }
+
     if cf and cf.used_type_meta {
         cf.used_type_meta.add(tpe)
     }
@@ -1995,6 +2007,7 @@ def walk_Cast(node: &parser::Node, state: &State) -> Value {
 
     let value = walk_and_load_expression(node.value.bin_op.left, state)
     import_structures(node.tpe, state.module)
+    add_type_meta(node.value.bin_op.left.tpe, state)
     add_type_meta(node.tpe, state)
     return convert_to(node, value, node.tpe, state)
 }
@@ -7203,6 +7216,7 @@ export def create_function(
             let context_name = tpe.type_name + ".context"
             function.context.type_name = context_name
             state.module.result.structures[context_name] = function.context
+            add_type_meta(reference(function.context), state)
 
             // Generate free_context
             var new_block = make_block()
@@ -7830,23 +7844,10 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
             }
 
             let name = debug::type_to_str(ptpe, full_name = true)
-            let destructor = destructors.get_or_default(name, null)
+            let destructor = typechecking::get_builtin_destructor(structure_type.tpe)
 
             if destructor {
-                state.call(destructor.type_name, null, [array_val])
-            } else {
-                let args = vector::make(typechecking::NamedParameter)
-                args.push({
-                    name = "__ptr",
-                    _tpe = ptpe
-                } !typechecking::NamedParameter)
-
-                let name_node = parser::make_identifier("__destruct__")
-                let ftpe = typechecking::make_function_type_n(name_node, args, vector::make(type &typechecking::Type))
-                predeclare_function(ftpe, state.module)
-                destructors[name] = ftpe 
-
-                create_destructor(ptpe, array_val, state)
+                state.call(destructor.tpe.type_name, null, [array_val])
             }
 
             let counter_inc = state.add(builtins::size_t_, counter_value, { kind = ValueKind::INT, tpe = builtins::size_t_, i = 1 } !Value)
@@ -7903,7 +7904,9 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
 
                 let destructor = typechecking::get_builtin_destructor(type_entry.tpe)
                 if not destructor { continue }
-                filtered[debug::type_to_str(type_entry.tpe, full_name = true)] = destructor
+                let name = debug::type_to_str(type_entry.tpe, full_name = true)
+                if not typechecking::types_map.contains(name) { continue }
+                filtered[name] = destructor
             }
         }
         let keys2 = map::keys(filtered)
@@ -7918,8 +7921,9 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
             push_insn(swtch, state)
 
             for var i in 0..keys2.size {
-                let type_entry = typechecking::types_map[keys2[i]]
-                let destructor = filtered[keys2[i]]
+                let key = keys2[i]
+                let type_entry = typechecking::types_map[key]
+                let destructor = filtered[key]
 
                 let if_true = make_label(state)
                 push_label(if_true, state)
@@ -7986,26 +7990,11 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
                 if typechecking::is_polymorph(field.tpe) { continue }
                 let ptpe = pointer(field.tpe)
                 let name = debug::type_to_str(ptpe, full_name = true)
-                let destructor = destructors.get_or_default(name, null)
+                let destructor = typechecking::get_builtin_destructor(field.tpe)
 
                 if destructor {
                     let field_value = state.gep(ptpe, structure_type, obj, [make_int_value(0), make_int_value(i)])
-                    state.call(destructor.type_name, null, [field_value])
-                } else if typechecking::has_destructor(field.tpe) and not typechecking::is_polymorph(field.tpe) {
-                    let field_value = state.gep(ptpe, structure_type, obj, [make_int_value(0), make_int_value(i)])
-
-                    let args = vector::make(typechecking::NamedParameter)
-                    args.push({
-                        name = "__ptr",
-                        _tpe = ptpe
-                    } !typechecking::NamedParameter)
-
-                    let name_node = parser::make_identifier("__destruct__")
-                    let ftpe = typechecking::make_function_type_n(name_node, args, vector::make(type &typechecking::Type))
-                    predeclare_function(ftpe, state.module)
-                    destructors[name] = ftpe 
-
-                    create_destructor(ptpe, field_value, state)
+                    state.call(destructor.tpe.type_name, null, [field_value])
                 }
             }
         }
