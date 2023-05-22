@@ -238,7 +238,7 @@ def go_to_definition(id: int, params: DefinitionParams) {
     
     var sloc: parser::SourceLoc
     
-    let name, _ = find_member(node)
+    let name, tpe = find_member(node) // TODO Use an underscore here (see https://github.com/Princess-org/Princess/issues/24)
     if name {
         sloc = name.loc
     } else {
@@ -249,7 +249,6 @@ def go_to_definition(id: int, params: DefinitionParams) {
     
     if parser::is_invalid(sloc) { send_reply(id, null); return }
     //error("Go to: ", svalue !*, " ", sloc.line, " ", sloc.column, "\n")
-
 
     let loc = {
         uri = path_to_uri(sloc.filename),
@@ -320,13 +319,30 @@ type InsertTextFormat = enum {
     Snippet = 2
 }
 
+def param_to_string(np: typechecking::NamedParameter) -> Str {
+    var str: StringBuffer = ""
+    if np.varargs {
+        if np.name {
+            str += np.name
+            str += ": "
+        }
+        if np.tpe {
+            str += debug::type_to_str(np.tpe)
+        }
+        str += "..."
+    } else {
+        str += np.name
+        str += ": "
+        str += debug::type_to_str(np.tpe)
+    }
+    return str
+}
+
 def params_to_string(tpe: &typechecking::Type) -> Str {
     var name: StringBuffer = "("
     for var i in 0..tpe.parameter_t.length {
         let param = tpe.parameter_t[i]
-        name += param.name
-        name += ": "
-        name += debug::type_to_str(param.tpe)
+        name += param_to_string(param)
         if i < tpe.parameter_t.length - 1 {
             name += ", "
         }
@@ -362,7 +378,7 @@ def push_completion_value(value: &scope::Value, module: &toolchain::Module, comp
         } else {
             kind = CompletionItemKind::Interface
         }
-    } else if value.modifier == parser::VarDecl::CONST {
+    } else if value.modifier == parser::VarDecl::CONST and value.tpe {
         if value.tpe.kind == typechecking::TypeKind::FUNCTION {
             kind = CompletionItemKind::Function
             detail = params_to_string(value.tpe)
@@ -381,6 +397,17 @@ def push_completion_value(value: &scope::Value, module: &toolchain::Module, comp
         smod = value.ident.module.module
     }
 
+    var format = InsertTextFormat::PlainText !int
+    var insert_text = value.name
+    if kind == CompletionItemKind::Function {
+        if value.tpe.parameter_t.length > 0 {
+            insert_text += "($0)"
+            format = InsertTextFormat::Snippet !int
+        } else {
+            insert_text += "()"
+        }
+    }
+
     completions.push({
         _label = value.name,
         labelDetails = {
@@ -388,8 +415,8 @@ def push_completion_value(value: &scope::Value, module: &toolchain::Module, comp
             description = smod
         } !CompletionItemLabelDetails,
         kind = kind !int,
-        insertText = value.name + ("($0)" if kind == CompletionItemKind::Function else ""),
-        insertTextFormat = InsertTextFormat::Snippet !int if kind == CompletionItemKind::Function else InsertTextFormat::PlainText !int
+        insertText = insert_text,
+        insertTextFormat = format
     } !CompletionItem)
 }
 
@@ -480,6 +507,12 @@ def complete(id: int, params: CompletionParams) {
                     push_completion_value(value, module, completions)
                 }
             }
+        } else if node.kind == parser::NodeKind::STRING or 
+            node.kind == parser::NodeKind::CHAR or 
+            node.kind == parser::NodeKind::FLOAT {
+
+            send_reply(id, null)
+            return
         } else {
             let values = scope::find_all(node.scope, false)
             for var i in 0..values.length {
@@ -557,9 +590,7 @@ def create_signature(value: &scope::Value) -> SignatureInformation {
     for var i in 0..value.tpe.parameter_t.length {
         let start_index = name.length() !uint
         let param = value.tpe.parameter_t[i]
-        name += param.name
-        name += ": "
-        name += debug::type_to_str(param.tpe)
+        name += param_to_string(param)
         let end_index = name.length() !uint
         if i < value.tpe.parameter_t.length - 1 {
             name += ", "
@@ -600,9 +631,12 @@ def signature_help(id: int, params: SignatureHelpParams) {
     if not node { 
         send_reply(id, null); return
     }
+    while param.parent and param.parent.kind != parser::NodeKind::FUNC_CALL {
+        param = param.parent
+    }
     if node.kind != parser::NodeKind::FUNC_CALL {
         is_parameter = true
-        node = node.parent
+        node = param.parent
     }
     if not node or not node.scope or node.kind != parser::NodeKind::FUNC_CALL {
         send_reply(id, null); return
@@ -614,10 +648,8 @@ def signature_help(id: int, params: SignatureHelpParams) {
                 break
             }
         }
-    } else {
-        active_par = max(0, node.value.func_call.args.length - 1) !uint
     }
-    
+
     let left = node.value.func_call.left
     if not left {
         send_reply(id, null); return
@@ -653,6 +685,7 @@ def signature_help(id: int, params: SignatureHelpParams) {
     }
 
     var active_sig = 0
+    var active_function: &scope::Value = null
     var smallest_score = std::MAX_INT32
 
     let infos = vector::make(SignatureInformation)
@@ -662,8 +695,16 @@ def signature_help(id: int, params: SignatureHelpParams) {
         if score >= 0 and score < smallest_score { 
             active_sig = i
             smallest_score = score 
+            active_function = fun
         }
-        infos.push(create_signature(functions[i]))
+        infos.push(create_signature(fun))
+    }
+
+    if active_function {
+        let params = active_function.tpe.parameter_t
+        if active_par >= params.length and params.length > 0 and params[params.length - 1].varargs {
+            active_par = (params.length - 1) !int
+        }
     }
 
     let help = {
@@ -810,6 +851,7 @@ def document_symbol(id: int, params: DocumentSymbolParams) {
             }
         } else if node.kind == parser::NodeKind::DEF {
             if not node.value.def_.name or not node.tpe { continue }
+            if node.value.def_.is_generic_instance { continue }
             
             let tpe = node.tpe
             var name: StringBuffer = parser::identifier_to_str(node.value.def_.name) + "("
