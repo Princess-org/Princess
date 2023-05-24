@@ -421,7 +421,7 @@ def parse_struct(name: str, inner: clang.Type, file: File, lookup: bool = False)
     for field in children:
         if field.kind == clang.CursorKind.STRUCT_DECL: 
             if len(list(field.get_children())) == 0: continue
-        fields.append(Field(parse_type(field.type, file), field.spelling, field.is_bitfield(), field.get_bitfield_width()))
+        fields.append(Field(parse_type(field.type, file, is_in_struct = True), field.spelling, field.is_bitfield(), field.get_bitfield_width()))
 
     res = None
     if declaration.kind == clang.CursorKind.STRUCT_DECL:
@@ -450,15 +450,18 @@ def parse_enum(name: str, inner: clang.Type, file: File) -> Type:
     file.TAGGED[name] = res
     return res
         
-def parse_type(type: clang.Type, file: File, lookup: bool = False) -> Type:
+def parse_type(type: clang.Type, file: File, lookup: bool = False, is_in_struct: bool = False) -> Type:
     if type.kind in PRIMITIVES:
         return PRIMITIVES[type.kind]
     elif type.kind == clang.TypeKind.POINTER:
-        inner = parse_type(type.get_pointee(), file, lookup)
+        inner = parse_type(type.get_pointee(), file, lookup, is_in_struct)
         if isinstance(inner, Function): return inner
         return Pointer(inner)
     elif type.kind == clang.TypeKind.CONSTANTARRAY:
-        return Array(parse_type(type.element_type, file, lookup), type.element_count)
+        inner = parse_type(type.element_type, file, lookup, is_in_struct)
+        if is_in_struct:
+            return Array(inner, type.element_count)
+        else: return Array(inner)
     elif type.kind == clang.TypeKind.ELABORATED:
         inner: clang.Type = type.get_named_type()
         if inner.kind == clang.TypeKind.TYPEDEF:
@@ -477,11 +480,11 @@ def parse_type(type: clang.Type, file: File, lookup: bool = False) -> Type:
     elif type.kind == clang.TypeKind.RECORD:
         return parse_struct(type.spelling, type, file, lookup)
     elif type.kind == clang.TypeKind.FUNCTIONPROTO:
-        ret = parse_type(type.get_result(), file, lookup)
-        args = [parse_type(tpe, file, lookup) for tpe in type.argument_types()]
+        ret = parse_type(type.get_result(), file, lookup, is_in_struct)
+        args = [parse_type(tpe, file, lookup, is_in_struct) for tpe in type.argument_types()]
         return Function(args, ret)
     elif type.kind == clang.TypeKind.INCOMPLETEARRAY:
-        return Pointer(parse_type(type.get_array_element_type(), file, lookup))
+        return Pointer(parse_type(type.get_array_element_type(), file, lookup, is_in_struct))
     elif type.kind == clang.TypeKind.TYPEDEF:
         return file.TYPEDEFS[type.spelling]
 

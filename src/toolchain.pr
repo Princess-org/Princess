@@ -16,6 +16,8 @@ import consteval
 import errors
 import serialize
 import json
+import imports
+import io
 
 // Contains the scopes for already compiled modules 
 // map of Module
@@ -44,7 +46,28 @@ export def find_module_by_path(path: Str) -> &Module {
     return null
 }
 
+// When there's a context switch (i.e it does jump to another module) it
+// calls START on the new module and when the previous module gains focus agin it signals
+// CONTINUE and later END when the whole processing inside the current stage is done
+export type ProgressUpdate = enum {
+    START
+    CONTINUE
+    END
+}
+
 export var file_loader: (String) -> (String) = *load_file
+export var progress_handler: (&Module, ProgressUpdate) -> ()
+
+var last_module: &Module
+export def progress_update(module: &Module, update: ProgressUpdate) {
+    if last_module == module and update == ProgressUpdate::CONTINUE {
+        return
+    }
+    if progress_handler != null {
+        progress_handler(module, update)
+    }
+    last_module = module
+}
 
 export var include_path = vector::make(Str)
 export var clang_flags = vector::make(Str)
@@ -180,6 +203,8 @@ export type Stage = enum {
     RESOLVE_DEPENDENCIES
     TYPECHECKING
     COMPILING
+    CODEGEN
+    BACKEND
 }
 
 export type Module = struct {
@@ -189,6 +214,7 @@ export type Module = struct {
     module: Str
     text: Str
     lines: &[Str]
+    tokens: *lexer::TokenList
     node: &parser::Node
     scope: &scope::Scope
     // This is code that gets inserted by consteval/eval
@@ -462,10 +488,11 @@ export def consteval_module(module: &Module, display_name: String = null) {
     let modulename = module.module
     module.stage = Stage::PREPROCESS
 
-    debug::trace("Lexing ", module.module)
-    let tokens = lexer::lex(module.text)
-    let node = parser::parse(tokens, module.lines, module.filename, module.module, display_name = display_name)
-    delete(tokens)
+    if not module.tokens {
+        imports::find_imports(module)
+    }
+    let node = parser::parse(module.tokens, module.lines, module.filename, module.module, display_name = display_name)
+    delete(module.tokens)
     
     module.node = node
     module.compiler_state = compiler::make_state(module)
@@ -730,9 +757,6 @@ export def compile_main_file(filename: String) {
         if not continue_on_output { return }
     }
 
-
-    let start_frontend = util::millis()
-
     prepare_preload()
     create_types_main()
 
@@ -742,6 +766,7 @@ export def compile_main_file(filename: String) {
 
     serialize::resolver_pass(module)
     if module.is_dirty { reset(module) }
+    imports::find_imports(module)
     consteval_module(module, main_file_name)
     serialize::dependency_pass(module)
 
@@ -793,22 +818,17 @@ export def compile_main_file(filename: String) {
         return
     }
 
-    if time_report {
-        print("Frontend: \n")
-        print("--------------------------------------\n")
-        print("              Lexing: ", lexer::time_spent / 1000.0, "s \n")
-        print("             Parsing: ", parser::time_spent / 1000.0, "s \n")
-        print("Constant propagation: ", consteval::time_spent / 1000.0, "s \n")
-        print("        Typechecking: ", typechecking::time_spent / 1000.0, "s \n")
-        print("           Compiling: ", compiler::time_spent / 1000.0, "s \n")
-    }
-
-    let end_frontend = util::millis()
-
     if errors::error_count == 0 {
-        is_shared = outfile.ends_with(".dll") or outfile.ends_with(".so")
+        let keys = modules.keys()
+        for var i in 0..keys.size {
+            let filename = keys[i]
+            let module = modules[filename]
+            if module.module == "builtin" or not (module.is_dirty or no_incremental) { continue }
+            codegen::gen(module)
+        }
 
-        let start_compiling = util::millis()
+
+        is_shared = outfile.ends_with(".dll") or outfile.ends_with(".so")
 
         #if defined WIN32 {
             let compile_cstd = clang + " -S -emit-llvm -o " + outfolder + "/cstd_include.ll " + include + "/cstd.c"
@@ -832,15 +852,13 @@ export def compile_main_file(filename: String) {
         }
 
         #if defined WIN32 {
-            build_command += "cstd_include.ll "
+            system(build_command + outfolder + "/cstd_include.ll -o " + outfolder + "/cstd_include.o")
         }
 
-        let keys = modules.keys()
         for var i in 0..keys.size {
             let filename = keys[i]
             let module = modules[filename]
             if module.module == "builtin" or not (module.is_dirty or no_incremental) { continue }
-            codegen::gen(module)
 
             var combine = false
             if module.module != "type" and module.is_dirty and not no_incremental {
@@ -865,23 +883,17 @@ export def compile_main_file(filename: String) {
             }
             
             if not combine {
-                build_command += module.file + ".ll "
+                var cmd = build_command
+                cmd += outfolder + "/" + module.file + ".ll "
+                cmd += "-o " + outfolder + "/" + module.file + ".o "
+                debug::trace(cmd)
+                
+                module.stage = Stage::BACKEND
+                progress_update(module, ProgressUpdate::START)
+                system(cmd)
+                progress_update(module, ProgressUpdate::END)
             }
         }
-        
-        if time_report {
-            print("             Codegen: ", codegen::time_spent / 1000.0, "s \n")
-            print("--------------------------------------\n")
-            print("Total time frontend: ", (end_frontend - start_frontend) / 1000.0, "s \n")
-            print("======================================\n")
-            print("Backend: \n")
-        }
-
-        debug::trace("Compiling with clang...")
-        debug::trace(build_command)
-
-        build_command = "cd \"" + outfolder + "\" && " + build_command
-        system(build_command)
 
         var link_command: StringBuffer = clang
         #if defined WIN32 {
@@ -931,15 +943,6 @@ export def compile_main_file(filename: String) {
         debug::trace("Linking with clang...")
         debug::trace(link_command)
         system(link_command)
-
-        let end_compiling = util::millis()
-
-        if time_report {
-            print("--------------------------------------\n")
-            print("Compiling: ", (end_compiling - start_compiling) / 1000.0, "s \n")
-            print("======================================\n")
-            print("Total time: ", (end_compiling - start_frontend) / 1000.0, "s \n")
-        }
     }
 }
 
