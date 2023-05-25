@@ -1,51 +1,112 @@
 import toolchain
 import util
 import debug
+import io
 
 toolchain::progress_handler = *trace_progress
 
-let is_tty = /*io::is_a_tty(std::stdout())*/ false
-
-def on_print(args: [&]) -> int {
-    erase_one_line()
-    let count = fprint(std::stdout(), args)
-    print_progress_bar()
-    return count
-}
-
-def on_error(args: [&]) -> int {
-    erase_one_line()
-    let count = fprint(std::stderr(), args)
-    print_progress_bar()
-    return count
-}
-
-if is_tty {
-    std::print_hook = *on_print
-    std::error_hook = *on_error
-}
+let is_tty = io::is_a_tty(std::stdout())
 
 def erase_one_line {
-
+    if debug::verbose { return }
+    fprint(std::stdout(), "\x1B[1K")
+    flush(std::stdout())
 }
 
 var task_count: int
 var current_task: int
 var current_module: Str
+var max_length_module: int
+
+let spinner_chars = ['-', '\\', '|', '/'] 
+
+var spinner = 0
 
 def print_progress_bar {
-    let row = util::get_terminal_size().row
+    const PADDING = 4
+    if debug::verbose { return }
+
+    fprint(std::stdout(), "\r")
+    if task_count == 0 {
+        // Do spinny thing
+        spinner += 1
+        let spinner_char = spinner_chars[spinner % spinner_chars.size]
+        fprint(std::stdout(), "Collecting modules... ", spinner_char)
+        fflush(std::stdout())
+        return
+    }
+    let col = util::get_terminal_size().col
+    let percentage = min(1, current_task !double / task_count)
+
+    let width = col - max_length_module - PADDING - 8
+    if width > 40 {
+        // Progress bar!
+        let done = (percentage * width) !int
+        fprint(std::stdout(), "|")
+        for var i in 0..done {
+            fprint(std::stdout(), "█")
+        }
+        for var i in done..width {
+            fprint(std::stdout(), " ")
+        }
+        fprint(std::stdout(), "|")
+    }
+    // Percentage
+    cstd::printf("[%3d%]".value, (percentage * 100) !int)
+
+    fprint(std::stdout(), " ", current_module)
+    fflush(std::stdout())
+}
+
+def steps_per_module(module: &toolchain::Module) -> int {
+    if module.module == "builtin" { return 0 }
+    if module.module == "type" { return 2 }
+    if not module.is_dirty { return 2 }
+    return 6
 }
 
 def trace_progress(module: &toolchain::Module, update: toolchain::ProgressUpdate) {
-    if not is_tty {
+    if not is_tty or debug::verbose {
         debug::trace("[" + to_string(module.stage) + "] " + module.module + " " + to_string(update))
         return
     }
 
     erase_one_line()
     if update == toolchain::ProgressUpdate::CONTINUE or update == toolchain::ProgressUpdate::START {
-        current_module = module.module
+        current_module = module.file
     }
+
+    if update == toolchain::ProgressUpdate::END {
+        current_task += 1
+    }
+
+    if module.module == "main" and update == toolchain::ProgressUpdate::START {
+        if module.stage == toolchain::Stage::PREPROCESS {
+            current_task = 0
+            task_count = steps_per_module(module)
+            for var path in @toolchain::modules.keys() {
+                let module = toolchain::modules[path]
+                if module.module.length() > max_length_module {
+                    max_length_module = module.module.length() !int
+                }
+                if module.stage >= toolchain::Stage::INITIAL {
+                    task_count += steps_per_module(module)
+                }
+            }
+        } else if module.stage == toolchain::Stage::RESOLVE_DEPENDENCIES {
+            current_task = 0
+            task_count = steps_per_module(module) - 1
+            for var path in @toolchain::modules.keys() {
+                let module = toolchain::modules[path]
+                if module.module.length() > max_length_module {
+                    max_length_module = module.module.length() !int
+                }
+                if module.stage >= toolchain::Stage::READ_CACHE {
+                    task_count += steps_per_module(module) - 1
+                }
+            }
+        }
+    }
+
     print_progress_bar()
 }
