@@ -88,7 +88,8 @@ class IncompleteType(Type):
         if self.displayname in file.has_declared or self.displayname in file.has_printed: return
         else: file.has_declared.add(self.displayname)
 
-        print(f"export type {self.displayname}", file = file.fp)
+        if self.displayname and "()" not in self.displayname:
+            print(f"export type {self.displayname}", file = file.fp)
 
 class IncompleteTypedef(Type):
     def __init__(self, name: str):
@@ -192,14 +193,15 @@ class Record(Type):
             self = file.TAGGED[self.name]
         
         for f in self.fields:
-            f.type.print_references(file)
+            if f.type:
+                f.type.print_references(file)
 
         if not self.fields: return
         if not self.displayname in file.has_printed:
             file.has_printed.add(self.displayname)
         else: return
 
-        if self.name:
+        if self.displayname:
             print(f"export type {self.displayname}", file = file.fp, end = "")
             if self.fields:
                 print(f" = {self.to_definition(file)}", file = file.fp)
@@ -215,7 +217,7 @@ class Struct(Record):
         if self.fields:
             res = "struct { "
             for field in self.fields:
-                res += field.to_definition(file) + "; "
+                if field.type: res += field.to_definition(file) + "; "
             res += "}"
             return res
 
@@ -229,7 +231,7 @@ class Union(Record):
         if self.fields:
             res = "struct #union { "
             for field in self.fields:
-                res += field.to_definition(file) + "; "
+                if field.type: res += field.to_definition(file) + "; "
             res += "}"
             return res
 
@@ -265,7 +267,7 @@ class Enum(Type):
             file.has_printed.add(self.displayname)
         else: return
 
-        if self.name and not is_anonymous(self.name):
+        if self.displayname and not is_anonymous(self.name):
             print(f"export type {self.displayname}", file = file.fp, end = "")
             if self.fields:
                 print(f" = {self.to_definition(file)}", file = file.fp)
@@ -418,10 +420,22 @@ def parse_struct(name: str, inner: clang.Type, file: File, lookup: bool = False)
 
     fields = []
     field: clang.Cursor
+    index = 0
     for field in children:
         if field.kind == clang.CursorKind.STRUCT_DECL: 
             if len(list(field.get_children())) == 0: continue
-        fields.append(Field(parse_type(field.type, file, is_in_struct = True), field.spelling, field.is_bitfield(), field.get_bitfield_width()))
+        field_type = parse_type(field.type, file, is_in_struct = True)
+        if not field_type: return None 
+
+        exists = True
+        spelling = field.spelling
+        if not spelling: 
+            spelling = "_" + str(index)
+            if type(field_type) == IncompleteType:
+                field_type = None
+
+        fields.append(Field(field_type, spelling, field.is_bitfield(), field.get_bitfield_width()))
+        index += 1
 
     res = None
     if declaration.kind == clang.CursorKind.STRUCT_DECL:
@@ -486,9 +500,24 @@ def parse_type(type: clang.Type, file: File, lookup: bool = False, is_in_struct:
     elif type.kind == clang.TypeKind.INCOMPLETEARRAY:
         return Pointer(parse_type(type.get_array_element_type(), file, lookup, is_in_struct))
     elif type.kind == clang.TypeKind.TYPEDEF:
-        return file.TYPEDEFS[type.spelling]
+        spelling = type.spelling
+        # TODO This doesn't work properly
+        if spelling.startswith("const"):
+            spelling = spelling.replace("const", "", 1)
+            spelling = spelling.strip()
+        if spelling.startswith("__unaligned"):
+            spelling = spelling.replace("__unaligned", "", 1)
+            spelling = spelling.strip()
+        if spelling.startswith("volatile"):
+            spelling = spelling.replace("volatile", "", 1)
+            spelling = spelling.strip()
+            
+        spelling = spelling.strip()
+        return file.TYPEDEFS[spelling]
+    
+    return IncompleteType(type.spelling)
 
-    assert False, f"Invalid type! {type.kind}"
+ALL_DEFINITIONS = {}
 
 def process_module(name: str, *libs):
     included = []
@@ -516,22 +545,23 @@ def process_module(name: str, *libs):
         def extract(node: clang.Cursor):
             if node.kind == clang.CursorKind.FUNCTION_DECL:
                 if node.is_static_method(): return
-                
-                for token in node.get_tokens():
-                    if token.spelling == "__inline" or token.spelling == "inline":
-                        return
 
-                dllimport = False #TODO
+                dllimport = False
+                for child in node.get_children():
+                    if child.kind == clang.CursorKind.DLLIMPORT_ATTR:
+                        dllimport = True
+
                 name = node.spelling
                 args = []
 
                 for child in node.get_arguments():
                     if child.kind == clang.CursorKind.PARM_DECL:
                         tokens = list(child.get_tokens())
-                        if len(tokens) == 2 and tokens[0].spelling == "size_t": #FIXME This is a hack, see https://github.com/sighingnow/libclang/issues/53
-                            args.append((child.spelling, PRIMITIVES[clang.TypeKind.ULONG]))
+                        spelling = escape_name(child.spelling)
+                        if sys.platform == "linux" and len(tokens) == 2 and tokens[0].spelling == "size_t": #FIXME This is a hack, see https://github.com/sighingnow/libclang/issues/53
+                            args.append((spelling, PRIMITIVES[clang.TypeKind.ULONG]))
                         else:
-                            args.append((child.spelling, parse_type(child.type, file)))
+                            args.append((spelling, parse_type(child.type, file)))
                             
                 is_size_t = False #FIXME Same hack
                 for token in node.get_tokens():
@@ -539,7 +569,7 @@ def process_module(name: str, *libs):
                     if token.spelling == "size_t": is_size_t = True
                     if token.spelling == "(": break
 
-                if is_size_t:
+                if is_size_t and sys.platform == "linux":
                     ret = PRIMITIVES[clang.TypeKind.ULONG]
                 else:
                     ret = parse_type(node.result_type, file)
@@ -547,8 +577,13 @@ def process_module(name: str, *libs):
                 file.GLOBALS[name] = FunctionDecl(name, ret, args, node.type.is_function_variadic(), dllimport)
             elif node.kind == clang.CursorKind.VAR_DECL:
                 if node.storage_class == clang.StorageClass.EXTERN:
+                    dllimport = False
+                    for child in node.get_children():
+                        if child.kind == clang.CursorKind.DLLIMPORT_ATTR:
+                            dllimport = True
+
                     type = parse_type(node.type, file)
-                    file.GLOBALS[node.spelling] = VarDecl(node.spelling, type, False)
+                    file.GLOBALS[node.spelling] = VarDecl(node.spelling, type, dllimport)
             elif node.kind == clang.CursorKind.TYPEDEF_DECL:
                 name = node.spelling
                 underlying = node.underlying_typedef_type
@@ -580,18 +615,19 @@ def process_module(name: str, *libs):
             elif node.kind == clang.CursorKind.MACRO_DEFINITION:
                 tokens = list(node.get_tokens())
                 if len(tokens) == 2 and tokens[1].kind == clang.TokenKind.LITERAL:
-                    token = tokens[1]
-                    if token.spelling.startswith('"') and token.spelling.endswith('"'):
-                        s = token.spelling
-                        s = re.sub(r"(?<!\\)\\(\d{1,3})", lambda o: f"\\x{ + int(o.group(1), base = 8):02x}", s)
-                        file.GLOBALS[node.spelling] = ConstDecl(node.spelling, string, s)
-                    elif token.spelling.isdigit():
-                        file.GLOBALS[node.spelling] = ConstDecl(node.spelling, PRIMITIVES[clang.TypeKind.INT], token.spelling)
-                    else:
-                        try: 
-                            float(token.spelling)
-                            file.GLOBALS[node.spelling] = ConstDecl(node.spelling, PRIMITIVES[clang.TypeKind.DOUBLE], token.spelling)
-                        except ValueError: pass        
+                    if node.spelling != "true" and node.spelling != "false":
+                        token = tokens[1]
+                        if token.spelling.startswith('"') and token.spelling.endswith('"'):
+                            s = token.spelling
+                            s = re.sub(r"(?<!\\)\\(\d{1,3})", lambda o: f"\\x{ + int(o.group(1), base = 8):02x}", s)
+                            file.GLOBALS[node.spelling] = ConstDecl(node.spelling, string, s)
+                        elif token.spelling.isdigit():
+                            file.GLOBALS[node.spelling] = ConstDecl(node.spelling, PRIMITIVES[clang.TypeKind.INT], token.spelling)
+                        else:
+                            try: 
+                                float(token.spelling)
+                                file.GLOBALS[node.spelling] = ConstDecl(node.spelling, PRIMITIVES[clang.TypeKind.DOUBLE], token.spelling)
+                            except ValueError: pass        
 
         index = clang.Index.create()
         tu = index.parse(folder / f"{name}.h", options = 
@@ -603,7 +639,8 @@ def process_module(name: str, *libs):
             extract(node)
         
             
-        file.GLOBALS = {k:v for k,v in file.GLOBALS.items() if k not in excluded}
+        file.GLOBALS = {k:v for k,v in file.GLOBALS.items() if k not in excluded and k not in ALL_DEFINITIONS }
+        ALL_DEFINITIONS.update(file.GLOBALS)
 
         for type in file.TYPEDEFS.values():
             type.print_references(file)
@@ -625,6 +662,7 @@ def process_module(name: str, *libs):
         print(f"export var __SYMBOLS: [{num_decls}; symbol::Symbol]", file = fp2)
 
 def main():
+    clang.Config.set_library_file(r"C:\Users\Vic\Programming\llvm-project\build\Release\bin\libclang.dll")
     if sys.platform != "win32":
         process_module("linux")
         process_module("bfd")
