@@ -11,8 +11,9 @@ import glob
 from urllib import request
 import requests
 
-with open("version") as fp:
-    VERSION = fp.read().split("VERSION=")[1]
+if os.path.exists("version"):
+    with open("version") as fp:
+        VERSION = fp.read().split("VERSION=")[1]
 
 RELEASES_URL = f"https://api.github.com/repos/Princess-Org/Princess/releases"
 
