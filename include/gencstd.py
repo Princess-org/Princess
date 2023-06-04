@@ -516,8 +516,6 @@ def parse_type(type: clang.Type, file: File, lookup: bool = False, is_in_struct:
     
     return IncompleteType(type.spelling)
 
-ALL_DEFINITIONS = {}
-
 def process_module(name: str, *libs):
     included = []
     if len(libs) > 0:
@@ -638,8 +636,7 @@ def process_module(name: str, *libs):
             extract(node)
         
             
-        file.GLOBALS = {k:v for k,v in file.GLOBALS.items() if k not in excluded and k not in ALL_DEFINITIONS }
-        ALL_DEFINITIONS.update(file.GLOBALS)
+        file.GLOBALS = {k:v for k,v in file.GLOBALS.items() if k not in excluded }
 
         for type in file.TYPEDEFS.values():
             type.print_references(file)
@@ -661,13 +658,13 @@ def process_module(name: str, *libs):
         print(f"export var __SYMBOLS: [{num_decls}; symbol::Symbol]", file = fp2)
 
 def main():
-    clang.Config.set_library_file(r"C:\Users\Vic\Programming\llvm-project\build\Release\bin\libclang.dll")
     if sys.platform != "win32":
         process_module("linux")
         process_module("bfd")
 
     process_module("cstd")
     process_module("ffi")
+    process_module("clang")
 
     if sys.platform == "win32":
         process_module("windows", "User32.lib", "Kernel32.lib", "Dbghelp.lib")

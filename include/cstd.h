@@ -22,7 +22,7 @@ Windows specific
 %EXCLUDE _vsnprintf_s_l _vsnprintf_s _vsnprintf_s vsnprintf_s vsnprintf_s _vscprintf_l _vscprintf _vscprintf_p_l _vscprintf_p 
 %EXCLUDE _vsnprintf_c_l _vsnprintf_c _sprintf_l _sprintf_s_l _sprintf_p_l _sprintf_p _snprintf_l _snprintf_c_l _snprintf_c 
 %EXCLUDE _snprintf_s_l _snprintf_s _scprintf_l _scprintf _scprintf_p_l _scprintf_p _vsscanf_s_l vsscanf_s _sscanf_l 
-%EXCLUDE _sscanf_s_l sscanf_s _snscanf_l _snscanf _snscanf_s_l _snscanf_s wcsnlen_s _wcstok strnlen_s _wctime_s timespec_get 
+%EXCLUDE _sscanf_s_l sscanf_s _snscanf_l _snscanf _snscanf_s_l _snscanf_s wcsnlen_s _wcstok strnlen_s _wctime_s 
 %EXCLUDE ctime_s gmtime_s localtime_s _chgsignl _copysignl _hypotl __ascii_iswdigit _vcwprintf_l _vcwprintf _vcwprintf_s_l 
 %EXCLUDE _vcwprintf_s _vcwprintf_p_l _vcwprintf_p _cwprintf_l _cwprintf _cwprintf_s_l _cwprintf_s _cwprintf_p_l _cwprintf_p 
 %EXCLUDE _vcwscanf_l _vcwscanf _vcwscanf_s_l _vcwscanf_s _cwscanf_l _cwscanf _cwscanf_s_l _cwscanf_s _vcprintf_l _vcprintf 
@@ -30,10 +30,11 @@ Windows specific
 %EXCLUDE _cprintf_p _vcscanf_l _vcscanf _vcscanf_s_l _vcscanf_s _cscanf_l _cscanf _cscanf _cscanf_s_l _cscanf_s cprintf cprintf cscanf cscanf
 
 Inline functions
-%EXCLUDE __acrt_locale_get_ctype_array_value __ascii_iswalpha __ascii_toupper time __ascii_towlower difftime sprintf_s 
-%EXCLUDE _vsscanf_l localtime _chvalidchk_l mktime _mkgmtime memcpy_s _vfscanf_l _vsprintf_l __acrt_get_locale_data_prefix 
-%EXCLUDE _vsprintf_s_l fwprintf __ascii_tolower _vfprintf_l __ascii_towupper __threadid _ischartype_l _wctime gmtime 
-%EXCLUDE __threadhandle _vsnprintf_l ctime __local_stdio_printf_options _vfwprintf_l swprintf memmove_s __local_stdio_scanf_options _vswprintf_c_l
+%EXCLUDE __acrt_locale_get_ctype_array_value __ascii_iswalpha __ascii_toupper __ascii_towlower sprintf_s 
+%EXCLUDE _vsscanf_l _chvalidchk_l _mkgmtime memcpy_s _vfscanf_l _vsprintf_l __acrt_get_locale_data_prefix 
+%EXCLUDE _vsprintf_s_l fwprintf __ascii_tolower _vfprintf_l __ascii_towupper __threadid _ischartype_l 
+%EXCLUDE __threadhandle _vsnprintf_l __local_stdio_printf_options _vfwprintf_l swprintf __local_stdio_scanf_options _vswprintf_c_l
+%EXCLUDE __bswap_16 __bswap_32 __bswap_64 __uint16_identity __uint32_identity __uint64_identity
 */
 
 #include <stdlib.h>
