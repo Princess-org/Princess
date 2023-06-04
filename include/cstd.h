@@ -4,6 +4,36 @@
 %EXCLUDE __builtin_fabsf __builtin_inff __builtin_fabs __builtin_inf __builtin_fabsl __builtin_infl longjmperror
 %EXCLUDE __va_start _sopen_s_nolock
 %EXCLUDE __builtin_bswap32 __builtin_bswap64
+
+Windows specific
+%EXCLUDE vfwprintf _vfwprintf_s_l vfwprintf_s _vfwprintf_p_l _vfwprintf_p _vwprintf_l vwprintf _vwprintf_s_l vwprintf_s
+%EXCLUDE _vwprintf_p_l _vwprintf_p _fwprintf_l _fwprintf_s_l fwprintf_s _fwprintf_p_l _fwprintf_p _wprintf_l wprintf 
+%EXCLUDE _wprintf_s_l wprintf_s _wprintf_p_l _wprintf_p _vfwscanf_l vfwscanf _vfwscanf_s_l vfwscanf_s _vwscanf_l vwscanf 
+%EXCLUDE _vwscanf_s_l vwscanf_s _fwscanf_l fwscanf _fwscanf_s_l fwscanf_s _wscanf_l wscanf _wscanf_s_l wscanf_s _vsnwprintf_l 
+%EXCLUDE _vsnwprintf_s_l _vsnwprintf_s _snwprintf _vsnwprintf _vswprintf_c _vswprintf_l __vswprintf_l _vswprintf _vswprintf 
+%EXCLUDE vswprintf vswprintf _vswprintf_s_l vswprintf_s _vswprintf_p_l _vswprintf_p _vscwprintf_l _vscwprintf _vscwprintf_p_l 
+%EXCLUDE _vscwprintf_p _swprintf __swprintf_l _swprintf_l _swprintf _swprintf _swprintf_s_l swprintf_s _swprintf_p_l _swprintf_p 
+%EXCLUDE _swprintf_c_l _swprintf_c _snwprintf_l _snwprintf_s_l _snwprintf_s _scwprintf_l _scwprintf _scwprintf_p_l 
+%EXCLUDE _scwprintf_p _vswscanf_l vswscanf _vswscanf_s_l vswscanf_s _vsnwscanf_l _vsnwscanf_s_l _swscanf_l swscanf 
+%EXCLUDE _swscanf_s_l swscanf_s _snwscanf_l _snwscanf _snwscanf_s_l _snwscanf_s _vfprintf_s_l vfprintf_s _vfprintf_p_l
+%EXCLUDE _vfprintf_p _vprintf_l _vprintf_s_l vprintf_s _vprintf_p_l _vprintf_p _fprintf_l _fprintf_s_l fprintf_s 
+%EXCLUDE _fprintf_p_l _fprintf_p _printf_l _printf_s_l printf_s _printf_p_l _printf_p _vfscanf_s_l vfscanf_s _vscanf_l 
+%EXCLUDE _vscanf_s_l vscanf_s _fscanf_l _fscanf_s_l fscanf_s _scanf_l _scanf_s_l scanf_s vsprintf_s _vsprintf_p_l _vsprintf_p 
+%EXCLUDE _vsnprintf_s_l _vsnprintf_s _vsnprintf_s vsnprintf_s vsnprintf_s _vscprintf_l _vscprintf _vscprintf_p_l _vscprintf_p 
+%EXCLUDE _vsnprintf_c_l _vsnprintf_c _sprintf_l _sprintf_s_l _sprintf_p_l _sprintf_p _snprintf_l _snprintf_c_l _snprintf_c 
+%EXCLUDE _snprintf_s_l _snprintf_s _scprintf_l _scprintf _scprintf_p_l _scprintf_p _vsscanf_s_l vsscanf_s _sscanf_l 
+%EXCLUDE _sscanf_s_l sscanf_s _snscanf_l _snscanf _snscanf_s_l _snscanf_s wcsnlen_s _wcstok strnlen_s _wctime_s timespec_get 
+%EXCLUDE ctime_s gmtime_s localtime_s _chgsignl _copysignl _hypotl __ascii_iswdigit _vcwprintf_l _vcwprintf _vcwprintf_s_l 
+%EXCLUDE _vcwprintf_s _vcwprintf_p_l _vcwprintf_p _cwprintf_l _cwprintf _cwprintf_s_l _cwprintf_s _cwprintf_p_l _cwprintf_p 
+%EXCLUDE _vcwscanf_l _vcwscanf _vcwscanf_s_l _vcwscanf_s _cwscanf_l _cwscanf _cwscanf_s_l _cwscanf_s _vcprintf_l _vcprintf 
+%EXCLUDE _vcprintf_s_l _vcprintf_s _vcprintf_p_l _vcprintf_p _cprintf_l _cprintf _cprintf _cprintf_s_l _cprintf_s _cprintf_p_l 
+%EXCLUDE _cprintf_p _vcscanf_l _vcscanf _vcscanf_s_l _vcscanf_s _cscanf_l _cscanf _cscanf _cscanf_s_l _cscanf_s cprintf cprintf cscanf cscanf
+
+Inline functions
+%EXCLUDE __acrt_locale_get_ctype_array_value __ascii_iswalpha __ascii_toupper time __ascii_towlower difftime sprintf_s 
+%EXCLUDE _vsscanf_l localtime _chvalidchk_l mktime _mkgmtime memcpy_s _vfscanf_l _vsprintf_l __acrt_get_locale_data_prefix 
+%EXCLUDE _vsprintf_s_l fwprintf __ascii_tolower _vfprintf_l __ascii_towupper __threadid _ischartype_l _wctime gmtime 
+%EXCLUDE __threadhandle _vsnprintf_l ctime __local_stdio_printf_options _vfwprintf_l swprintf memmove_s __local_stdio_scanf_options _vswprintf_c_l
 */
 
 #include <stdlib.h>
