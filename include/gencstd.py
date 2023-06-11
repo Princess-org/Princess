@@ -420,13 +420,21 @@ def parse_struct(name: str, inner: clang.Type, file: File, lookup: bool = False)
     fields = []
     field: clang.Cursor
     index = 0
+    last_unnamed_struct: clang.Cursor = None
+
     for field in children:
         if field.kind == clang.CursorKind.STRUCT_DECL: 
             if len(list(field.get_children())) == 0: continue
         field_type = parse_type(field.type, file, is_in_struct = True)
-        if not field_type: return None 
+        if not field_type: return None
 
-        exists = True
+        if last_unnamed_struct and field.type.get_declaration() == last_unnamed_struct:
+            del fields[-1]
+        
+        last_unnamed_struct = None
+        if is_anonymous(field.type.spelling):
+            last_unnamed_struct = field.type.get_declaration()
+
         spelling = field.spelling
         if not spelling: 
             spelling = "_" + str(index)
@@ -555,21 +563,9 @@ def process_module(name: str, *libs):
                     if child.kind == clang.CursorKind.PARM_DECL:
                         tokens = list(child.get_tokens())
                         spelling = escape_name(child.spelling)
-                        if sys.platform == "linux" and len(tokens) == 2 and tokens[0].spelling == "size_t": #FIXME This is a hack, see https://github.com/sighingnow/libclang/issues/53
-                            args.append((spelling, PRIMITIVES[clang.TypeKind.ULONG]))
-                        else:
-                            args.append((spelling, parse_type(child.type, file)))
-                            
-                is_size_t = False #FIXME Same hack
-                for token in node.get_tokens():
-                    if token.kind == clang.TokenKind.KEYWORD and token.spelling == "extern": continue
-                    if token.spelling == "size_t": is_size_t = True
-                    if token.spelling == "(": break
+                        args.append((spelling, parse_type(child.type, file)))
 
-                if is_size_t and sys.platform == "linux":
-                    ret = PRIMITIVES[clang.TypeKind.ULONG]
-                else:
-                    ret = parse_type(node.result_type, file)
+                ret = parse_type(node.result_type, file)
 
                 file.GLOBALS[name] = FunctionDecl(name, ret, args, node.type.is_function_variadic(), dllimport)
             elif node.kind == clang.CursorKind.VAR_DECL:
