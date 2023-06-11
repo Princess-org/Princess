@@ -17,7 +17,7 @@ class File:
         self.TAGGED = {}
         self.STRUCT_IDS = {}
 
-        self.TYPEDEFS["__va_list_tag"] = VaList()
+        self.TYPEDEFS["__builtin_va_list"] = VaList()
 
         self.has_printed = set()
         self.has_declared = set()

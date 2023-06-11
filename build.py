@@ -132,7 +132,7 @@ def build(extra):
     if sys.platform == "win32":
         args += WIN_ARGS
     else:
-        args += "-lbfd"
+        args.append("-lbfd")
         
     subprocess.check_call(args + extra)
 
