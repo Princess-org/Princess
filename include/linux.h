@@ -18,6 +18,7 @@
     #include <termios.h>
     #include <stdlib.h>
     #include <dlfcn.h>
+    #include <fcntl.h>
 #ifdef __APPLE__
     #include <libelf/libelf.h>
 #endif
