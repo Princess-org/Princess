@@ -656,8 +656,8 @@ def process_module(name: str, *libs):
 def main():
     if sys.platform != "win32":
         process_module("linux")
-        process_module("bfd")
-
+        
+    process_module("bfd")
     process_module("cstd")
     process_module("ffi")
     process_module("clang")
