@@ -1,0 +1,511 @@
+import map
+import set
+import util
+
+type Location = struct {
+    line: int
+    column: int
+    end_line: int
+    end_column: int
+    file: Str
+}
+
+type TokenKind = enum {
+    UNKNOWN; EOF
+
+    K_AUTO; K_BREAK; K_CASE; K_CHAR; K_CONST; K_CONTINUE
+    K_DEFAULT; K_DO; K_DOUBLE; K_ELSE; K_ENUM; K_EXTERN
+    K_FLOAT; K_FOR; K_GOTO; K_IF; K_INLINE; K_INT; K_LONG
+    K_REGISTER; K_RESTRICT; K_RETURN; K_SHORT; K_SIGNED
+    K_SIZEOF; K_STATIC; K_STRUCT; K_SWITCH; K_TYPEDEF; K_UNION
+    K_UNSIGNED; K_VOID; K_VOLATILE; K_WHILE; K_BOOL
+
+    OP_ASSIGN; OP_ADD; OP_SUB; OP_MUL; OP_DIV
+    OP_MOD; OP_BOR; OP_BAND; OP_BXOR; OP_BNOT; OP_SHL
+    OP_SHR; OP_INC; OP_DEC; OP_EQ; OP_NEQ; OP_LEQ; OP_GEQ
+    OP_LT; OP_GT; OP_ADD_EQ; OP_SUB_EQ; OP_MUL_EQ; OP_DIV_EQ
+    OP_MOD_EQ; OP_OR_EQ; OP_AND_EQ; OP_XOR_EQ; OP_SHL_EQ
+    OP_SHR_EQ; OP_DOT; OP_VARARGS; OP_NOT; OP_AND; OP_OR
+    OP_COLON; OP_ARROW
+
+    O_BRACE; C_BRACE
+    O_SQUARE; C_SQUARE
+    O_PAREN; C_PAREN
+
+    QUESTION_MARK; COMMA; SEMICOLON
+
+    IDENTIFIER
+    INTEGER
+    CHARACTER
+    FLOAT
+    STRING
+}
+
+let keywords = map::make(TokenKind)
+keywords["auto"] = TokenKind::K_AUTO
+keywords["break"] = TokenKind::K_BREAK
+keywords["case"] = TokenKind::K_CASE
+keywords["char"] = TokenKind::K_CHAR
+keywords["const"] = TokenKind::K_CONST
+keywords["continue"] = TokenKind::K_CONTINUE
+keywords["default"] = TokenKind::K_DEFAULT
+keywords["do"] = TokenKind::K_DO
+keywords["double"] = TokenKind::K_DOUBLE
+keywords["else"] = TokenKind::K_ELSE
+keywords["enum"] = TokenKind::K_ENUM
+keywords["extern"] = TokenKind::K_EXTERN
+keywords["float"] = TokenKind::K_FLOAT
+keywords["for"] = TokenKind::K_FOR
+keywords["goto"] = TokenKind::K_GOTO
+keywords["if"] = TokenKind::K_IF
+keywords["inline"] = TokenKind::K_INLINE
+keywords["int"] = TokenKind::K_INT
+keywords["long"] = TokenKind::K_LONG
+keywords["register"] = TokenKind::K_REGISTER
+keywords["restrict"] = TokenKind::K_RESTRICT
+keywords["return"] = TokenKind::K_RETURN
+keywords["short"] = TokenKind::K_SHORT
+keywords["signed"] = TokenKind::K_SIGNED
+keywords["sizeof"] = TokenKind::K_SIZEOF
+keywords["static"] = TokenKind::K_STATIC
+keywords["struct"] = TokenKind::K_STRUCT
+keywords["switch"] = TokenKind::K_SWITCH
+keywords["typedef"] = TokenKind::K_TYPEDEF
+keywords["union"] = TokenKind::K_UNION
+keywords["unsigned"] = TokenKind::K_UNSIGNED
+keywords["void"] = TokenKind::K_VOID
+keywords["volatile"] = TokenKind::K_VOLATILE
+keywords["while"] = TokenKind::K_WHILE
+keywords["_Bool"] = TokenKind::K_BOOL
+
+type Token = struct {
+    kind: TokenKind
+    loc: Location
+    value: struct #union {
+        str: StringSlice
+        i: uint64
+        f: double
+    }
+}
+
+export def destruct(token: *Token) {
+    if token.kind == TokenKind::STRING or
+        token.kind == TokenKind::IDENTIFIER {
+        __destruct__(*token.value.str)
+    }
+}
+
+export def construct(copy: *Token, this: *Token) {
+    copy.kind = this.kind
+    copy.loc = this.loc
+
+    if this.kind == TokenKind::STRING or
+        this.kind == TokenKind::IDENTIFIER {
+        copy.value.str = this.value.str
+    } else {
+        copy.value = this.value
+    }
+}
+
+type TokenList = struct {
+    token: Token
+    next: *TokenList
+}
+
+export def destruct(list: *TokenList) {
+    list = list.next
+    while list {
+        let next = list.next
+        __destruct__(*list.token)
+        free(list)
+        list = next
+    }
+}
+
+type State = struct {
+    i: int
+    line: int
+    column: int
+    input: Str
+    file: Str
+}
+
+const EOF: char = 0x1A !char
+
+def peek(state: *State, ahead: int = 0) -> char {
+    if state.i + ahead>= state.input.length() {
+        return EOF
+    }
+    return state.input[state.i + ahead]
+}
+
+def pop(state: *State) -> char {
+    if state.i + 1 >= state.input.length() {
+        state.i += 1
+        return EOF
+    }
+    var ch = state.input[state.i + 1]
+    while ch == '\\' {
+        if state.i + 2 < state.input.length() {
+            ch = state.input[state.i + 2]
+            if ch == '\r' {
+                if state.i + 3 < state.input.length() {
+                    ch = state.input[state.i + 3]
+                    if ch == '\n' {
+                        state.line += 1
+                        state.column = 0
+                        state.i += 3
+                        if state.i + 1 < state.input.length() {
+                            ch = state.input[state.i + 1]
+                            state.i += 1
+                        } else {
+                            return EOF
+                        }
+                    }
+                } else {
+                    return EOF
+                }
+            } else if ch == '\n' {
+                state.line += 1
+                state.column = 0
+                if state.i + 3 < state.input.length() {
+                    state.i += 2
+                    ch = state.input[state.i + 1]
+                } else {
+                    return EOF
+                }
+            }
+        } else {
+            return EOF
+        }
+    }
+
+    if ch == '\n' {
+        state.line += 1
+        state.column = 0
+    } else {
+        state.column += 1
+    }
+    state.i += 1
+    return ch
+}
+
+def is_text(a: char) -> bool {
+    return a == '_' or a >= 'a' and a <= 'z' or a >= 'A' and a <= 'Z'
+}
+
+def is_alphanumeric(a: char) -> bool {
+    return is_text(a) or a >= '0' and a <= '9'
+}
+
+def lex_identifier(state: *State) -> Token {
+    let start = state.i
+    var end = state.i
+    var next = peek(state)
+    while next != EOF and is_alphanumeric(next) {
+        pop(state)
+        end += 1
+        next = peek(state)
+    }
+    let res = state.input.slice(start, end)
+    if keywords.contains(res) {
+        return { kind = keywords[res] } !Token
+    }
+    let token = { kind = TokenKind::IDENTIFIER } !Token
+    token.value.str = res
+    return token
+}
+
+def lex_directive(state: *State, list: **TokenList) {
+    let start = state.i
+    var end = state.i
+    var ch = peek(state)
+    while ch != EOF and is_alphanumeric(ch) {
+        pop(state)
+        end += 1
+        ch = peek(state)
+    }
+    let res = state.input.slice(start, end)
+    if res == "ifdef" {
+    } else if res == "ifndef" {
+    } else if res == "if" {
+    } else if res == "elif" {
+    } else if res == "else" {
+    } else if res == "include" {
+        while ch != EOF and (ch == ' ' or ch == '\t') {
+            ch = pop(state)
+        }
+        if ch == '<' {
+            ch = pop(state)
+            var include: StringBuffer = ""
+            while ch != EOF and ch != '>' {
+                include += ch
+                ch = pop(state)
+            }
+            for var prefix in include_path {
+                let file = prefix + "/" + include
+                if util::exists(file) {
+                    let new_tokens = lex(file)
+                    if new_tokens {
+                        (@list).token = new_tokens.token
+                        (@list).next = new_tokens.next
+                        var next = new_tokens
+                        while next.next {
+                            next = next.next
+                        }
+                        @list = next
+                    }
+                    break
+                }
+            }
+            pop(state)
+        } else if ch == '"' {
+
+        }
+    } else if res == "define" {
+    }
+}
+
+def lex_float(state: *State) -> Token {
+    var off: int = 0
+    let res = util::parse_float(state.input.slice(state.i, length(state.input)), *off)
+    state.i += off
+
+    let tok = { kind = TokenKind::FLOAT } !Token
+    tok.value.f = res
+    return tok
+}
+
+def lex_int(state: *State) -> Token {
+    let c = peek(state)
+    var res: uint64
+    var off: int = 0
+
+    let substr = state.input.slice(state.i, length(state.input))
+    if c == '0' {
+        let r = peek(state, 1)
+        if r == 'b' {
+            off += 2
+            res = util::parse_number(substr, "01", *off)
+        } else if r == 'x' {
+            off += 2
+            res = util::parse_number(substr, "0123456789abcdef", *off)
+        } else {
+            res = util::parse_number(substr, "01234567", *off)
+        }
+    } else {
+        res = util::parse_number(substr, "0123456789", *off)
+    }
+    state.i += off
+    let tok = { kind = TokenKind::INTEGER } !Token
+    tok.value.i = res
+    return tok
+}
+
+def lex_number(state: *State) -> Token {
+    var j = 0
+    var is_float = false
+    loop {
+        let c = peek(state, j)
+        if c == '.' {
+            let c2 = peek(state, j + 1)
+            if c2 != '.' {
+                is_float = true
+            }
+            break
+        } else if c == 'e' or c == 'E' {
+            is_float = true
+            break
+        } else if c >= '0' and c <= '9' {
+            j += 1
+        } else {
+            break
+        }
+    }
+
+    if is_float {
+        return lex_float(state)
+    }
+    return lex_int(state)
+}
+
+def lex_string(state: *State) -> Token {
+
+}
+
+def lex_symbol(state: *State) -> Token {
+    let first = peek(state, 0)
+    let second = peek(state, 1)
+    let third = peek(state, 2)
+
+    var tt: TokenKind = TokenKind::UNKNOWN
+    var length = 3
+
+    if first == '<' and second == '<' and third == '=' {
+        tt = TokenKind::OP_SHL_EQ
+    } else if first == '>' and second == '>' and third == '=' {
+        tt = TokenKind::OP_SHR_EQ
+    } else if first == '.' and second == '.' and third == '.' {
+        tt = TokenKind::OP_VARARGS
+    } else {
+        length = 2
+        if second == '=' {
+            switch first {
+                case '+': tt = TokenKind::OP_ADD_EQ
+                case '-': tt = TokenKind::OP_SUB_EQ
+                case '*': tt = TokenKind::OP_MUL_EQ
+                case '/': tt = TokenKind::OP_DIV_EQ
+                case '%': tt = TokenKind::OP_MOD_EQ
+                case '&': tt = TokenKind::OP_AND_EQ
+                case '|': tt = TokenKind::OP_OR_EQ
+                case '^': tt = TokenKind::OP_XOR_EQ
+                case '!': tt = TokenKind::OP_NEQ
+                case '>': tt = TokenKind::OP_GEQ
+                case '<': tt = TokenKind::OP_LEQ
+                case '=': tt = TokenKind::OP_EQ
+            }
+        } else if first == '-' and second == '>' {
+            tt = TokenKind::OP_ARROW
+        } else if first == '+' and second == '+' {
+            tt = TokenKind::OP_INC
+        } else if first == '-' and second == '-' {
+            tt = TokenKind::OP_DEC
+        } else if first == '<' and second == '<' {
+            tt = TokenKind::OP_SHL
+        } else if first == '>' and second == '>' {
+            tt = TokenKind::OP_SHR
+        } else if first == '&' and second == '&' {
+            tt = TokenKind::OP_AND
+        } else if first == '|' and second == '|' {
+            tt = TokenKind::OP_OR
+        } else {
+            length = 1
+            switch first {
+                case '>': tt = TokenKind::OP_GT
+                case '<': tt = TokenKind::OP_LT
+                case '{': tt = TokenKind::O_BRACE
+                case '}': tt = TokenKind::C_BRACE
+                case '[': tt = TokenKind::O_SQUARE
+                case ']': tt = TokenKind::C_SQUARE
+                case '(': tt = TokenKind::O_PAREN
+                case ')': tt = TokenKind::C_PAREN
+                case '+': tt = TokenKind::OP_ADD
+                case '-': tt = TokenKind::OP_SUB
+                case '*': tt = TokenKind::OP_MUL
+                case '/': tt = TokenKind::OP_DIV
+                case '%': tt = TokenKind::OP_MOD
+                case '&': tt = TokenKind::OP_BAND
+                case '|': tt = TokenKind::OP_BOR
+                case '^': tt = TokenKind::OP_BXOR
+                case '~': tt = TokenKind::OP_BNOT
+                case '!': tt = TokenKind::OP_NOT
+                case '=': tt = TokenKind::OP_ASSIGN                    
+                case ',': tt = TokenKind::COMMA  
+                case ':': tt = TokenKind::OP_COLON
+                case '?': tt = TokenKind::QUESTION_MARK
+                case '.': tt = TokenKind::OP_DOT
+                case ';': tt = TokenKind::SEMICOLON
+            }
+        }
+    }
+
+    for var j in 0..length {
+        pop(state)
+    }
+
+    return { kind = tt } !Token
+}
+
+def lex(path: Str) -> *TokenList {
+    let fp = open(path, "r")
+    let input = read_all(fp)
+    close(fp)
+
+    return lex(input, path)
+}
+
+def lex(input: Str, path: Str) -> *TokenList {
+    let state = {
+        input = input,
+        file = path
+    } !State
+
+    var res = zero_allocate(TokenList)
+    var first = res
+    while state.i < input.length() {
+        let start_line = state.line
+        let start_col = state.column
+        var token: Token
+        var ch = peek(*state)
+        switch ch {
+            case EOF: 
+                pop(*state)
+                break
+            case '#':
+                pop(*state)
+                ch = peek(*state)
+                while ch == ' ' or ch == '\t' {
+                    ch = pop(*state)
+                }
+                lex_directive(*state, *res)
+                continue
+            case '\n', '\r', ' ', '\t': 
+                pop(*state)
+                continue
+            case '"': token = lex_string(*state)
+            case '0'..='9': token = lex_number(*state)
+            case 'a'..='z', 'A'..'Z', '_': token = lex_identifier(*state)
+            case: token = lex_symbol(*state)
+        }
+        token.loc = {
+            line = start_line,
+            column = start_col,
+            end_line = state.line,
+            end_column = state.column,
+            file = state.file
+        } !Location
+
+        let next = zero_allocate(TokenList)
+        res.token = token
+        res.next = next
+        res = next
+    }
+    res.token.kind = TokenKind::EOF
+    return first
+}
+
+def print_tokens(list: *TokenList) {
+    loop {
+        let token = list.token
+        print(to_string(token.kind))
+        if token.kind == TokenKind::INTEGER {
+            print("(", token.value.i, ")")
+        } else if token.kind == TokenKind::FLOAT {
+            print("(", token.value.f, ")")
+        } else if token.kind == TokenKind::IDENTIFIER {
+            print("(", token.value.str, ")")
+        }
+        print(" ")
+        if not list.next {
+            return
+        } else {
+            list = list.next
+        }
+    }
+    print("\n")
+}
+
+let include_path = [
+    ".",
+    "/usr/local/include",
+    "/usr/include/x86_64-linux-gnu",
+    "/usr/include"
+]
+
+let input = """
+"some example string\n\x64"
+"""
+let out = lex(input, "")
+print_tokens(out)
+print("\n")
+delete(out)
