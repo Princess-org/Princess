@@ -133,53 +133,32 @@ type State = struct {
 const EOF: char = 0x1A !char
 
 def peek(state: *State, ahead: int = 0) -> char {
-    if state.i + ahead>= state.input.length() {
+    if state.i + ahead >= state.input.length() {
         return EOF
     }
     return state.input[state.i + ahead]
 }
 
 def pop(state: *State) -> char {
-    if state.i + 1 >= state.input.length() {
-        state.i += 1
-        return EOF
-    }
-    var ch = state.input[state.i + 1]
-    while ch == '\\' {
-        if state.i + 2 < state.input.length() {
-            ch = state.input[state.i + 2]
-            if ch == '\r' {
-                if state.i + 3 < state.input.length() {
-                    ch = state.input[state.i + 3]
-                    if ch == '\n' {
-                        state.line += 1
-                        state.column = 0
-                        state.i += 3
-                        if state.i + 1 < state.input.length() {
-                            ch = state.input[state.i + 1]
-                            state.i += 1
-                        } else {
-                            return EOF
-                        }
-                    }
-                } else {
-                    return EOF
-                }
-            } else if ch == '\n' {
+    var ch = peek(state, 1)
+    var ch2 = ch
+    while ch2 == '\\' {
+        ch2 = peek(state, 2)
+        if ch2 == '\r' {
+            ch2 = peek(state, 3)
+            if ch2 == '\n' {
                 state.line += 1
                 state.column = 0
-                if state.i + 3 < state.input.length() {
-                    state.i += 2
-                    ch = state.input[state.i + 1]
-                } else {
-                    return EOF
-                }
+                ch2 = ch = peek(state, 4)
+                state.i += 3
             }
-        } else {
-            return EOF
+        } else if ch2 == '\n' {
+            state.line += 1
+            state.column = 0
+            ch2 = ch = peek(state, 3)
+            state.i += 2
         }
     }
-
     if ch == '\n' {
         state.line += 1
         state.column = 0
@@ -196,6 +175,17 @@ def is_text(a: char) -> bool {
 
 def is_alphanumeric(a: char) -> bool {
     return is_text(a) or a >= '0' and a <= '9'
+}
+
+def is_hex_digit(a: char) -> bool {
+    return get_hex_digit(a) >= 0
+}
+
+def get_hex_digit(a: char) -> int {
+    if a >= '0' and a <= '9' { return a - '0' }
+    if a >= 'a' and a <= 'f' { return a - 'a' }
+    if a >= 'A' and a <= 'F' { return a - 'A' }
+    return -1
 }
 
 def lex_identifier(state: *State) -> Token {
@@ -231,6 +221,7 @@ def lex_directive(state: *State, list: **TokenList) {
     } else if res == "if" {
     } else if res == "elif" {
     } else if res == "else" {
+    } else if res == "endif" {
     } else if res == "include" {
         while ch != EOF and (ch == ' ' or ch == '\t') {
             ch = pop(state)
@@ -329,8 +320,83 @@ def lex_number(state: *State) -> Token {
     return lex_int(state)
 }
 
-def lex_string(state: *State) -> Token {
+def lex_escape_sequence(state: *State) -> Str {
+    var str: StringBuffer = ""
+    var ch = pop(state)
+    switch ch {
+        case 'a': str += '\a';   pop(state)
+        case 'b': str += '\b';   pop(state)
+        case 'e': str += '\x1B'; pop(state)
+        case 'f': str += '\f';   pop(state)
+        case 'n': str += '\n';   pop(state)
+        case 'r': str += '\r';   pop(state)
+        case 't': str += '\t';   pop(state)
+        case 'v': str += '\v';   pop(state)
+        case '\\': str += '\\';  pop(state)
+        case '\'': str += '\'';  pop(state)
+        case '"': str += '"';    pop(state)
+        case '?': str += '?';    pop(state)
+        case '0'..'8':
+            var i = 0
+            var res: char = 0
+            while ch != EOF and ch >= '0' and ch <= '8' and i < 3 {
+                res *= 8
+                res += ch - '0'
+                ch = pop(state)
+                i += 1
+            }
+            str += res
+        case 'x', 'u', 'U':
+            ch = pop(state)
+            var i = 0
+            let n = MAX_INT32 if ch == 'x' else 4 if ch == 'u' else 8
+            var res: char = 0
+            while ch != EOF and is_hex_digit(ch) and i < n {
+                res *= 16
+                res += get_hex_digit(ch)
+                ch = pop(state)
+                i += 1
+            }
+            str += res
+    }
+    return str
+}
 
+def lex_string(state: *State) -> Token {
+    pop(state)
+    var ch = peek(state)
+    var str: StringBuffer = ""
+    while ch != EOF and ch != '"' and ch != '\n' {
+        if ch == '\\' {
+            str += lex_escape_sequence(state)
+            ch = peek(state)
+        } else {
+            str += ch
+            ch = pop(state)
+        }
+    }
+    pop(state)
+
+    let tok = { kind = TokenKind::STRING } !Token
+    tok.value.str = to_slice(to_str(str))
+    return tok
+}
+
+def lex_char(state: *State) -> Token {
+    pop(state)
+    var ch = peek(state)
+    if ch == '\\' {
+        let str = lex_escape_sequence(state)
+        if str {
+            ch = str[0]
+        }
+    }
+    pop(state)
+    pop(state)
+
+    let tok = { kind = TokenKind::CHARACTER } !Token
+    tok.value.i = ch !uint64
+    return tok
 }
 
 def lex_symbol(state: *State) -> Token {
@@ -452,9 +518,10 @@ def lex(input: Str, path: Str) -> *TokenList {
             case '\n', '\r', ' ', '\t': 
                 pop(*state)
                 continue
-            case '"': token = lex_string(*state)
             case '0'..='9': token = lex_number(*state)
             case 'a'..='z', 'A'..'Z', '_': token = lex_identifier(*state)
+            case '"': token = lex_string(*state)
+            case '\'': token = lex_char(*state)
             case: token = lex_symbol(*state)
         }
         token.loc = {
@@ -480,10 +547,14 @@ def print_tokens(list: *TokenList) {
         print(to_string(token.kind))
         if token.kind == TokenKind::INTEGER {
             print("(", token.value.i, ")")
+        } else if token.kind == TokenKind::CHARACTER {
+            print("('", token.value.i !char, "')")
         } else if token.kind == TokenKind::FLOAT {
             print("(", token.value.f, ")")
         } else if token.kind == TokenKind::IDENTIFIER {
             print("(", token.value.str, ")")
+        } else if token.kind == TokenKind::STRING {
+            print("(\"", token.value.str, "\")")
         }
         print(" ")
         if not list.next {
@@ -503,7 +574,7 @@ let include_path = [
 ]
 
 let input = """
-"some example string\n\x64"
+    "0\\?\\u0064"
 """
 let out = lex(input, "")
 print_tokens(out)
