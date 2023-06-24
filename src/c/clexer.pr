@@ -2,7 +2,7 @@ import map
 import set
 import util
 
-type Location = struct {
+export type Location = struct {
     line: int
     column: int
     end_line: int
@@ -10,8 +10,8 @@ type Location = struct {
     file: Str
 }
 
-type TokenKind = enum {
-    UNKNOWN; EOF
+export type TokenKind = enum {
+    UNKNOWN; EOF; EOL
 
     K_AUTO; K_BREAK; K_CASE; K_CHAR; K_CONST; K_CONTINUE
     K_DEFAULT; K_DO; K_DOUBLE; K_ELSE; K_ENUM; K_EXTERN
@@ -19,6 +19,11 @@ type TokenKind = enum {
     K_REGISTER; K_RESTRICT; K_RETURN; K_SHORT; K_SIGNED
     K_SIZEOF; K_STATIC; K_STRUCT; K_SWITCH; K_TYPEDEF; K_UNION
     K_UNSIGNED; K_VOID; K_VOLATILE; K_WHILE; K_BOOL
+
+    P_DEFINED; P_MACRO; P_MACRO_FUNLIKE; P_IF; P_ELSE; P_ELIF; P_ENDIF;
+    P_IFDEF; P_IFNDEF; P_LINE; P_PRAGMA; P_UNDEF
+
+    STRINGIFY; CONCAT
 
     OP_ASSIGN; OP_ADD; OP_SUB; OP_MUL; OP_DIV
     OP_MOD; OP_BOR; OP_BAND; OP_BXOR; OP_BNOT; OP_SHL
@@ -78,6 +83,16 @@ keywords["volatile"] = TokenKind::K_VOLATILE
 keywords["while"] = TokenKind::K_WHILE
 keywords["_Bool"] = TokenKind::K_BOOL
 
+let prep_directives = map::make(TokenKind)
+prep_directives["define"] = TokenKind::P_MACRO
+prep_directives["if"] = TokenKind::P_IF
+prep_directives["else"] = TokenKind::P_ELSE
+prep_directives["elif"] = TokenKind::P_ELIF
+prep_directives["endif"] = TokenKind::P_ENDIF
+prep_directives["ifdef"] = TokenKind::P_IFDEF
+prep_directives["ifndef"] = TokenKind::P_IFNDEF
+prep_directives["undef"] = TokenKind::P_UNDEF
+
 type Token = struct {
     kind: TokenKind
     loc: Location
@@ -88,9 +103,14 @@ type Token = struct {
     }
 }
 
+export def is_textual(kind: TokenKind) -> bool {
+    return kind == TokenKind::STRING or
+        kind == TokenKind::IDENTIFIER or
+        kind >= TokenKind::K_AUTO and kind <= TokenKind::K_BOOL
+}
+
 export def destruct(token: *Token) {
-    if token.kind == TokenKind::STRING or
-        token.kind == TokenKind::IDENTIFIER {
+    if is_textual(token.kind) {
         __destruct__(*token.value.str)
     }
 }
@@ -99,8 +119,7 @@ export def construct(copy: *Token, this: *Token) {
     copy.kind = this.kind
     copy.loc = this.loc
 
-    if this.kind == TokenKind::STRING or
-        this.kind == TokenKind::IDENTIFIER {
+    if is_textual(copy.kind) {
         copy.value.str = this.value.str
     } else {
         copy.value = this.value
@@ -133,36 +152,45 @@ type State = struct {
 const EOF: char = 0x1A !char
 
 def peek(state: *State, ahead: int = 0) -> char {
-    if state.i + ahead >= state.input.length() {
-        return EOF
+    def _peek(ahead: int) -> char {
+        if state.i + ahead >= state.input.length() {
+            return EOF
+        }
+        return state.input[state.i + ahead]
     }
-    return state.input[state.i + ahead]
+
+    var n = 0
+    loop {
+        var ch = _peek(n)
+        var ch2 = ch
+        while ch2 == '\\' {
+            ch2 = _peek(1 + n)
+            if ch2 == '\r' {
+                ch2 = _peek(2 + n)
+                if ch2 == '\n' {
+                    state.line += 1
+                    state.column = 0
+                    ch2 = ch = _peek(3 + n)
+                    state.i += 3
+                }
+            } else if ch2 == '\n' {
+                state.line += 1
+                state.column = 0
+                ch2 = ch = _peek(2 + n)
+                state.i += 2
+            }
+        }
+        if n == ahead { return ch }
+        n += 1
+    }
 }
 
 def pop(state: *State) -> char {
-    var ch = peek(state, 1)
-    var ch2 = ch
-    while ch2 == '\\' {
-        ch2 = peek(state, 2)
-        if ch2 == '\r' {
-            ch2 = peek(state, 3)
-            if ch2 == '\n' {
-                state.line += 1
-                state.column = 0
-                ch2 = ch = peek(state, 4)
-                state.i += 3
-            }
-        } else if ch2 == '\n' {
-            state.line += 1
-            state.column = 0
-            ch2 = ch = peek(state, 3)
-            state.i += 2
-        }
-    }
+    let ch = peek(state, 1)
     if ch == '\n' {
         state.line += 1
         state.column = 0
-    } else {
+    } else if ch != EOF {
         state.column += 1
     }
     state.i += 1
@@ -199,62 +227,12 @@ def lex_identifier(state: *State) -> Token {
     }
     let res = state.input.slice(start, end)
     if keywords.contains(res) {
-        return { kind = keywords[res] } !Token
+        let token = { kind = keywords[res] } !Token
+        token.value.str = res
     }
     let token = { kind = TokenKind::IDENTIFIER } !Token
     token.value.str = res
     return token
-}
-
-def lex_directive(state: *State, list: **TokenList) {
-    let start = state.i
-    var end = state.i
-    var ch = peek(state)
-    while ch != EOF and is_alphanumeric(ch) {
-        pop(state)
-        end += 1
-        ch = peek(state)
-    }
-    let res = state.input.slice(start, end)
-    if res == "ifdef" {
-    } else if res == "ifndef" {
-    } else if res == "if" {
-    } else if res == "elif" {
-    } else if res == "else" {
-    } else if res == "endif" {
-    } else if res == "include" {
-        while ch != EOF and (ch == ' ' or ch == '\t') {
-            ch = pop(state)
-        }
-        if ch == '<' {
-            ch = pop(state)
-            var include: StringBuffer = ""
-            while ch != EOF and ch != '>' {
-                include += ch
-                ch = pop(state)
-            }
-            for var prefix in include_path {
-                let file = prefix + "/" + include
-                if util::exists(file) {
-                    let new_tokens = lex(file)
-                    if new_tokens {
-                        (@list).token = new_tokens.token
-                        (@list).next = new_tokens.next
-                        var next = new_tokens
-                        while next.next {
-                            next = next.next
-                        }
-                        @list = next
-                    }
-                    break
-                }
-            }
-            pop(state)
-        } else if ch == '"' {
-
-        }
-    } else if res == "define" {
-    }
 }
 
 def lex_float(state: *State) -> Token {
@@ -482,48 +460,111 @@ def lex_symbol(state: *State) -> Token {
     return { kind = tt } !Token
 }
 
-def lex(path: Str) -> *TokenList {
-    let fp = open(path, "r")
-    let input = read_all(fp)
-    close(fp)
+def lex_next_token(state: *State) -> Token {
+    let start_line = state.line
+    let start_col = state.column
 
-    return lex(input, path)
-}
-
-def lex(input: Str, path: Str) -> *TokenList {
-    let state = {
-        input = input,
-        file = path
-    } !State
-
-    var res = zero_allocate(TokenList)
-    var first = res
-    while state.i < input.length() {
-        let start_line = state.line
-        let start_col = state.column
-        var token: Token
-        var ch = peek(*state)
+    var token: Token
+    loop {
+        var ch = peek(state)
         switch ch {
             case EOF: 
-                pop(*state)
-                break
-            case '#':
-                pop(*state)
-                ch = peek(*state)
-                while ch == ' ' or ch == '\t' {
-                    ch = pop(*state)
-                }
-                lex_directive(*state, *res)
-                continue
+                pop(state)
             case '\n', '\r', ' ', '\t': 
-                pop(*state)
+                pop(state)
                 continue
-            case '0'..='9': token = lex_number(*state)
-            case 'a'..='z', 'A'..'Z', '_': token = lex_identifier(*state)
-            case '"': token = lex_string(*state)
-            case '\'': token = lex_char(*state)
-            case: token = lex_symbol(*state)
+            case '0'..='9': token = lex_number(state)
+            case 'a'..='z', 'A'..'Z', '_': token = lex_identifier(state)
+            case '"': token = lex_string(state)
+            case '\'': token = lex_char(state)
+            case '/':
+                let second = peek(state, 1)
+                if second == '*' {
+                    pop(state)
+                    pop(state)
+                    while ch != '*' and peek(state, 1) != '/' and ch != EOF {
+                        ch = pop(state)
+                    }
+                    pop(state)
+                } else if second == '/' {
+                    pop(state)
+                    pop(state)
+                    while ch != '\n' and ch != EOF {
+                        ch = pop(state)
+                    }
+                } else {
+                    token = lex_symbol(state)
+                }
+            case '#': break
+            case: token = lex_symbol(state)
         }
+        break
+    }
+
+    token.loc = {
+        line = start_line,
+        column = start_col,
+        end_line = state.line,
+        end_column = state.column,
+        file = state.file
+    } !Location
+
+    return token
+}
+
+def lex_directive(state: *State) -> Token {
+    var name: Token
+    while state.i < state.input.length() {
+        name = lex_next_token(state)
+        if is_textual(name.kind) or name.kind == TokenKind::EOF {
+            break
+        }
+    }
+    
+    var directive: TokenKind
+    if prep_directives.contains(name.value.str) {
+        directive = prep_directives[name.value.str]
+    }
+
+    if directive != TokenKind::P_MACRO {
+        yield { kind = directive, loc = name.loc } !Token
+    }
+
+    var first_token = true
+    while state.i < state.input.length() {
+        let start_line = state.line
+        let start_col = state.column
+
+        var token: Token
+        var ch = peek(state)
+        switch ch {
+            case '\n': 
+                token = { kind = TokenKind::EOL } !Token
+                pop(state)
+            case '#':
+                pop(state)
+                token = { kind = TokenKind::STRINGIFY } !Token
+                if peek(state) == '#' {
+                    pop(state)
+                    token = { kind = TokenKind::CONCAT } !Token
+                }
+            case: 
+                let next = lex_next_token(state)
+                if is_textual(next.kind) and directive == TokenKind::P_MACRO and first_token {
+                    if peek(state) == '(' {
+                        yield { kind = TokenKind::P_MACRO_FUNLIKE, loc = name.loc } !Token
+                    } else {
+                        yield { kind = directive, loc = name.loc } !Token
+                    }
+                    first_token = false
+                }
+                yield next
+                continue
+                
+        }
+
+        first_token = false
+
         token.loc = {
             line = start_line,
             column = start_col,
@@ -531,17 +572,59 @@ def lex(input: Str, path: Str) -> *TokenList {
             end_column = state.column,
             file = state.file
         } !Location
+        yield token
 
+        if token.kind == TokenKind::EOL {
+            return
+        }
+    }
+}
+
+export def lex(path: Str) -> *TokenList {
+    let fp = open(path, "r")
+    let input = read_all(fp)
+    close(fp)
+
+    return lex(input, path)
+}
+
+export def lex(input: Str, path: Str) -> *TokenList {
+    let state = {
+        input = input,
+        file = path
+    } !State
+    
+    var res = zero_allocate(TokenList)
+    var first = res
+    for var token in lex(*state) {
+        if token.kind == TokenKind::UNKNOWN {
+            continue
+        }
         let next = zero_allocate(TokenList)
         res.token = token
         res.next = next
         res = next
     }
+
     res.token.kind = TokenKind::EOF
     return first
 }
 
-def print_tokens(list: *TokenList) {
+def lex(state: *State) -> Token {
+    while state.i < state.input.length() {
+        var token: Token
+        var ch = peek(state)
+        if ch == '#' {
+            pop(state)
+            yield from lex_directive(state)
+        } else {
+            token = lex_next_token(state)
+            yield token
+        }
+    }
+}
+
+export def print_tokens(list: *TokenList) {
     loop {
         let token = list.token
         print(to_string(token.kind))
@@ -565,18 +648,3 @@ def print_tokens(list: *TokenList) {
     }
     print("\n")
 }
-
-let include_path = [
-    ".",
-    "/usr/local/include",
-    "/usr/include/x86_64-linux-gnu",
-    "/usr/include"
-]
-
-let input = """
-    "0\\?\\u0064"
-"""
-let out = lex(input, "")
-print_tokens(out)
-print("\n")
-delete(out)
