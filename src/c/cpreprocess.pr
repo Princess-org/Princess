@@ -8,11 +8,15 @@ type Define = struct {
     is_function_like: bool
     arguments: &Vector(Token)
     replacement_list: *TokenList
+    nesting: int
 }
 
 type State = struct {
+    prev: *TokenList
+    list: *TokenList
     defines: &SMap(Define)
     context_stack: &Vector(Str)
+    ifdef_stack: &Vector(bool)
 }
 
 def is_macro_disabled(state: *State, macro_name: Str) -> bool {
@@ -42,99 +46,130 @@ def copy_replacement_list(to_copy: *TokenList, tail: *TokenList) -> *TokenList {
     return start
 }
 
-def preprocess(list: *TokenList) {
-    let state = {
-        defines = map::make(Define),
-        context_stack = vector::make(Str)
-    } !State
-
-    preprocess(list, *state)
+def delete_next(s: *State) {
+    let next = s.list.next
+    s.prev.next = next
+    s.list.next = null
+    delete(s.list)
+    s.list = next
 }
 
-def preprocess(list: *TokenList, state: *State) {
-    var prev: *TokenList = null
-
-    def next_token {
-        let l = *list
-        let p = *prev
-        while (@l) and (@l).token.kind == TokenKind::EOL {
-            if state.context_stack.length > 0 {
-                state.context_stack.pop()
-            }
-            let next = (@l).next
-            (@p).next = next
-            (@l).next = null
-            delete((@l))
-            (@l) = next
+def next_token(s: *State) {
+    while s.list and s.list.token.kind == TokenKind::EOL {
+        if s.context_stack.length > 0 {
+            s.context_stack.pop()
         }
+        delete_next(s)
     }
+}
 
-    while list {
-        let token = list.token
-        //print(list.token.kind, "\n")
+def skip_to_endif(s: *State) {
+    while s.list and s.list.token.kind != TokenKind::P_ENDIF {
+        delete_next(s)
+    }
+    delete_next(s)
+    delete_next(s)
+}
+
+def skip_to_else(s: *State) {
+    var nesting = 1
+    while s.list {
+        if s.list.token.kind == TokenKind::P_IF or 
+            s.list.token.kind == TokenKind::P_IFDEF or
+            s.list.token.kind == TokenKind::P_IFNDEF {
+            nesting += 1
+        } else if s.list.token.kind == TokenKind::P_ENDIF or 
+            s.list.token.kind == TokenKind::P_ELSE or
+            s.list.token.kind == TokenKind::P_ELIF {
+            nesting -= 1
+        }
+
+        if nesting == 0 { break }
+
+        delete_next(s)
+    }
+}
+
+def preprocess(list: *TokenList) {
+    let state = {
+        list = list,
+        defines = map::make(Define),
+        context_stack = vector::make(Str),
+        ifdef_stack = vector::make(bool)
+    } !State
+
+    preprocess(*state)
+}
+
+def preprocess(s: *State) {
+    s.prev = s.list
+
+    while s.list {
+        let token = s.list.token
+        //print(s.list.token.kind, "\n")
         if token.kind == TokenKind::P_MACRO or token.kind == TokenKind::P_MACRO_FUNLIKE {
-            if not list.next { return }
-            let name = list.next.token
-            list = list.next
+            if not s.list.next { return }
+            let name = s.list.next.token
+            s.list = s.list.next
 
             var args: &Vector(Token)
             if token.kind == TokenKind::P_MACRO_FUNLIKE {
                 args = vector::make(Token)
 
-                if not list.next { return }
-                list = list.next.next
-                while list.token.kind != TokenKind::C_PAREN and list.token.kind != TokenKind::EOF {
-                    if list.token.kind != TokenKind::COMMA {
-                        args.push(list.token)
+                if not s.list.next { return }
+                s.list = s.list.next.next
+                while s.list.token.kind != TokenKind::C_PAREN and s.list.token.kind != TokenKind::EOF {
+                    if s.list.token.kind != TokenKind::COMMA {
+                        args.push(s.list.token)
                     }
-                    list = list.next
+                    s.list = s.list.next
                 }
             }
 
-            let start = list.next
-            list = start
-            while list and list.token.kind != TokenKind::EOL and 
-                list.token.kind != TokenKind::EOF {
-                list = list.next
+            let start = s.list.next
+            s.list = start
+            while s.list and s.list.token.kind != TokenKind::EOL and 
+                s.list.token.kind != TokenKind::EOF {
+                s.list = s.list.next
             }
-            if not list { return }
-            let next = list.next
-            list.next = null
-            if prev { prev.next = list.next }
-            list = next
+            if not s.list { return }
+            let next = s.list.next
+            s.list.next = null
+            if s.prev { s.prev.next = s.list.next }
+            s.list = next
 
-            state.defines[name.value.str] = {
+            s.defines[name.value.str] = {
                 token = name,
                 is_function_like = token.kind == TokenKind::P_MACRO_FUNLIKE,
                 replacement_list = start,
                 arguments = args
             } !Define
         } else if is_textual(token.kind) and 
-            state.defines.contains(token.value.str) and 
-            not is_macro_disabled(state, token.value.str) {
+            s.defines.contains(token.value.str) and 
+            not is_macro_disabled(s, token.value.str) {
 
-            let define = *state.defines[token.value.str]
+            let define = *s.defines[token.value.str]
 
-            let tmp = list
-            list = list.next
-            next_token()
-            if list and list.token.kind == TokenKind::O_PAREN and define.is_function_like {
+            let tmp = s.list
+            s.list = s.list.next
+            next_token(s)
+            if s.list and s.list.token.kind == TokenKind::O_PAREN and define.is_function_like {
                 //print("Pushing ", token.value.str, "\n")
-                state.context_stack.push(token.value.str)
+                s.context_stack.push(token.value.str)
 
-                list = list.next
+                s.list = s.list.next
 
                 let arguments = vector::make(type *TokenList)
 
                 var nesting = 0
-                while list and (list.token.kind != TokenKind::EOF and list.token.kind != TokenKind::C_PAREN) {
+                while s.list and (s.list.token.kind != TokenKind::EOF and s.list.token.kind != TokenKind::C_PAREN) {
                     var arg_start = zero_allocate(TokenList)
                     arg_start.token.kind = TokenKind::START
                     var result = zero_allocate(TokenList)
                     arg_start.next = result
                     loop {
-                        @result = @list
-                        list = list.next
+                        @result = @s.list
+                        s.list = s.list.next
 
                         if result.token.kind == TokenKind::O_PAREN {
                             nesting += 1
@@ -142,11 +177,11 @@ def preprocess(list: *TokenList, state: *State) {
                             nesting -= 1
                         }
                         
-                        if not list or (nesting <= 0 and 
-                            (list.token.kind == TokenKind::COMMA or 
-                            list.token.kind == TokenKind::C_PAREN)) {
-                            if list and list.token.kind == TokenKind::COMMA {
-                                list = list.next
+                        if not s.list or (nesting <= 0 and 
+                            (s.list.token.kind == TokenKind::COMMA or 
+                            s.list.token.kind == TokenKind::C_PAREN)) {
+                            if s.list and s.list.token.kind == TokenKind::COMMA {
+                                s.list = s.list.next
                             }
                             result.next = null
                             break
@@ -157,19 +192,22 @@ def preprocess(list: *TokenList, state: *State) {
                         result = new
                     }
 
-                    preprocess(arg_start, state)
+                    let list = s.list
+                    s.list = arg_start
+                    preprocess(s)
                     arguments.push(arg_start.next)
+                    s.list = list
                     //print("Argument: ")
                     //print_tokens(arg_start.next)
                     //print("\n")
                 }
 
-                if not list { return }
+                if not s.list { return }
 
                 let tokens = copy_replacement_list(define.replacement_list, null)
                 var cur2 = tokens
-                prev.next = tokens
-                let rescan_start = prev
+                s.prev.next = tokens
+                let rescan_start = s.prev
 
                 //print("Replacement list: ")
                 //print_tokens(tokens)
@@ -192,36 +230,36 @@ def preprocess(list: *TokenList, state: *State) {
                         }
                 
                         if arg_index != -1 and arg_index < arguments.length {
-                            prev.next = copy_replacement_list(arguments[arg_index], cur2.next)
+                            s.prev.next = copy_replacement_list(arguments[arg_index], cur2.next)
                         }
                     }
 
-                    prev = cur2
+                    s.prev = cur2
                     if not cur2.next {
-                        cur2.next = list.next
+                        cur2.next = s.list.next
                         break
                     }
                     cur2 = cur2.next
                 }
 
-                list = rescan_start
+                s.list = rescan_start
                 //print("Now looking at: ")
-                //print_tokens(list)
+                //print_tokens(s.list)
                 //print("\n")
             } else if not define.is_function_like {
-                state.context_stack.push(token.value.str)
+                s.context_stack.push(token.value.str)
 
-                list = list.next
-                list = copy_replacement_list(define.replacement_list, list)
-                state.context_stack.push(token.value.str)
+                s.list = s.list.next
+                s.list = copy_replacement_list(define.replacement_list, s.list)
+                s.context_stack.push(token.value.str)
 
-                prev.next = list
+                s.prev.next = s.list
             }
         } else if token.kind == TokenKind::P_INCLUDE {
-            let start = list
-            next_token()
-            let include = list.next
-            list = include.next
+            let start = s.list
+            next_token(s)
+            let include = s.list.next
+            s.list = include.next
             include.next = null
             delete(start)
 
@@ -231,30 +269,63 @@ def preprocess(list: *TokenList, state: *State) {
                 if util::exists(full_path) {
                     var tokens = lex(full_path)
                     preprocess(tokens)
-                    prev.next = tokens.next
-                    prev = tokens
+                    s.prev.next = tokens.next
+                    s.prev = tokens
                     loop {
                         if not tokens.next or tokens.next.token.kind == TokenKind::EOF {
-                            tokens.next = list.next
-                            list = list.next
-                            prev = tokens
+                            tokens.next = s.list.next
+                            s.list = s.list.next
+                            s.prev = tokens
                             break
                         }
-                        prev = tokens
+                        s.prev = tokens
                         tokens = tokens.next
                     }
                     break
                 }
             }
+        } else if token.kind == TokenKind::P_IFDEF or token.kind == TokenKind::P_IFNDEF {
+            var start = s.prev
+            delete_next(s)
+            let macro = s.list.token
+            delete_next(s)
+            if not is_textual(macro.kind) { continue }
+
+            if s.defines.contains(macro.value.str) == (token.kind == TokenKind::P_IFNDEF) {
+                s.ifdef_stack.push(false)
+                skip_to_else(s)
+
+                start.next = s.list
+                s.prev = start
+
+            } else {
+                s.ifdef_stack.push(true)
+                delete_next(s)
+                start.next = s.list
+            }
+        } else if token.kind == TokenKind::P_ELIF {
+            if s.ifdef_stack.peek() {
+                skip_to_endif(s)    
+            }
+        } else if token.kind == TokenKind::P_ENDIF {
+            delete_next(s)
+            if s.ifdef_stack.length > 0 {
+                s.ifdef_stack.pop()
+            }
+        } else if token.kind == TokenKind::P_ELSE {
+            delete_next(s)
+            if s.ifdef_stack.peek() {
+                skip_to_endif(s)
+            }
         } else if token.kind == TokenKind::EOL {
-            next_token()
+            next_token(s)
         } else {
-            prev = list
-            list = list.next
+            s.prev = s.list
+            s.list = s.list.next
         }
     }
 
-    //print(state.context_stack.length, "\n")
+    //print(s.context_stack.length, "\n")
 }
 
 let include_path = [
@@ -263,14 +334,3 @@ let include_path = [
     "/usr/include/x86_64-linux-gnu",
     "/usr/include"
 ]
-
-let input = """
-#include <stdio.h>
-"""
-let out = lex(input, "")
-print_tokens(out)
-print("\n")
-preprocess(out)
-print_tokens(out)
-print("\n")
-delete(out)
