@@ -40,6 +40,7 @@ export type TokenKind = enum {
 
     QUESTION_MARK; COMMA; SEMICOLON
 
+    PP_NUMBER
     IDENTIFIER
     INTEGER
     CHARACTER
@@ -47,7 +48,7 @@ export type TokenKind = enum {
     STRING
 }
 
-let keywords = map::make(TokenKind)
+export let keywords = map::make(TokenKind)
 keywords["auto"] = TokenKind::K_AUTO
 keywords["break"] = TokenKind::K_BREAK
 keywords["case"] = TokenKind::K_CASE
@@ -95,41 +96,14 @@ prep_directives["ifndef"] = TokenKind::P_IFNDEF
 prep_directives["undef"] = TokenKind::P_UNDEF
 prep_directives["include"] = TokenKind::P_INCLUDE
 
-export type Token = struct {
+export type PPToken = struct {
     kind: TokenKind
     loc: Location
-    value: struct #union {
-        str: StringSlice
-        i: uint64
-        f: double
-    }
-}
-
-export def is_textual(kind: TokenKind) -> bool {
-    return kind == TokenKind::STRING or
-        kind == TokenKind::IDENTIFIER or
-        kind >= TokenKind::K_AUTO and kind <= TokenKind::K_BOOL
-}
-
-export def destruct(token: *Token) {
-    if is_textual(token.kind) {
-        __destruct__(*token.value.str)
-    }
-}
-
-export def construct(copy: *Token, this: *Token) {
-    copy.kind = this.kind
-    copy.loc = this.loc
-
-    if is_textual(copy.kind) {
-        copy.value.str = this.value.str
-    } else {
-        copy.value = this.value
-    }
+    value: Str
 }
 
 export type TokenList = struct {
-    token: Token
+    token: PPToken
     next: *TokenList
 }
 
@@ -218,25 +192,29 @@ def get_hex_digit(a: char) -> int {
     return -1
 }
 
-def lex_identifier(state: *State) -> Token {
+def lex_identifier(state: *State) -> PPToken {
     let start = state.i
     var end = state.i
     var next = peek(state)
+    
+    var buf: StringBuffer = ""
     while next != EOF and is_alphanumeric(next) {
+        buf += next
+
         pop(state)
         end += 1
         next = peek(state)
     }
-    let res = state.input.slice(start, end)
-    if keywords.contains(res) {
-        let token = { kind = keywords[res] } !Token
-        token.value.str = res
-    }
-    let token = { kind = TokenKind::IDENTIFIER } !Token
-    token.value.str = res
+    //if keywords.contains(res) {
+    //    let token = { kind = keywords[res] } !PPToken
+    //    token.value = res
+    //}
+    let token = { kind = TokenKind::IDENTIFIER } !PPToken
+    token.value = buf
     return token
 }
 
+/*
 def lex_float(state: *State) -> Token {
     var off: int = 0
     let res = util::parse_float(state.input.slice(state.i, length(state.input)), *off)
@@ -299,6 +277,34 @@ def lex_number(state: *State) -> Token {
     }
     return lex_int(state)
 }
+*/
+
+def lex_pp_number(state: *State) -> PPToken {
+    var c = peek(state)
+    var buf: StringBuffer = ""
+    while c != EOF {
+        if c == 'e' or c == 'E' or c == 'p' or c == 'P' {
+            buf += c
+            c = pop(state)
+            if c == '+' or c == '-' {
+                buf += c
+                c = pop(state)
+                continue
+            }
+        }
+        if c != '.' and not is_alphanumeric(c) {
+            break
+        }
+
+        buf += c
+        c = pop(state)
+    }
+    
+    let tok = { kind = TokenKind::PP_NUMBER } !PPToken
+    tok.value = buf
+
+    return tok
+}
 
 def lex_escape_sequence(state: *State) -> Str {
     var str: StringBuffer = ""
@@ -342,7 +348,7 @@ def lex_escape_sequence(state: *State) -> Str {
     return str
 }
 
-def lex_string(state: *State) -> Token {
+def lex_string(state: *State) -> PPToken {
     pop(state)
     var ch = peek(state)
     var str: StringBuffer = ""
@@ -357,12 +363,12 @@ def lex_string(state: *State) -> Token {
     }
     pop(state)
 
-    let tok = { kind = TokenKind::STRING } !Token
-    tok.value.str = to_slice(to_str(str))
+    let tok = { kind = TokenKind::STRING } !PPToken
+    tok.value = str
     return tok
 }
 
-def lex_char(state: *State) -> Token {
+def lex_char(state: *State) -> PPToken {
     pop(state)
     var ch = peek(state)
     if ch == '\\' {
@@ -374,12 +380,12 @@ def lex_char(state: *State) -> Token {
     pop(state)
     pop(state)
 
-    let tok = { kind = TokenKind::CHARACTER } !Token
-    tok.value.i = ch !uint64
+    let tok = { kind = TokenKind::CHARACTER } !PPToken
+    tok.value = to_string(ch)
     return tok
 }
 
-def lex_symbol(state: *State) -> Token {
+def lex_symbol(state: *State) -> PPToken {
     let first = peek(state, 0)
     let second = peek(state, 1)
     let third = peek(state, 2)
@@ -455,27 +461,36 @@ def lex_symbol(state: *State) -> Token {
         }
     }
 
+    var ch = peek(state)
+    var buf: StringBuffer = ""
     for var j in 0..length {
-        pop(state)
+        buf += ch
+        ch = pop(state)
     }
 
-    return { kind = tt } !Token
+    return { kind = tt, value = buf } !PPToken
 }
 
-def lex_next_token(state: *State) -> Token {
-    let start_line = state.line
-    let start_col = state.column
+def lex_next_token(state: *State) -> PPToken {
+    var start_line = state.line
+    var start_col = state.column
 
-    var token: Token
+    var token: PPToken
     loop {
         var ch = peek(state)
         switch ch {
             case EOF: 
                 pop(state)
-            case '\n', '\r', ' ', '\t': 
+            case '\n':
+                start_col = 0
+                start_line += 1
                 pop(state)
                 continue
-            case '0'..='9': token = lex_number(state)
+            case '\r', ' ', '\t':
+                start_col += 1
+                pop(state)
+                continue
+            case '0'..='9': token = lex_pp_number(state)
             case 'a'..='z', 'A'..'Z', '_': token = lex_identifier(state)
             case '"': token = lex_string(state)
             case '\'': token = lex_char(state)
@@ -514,22 +529,22 @@ def lex_next_token(state: *State) -> Token {
     return token
 }
 
-def lex_directive(state: *State) -> Token {
-    var name: Token
+def lex_directive(state: *State) -> PPToken {
+    var name: PPToken
     while state.i < state.input.length() {
         name = lex_next_token(state)
-        if is_textual(name.kind) or name.kind == TokenKind::EOF {
+        if name.kind == TokenKind::IDENTIFIER or name.kind == TokenKind::EOF {
             break
         }
     }
     
     var directive: TokenKind
-    if prep_directives.contains(name.value.str) {
-        directive = prep_directives[name.value.str]
+    if prep_directives.contains(name.value) {
+        directive = prep_directives[name.value]
     }
 
     if directive != TokenKind::P_MACRO {
-        yield { kind = directive, loc = name.loc } !Token
+        yield { kind = directive, loc = name.loc } !PPToken
     }
 
     var ch = peek(state)
@@ -537,20 +552,26 @@ def lex_directive(state: *State) -> Token {
         while ch != TokenKind::EOF and ch == ' ' or ch == '\t' or ch == '\n' {
             ch = pop(state)
         }
-        var start = state.i + 1
 
+        var buf: StringBuffer = ""
         var kind = TokenKind::INCLUDE_QOUTE
         if ch == '<' { kind = TokenKind::INCLUDE_ANGLE}
         if ch == '<' {
             ch = pop(state)
-            while ch != '>' { ch = pop(state) }
+            while ch != '>' {
+                buf += ch
+                ch = pop(state) 
+            }
         } else if ch == '"' {
             ch = pop(state)
-            while ch != '"' { ch = pop(state) }
+            while ch != '"' { 
+                buf += ch
+                ch = pop(state) 
+            }
         }
         ch = pop(state)
-        let token = { kind = kind } !Token
-        token.value.str = state.input.slice(start, state.i - 1)
+        let token = { kind = kind } !PPToken
+        token.value = buf
 
         yield token
     }
@@ -560,26 +581,26 @@ def lex_directive(state: *State) -> Token {
         let start_line = state.line
         let start_col = state.column
 
-        var token: Token
+        var token: PPToken
         var ch = peek(state)
         switch ch {
             case '\n': 
-                token = { kind = TokenKind::EOL } !Token
+                token = { kind = TokenKind::EOL } !PPToken
                 pop(state)
             case '#':
                 pop(state)
-                token = { kind = TokenKind::STRINGIFY } !Token
+                token = { kind = TokenKind::STRINGIFY } !PPToken
                 if peek(state) == '#' {
                     pop(state)
-                    token = { kind = TokenKind::CONCAT } !Token
+                    token = { kind = TokenKind::CONCAT } !PPToken
                 }
             case: 
                 let next = lex_next_token(state)
-                if is_textual(next.kind) and directive == TokenKind::P_MACRO and first_token {
+                if next.kind == TokenKind::IDENTIFIER and directive == TokenKind::P_MACRO and first_token {
                     if peek(state) == '(' {
-                        yield { kind = TokenKind::P_MACRO_FUNLIKE, loc = name.loc } !Token
+                        yield { kind = TokenKind::P_MACRO_FUNLIKE, loc = name.loc } !PPToken
                     } else {
-                        yield { kind = directive, loc = name.loc } !Token
+                        yield { kind = directive, loc = name.loc } !PPToken
                     }
                     first_token = false
                 }
@@ -638,9 +659,9 @@ export def lex(input: Str, path: Str) -> *TokenList {
     return first
 }
 
-def lex(state: *State) -> Token {
+def lex(state: *State) -> PPToken {
     while state.i < state.input.length() {
-        var token: Token
+        var token: PPToken
         var ch = peek(state)
         if ch == '#' {
             pop(state)
@@ -658,14 +679,12 @@ export def tokens_to_json(list: *TokenList) -> &Json {
         let token = list.token
         let elem = json::make_object()
         elem["kind"] = to_string(token.kind)
-        if token.kind == TokenKind::CHARACTER or token.kind == TokenKind::INTEGER  {
-            elem["value"] = token.value.i
-        } else if token.kind == TokenKind::FLOAT {
-            elem["value"] = token.value.f
-        } else if token.kind == TokenKind::IDENTIFIER or token.kind == TokenKind::STRING or
-            token.kind == TokenKind::INCLUDE_ANGLE or token.kind == TokenKind::INCLUDE_QOUTE {
-            elem["value"] = token.value.str
+        if token.kind != TokenKind::START and 
+            token.kind != TokenKind::EOF and
+            token.kind != TokenKind::EOL {
+            elem["value"] = token.value
         }
+
         res.push(elem)
         if not list.next {
             break

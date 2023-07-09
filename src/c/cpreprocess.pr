@@ -4,9 +4,9 @@ import clexer
 import util
 
 type Define = struct {
-    token: Token
+    token: PPToken
     is_function_like: bool
-    arguments: &Vector(Token)
+    arguments: &Vector(PPToken)
     replacement_list: *TokenList
     nesting: int
 }
@@ -22,7 +22,7 @@ type State = struct {
 def is_macro_disabled(state: *State, macro_name: Str) -> bool {
     for var context in state.context_stack {
         if context == macro_name {
-            //print("Disabled! ", macro_name, "\n")
+            //error("Disabled! ", macro_name, "\n")
             return true
         }
     }
@@ -50,6 +50,7 @@ def delete_next(s: *State) {
     let next = s.list.next
     s.prev.next = next
     s.list.next = null
+    print(s.list !*, "\n")
     delete(s.list)
     s.list = next
 }
@@ -90,7 +91,7 @@ def skip_to_else(s: *State) {
     }
 }
 
-def preprocess(list: *TokenList) {
+export def preprocess(list: *TokenList) {
     let state = {
         list = list,
         defines = map::make(Define),
@@ -106,15 +107,20 @@ def preprocess(s: *State) {
 
     while s.list {
         let token = s.list.token
-        //print(s.list.token.kind, "\n")
-        if token.kind == TokenKind::P_MACRO or token.kind == TokenKind::P_MACRO_FUNLIKE {
+        if token.kind == TokenKind::P_UNDEF {
+            delete_next(s)
+            let name = s.list.token.value
+            s.defines.remove(name)
+            delete_next(s)
+            delete_next(s)
+        } else if token.kind == TokenKind::P_MACRO or token.kind == TokenKind::P_MACRO_FUNLIKE {
             if not s.list.next { return }
             let name = s.list.next.token
             s.list = s.list.next
 
-            var args: &Vector(Token)
+            var args: &Vector(PPToken)
             if token.kind == TokenKind::P_MACRO_FUNLIKE {
-                args = vector::make(Token)
+                args = vector::make(PPToken)
 
                 if not s.list.next { return }
                 s.list = s.list.next.next
@@ -135,29 +141,40 @@ def preprocess(s: *State) {
             if not s.list { return }
             let next = s.list.next
             s.list.next = null
-            if s.prev { s.prev.next = s.list.next }
+
+            s.prev.next = next
             s.list = next
 
-            s.defines[name.value.str] = {
+            s.defines[name.value] = {
                 token = name,
                 is_function_like = token.kind == TokenKind::P_MACRO_FUNLIKE,
                 replacement_list = start,
                 arguments = args
             } !Define
-        } else if is_textual(token.kind) and 
-            s.defines.contains(token.value.str) and 
-            not is_macro_disabled(s, token.value.str) {
+        } else if token.kind == TokenKind::IDENTIFIER and 
+            s.defines.contains(token.value) and 
+            not is_macro_disabled(s, token.value) {
+            
+            if s.prev.token.kind == TokenKind::STRINGIFY or
+                s.prev.token.kind == TokenKind::CONCAT or 
+                (s.list.next and s.list.next.token.kind == TokenKind::CONCAT) {
 
-            let define = *s.defines[token.value.str]
+                s.prev = s.list
+                s.list = s.list.next
 
-            let tmp = s.list
+                continue
+            }
+
+            let prev = s.prev
+            let list = s.list
+            let define = *s.defines[token.value]
+
             s.list = s.list.next
             next_token(s)
             if s.list and s.list.token.kind == TokenKind::O_PAREN and define.is_function_like {
-                //print("Pushing ", token.value.str, "\n")
-                s.context_stack.push(token.value.str)
-
-                s.list = s.list.next
+                //print("Pushing ", token.value, "\n")
+                s.context_stack.push(token.value)
+                delete_next(s)
 
                 let arguments = vector::make(type *TokenList)
 
@@ -192,45 +209,92 @@ def preprocess(s: *State) {
                         result = new
                     }
 
-                    let list = s.list
-                    s.list = arg_start
-                    preprocess(s)
-                    arguments.push(arg_start.next)
-                    s.list = list
-                    //print("Argument: ")
-                    //print_tokens(arg_start.next)
-                    //print("\n")
+                    arguments.push(arg_start)
                 }
 
                 if not s.list { return }
 
                 let tokens = copy_replacement_list(define.replacement_list, null)
                 var cur2 = tokens
-                s.prev.next = tokens
-                let rescan_start = s.prev
+                prev.next = tokens
+                let rescan_start = prev
+                s.prev = prev
 
-                //print("Replacement list: ")
-                //print_tokens(tokens)
-                //print("\n")
-
-                //print("Start at: ")
-                //print_tokens(rescan_start)
-                //print("\n")
+                //error("Replacement list: ")
+                //error(tokens_to_json(tokens), "\n")
 
                 loop {
-                    if is_textual(cur2.token.kind) {
+                    if cur2.token.kind == TokenKind::STRINGIFY {
+                        s.prev.next = cur2.next
+                        cur2 = cur2.next
+
                         var arg_index = -1
                         var i = 0
                         for var arg in define.arguments {
-                            if arg.value.str == cur2.token.value.str {
+                            if arg.value == cur2.token.value {
                                 arg_index = i
                                 break
                             }
                             i += 1
                         }
-                
+
                         if arg_index != -1 and arg_index < arguments.length {
-                            s.prev.next = copy_replacement_list(arguments[arg_index], cur2.next)
+                            let arg = arguments[arg_index].next
+                            var str: StringBuffer = ""
+
+                            var prev: *TokenList = null
+                            var cur3 = arg
+                            while cur3 and cur3.token.kind != TokenKind::EOL {
+                                if prev and not (prev.token.loc.end_line == cur3.token.loc.line and 
+                                    prev.token.loc.end_column == cur3.token.loc.column) {
+
+                                    str += " "
+                                }
+                                if cur3.token.kind == TokenKind::STRING or cur3.token.kind == TokenKind::CHARACTER {
+                                    for var c in cur3.token.value {
+                                        if c == '\\' {
+                                            str += "\\\\"
+                                        } else if c == '"' {
+                                            str += "\\\""
+                                        } else {
+                                            str += c
+                                        }
+                                    }
+                                } else {
+                                    str += cur3.token.value
+                                }
+                                prev = cur3
+                                cur3 = cur3.next
+                            }
+                            cur2.token.kind = TokenKind::STRING
+                            cur2.token.value = str
+                        }
+                    } else if cur2.token.kind == TokenKind::IDENTIFIER {
+                        var arg_index = -1
+                        var i = 0
+                        for var arg in define.arguments {
+                            if arg.value == cur2.token.value {
+                                arg_index = i
+                                break
+                            }
+                            i += 1
+                        }
+
+                        if arg_index != -1 and arg_index < arguments.length {
+                            var args = copy_replacement_list(arguments[arg_index], null)
+                            
+                            // Preprocess as if it was the rest of the file
+                            let list = s.list
+                            let prev = s.prev
+                            s.list = args
+
+                            preprocess(s)
+                            s.prev.next = cur2.next
+
+                            s.list = list
+                            s.prev = prev
+
+                            s.prev.next = args.next
                         }
                     }
 
@@ -243,16 +307,12 @@ def preprocess(s: *State) {
                 }
 
                 s.list = rescan_start
-                //print("Now looking at: ")
-                //print_tokens(s.list)
-                //print("\n")
+
+                //error("Start at: ")
+                //error(tokens_to_json(rescan_start), "\n")
             } else if not define.is_function_like {
-                s.context_stack.push(token.value.str)
-
-                s.list = s.list.next
+                s.context_stack.push(token.value)
                 s.list = copy_replacement_list(define.replacement_list, s.list)
-                s.context_stack.push(token.value.str)
-
                 s.prev.next = s.list
             }
         } else if token.kind == TokenKind::P_INCLUDE {
@@ -263,7 +323,7 @@ def preprocess(s: *State) {
             include.next = null
             delete(start)
 
-            let file = include.token.value.str
+            let file = include.token.value
             for var path in include_path {
                 let full_path = path + "/" + file
                 if util::exists(full_path) {
@@ -289,9 +349,9 @@ def preprocess(s: *State) {
             delete_next(s)
             let macro = s.list.token
             delete_next(s)
-            if not is_textual(macro.kind) { continue }
+            if macro.kind != TokenKind::IDENTIFIER { continue }
 
-            if s.defines.contains(macro.value.str) == (token.kind == TokenKind::P_IFNDEF) {
+            if s.defines.contains(macro.value) == (token.kind == TokenKind::P_IFNDEF) {
                 s.ifdef_stack.push(false)
                 skip_to_else(s)
 
@@ -316,7 +376,7 @@ def preprocess(s: *State) {
             delete_next(s)
             if s.ifdef_stack.peek() {
                 skip_to_endif(s)
-            }
+            }  
         } else if token.kind == TokenKind::EOL {
             next_token(s)
         } else {
@@ -334,3 +394,15 @@ let include_path = [
     "/usr/include/x86_64-linux-gnu",
     "/usr/include"
 ]
+
+/*var input = """
+    #define f(a) a*g
+    #define g(a) f(a)
+    f(1)(2)(3)
+"""
+
+let tokens = lex(input, "<snippet>")
+preprocess(tokens)
+let res = tokens_to_json(tokens)
+delete(tokens)
+print(res)*/
