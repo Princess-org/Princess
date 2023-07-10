@@ -54,9 +54,7 @@ def copy_replacement_list(to_copy: *TokenList, tail: *TokenList, mask_operators:
 def delete_next(s: *State) {
     let next = s.list.next
     s.prev.next = next
-    s.list.next = null
-    //print(s.list !*, "\n")
-    delete(s.list)
+    delete_single(s.list)
     s.list = next
 }
 
@@ -257,8 +255,9 @@ def preprocess(s: *State) {
                             let arg_index = find_argument(define.arguments, cur2)
                             if arg_index != -1 and arg_index < arguments.length {
                                 let next = cur2.next
-                                var args = copy_replacement_list(arguments[arg_index], next, mask_operators = true)
-                                args = args.next
+                                let rl = copy_replacement_list(arguments[arg_index], next, mask_operators = true)
+                                delete_single(rl)
+                                let args = rl.next
                                 if args.token.kind == TokenKind::EMPTY {
                                     args.token.kind = TokenKind::PLACEMARKER
                                 }
@@ -273,8 +272,9 @@ def preprocess(s: *State) {
                             let arg_index = find_argument(define.arguments, cur2)
                             if arg_index != -1 and arg_index < arguments.length {
                                 let next = cur2.next
-                                var args = copy_replacement_list(arguments[arg_index], next, mask_operators = true)
-                                args = args.next
+                                let rl = copy_replacement_list(arguments[arg_index], next, mask_operators = true)
+                                delete_single(rl)
+                                let args = rl.next
                                 if args.token.kind == TokenKind::EMPTY {
                                     args.token.kind = TokenKind::PLACEMARKER
                                 }
@@ -335,21 +335,22 @@ def preprocess(s: *State) {
                         }
                     } else if cur2.next and cur2.next.token.kind == TokenKind::CONCAT {
                         let left = cur2
+                        let op = cur2.next
                         let right = cur2.next.next
                         //error(left.token.kind, " ", right.token.kind, "\n")
 
                         if right { 
                             if left.token.kind == TokenKind::PLACEMARKER {
-                                left.next.next = null
-                                delete(left)
+                                delete_single(left)
+                                delete_single(op)
                                 s.prev.next = right
                                 cur2 = right
                                 continue
                             } else if right.token.kind == TokenKind::PLACEMARKER {
                                 let prev = left.next
                                 left.next = right.next
-                                prev.next = null
-                                delete(prev)
+                                delete_single(op)
+                                delete_single(right)
                                 cur2 = left
                                 continue
                             } else {
@@ -362,9 +363,9 @@ def preprocess(s: *State) {
                                 list.token = new_token
                                 list.next = right.next
                                 s.prev.next = list
-                                cur2.next.next = null
-                                delete(cur2)
-
+                                delete_single(left)
+                                delete_single(op)
+                                delete_single(right)
                                 cur2 = list
                                 continue
                             }
@@ -409,20 +410,65 @@ def preprocess(s: *State) {
 
                 //error("Start at: ")
                 //error(tokens_to_json(rescan_start), "\n")
+
+                for var arg in arguments {
+                    delete(arg)
+                }
             } else if not define.is_function_like {
                 s.context_stack.push(token.value)
                 s.list = copy_replacement_list(define.replacement_list, s.list)
                 s.prev.next = s.list
             }
         } else if token.kind == TokenKind::P_INCLUDE {
+            let prev = s.prev
             let start = s.list
             next_token(s)
-            let include = s.list.next
-            s.list = include.next
-            include.next = null
-            delete(start)
+            var include = s.list.next.token
+            if include.kind != TokenKind::INCLUDE_ANGLE and include.kind != TokenKind::INCLUDE_QOUTE {
+                s.list = s.list.next
+                
+                let start2 = zero_allocate(TokenList)
+                start2.token.kind = TokenKind::START
+                start2.next = s.list
 
-            let file = include.token.value
+                s.prev = null
+                s.list = start2
+                while s.list and s.list.token.kind != TokenKind::EOL and s.list.token.kind != TokenKind::EOF {
+                    s.prev = s.list
+                    s.list = s.list.next
+                }
+                let next = s.list
+                s.prev.next = null
+
+                s.prev = null
+                s.list = start2
+                preprocess(s)
+
+                var include_str: StringBuffer = ""
+                s.prev = null
+                s.list = start2
+                while s.list and s.list.token.kind != TokenKind::EOL and s.list.token.kind != TokenKind::EOF {
+                    if s.prev and not (s.prev.token.loc.end_line == s.list.token.loc.line and 
+                        s.prev.token.loc.end_column == s.list.token.loc.column) {
+
+                        include_str += " "
+                    }
+
+                    include_str += s.list.token.value
+                    s.prev = s.list
+                    s.list = s.list.next
+                }
+
+                include = lex_include(include_str)
+
+                s.prev = prev
+                s.prev.next = next
+                s.list = next
+            } else {
+                delete_next(s)
+            }
+
+            let file = include.value
             for var path in include_path {
                 let full_path = path + "/" + file
                 if util::exists(full_path) {
@@ -486,6 +532,10 @@ def preprocess(s: *State) {
         }
     }
 
+    for var key in @s.defines.keys() {
+        let define = s.defines[key]
+        delete(define.replacement_list)
+    }
     //print(s.context_stack.length, "\n")
 }
 
@@ -496,18 +546,21 @@ let include_path = [
     "/usr/include"
 ]
 
-/*
-var input = """
-    #define hash_hash # ## #
-    #define mkstr(a) # a
-    #define in_between(a) mkstr(a)
-    #define join(c, d) in_between(c hash_hash d)
 
-    join(x, y)
+var input = """
+    #define f(a,b,c) a##b##c
+    f(,,)
+    f(1,,)
+    f(,2,)
+    f(,,3)
+    f(1,2,)
+    f(1,,3)
+    f(,2,3)
+    f(1,2,3)
 """
 
 let tokens = lex(input, "<snippet>")
 preprocess(tokens)
 let res = tokens_to_json(tokens)
 delete(tokens)
-print(res)*/
+print(res)
