@@ -1112,7 +1112,38 @@ export def equals(a: &Type, b: &Type) -> bool {
     assert
 }
 
-def has_function(entry: &TypeEntry, mb: StructuralTypeMember, module: &toolchain::Module) -> bool {
+def is_setter(mb: StructuralTypeMember) -> bool {
+    return mb.name.starts_with("__set_") and mb.name.ends_with("__")
+}
+
+def is_getter(mb: StructuralTypeMember) -> bool {
+    return mb.parameter_t.length == 0
+}
+
+def has_function(entry: &TypeEntry, intf: &Type, mb: StructuralTypeMember, module: &toolchain::Module) -> bool {
+    var tpe = entry.tpe
+
+    if tpe.kind == typechecking::TypeKind::STRUCT {
+        implements(reference(tpe), intf, module)
+    }
+    if tpe.kind == typechecking::TypeKind::REFERENCE or tpe.kind == typechecking::TypeKind::WEAK_REF or
+        tpe.kind == typechecking::TypeKind::POINTER {
+        tpe = tpe.tpe
+    }
+
+    if tpe and tpe.kind == typechecking::TypeKind::STRUCT { 
+        if is_setter(mb) {
+            let name = mb.name.slice(6, mb.name.length() - 2)
+            for var field in @tpe.fields {
+                if field.name == name and equals(mb.parameter_t[0].tpe, field.tpe) { return true }
+            }
+        } else if is_getter(mb) {
+            for var field in @tpe.fields {
+                if field.name == mb.name and equals(mb.return_t[0], field.tpe) { return true }
+            }
+        }
+    }
+
     for var member in iterate_member_functions(entry.tpe) {
         let function = member.function
         if function.name != mb.name { continue }
@@ -1211,7 +1242,7 @@ export def implements(a: &Type, b: &Type, module: &toolchain::Module) -> bool {
                 found = true
             }
             if not found {
-                found = has_function(type_entry, mb, module)
+                found = has_function(type_entry, b, mb, module)
             }
             if not found { 
                 type_entry.cached[nameb] = CacheEntry::NOT_CONTAINS
@@ -1223,7 +1254,7 @@ export def implements(a: &Type, b: &Type, module: &toolchain::Module) -> bool {
     } else {
         for var i in 0..vector::length(b.members) {
             let mb = b.members[i]
-            if not has_function(type_entry, mb, module) { 
+            if not has_function(type_entry, b, mb, module) { 
                 type_entry.cached[nameb] = CacheEntry::NOT_CONTAINS
                 return false 
             }
@@ -2024,6 +2055,7 @@ export def generate_concrete_functions(type_constructor: &Type, tpe: &Type, stat
     for var j in 0..vector::length(functions) {
         let function = functions[j]
         let ftpe = copy(function.function)
+        if ftpe.kind != TypeKind::FUNCTION { continue }
 
         let pars = vector::make(NamedParameter)
         pars.push({ _tpe = tpe } !NamedParameter)
@@ -2471,39 +2503,76 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
 
         for var i in 0..vector::length(node.value.body) {
             let member = node.value.body[i]
+            if not member { continue }
             var current_member: *StructuralTypeMember = null
             if current_type { current_member = current_type.members.get(i) }
 
             let name_node = member.value.structural_member.name
             if not name_node { continue }
             let name = parser::identifier_to_str(name_node)
-            let parameter_t = vector::make(NamedParameter)
-            let return_t = vector::make(type &Type)
+            
+            let kw = member.value.structural_member.kw
+            if kw == parser::MemberType::DEF {
+                let parameter_t = vector::make(NamedParameter)
+                let return_t = vector::make(type &Type)
 
-            for var i in 0..vector::length(member.value.structural_member.params) {
-                let parameter_node = member.value.structural_member.params[i]
-                let current_parameter_type = (current_member.parameter_t[i]).tpe if current_member else null !&Type
-                var ntpe = box(type_lookup(parameter_node.value.param.tpe, state, current_parameter_type, false, cache))
-                parameter_t.push({
-                    name = parser::identifier_to_str(parameter_node.value.param.name),
-                    _tpe = ntpe
-                } !NamedParameter)
-            }
+                for var i in 0..vector::length(member.value.structural_member.params) {
+                    let parameter_node = member.value.structural_member.params[i]
+                    let current_parameter_type = (current_member.parameter_t[i]).tpe if current_member else null !&Type
+                    var ntpe = box(type_lookup(parameter_node.value.param.tpe, state, current_parameter_type, false, cache))
+                    parameter_t.push({
+                        name = parser::identifier_to_str(parameter_node.value.param.name),
+                        _tpe = ntpe
+                    } !NamedParameter)
+                }
 
-            for var i in 0..vector::length(member.value.structural_member.returns) {
+                for var i in 0..vector::length(member.value.structural_member.returns) {
+                    let return_node = member.value.structural_member.returns[i]
+                    let current_return_type = current_member.return_t[i] if current_member else null !&Type
+
+                    var ntpe = box(type_lookup(return_node, state, current_return_type, false, cache))
+                    vector::push(return_t, ntpe)
+                }
+
+                let structural_type_member = {
+                    name,
+                    parameter_t,
+                    return_t
+                } !StructuralTypeMember
+                members.push(structural_type_member)
+            } else {
+                let parameter_t = vector::make(NamedParameter)
+                let return_t = vector::make(type &Type)
+
                 let return_node = member.value.structural_member.returns[i]
-                let current_return_type = current_member.return_t[i] if current_member else null !&Type
+                let current_return_type = current_member.return_t[0] if current_member else null !&Type
+                var rtpe = box(type_lookup(return_node, state, current_return_type, false, cache))
+                return_t.push(rtpe)
 
-                var ntpe = box(type_lookup(return_node, state, current_return_type, false, cache))
-                vector::push(return_t, ntpe)
+                let structural_type_member = {
+                    name,
+                    parameter_t,
+                    return_t
+                } !StructuralTypeMember
+                members.push(structural_type_member)
+
+                if kw == parser::MemberType::VAR {
+                    let parameter_t = vector::make(NamedParameter)
+                    let return_t = vector::make(type &Type)
+
+                    parameter_t.push({
+                        name = "_value",
+                        _tpe = rtpe
+                    } !NamedParameter)
+
+                    let structural_type_member = {
+                        "__set_" + name + "__",
+                        parameter_t,
+                        return_t
+                    } !StructuralTypeMember
+                    members.push(structural_type_member)
+                }
             }
-
-            let structural_type_member = {
-                name,
-                parameter_t,
-                return_t
-            } !StructuralTypeMember
-            members.push(structural_type_member)
         }
         tpe.members = members
 
@@ -2949,11 +3018,29 @@ def walk_Assign(node: &parser::Node, state: &State) {
     for var i in 0..vector::length(left) {
         let l = left[i]
         if not l { continue }
+        var rtpe = rtypes[i]
+
+        if l.kind == parser::NodeKind::MEMBER_ACCESS {
+            // Check for overloaded assignment
+            let value = l.value.bin_op.left
+            let name = l.value.bin_op.right
+            if not value or not name or name.kind != parser::NodeKind::IDENTIFIER { continue }
+
+            let args = vector::make(NamedParameter)
+            args.push({ _tpe = value.tpe } !NamedParameter)
+            args.push({ _tpe = rtpe } !NamedParameter)
+
+            let ident = parser::make_identifier("__set_" + parser::identifier_to_str(name) + "__")
+            let fun = scope::get_function(state.scope, ident, args, false, true, force_compile = not consteval::is_static)
+            if fun {
+                compile_function(*fun, args)
+            }
+        }
+
         var ltpe = l.tpe
         if not check_is_identifier_assignable(l, state) {
             continue
         }
-        var rtpe = rtypes[i]
 
         if l.kind == parser::NodeKind::IDENTIFIER and scope::last_path_element(l) == "_" {
             ltpe = rtpe
@@ -4269,6 +4356,10 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
                 }
                 
                 tpe = copy(function.tpe)
+            } else if left.kind == parser::NodeKind::MEMBER_ACCESS and left.tpe and arguments.length == 0 {
+                // "Call" a field
+                node.tpe = left.tpe
+                return true
             } else {
                 errors::errorn(left, "Can't call expression")
                 return false
@@ -4623,6 +4714,7 @@ def walk_MemberAccess_ucs(node: &parser::Node, state: &State) -> bool {
 
         let function = scope::get_function(node.scope, right, parameter_t, false, false, only_function = true)
         if not function { return false }
+        if node.parent.kind == parser::NodeKind::ASSIGN { return true }
 
         let args = vector::make(type &parser::Node)
         args.push(left)
@@ -4793,6 +4885,7 @@ def walk_ArraySubscript(node: &parser::Node, state: &State) {
 
             let set_item = scope::get_function(state.scope, parser::make_identifier("set_item"), args)
             if set_item {
+                compile_function(*set_item, args)
                 return
             } 
         }
