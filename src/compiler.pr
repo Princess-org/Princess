@@ -2619,6 +2619,14 @@ def walk_Call(node: &parser::Node, state: &State) -> Value {
     let loc = make_location(node, state)
     let left = node.value.func_call.left
     var tpe = node.function
+    if not left { return NO_VALUE }
+
+    if not tpe {
+        if left.kind == parser::NodeKind::MEMBER_ACCESS and node.value.func_call.args.length == 0 {
+            // "Call" a field
+            return walk_MemberAccess(left, state)
+        }
+    }
     if not tpe { return NO_VALUE }
 
     var is_fp = false
@@ -3413,6 +3421,45 @@ def call_set_item(n: &parser::Node, l: &parser::Node, value_type: &typechecking:
     return false
 }
 
+def call_set_attribute(n: &parser::Node, l: &parser::Node, value_type: &typechecking::Type, value: Value, loc: &Value, state: &State) -> bool {
+    if not l or l.kind != parser::NodeKind::MEMBER_ACCESS { return false }
+
+    let args = vector::make(typechecking::NamedParameter)
+    args.push({ _tpe = l.value.bin_op.left.tpe } !typechecking::NamedParameter)
+    args.push({ _tpe = value_type } !typechecking::NamedParameter)
+
+    let name = l.value.bin_op.right
+    if not name or name.kind != parser::NodeKind::IDENTIFIER { return false }
+
+    let set_attrib = scope::get_function(state.scope, parser::make_identifier("__set_" + parser::identifier_to_str(name) + "__"), args)
+    if set_attrib {
+        let left = (set_attrib.tpe.parameter_t[0]).tpe
+        let right = (set_attrib.tpe.parameter_t[1]).tpe
+
+        var obj = walk_and_load_expression(l.value.bin_op.left, state)
+        obj = convert_to(n, obj, left, state)
+        if typechecking::has_copy_constructor(obj.tpe) {
+            let ret = state.alloca(obj.tpe, loc, no_yield_capture = true)
+            insert_copy_constructor(ret, obj, loc, state)
+            obj = state.load(obj.tpe, ret, loc)
+        }
+
+        value = convert_to(n, value, right, state)
+        if typechecking::has_copy_constructor(value.tpe) {
+            let ret = state.alloca(value.tpe, loc, no_yield_capture = true)
+            insert_copy_constructor(ret, value, loc, state)
+            value = state.load(value.tpe, ret, loc)
+        }
+
+        predeclare_function(set_attrib.tpe, state.module)
+        state.module.imported.add(set_attrib.tpe.type_name)
+        state.call(set_attrib.tpe.type_name, null, [obj, value], loc)
+        
+        return true
+    }
+    return false
+}
+
 def create_temporary(addr: Value, ret: Value, loc: &Value, state: &State) {
     var name = addr.name
     let is_global = scope::is_global(state.scope)
@@ -3456,8 +3503,14 @@ def assign_post(n: &parser::Node, l: &parser::Node, value_type: &typechecking::T
         not ret or not ret.tpe { 
         return false 
     }
-    
-    if not call_set_item(n, l, value_type, @ret, loc, state) {
+
+    if not call_set_attribute(n, l, value_type, @ret, loc, state) and 
+        not call_set_item(n, l, value_type, @ret, loc, state) {
+        
+        if l.kind == parser::NodeKind::FUNC_CALL {
+            errors::errorn(l, "Can't assign to function return value")
+            return false
+        }
         let addr = walk_expression(l, state).addr
         if not addr {
             errors::errorn(l, "Can't assign, expression has no address")
@@ -7589,10 +7642,10 @@ export def create_builtin_functions {
     create_constructors()
 }
 
-export def create_dyn_dispatch(state: &State) {
-    while state.module.dyn_dispatch.length > 0 {
-        let tpe = state.module.dyn_dispatch[0]
-        state.module.dyn_dispatch.remove(0)
+export def create_dyn_dispatch(dyn_dispatch: &Vector(&typechecking::Type), state: &State) {
+    while dyn_dispatch.length > 0 {
+        let tpe = dyn_dispatch[0]
+        dyn_dispatch.remove(0)
         let function = predeclare_function(tpe, state.module)
         generate_vtable_function(function, tpe, state)
         consteval::const_module.result.functions[function.name] = function
@@ -8863,30 +8916,44 @@ def generate_vtable_function(function: &Function, tpe: &typechecking::Type, stat
             parameter_t[0] = { _tpe = type_entry.tpe } !typechecking::NamedParameter
             
             var score = std::MAX_INT32 !int
-            var function: &typechecking::Type = null
+            var fun: &typechecking::Type = null
             var module: &toolchain::Module = null
             for var i in 0..vector::length(type_entry.functions) {
                 let member = type_entry.functions[i]
                 if member.function.name != tpe.name { continue }
                 let s = typechecking::overload_score(member.function, parameter_t, state.module, true)
                 if s >= 0 and s < score { 
-                    function = member.function
+                    fun = member.function
                     module = member.module
                     score = s
                 }
             }
 
-            if not function { continue }
-            if consteval::is_static {
-                let fun = scope::get_function(module.scope, parser::make_identifier(tpe.name), parameter_t, false, false, false)
-                let val = consteval::compile_function(fun)
-                import_structures(val.tpe, state.module)
+            var kind = 0
+            if not fun {
+                if function.unmangled.starts_with("__set_") and function.unmangled.ends_with("__") {
+                    kind = 1
+                } else if function.args.length == 1 {
+                    kind = 2
+                } else {
+                    continue
+                }
             } else {
-                import_structure(type_entry.tpe.tpe, state.module)
+                predeclare_function(fun, state.module)
+                state.module.imported.add(fun.type_name)
+
+                if consteval::is_static {
+                    let fun = scope::get_function(module.scope, parser::make_identifier(tpe.name), parameter_t, false, false, false)
+                    let val = consteval::compile_function(fun)
+                    import_structures(val.tpe, state.module)
+                }
             }
 
-            predeclare_function(function, state.module)
-            state.module.imported.add(function.type_name)
+            if kind != 0 and type_entry.tpe.tpe.kind != typechecking::TypeKind::STRUCT { continue }
+
+            if not consteval::is_static {
+                import_structure(type_entry.tpe.tpe, state.module)
+            }
 
             let if_true = make_label(state)
             push_label(if_true, state)
@@ -8898,16 +8965,54 @@ def generate_vtable_function(function: &Function, tpe: &typechecking::Type, stat
             } !SwitchValue
             switch_values.push(svalue)
 
+            
             let reference = convert_ref_to_ref(type_entry.tpe, { kind = ValueKind::LOCAL, tpe = first_param, name = "__ref.value"} !Value, null, state)
+            
+            if kind == 0 {
+                let args = allocate_ref(Value, vector::length(tpe.parameter_t))
+                args[0] = reference
+                for var i in 1..vector::length(tpe.parameter_t) {
+                    let np = tpe.parameter_t[i]
+                    args[i] = { kind = ValueKind::LOCAL, tpe = np.tpe, name = np.name + ".value" } !Value
+                }
+                let r = state.call(fun.type_name, ret_tpe, args)
+                state.ret(r)
+            } else if kind == 1 {
+                // Setter 
+                var deref = state.extract_value(pointer(type_entry.tpe.tpe), reference, [1])
+                var value = state.load(type_entry.tpe.tpe, deref)
+                let name = function.unmangled.slice(6, function.unmangled.length() - 2)
+                var findex: size_t = 0
+                var ftpe: &typechecking::Type
+                for var field in @type_entry.tpe.tpe.fields {
+                    if field.name == name {
+                        findex = field.index
+                        ftpe = field.tpe
+                    }
+                }
 
-            let args = allocate_ref(Value, vector::length(tpe.parameter_t))
-            args[0] = reference
-            for var i in 1..vector::length(tpe.parameter_t) {
-                let np = tpe.parameter_t[i]
-                args[i] = { kind = ValueKind::LOCAL, tpe = np.tpe, name = np.name + ".value" } !Value
+                let np = tpe.parameter_t[1]
+                let arg = { kind = ValueKind::LOCAL, tpe = np.tpe, name = np.name + ".value" } !Value
+                value = state.insert_value(type_entry.tpe.tpe, value, arg, [findex !int])
+                state.store(deref, value)
+                state.ret(NO_VALUE)
+            } else {
+                // Getter
+                var deref = state.extract_value(pointer(type_entry.tpe.tpe), reference, [1])
+                var value = state.load(type_entry.tpe.tpe, deref)
+                let name = function.unmangled
+                var findex: size_t = 0
+                var ftpe: &typechecking::Type
+                for var field in @type_entry.tpe.tpe.fields {
+                    if field.name == name {
+                        findex = field.index
+                        ftpe = field.tpe
+                    }
+                }
+
+                value = state.extract_value(ftpe, value, [findex !int])
+                state.ret(value)
             }
-            let r = state.call(function.type_name, ret_tpe, args)
-            state.ret(r)
         }
     }
 
@@ -9190,7 +9295,7 @@ export def compile(state: &State, is_main: bool, no_cleanup: bool = false) {
     // Forward declare functions from other files
     // TODO This doesn't work for functions that return multiple parameters
     predeclare_functions(state.module)
-    create_dyn_dispatch(state)
+    create_dyn_dispatch(state.module.dyn_dispatch, state)
 
     let ident = parser::make_identifier("__main__")
     ident.loc.module = state.module.module
