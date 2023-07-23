@@ -492,6 +492,10 @@ export type Function = struct {
     context: &typechecking::Type
     optional: &typechecking::Type
     all_locals: &SMap(&typechecking::Type)
+    // This is the current scope that needs to be freed by the jump index
+    current_snapshot: &SMap(int)
+    snapshots: &Vector(&SMap(int))
+
     has_yield: bool
     yield_index: int
     yield_switch: &Insn
@@ -769,6 +773,14 @@ export def push_insn(insn: &Insn, state: &State) {
     insns.push(insn)
 }
 
+def push_local_var(name: Str, tpe: &typechecking::Type, function: &Function) {
+    if function.has_yield {
+        let index = function.all_locals.size !int + 1
+        function.all_locals[name] = tpe
+        function.current_snapshot[name] = index
+    }
+}
+
 // TODO We must use make_insn directly because the values go into the alloca vector
 // There might be a better way of handling this
 def push_alloca(insn: &Insn, state: &State, no_yield_capture: bool = false) {
@@ -780,13 +792,9 @@ def push_alloca(insn: &Insn, state: &State, no_yield_capture: bool = false) {
     let allocas = current_function.allocas
 
     if current_function.has_yield and not no_yield_capture {
-        if not current_function.all_locals {
-            current_function.all_locals = map::make(type &typechecking::Type)
-        }
-
         let ret = insn.value.alloca.ret
         let index = current_function.all_locals.size !int + 1
-        current_function.all_locals[ret.name] = ret.tpe
+        push_local_var(ret.name, ret.tpe, current_function)
 
         let gep = make_insn(InsnKind::GETELEMENTPTR)
         gep.value.gep = {
@@ -3006,15 +3014,15 @@ def walk_Identifier(node: &parser::Node, state: &State) -> Value {
 }
 
 // This function assumes that value.tpe has a copy constructor
-def insert_copy_constructor(addr: Value, value: Value, loc: &Value, state: &State) {
-    if not value.tpe { return }
+def insert_copy_constructor(addr: Value, value: Value, loc: &Value, state: &State, no_yield_capture: bool = true) -> Value {
+    if not value.tpe { return NO_VALUE }
     state.store(addr, { kind = ValueKind::ZEROINITIALIZER, tpe = addr.tpe.tpe } !Value, loc) 
 
     if value.tpe.kind == typechecking::TypeKind::STATIC_ARRAY {
-        let array_loc = state.alloca(value.tpe, loc, no_yield_capture = true)
+        let array_loc = state.alloca(value.tpe, loc, no_yield_capture = no_yield_capture)
         state.store(array_loc, value)
 
-        let counter_ptr = state.alloca(builtins::size_t_, loc, no_yield_capture = true)
+        let counter_ptr = state.alloca(builtins::size_t_, loc, no_yield_capture = no_yield_capture)
         state.store(counter_ptr, { kind = ValueKind::INT, tpe = builtins::size_t_, i = 0 } !Value, loc)
         
         let br_to_start = make_insn_dbg(InsnKind::BR_UNC, loc)
@@ -3040,7 +3048,7 @@ def insert_copy_constructor(addr: Value, value: Value, loc: &Value, state: &Stat
         } else {
             let value_ptr = state.gep(pointer(value.tpe.tpe), value.tpe, array_loc, [make_int_value(0), counter_value])
             value = state.load(value.tpe.tpe, value_ptr)
-            insert_copy_constructor(array_ptr, value, loc, state)
+            insert_copy_constructor(array_ptr, value, loc, state, no_yield_capture)
         }
 
         let counter_inc = state.add(builtins::size_t_, counter_value, { kind = ValueKind::INT, tpe = builtins::size_t_, i = 1 } !Value, loc)
@@ -3051,9 +3059,11 @@ def insert_copy_constructor(addr: Value, value: Value, loc: &Value, state: &Stat
         let loop_end = make_label(state)
         push_label(loop_end, state)
         br.value.br.if_true = loop_end
+
+        return NO_VALUE
     } else {
         var ctor = typechecking::get_constructor(addr.tpe.tpe)
-        if not ctor { return }
+        if not ctor { return NO_VALUE }
         if consteval::is_static {
             consteval::compile_function(ctor)
         }
@@ -3061,9 +3071,11 @@ def insert_copy_constructor(addr: Value, value: Value, loc: &Value, state: &Stat
         state.module.imported.add(ctor.tpe.type_name)
 
         // allocate set value
-        let ret = state.alloca(value.tpe, loc, no_yield_capture = true)
+        let ret = state.alloca(value.tpe, loc, no_yield_capture = no_yield_capture)
         state.store(ret, value, loc)
         state.call(ctor.tpe.type_name, null, [addr, ret], loc)
+
+        return ret
     }
 }
 
@@ -3138,6 +3150,11 @@ def insert_destructor(value: Value, loc: &Value, state: &State) {
 
         state.module.imported.add(destructor.tpe.type_name)
         state.call(destructor.tpe.type_name, null, [value], loc)
+
+        // If we insert a destructor the variable doesn't need to be freed anymoree
+        if value.name and state.current_function.has_yield {
+            state.current_function.current_snapshot.remove(value.name)
+        }
     }
 }
 
@@ -4997,6 +5014,10 @@ def walk_Yield(node: &parser::Node, state: &State) {
         { value = { kind = ValueKind::INT, tpe = builtins::int_, i = current_function.yield_index } !Value, label_ = label_} !SwitchValue
     ) 
 
+    let new_snapshot = map::make(int)
+    new_snapshot.put_all(current_function.current_snapshot)
+    current_function.current_snapshot = new_snapshot
+    current_function.snapshots.push(new_snapshot)
     current_function.yield_index += 1
 }
 
@@ -5225,7 +5246,6 @@ def walk_For_generator(node: &parser::Node, state: &State) {
     let expr_loc = make_location(expr, state)
     var gen = walk_expression(expr, state)
     let gen_ptr = @gen.addr
-    state.store(gen_ptr, gen)
 
     push_scope(node, state)
     push_insn(continue_insn, state)
@@ -5261,9 +5281,9 @@ def walk_For_generator(node: &parser::Node, state: &State) {
     if is_ref(iddecl.tpe) {
         increase_ref_count(locv, loc, state)
     } else if has_copy_constructor(iddecl.tpe) {
-        insert_copy_constructor(locv, next_value, loc, state)
+        let copy = insert_copy_constructor(locv, next_value, loc, state, no_yield_capture = false)
+        create_temporary(copy, state.load(iddecl.tpe, copy, loc), loc, state)
     }
-    create_temporary(locv, state.load(iddecl.tpe, locv, loc), loc, state)
 
     var last_node = node
     for var i in 0..vector::length(node.value.for_loop.body) {
@@ -5616,7 +5636,7 @@ def walk_Def(node: &parser::Node, state: &State) {
     }
     state.store(context_ptr, context, loc)
 
-    state.current_function.all_locals[context_tpe.type_name] = reference(context_tpe)
+    push_local_var(context_tpe.type_name, reference(context_tpe), state.current_function)
 }
 
 def walk_Defer(node: &parser::Node, state: &State) {
@@ -6726,17 +6746,46 @@ def create_debug_info(node: &parser::Node, function: &Function, tpe: &typechecki
     (@state).discope.push(disubp)
 }
 
-def create_free_context(context: &typechecking::Type, state: &State) {
+def create_free_context(function: &Function, state: &State) {
     import_cstd_function("free", state)
 
+    let context = function.context
     let context_ptr_i8 = { kind = ValueKind::LOCAL, name = "__context.value", tpe = pointer(null) } !Value
     let context_ptr = state.bitcast(pointer(context), context_ptr_i8)
 
-    for var i in 0..context.field_types.length {
-        let field_type = context.field_types[i].tpe
-        let local_ptr = state.gep(pointer(field_type), context, context_ptr, [make_int_value(0), make_int_value(i)])
-        insert_destructor(local_ptr, null, state)
+    let index_ptr = state.gep(pointer(builtins::int_), context, context_ptr, [make_int_value(0), make_int_value(0)])
+    let index = state.load(builtins::int_, index_ptr)
+
+    let switch_values = vector::make(SwitchValue)
+    let insn_switch = make_insn(InsnKind::SWITCH)
+    insn_switch.value.switch_ = {
+        switch_values = switch_values,
+        value = index
+    } !InsnSwitch
+    push_insn(insn_switch, state)
+
+    let snapshots = function.snapshots
+    for var i in 0..snapshots.length {
+        let label_ = state.make_label()
+        push_label(label_, state)
+        switch_values.push({
+            value = make_int_value(i + 1),
+            label_ = label_
+        } !SwitchValue)
+
+        let snapshot = snapshots[i]
+        for var key in @snapshot.keys() {
+            let j = snapshot[key]
+            let field_type = context.field_types[j].tpe
+            let local_ptr = state.gep(pointer(field_type), context, context_ptr, [make_int_value(0), make_int_value(j)])
+            insert_destructor(local_ptr, null, state)
+        }
+        state.ret(NO_VALUE)
     }
+
+    let end = state.make_label()
+    push_label(end, state)
+    insn_switch.value.switch_.otherwise = end 
     state.ret(NO_VALUE)
 }
 
@@ -6936,6 +6985,12 @@ export def create_function(
         var generator: &typechecking::Type
 
         function.all_locals = map::make(type &typechecking::Type)
+        if function.has_yield {
+            // Set up snapshots
+            function.current_snapshot = map::make(int)
+            function.snapshots = vector::make(type &SMap(int))
+            function.snapshots.push(function.current_snapshot)
+        }
         function.used_type_meta = set::make(type &typechecking::Type)
 
         if function.has_yield {
@@ -7300,7 +7355,7 @@ export def create_function(
             state.module.imported.add(free_context_tpe.type_name)
 
             state.function_stack.push(free_context)
-            create_free_context(function.context, state)
+            create_free_context(function, state)
             vector::insert(free_context.block.insn, 0, free_context.allocas)
             state.function_stack.pop()
 
@@ -7311,11 +7366,11 @@ export def create_function(
             
             create_generator(impl_tpe, free_context_tpe, tpe, generator, function.context, state)
 
-            function.all_locals[context_name] = function.context
+            push_local_var(context_name, function.context, function)
         }
 
         if function.state {
-            function.all_locals[function.state.type_name] = function.state
+            push_local_var(function.state.type_name, function.state, function)
         }
 
         pop_scope(state)
