@@ -345,7 +345,7 @@ class FunctionDecl(Declaration):
     def to_symbol(self, n: int, file: File) -> str:
         function = ""
         if not self.dllimport:
-            function = f", function = *{self.name} !def () -> ()"
+            function = f", function = *{self.name} !(def () -> ())"
 
         ret = f"__SYMBOLS[{n}] = {{ kind = symbol::SymbolKind::FUNCTION, dllimport = {'true' if self.dllimport else 'false'}, name = \"{self.name}\"{function}}} !symbol::Symbol"
         return ret
@@ -566,8 +566,12 @@ def process_module(name: str, *libs):
                         args.append((spelling, parse_type(child.type, file)))
 
                 ret = parse_type(node.result_type, file)
+                
+                is_variadic = False
+                if node.type.kind == clang.TypeKind.FUNCTIONPROTO:
+                    is_variadic = node.type.is_function_variadic()
 
-                file.GLOBALS[name] = FunctionDecl(name, ret, args, node.type.is_function_variadic(), dllimport)
+                file.GLOBALS[name] = FunctionDecl(name, ret, args, is_variadic, dllimport)
             elif node.kind == clang.CursorKind.VAR_DECL:
                 if node.storage_class == clang.StorageClass.EXTERN:
                     dllimport = False
