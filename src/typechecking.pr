@@ -55,9 +55,10 @@ export type TypeKind = enum {
     // This is used as a function parameter that is generic
     GENERIC
     // This is used to express types that may by resolved to multiple types
-    // Right now this is only used for looking up functions in generic interfaces
-    // but it could be turned into actual union types
     VARIANT
+    // Tagged union types, very similar to VARIANT but the equality relation is different
+    // This is actually called variant in runtime
+    TUNION
     // References to structs are using a weak reference, ie. Type::weak instead of Type::_tpe
     // This is because references to structs can cause cycles
     // TODO I think we don't really need this because we can just use weak directly
@@ -114,6 +115,7 @@ export type Type = struct {
     kw: parser::VarDecl
     // Type both used for array/pointer and enum
     // This is also used for type arguments to specify the actual type
+    // And tagged unions carry the underlying union type
     _tpe: &Type
     weak: weak_ref(Type)
     packed: bool
@@ -143,7 +145,7 @@ export type Type = struct {
     // True if some parameters weren't set yet
     tc_incomplete: bool
     // null means any, Vector of Type
-    variants: &Vector(&Type)
+    variants: &Set(&Type)
     _hash: uint64
     svalue: weak_ref(scope::Value)
 
@@ -165,6 +167,24 @@ export def == (this: &Type, other: &Type) -> bool {
 }
 export def != (this: &Type, other: &Type) -> bool {
     return not equals(this, other)
+}
+
+def sort_by_typename(types: &Vector(&Type)) {
+    let n = types.length
+    let names = allocate_ref(Str, n)
+    for var i in 0..types.length {
+        names[i] = debug::type_to_str(types[i], full_name = true)
+    }
+
+    // bubble sort because icba // TODO Implement sorting for vectors and arrays
+    for var i in 0..n {
+        for var j in 0..(n - 1) {
+            if names[j] > names[j + 1] {
+                let t = names[j]; names[j] = names[j + 1]; names[j + 1] = t
+                let u = types[j]; types[j] = types[j + 1]; types[j + 1] = u
+            }
+        }
+    }
 }
 
 let meta = map::make(type &Type, type &TypeMeta)
@@ -1050,9 +1070,7 @@ export def equals(a: &Type, b: &Type) -> bool {
             let c = a; a = b; b = c;
         }
         if not a.variants { return true }
-        for var i in 0..vector::length(a.variants) {
-            if equals(a.variants[i], b) { return true }
-        }
+        if a.variants.contains(b) { return true }
         return false
     }
 
@@ -1135,6 +1153,9 @@ export def equals(a: &Type, b: &Type) -> bool {
     }
     if kind == TypeKind::NAMESPACE {
         return a !* == b !*
+    }
+    if kind == TypeKind::TUNION {
+        return a.variants == b.variants
     }
 
     assert
@@ -1351,24 +1372,22 @@ def infer_interface_types(a: &Type, b: &Type, module: &toolchain::Module) -> &Ty
         for var i in 0..keys.size {
             let key = keys[i]
             let variant_tpe = variants[key]
-            let variants2 = result[key]
+            let variants2 = set::make(result[key])
             if variant_tpe.variants {
-                let new_variants = vector::make(type &Type)
-                for var i in 0..vector::length(variant_tpe.variants) {
-                    let a = variant_tpe.variants[i]
+                let new_variants = set::make(type &Type)
+                for var a in @variant_tpe.variants.keys() {
                     var contains_both = false
-                    for var j in 0..vector::length(variants2) {
-                        let b = variants2[j]
+                    for var b in @variants2.keys() {
                         if equals(a, b) {
                             contains_both = true
                             break
                         }
                     }
                     if contains_both {
-                        new_variants.push(a)
+                        new_variants.add(a)
                     }
                 }
-                if vector::length(new_variants) == 0 {
+                if new_variants.size() == 0 {
                     return null
                 } else {
                     variant_tpe.variants = new_variants
@@ -1384,7 +1403,7 @@ def infer_interface_types(a: &Type, b: &Type, module: &toolchain::Module) -> &Ty
         for var i in 0..keys.size {
             let key = keys[i]
             let variant = variants[key]
-            if not variant.variants or vector::length(variant.variants) > 1  {
+            if not variant.variants or variant.variants.size() > 1  {
                 return null
             }
         }
@@ -1396,7 +1415,7 @@ def infer_interface_types(a: &Type, b: &Type, module: &toolchain::Module) -> &Ty
     for var i in 0..keys.size {
         let key = keys[i]
         let variant = variants[key]
-        vector::push(tpe.tc_args, variant.variants[0])
+        vector::push(tpe.tc_args, variant.variants.keys[0])
     }
 
     return tpe
@@ -1426,6 +1445,16 @@ export def convert_type_score(a: &Type, b: &Type, module: &toolchain::Module, is
         (equals(a.tpe, b.tpe) or not a.tpe) {
 
         return 0 if a.kind == b.kind else 3
+    }
+    if a.kind == TypeKind::TUNION {
+        if b.kind == TypeKind::TUNION {
+            for var v in @b.variants.keys() {
+                if not a.variants.contains(v) { return -1 }
+            }
+            return 2
+        } else if a.variants.contains(b) {
+            return 3
+        }
     }
 
     // We need to check if they are actually compatible elsewhere
@@ -1990,6 +2019,40 @@ export def make_stub_type(ident: &parser::Node, state: &State) -> &typechecking:
     return tpe 
 }
 
+export def make_union_type(fields: &[StructMember], current_type: &Type = null) -> &Type {
+    let tpe = make_type_raw(TypeKind::UNION) if not current_type else current_type
+    let field_types = vector::make(TypeMember)
+    
+    var size = 0 !size_t
+    var align = 1 !size_t
+    var biggest_type: &Type = null
+    for var i in 0..fields.size {
+        let field = fields[i]
+        var field_tpe = field.tpe
+        if field_tpe {
+            if field_tpe.size > size {
+                size = field_tpe.size
+                biggest_type = field_tpe
+            }
+            if field_tpe.kind == TypeKind::TYPE_CONSTRUCTOR {
+                errors::errorn(field.node, "Can't use type constructor as field type")
+            }
+            // TODO Alignment of bit fields on Windows is strange
+            align = max(field_tpe.align, align) !size_t
+        }
+    }
+
+    let type_member = { biggest_type, 0 } !TypeMember
+    field_types.push(type_member)
+
+    tpe.size = size
+    tpe.align = align
+    tpe.fields = fields
+    tpe.field_types = field_types
+
+    return tpe
+}
+
 export def make_struct_type(fields: &[StructMember], current_type: &Type = null) -> &Type {
     let struct_tpe = make_type_raw(TypeKind::STRUCT) if not current_type else current_type
     let field_types = vector::make(TypeMember)
@@ -2283,7 +2346,7 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
         var tpe = type_lookup(node.value.t_parr.tpe, state, current_type, lookup_default, cache)
         tpe = weak_reference(tpe, node.value.t_parr.kw)
         return tpe
-    } else if node.kind == parser::NodeKind::STRUCT_T {
+    } else if node.kind == parser::NodeKind::STRUCT_T or node.kind == parser::NodeKind::UNION_T {
         
         let length = vector::length(node.value.body)
         let fields = allocate_ref(StructMember, length)
@@ -2325,85 +2388,14 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
             } !StructMember
         }
         
-        let tpe = make_struct_type(fields, current_type)
+        var tpe = (make_struct_type(fields, current_type)
+            if node.kind == parser::NodeKind::STRUCT_T
+            else make_union_type(fields, current_type))
+
+        tpe.line = node.loc.line
         tpe.type_name = make_unique_name("<anonymous>", state)
         tpe.name = "<anonymous>"
         tpe.line = node.loc.line
-
-        return tpe
-    } else if node.kind == parser::NodeKind::UNION_T {
-        let tpe = make_type_raw(TypeKind::UNION) if not current_type else current_type
-        (@tpe).type_name = make_unique_name("<anonymous>", state)
-        (@tpe).name = "<anonymous>"
-
-        let length = vector::length(node.value.body)
-        let fields = allocate_ref(StructMember, length)
-        let field_types = vector::make(TypeMember)
-
-        var size = 0 !size_t
-        var align = 1 !size_t
-        var biggest_type: &Type = null
-        for var i in 0..length {
-            let field = node.value.body[i]
-            if not field { continue }
-            field.scope = state.scope
-
-            let line = (@field).loc.line
-            
-            var field_tpe: &Type = null
-            var name: Str
-            var is_bitfield = false
-            var bit_size = 0 !size_t
-
-            var field_type: &Type = null
-            if current_type and current_type.kind != TypeKind::STUB { 
-                field_type = current_type.fields[i].tpe 
-            }
-
-            if (@field).kind == parser::NodeKind::ID_DECL_STRUCT {
-                let ident = (@field).value.id_decl_struct.ident
-                name = last_ident_to_str(ident)
-                if field.value.id_decl_struct.tpe { field.value.id_decl_struct.tpe.parent = field }
-                field_tpe = lookup_field_type((@field).value.id_decl_struct.tpe, state, field_type, cache)
-                if field.value.id_decl_struct.is_bitfield {
-                    is_bitfield = true
-                    bit_size = field.value.id_decl_struct.bit_size
-                }
-            } else if (@field).kind == parser::NodeKind::STRUCT_T or
-                (@field).kind == parser::NodeKind::UNION_T {
-                field_tpe = type_lookup(field, state, field_type, false, cache)
-            }
-
-            fields[i] = {
-                line = line,
-                node = field, 
-                name = name, 
-                tpe = field_tpe,
-                is_bitfield = is_bitfield, 
-                bit_size = bit_size
-            } !StructMember
-
-            if field_tpe {
-                if field_tpe.size > size {
-                    size = field_tpe.size
-                    biggest_type = field_tpe
-                }
-                if field_tpe.kind == TypeKind::TYPE_CONSTRUCTOR {
-                    errors::errorn(field, "Can't use type constructor as field type")
-                }
-                // TODO Alignment of bit fields on Windows is strange
-                align = max(field_tpe.align, align) !size_t
-            }
-        }
-
-        let type_member = { biggest_type, 0 } !TypeMember
-        field_types.push(type_member)
-
-        tpe.line = node.loc.line
-        tpe.size = size
-        tpe.align = align
-        tpe.fields = fields
-        tpe.field_types = field_types
 
         return tpe
     } else if node.kind == parser::NodeKind::ENUM_T {
@@ -2744,6 +2736,52 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
         @cached_type = @tpe
         state.scope = scpe
         return cached_type
+    } else if node.kind == parser::NodeKind::VARIANT_T {
+        let tpe = make_type_raw(TypeKind::TUNION)
+
+        var offset: uint64 = size_of *
+        var align: uint64 = align_of *
+        var biggest_type: &Type = null
+        var variants = vector::make(type &Type)
+
+        for var i in 0..node.value.t_variant.variants.length {
+            var vtpe: &Type = null
+            if current_type { 
+                vtpe = (current_type.variants.keys[i]).tpe 
+            }
+
+            let v = node.value.t_variant.variants[i]
+            let variant = type_lookup(v, state, vtpe, lookup_default, cache)
+            if variant and variant.kind == TypeKind::TUNION {
+                for var inner_variant in @variant.variants.keys() {
+                    variants.push(inner_variant)
+                    if not biggest_type or biggest_type.size < inner_variant.size {
+                        biggest_type = inner_variant
+                    }
+                }
+            } else {
+                variants.push(variant)
+                if not biggest_type or biggest_type.size < variant.size {
+                    biggest_type = variant
+                }
+            }
+        }
+
+        sort_by_typename(variants)
+
+        var fields = allocate_ref(StructMember, variants.length)
+        for var i in 0..variants.length {
+            fields[i] = { name = "_" + to_string(i), tpe = variants[i] } !StructMember
+        }
+
+        tpe.size = (ceil(offset / biggest_type.align !double) * biggest_type.align) !int
+        tpe.align = util::lcm(align !int, biggest_type.align !int)
+    
+        tpe._tpe = make_union_type(fields, tpe._tpe)
+        tpe.variants = set::make(variants)
+        tpe.line = node.loc.line
+
+        return tpe
     }
 
     return null
@@ -3606,11 +3644,16 @@ def walk_Cast(node: &parser::Node, state: &State) {
     }
 
     if equals(ltpe, rtpe) or (equals(ltpe, builtins::Ref_) and (is_ref(rtpe) or is_weak_ref(rtpe))) {
+    } else if ltpe.kind == TypeKind::TUNION {
+        if not (ltpe.variants.contains(rtpe)) {
+            errors::errorn(left, "Invalid cast")
+            return
+        }
     } else if equals(rtpe, builtins::Ref_) {
         if not (is_ref(ltpe) or is_weak_ref(ltpe)) {
             errors::errorn(left, "Invalid cast")
             return
-        }   
+        }
     } else if is_struct(ltpe) or is_struct(rtpe) {
         if ltpe.kind != rtpe.kind and not is_ref(rtpe) { 
             errors::errorn(left, "Invalid cast") 
@@ -4821,12 +4864,22 @@ def walk_MemberAccess(node: &parser::Node, state: &State) {
     if not left { return }
 
     // Opportunistically walk the right part so if it is a function it is going to get resolved
-    scope::get(state.scope, right, not consteval::is_static, false, true)
+    if right {
+        scope::get(state.scope, right, not consteval::is_static, false, true)
+    }
 
     walk(node, left, state)
     let tpe = (@left).tpe
 
-    if not right { return }
+    if not right or not left { return }
+    if parser::identifier_to_str(right) == "type" {
+        if not is_ref_or_weak(tpe) and tpe.kind != TypeKind::TUNION {
+            errors::errorn(node, "Can't get type from `" + debug::type_to_str(tpe) + "`, only references or variants allowed")
+        } else {
+            node.tpe = pointer(builtins::Type_)
+        }
+        return
+    }
 
     if is_pointer(tpe) or is_ref_or_weak(tpe) {
         let old_left = parser::copy_node(left)

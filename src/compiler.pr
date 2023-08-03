@@ -1323,6 +1323,63 @@ def do_create_type(tpe: &typechecking::Type, module: &toolchain::Module) -> Valu
     return { kind = ValueKind::NULL, tpe = typechecking::pointer(builtins::Type_) } !Value
 }
 
+// Variants are a type followed by a union
+def convert_value_to_variant(tpe: &typechecking::Type, value: Value, loc: &Value, state: &State) -> Value {
+    let ptr_variant = state.alloca(tpe, loc, no_yield_capture = true)
+    state.store(ptr_variant, { kind = ValueKind::ZEROINITIALIZER, tpe = tpe } !Value, loc)
+
+    let union_tpe = pointer({ typechecking::TypeKind::WORD, size = tpe.tpe.align } !&typechecking::Type)
+    var tptr = state.gep(pointer(pointer(builtins::Type_)), tpe, ptr_variant, [make_int_value(0), make_int_value(0)], loc)
+    var vptr = state.gep(union_tpe, tpe, ptr_variant, [make_int_value(0), make_int_value(1), make_int_value(0)], loc)
+    vptr = state.bitcast(pointer(value.tpe), vptr, loc)
+
+    state.store(vptr, value, loc)
+    let ctpe = do_create_type(value.tpe, state.module)
+    state.store(tptr, ctpe, loc)
+
+    return state.load(tpe, ptr_variant, loc)
+}
+
+def convert_variant_to_variant(tpe: &typechecking::Type, value: Value, loc: &Value, state: &State) -> Value {
+    if value.addr { // Make it work with values that don't have an address
+        value = @value.addr
+    } else {
+        var tmp = state.alloca(value.tpe, loc, no_yield_capture = true)
+        state.store(value, tmp, loc)
+        value = tmp
+    }
+    
+    let ptr_variant = state.alloca(tpe, loc, no_yield_capture = true)
+    
+    var ptpein = state.gep(pointer(pointer(builtins::Type_)), value.tpe.tpe, value, [make_int_value(0), make_int_value(0)], loc)
+    var ptpeout = state.gep(pointer(pointer(builtins::Type_)), tpe, ptr_variant, [make_int_value(0), make_int_value(0)], loc)
+    var vin = state.gep(pointer(value.tpe.tpe.tpe), value.tpe.tpe, value, [make_int_value(0), make_int_value(1)], loc)
+    var vout = state.gep(pointer(tpe.tpe), tpe, ptr_variant, [make_int_value(0), make_int_value(1)], loc)
+
+    let vptr = state.bitcast(pointer(tpe.tpe), vin, loc)
+    let v = state.load(tpe.tpe, vptr, loc)
+    state.store(vout, v, loc)
+
+    let ptpe = state.load(pointer(builtins::Type_), ptpein, loc)
+    state.store(ptpeout, ptpe)
+    return state.load(tpe, ptr_variant, loc)
+}
+
+def convert_variant_to_value(tpe: &typechecking::Type, value: Value, loc: &Value, state: &State) -> Value {
+    if value.addr { // Make it work with values that don't have an address
+        value = @value.addr
+    } else {
+        var tmp = state.alloca(value.tpe, loc, no_yield_capture = true)
+        state.store(value, tmp, loc)
+        value = tmp
+    }
+
+    let union_tpe = pointer({ typechecking::TypeKind::WORD, size = value.tpe.tpe.tpe.align } !&typechecking::Type)
+    var vptr = state.gep(union_tpe, value.tpe.tpe, value, [make_int_value(0), make_int_value(1), make_int_value(0)], loc)
+    vptr = state.bitcast(pointer(tpe), vptr, loc)
+    return state.load(tpe, vptr, loc)
+}
+
 def convert_ref_to_ref(tpe: &typechecking::Type, value: Value, loc: &Value, state: &State) -> Value {
     if is_interface(tpe.tpe) and is_interface(value.tpe.tpe) {
         // Interface is already i8 so we don't need to convert anything
@@ -1934,6 +1991,15 @@ def convert_to(loc: &Value, value: Value, tpe: &typechecking::Type, state: &Stat
             create_temporary(addr, value, loc, state)
             return value
         }
+    }
+    if tpe.kind == typechecking::TypeKind::TUNION {
+        if value.tpe.kind == typechecking::TypeKind::TUNION {
+            return convert_variant_to_variant(tpe, value, loc, state)
+        } else {
+            return convert_value_to_variant(tpe, load_value(value, loc, state), loc, state)
+        }
+    } else if value.tpe.kind == typechecking::TypeKind::TUNION {
+        return convert_variant_to_value(tpe, value, loc, state)
     }
 
     if typechecking::is_ref_or_weak(tpe) and typechecking::equals(value.tpe, builtins::Ref_) {
@@ -3894,6 +3960,19 @@ def walk_MemberAccess(node: &parser::Node, state: &State) -> Value {
 
     // TODO This might double error
     let name = typechecking::last_ident_to_str(right)
+
+    if name == "type" {
+        var res = NO_VALUE
+        if typechecking::is_ref_or_weak(tpe) {
+            value = load_value(value, loc, state)
+            res = state.extract_value(pointer(builtins::Type_), value, [2], loc)
+        } else if tpe.kind == typechecking::TypeKind::TUNION {
+            value = load_value(value, loc, state)
+            res = state.extract_value(pointer(builtins::Type_), value, [0], loc)
+        }
+
+        return res
+    }
 
     if tpe.kind == typechecking::TypeKind::STATIC_ARRAY {
         if name == "size" {
@@ -6400,6 +6479,11 @@ def di_type(tpe: &typechecking::Type, state: &State) -> &Value {
             @ditpe = @di_forward_declare(tpe, name, state)
         case typechecking::TypeKind::TYPE:
             @ditpe = @di_composite_type(ditpep, builtins::Type_, "<type>", "DW_TAG_structure_type", state)
+        case typechecking::TypeKind::TUNION:
+            let members = allocate_ref(StructMember, 2)
+            members[0] = { tpe = pointer(builtins::Type_), name = "tpe" } !StructMember
+            members[1] = { tpe = tpe.tpe, name = "union" } !StructMember
+            @ditpe = @di_composite_type(ditpep, typechecking::make_struct_type(members), "<tagged_union>", "DW_TAG_structure_type", state)
         case:
             error(tpe.kind, "\n") 
             assert(false)
@@ -8391,6 +8475,24 @@ def push_enum_values(tpe: &typechecking::Type, global: Value, module: &toolchain
     push_insn(store, state)
 }
 
+def push_variants(tpe: &typechecking::Type, global: Value, module: &toolchain::Module, state: &State, cache: &Vector(TypeEntry)) {
+    let values_sarray = make_static_array(pointer(builtins::Type_), tpe.variants.size)
+    let values = make_global_value(values_sarray, "values", null, state)
+
+    var i = 0
+    for var variant in @tpe.variants.keys() {
+        let val = create_type(variant, module, cache)
+        let slot = state.gep(pointer(pointer(builtins::Type_)), values_sarray, values, [make_int_value(0), make_int_value(i)])
+        state.store(slot, @val)
+
+        i += 1
+    }
+
+    let gep_ret = state.gep(pointer(pointer(builtins::Type_)), values_sarray, values, [make_int_value(0), make_int_value(0)])
+    let gep2_ret = state.gep(pointer(pointer(pointer(builtins::Type_))), builtins::Type_, global, [make_int_value(0), make_int_value(8), make_int_value(1)])
+    state.store(gep2_ret, gep_ret)
+}
+
 def push_type_member(
     exported: bool, 
     f_name: Str, 
@@ -8728,6 +8830,16 @@ def do_create_type(tpe: &typechecking::Type, svalue: &scope::Value, module: &too
         case typechecking::TypeKind::GENERIC, typechecking::TypeKind::TYPE_CONSTRUCTOR:
         case typechecking::TypeKind::TYPE:
             value.values[0] = { kind = ValueKind::INT, tpe = builtins::int_, i = 15 } !Value
+        case typechecking::TypeKind::TUNION:
+            value.values[0] = { kind = ValueKind::INT, tpe = builtins::int_, i = 16 } !Value
+            
+            let array_values = allocate_ref(Value, 2)
+            array_values[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = tpe.variants.size() } !Value
+            array_values[1] = { kind = ValueKind::UNDEF, tpe = pointer(pointer(builtins::Type_)) } !Value
+
+            value.values[8] = { kind = ValueKind::STRUCT, tpe = array(pointer(builtins::Type_)), values = array_values } !Value
+
+            push_variants(tpe, global, module, state, cache)
         case:
             error(tpe.kind, "\n")
             assert(false)
