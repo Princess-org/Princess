@@ -663,7 +663,7 @@ export def find_functions(scope: &Scope, node: &parser::Node, template: &typeche
     return result, resolved
 }
 
-def find_function(scope: &Scope, node: &parser::Node, v: &Value, parameter_t: &Vector(typechecking::NamedParameter), score: *int, dry_run: bool) -> bool, &Value {
+def find_function(scope: &Scope, node: &parser::Node, v: &Value, parameter_t: &Vector(typechecking::NamedParameter), score: *int, dry_run: bool, context: &Scope) -> bool, &Value {
     for var i in 0..vector::length(parameter_t) {
         let np = parameter_t[i]
         if not np.tpe { return false, null }
@@ -682,7 +682,7 @@ def find_function(scope: &Scope, node: &parser::Node, v: &Value, parameter_t: &V
 
         loop {
             if not v { break }
-            let s = typechecking::overload_score(v.tpe, node.value.identifier.types, scope.module, true)
+            let s = typechecking::overload_score(v.tpe, node.value.identifier.types, context.module, true)
             if s == 0 {
                 @score = 0
                 return true, v
@@ -717,7 +717,7 @@ def find_function(scope: &Scope, node: &parser::Node, v: &Value, parameter_t: &V
             v.tpe = typechecking::lookup_parameters(v.node, v.state)
         }
 
-        let s = typechecking::overload_score(v.tpe, parameter_t, scope.module, false)
+        let s = typechecking::overload_score(v.tpe, parameter_t, context.module, false)
         //print(v.tpe.type_name, " ", s, "\n")
         if s >= 0 {
             if s < @score {
@@ -749,8 +749,9 @@ def find_function(scope: &Scope, node: &parser::Node, v: &Value, parameter_t: &V
     return found != null, found
 }
 
-export def find_implicit_function(scope: &Scope, parameter_t: &Vector(typechecking::NamedParameter), ret: &typechecking::Type, force_compile: bool = true) -> &Value {
+export def find_implicit_function(scope: &Scope, parameter_t: &Vector(typechecking::NamedParameter), ret: &typechecking::Type, force_compile: bool = true, context: &Scope = null) -> &Value {
     if not scope { return null }
+    if not context { context = scope }
     assert parameter_t.length == 1
 
     let first_param = parameter_t[0].tpe
@@ -769,7 +770,7 @@ export def find_implicit_function(scope: &Scope, parameter_t: &Vector(typechecki
             }
 
             if not typechecking::equals(v.tpe.return_t[0], r) { continue }
-            let s = typechecking::convert_type_score(v.tpe.parameter_t[0].tpe, parameter_t[0].tpe, scope.module, impl = false)
+            let s = typechecking::convert_type_score(v.tpe.parameter_t[0].tpe, parameter_t[0].tpe, context.module, impl = false)
             if s == @score {
                 d = true
             } else if s >= 0 and s < @score {
@@ -812,13 +813,13 @@ export def find_implicit_function(scope: &Scope, parameter_t: &Vector(typechecki
     }
 
     if not value {
-        value = find_implicit_function(scope.parent, parameter_t, ret)
+        value = find_implicit_function(scope.parent, parameter_t, ret, force_compile, context)
     }
 
     if value and value.phase == Phase::DEFINED and value.state and value.node and force_compile {
         // TODO Factor this out
         if typechecking::is_polymorph(value.tpe) {
-            typechecking::walk_Def_with_type_argument(value.node, parameter_t, value.state)
+            typechecking::walk_Def_with_type_argument(value.node, parameter_t, scope, value.state)
         } else {
             typechecking::walk_Def(value.node, value.state)
         }
@@ -887,7 +888,7 @@ export def generate_function(scope: &Scope, node: &parser::Node, parameter_t: &V
             (first_parameter.tpe.tpe and first_parameter.tpe.tpe.kind == typechecking::TypeKind::STRUCTURAL) {
             
             let equals = get(toolchain::runtime_.scope, parser::make_identifier("equals"))
-            consteval::compile_function(equals)
+            consteval::compile_function(equals, scope)
 
             let parameter_t2 = vector::copy(parameter_t)
             vector::remove(parameter_t2, 0)
@@ -1042,12 +1043,12 @@ export def create_underscore(scope: &Scope, name_node: &parser::Node, tpe: &type
     return value
 }
 
-export def typecheck_function(value: &Value, id: &parser::Node, scope: &Scope, dry_run: bool, parameter_t: &Vector(typechecking::NamedParameter)) -> &Value {
+export def typecheck_function(value: &Value, id: &parser::Node, scope: &Scope, dry_run: bool, parameter_t: &Vector(typechecking::NamedParameter), context: &Scope) -> &Value {
     let tpe = typechecking::lookup_parameters(value.node, value.state)
     if typechecking::is_polymorph(value.tpe) {
-        typechecking::walk_Def_with_type_argument(value.node, parameter_t, value.state)
+        typechecking::walk_Def_with_type_argument(value.node, parameter_t, context, value.state)
         // TODO Do we really need to do that?
-        return get_function(scope, id, parameter_t, false, dry_run, false)
+        return get_function(context, id, parameter_t, false, dry_run, false)
     } else {
         value.node.tpe = tpe
         typechecking::walk_Def(value.node, value.state)
@@ -1077,15 +1078,20 @@ export def get_function_check(
     dry_run: bool = false, 
     force_compile: bool = true, 
     only_function: bool = false,
-    re_exports: bool = true
+    re_exports: bool = true,
+    context: &Scope = null
 ) -> bool, &Value {
+
+    if not context {
+        context = scope
+    }
 
     def check_for_re_exports(scope: &Scope, value: &Value) -> &Value {
         if not scope.re_exports { return value }
         for var i in 0..scope.re_exports.length {
             let re_export = scope.re_exports[i]
             if pattern_matches(id, re_export.pattern) {
-                var _, value2 = get_function_check(re_export.module.scope, id, parameter_t, true, dry_run, force_compile, only_function, false)
+                var _, value2 = get_function_check(re_export.module.scope, id, parameter_t, true, dry_run, force_compile, only_function, false, context)
                 if value2 and not pattern_matches(id, re_export.pattern, value2.tpe.parameter_t) { continue }
                 if value2 and value2.share !int & parser::ShareMarker::EXPORT !int {
                     if value and value !* != value2 !* {
@@ -1112,7 +1118,7 @@ export def get_function_check(
 
         // We need to store this to check later that there's no entry by that name
         let first_value = scope.fields.get_or_default(name, null)
-        let (code), first_function = find_function(scope, id, first_value, parameter_t, *score, dry_run)
+        let (code), first_function = find_function(scope, id, first_value, parameter_t, *score, dry_run, context)
         let first_score = score
         var value = first_function
         var d = false
@@ -1121,7 +1127,7 @@ export def get_function_check(
                 let imprt = (@scope).imports[i]
                 let scope2 = imprt.module.scope
                 var new_score = std::MAX_INT32 !int
-                let code2, new_value = find_function(scope, id, scope2.fields.get_or_default(name, null), parameter_t, *new_score, dry_run)
+                let code2, new_value = find_function(scope, id, scope2.fields.get_or_default(name, null), parameter_t, *new_score, dry_run, context)
                 if code2 { code = true }
                 if new_value and (@new_value).share !int & parser::ShareMarker::EXPORT !int {
                     if score == new_score {
@@ -1156,7 +1162,7 @@ export def get_function_check(
         }
 
         if not value and (@scope).parent and (not first_value or only_function) {
-            code, value = get_function_check((@scope).parent, id, parameter_t, check_export, dry_run, force_compile, only_function, re_exports)
+            code, value = get_function_check((@scope).parent, id, parameter_t, check_export, dry_run, force_compile, only_function, re_exports, context)
         }
         if not value and vector::length(parameter_t) > 0 and not check_export {
             let first_param = parameter_t[0]
@@ -1164,7 +1170,7 @@ export def get_function_check(
             if first_param.tpe and module and module != scope.module {
                 let scope = module.scope
                 var new_score = std::MAX_INT32 !int
-                let code2, new_value = find_function(scope, id, scope.fields.get_or_default(name, null), parameter_t, *new_score, dry_run)
+                let code2, new_value = find_function(scope, id, scope.fields.get_or_default(name, null), parameter_t, *new_score, dry_run, context)
                 if code2 { code = true }
                 if new_value and new_value.share !int & parser::ShareMarker::EXPORT !int {
                     value = new_value
@@ -1172,7 +1178,7 @@ export def get_function_check(
             }
         }
         if value and value.phase == Phase::DEFINED and force_compile {
-            value = typecheck_function(value, id, scope, dry_run, parameter_t)
+            value = typecheck_function(value, id, scope, dry_run, parameter_t, context)
         }
         if value and check_export and (value.share !int & parser::ShareMarker::EXPORT !int) == 0 {
             value = null
@@ -1228,10 +1234,13 @@ export def get(
     check_export: bool = false, 
     dry_run: bool = false, 
     same_module: bool = false, 
-    re_exports: bool = true
+    re_exports: bool = true,
+    context: &Scope = null
 ) -> &Value {
     
     if not scope { return null }
+    if not context { context = scope }
+
     assert((@id).kind == parser::NodeKind::IDENTIFIER)
     //TODO This optimization screws with incremental compilation
     //if id.svalue { return id.svalue }
@@ -1266,10 +1275,10 @@ export def get(
         if value { 
             if id.value.identifier.types {
                 var score = 0
-                let _, (value) = find_function(scope, id, value, id.value.identifier.types, *score, true)
+                let _, (value) = find_function(scope, id, value, id.value.identifier.types, *score, true, context)
 
                 if value and force_compile and value.phase == Phase::DEFINED {
-                    value = typecheck_function(value, id, scope, false, id.value.identifier.types)
+                    value = typecheck_function(value, id, scope, false, id.value.identifier.types, context)
                 }
                 return value
             } else if is_function(value.tpe) and id.parent and id.parent.kind == parser::NodeKind::PTR and value.next {
@@ -1297,9 +1306,9 @@ export def get(
 
                     if id.value.identifier.types {
                         var score = 0
-                        let _, (value2) = find_function(scope, id, value2, id.value.identifier.types, *score, true)
+                        let _, (value2) = find_function(scope, id, value2, id.value.identifier.types, *score, true, context)
                         if value2 and force_compile and value2.phase == Phase::DEFINED {
-                            value2 = typecheck_function(value2, id, scope, false, id.value.identifier.types)
+                            value2 = typecheck_function(value2, id, scope, false, id.value.identifier.types, context)
                         }
                     } else {
                         if force_compile and value2.phase == Phase::DEFINED {
@@ -1324,7 +1333,7 @@ export def get(
         }
        
         if not value and (@scope).parent {
-            value = get((@scope).parent, id, force_compile, check_export, dry_run, same_module)
+            value = get((@scope).parent, id, force_compile, check_export, dry_run, same_module, context = context)
         }
 
         if value and check_export and (value.share !int & parser::ShareMarker::EXPORT !int) == 0 {
@@ -1343,13 +1352,13 @@ export def get(
         let id_tail = parser::copy_node(id)
         (@id_tail).value.identifier.path = tail
 
-        let s = get(scope, id_head, force_compile, false, dry_run)
+        let s = get(scope, id_head, force_compile, false, dry_run, context = context)
         if s {
             if not s.get_scope() {
                 errors::errorn(id, "Use of :: on non namespace")
                 return null
             }
-            let value = get(s.get_scope(), id_tail, force_compile, s.imported, dry_run)
+            let value = get(s.get_scope(), id_tail, force_compile, s.imported, dry_run, context = context)
             return value
         }
         return null

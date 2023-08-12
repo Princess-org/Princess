@@ -64,6 +64,9 @@ export type TypeKind = enum {
     // TODO I think we don't really need this because we can just use weak directly
     BOX
     VOID
+    // This is a type that gets assigned whenever you pass an interface implementation to
+    // a generic function
+    INTERFACE_IMPL
 }
 
 export type TypeMember = struct {
@@ -144,7 +147,8 @@ export type Type = struct {
     tc_args: &Vector(&Type)
     // True if some parameters weren't set yet
     tc_incomplete: bool
-    // null means any, Vector of Type
+    // null means any for variant
+    // This is used by variant, tagged union and interface impl
     variants: &Set(&Type)
     _hash: uint64
     svalue: weak_ref(scope::Value)
@@ -154,10 +158,16 @@ export type Type = struct {
     is_in_type_cache: bool
     // Set on type arguments
     is_type_argument: bool
+    
+    // Interface implementation
+    intf: &Type
 }
 
 export def hash(tpe: &Type) -> uint64 {
     if tpe._hash { return tpe._hash }
+    if tpe.kind == TypeKind::INTERFACE_IMPL {
+        return hash(tpe.tpe)
+    }
     let name = debug::type_to_str(tpe, full_name = true)
     tpe._hash = md5::high(md5::md5(name))
     return tpe._hash
@@ -296,7 +306,7 @@ export def get_user_defined_destructor(tpe: &Type) -> &scope::Value {
         var destructor = scope::get_function(tpe.module.scope, parser::make_identifier("destruct"), args, false, true, not consteval::is_static)
         if destructor {
             if consteval::is_static {
-                destructor = consteval::compile_function(destructor, args)
+                destructor = consteval::compile_function(destructor, tpe.module.scope, args)
             } else {
                 tm.has_destructor = 1
             }
@@ -337,7 +347,7 @@ export def has_user_defined_copy_constructor(tpe: &Type) -> bool {
         var constructor = scope::get_function(tpe.module.scope, parser::make_identifier("construct"), args, false, false, not consteval::is_static)
         if constructor {
             if consteval::is_static {
-                constructor = consteval::compile_function(constructor, args)
+                constructor = consteval::compile_function(constructor, tpe.module.scope, args)
             }
             tm.constructor = constructor
             res = true 
@@ -619,7 +629,8 @@ export def is_box(tpe: &Type) -> bool {
         tpe.kind == TypeKind::REFERENCE or
         tpe.kind == TypeKind::WEAK_REF or
         tpe.kind == TypeKind::STATIC_ARRAY or
-        tpe.kind == TypeKind::ARRAY
+        tpe.kind == TypeKind::ARRAY or
+        tpe.kind == TypeKind::INTERFACE_IMPL
 }
 
 export def is_struct(tpe: &Type) -> bool {
@@ -1092,7 +1103,7 @@ export def equals(a: &Type, b: &Type) -> bool {
 
     if (@a).kind != (@b).kind { return false }
 
-    let kind = (@a).kind
+    let kind = (@a).kind    
     if kind == TypeKind::RANGE or 
         kind == TypeKind::RANGE_INC or 
         kind == TypeKind::VOID or 
@@ -1123,6 +1134,9 @@ export def equals(a: &Type, b: &Type) -> bool {
         kind == TypeKind::WEAK_REF {
         
         return equals((@a).tpe, (@b).tpe)
+    }
+    if kind == TypeKind::INTERFACE_IMPL {
+        return equals(a.intf, b.intf) and equals(a.tpe, b.tpe) and a.variants == b.variants
     }
     if kind == TypeKind::STATIC_ARRAY {
         return (@a).length == (@b).length and equals((@a).tpe, (@b).tpe)
@@ -1591,10 +1605,17 @@ export def convert_type_score(a: &Type, b: &Type, module: &toolchain::Module, is
         let conv = scope::find_implicit_function(module.scope, parameter_t, a, not consteval::is_static)
         if conv {
             if consteval::is_static {
-                consteval::compile_function(conv, parameter_t)
+                consteval::compile_function(conv, module.scope, parameter_t)
             }
             return 15
         }
+    }
+
+    if a.kind == TypeKind::INTERFACE_IMPL {
+        if convert_type_score(a.intf, b, module) < 0 { return -1 }
+        b = make_interface_impl(a.intf, b, module.scope)
+        if equals(a, b) { return 0 }
+        return -1
     }
 
     let intfp = get_interface(a)
@@ -1764,7 +1785,7 @@ def replace_parameter(tpe: &Type, types: &SMap(&Type)) -> &Type {
     } else if tpe.kind == TypeKind::FUNCTION or tpe.kind == TypeKind::CLOSURE or tpe.kind == TypeKind::TUPLE {
         for var i in 0..vector::length(tpe.parameter_t) {
             let np = tpe.parameter_t[i]
-            np._tpe =  replace_parameter(np.tpe, types)
+            np._tpe = replace_parameter(np.tpe, types)
         }
     } else if tpe.kind != TypeKind::TYPE_DEF and tpe.name {
         let ntpe = types.get_or_default(tpe.name, null)
@@ -1816,6 +1837,11 @@ export def replace_type_defs(
 
         if not rtpe { return }
         if convert_type_score(ltpe, rtpe, module, impl = impl) < 0 { return }
+
+        if is_interface(ltpe) and replace {
+            @ltpe = @make_interface_impl(copy(ltpe), rtpe, module.scope)
+            continue
+        }
 
         let intf = get_interface(ltpe)
         if intf and replace {
@@ -2185,9 +2211,9 @@ export def generate_concrete_functions(type_constructor: &Type, tpe: &Type, stat
                 if not scope::has_function(state.scope, ftpe) {
                     if consteval::is_static {
                         let value = scope::get_function(state2.scope, parser::make_identifier(ftpe.name), pars, false, true, force_compile = false)
-                        consteval::compile_function(value, pars)
+                        consteval::compile_function(value, state2.scope, pars)
                     } else {
-                        walk_Def_with_type_argument(ftpe.node, pars, state2)
+                        walk_Def_with_type_argument(ftpe.node, pars, state.scope, state2)
                     }
                 }
             }
@@ -3133,7 +3159,7 @@ def walk_Assign(node: &parser::Node, state: &State) {
             let ident = parser::make_identifier("__set_" + parser::identifier_to_str(name) + "__")
             let fun = scope::get_function(state.scope, ident, args, false, true, force_compile = not consteval::is_static)
             if fun {
-                compile_function(*fun, args)
+                compile_function(*fun, state.scope, args)
             }
         }
 
@@ -3408,7 +3434,7 @@ def convert_to_call(node: &parser::Node, name: Str, args: &Vector(NamedParameter
     let ident = parser::make_identifier(name)
     let fun = scope::get_function(state.scope, ident, args, false, true, force_compile = not consteval::is_static)
     if fun {
-        compile_function(*fun, args)
+        compile_function(*fun, state.scope, args)
         let parent = node.parent
         @node = @make_function_call(node, ident)
         consteval::walk_Call(node, state)
@@ -3420,7 +3446,7 @@ def convert_to_icall(node: &parser::Node, name: Str, args: &Vector(NamedParamete
     let ident = parser::make_identifier(name)
     let fun = scope::get_function(state.scope, ident, args, false, true, force_compile = not consteval::is_static)
     if fun { 
-        compile_function(*fun, args)
+        compile_function(*fun, state.scope, args)
 
         let parent = node.parent
         var assign = {
@@ -3973,16 +3999,19 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
                 if tpe2.kind == TypeKind::TYPE { continue }
                 if tpe2.kind == TypeKind::TYPE_CONSTRUCTOR {
                     errors::errorn(np.node, "Can't use type constructor as function argument")
-                    np._tpe =  null
+                    np._tpe = null
                 }
             }
+            if tpe2 and tpe2.kind == TypeKind::INTERFACE_IMPL {
+                tpe2 = tpe2.tpe
+            }
             if np.varargs {
-                if np.tpe {
-                    let value = scope::create_variable(inner_scope, np.node, parser::ShareMarker::NONE, parser::VarDecl::VAR, array(np.tpe), null)
+                if tpe2 {
+                    let value = scope::create_variable(inner_scope, np.node, parser::ShareMarker::NONE, parser::VarDecl::VAR, array(tpe2), null)
                     np.node.svalue = value
                 }
             } else {
-                let value = scope::create_variable(inner_scope, np.node, parser::ShareMarker::NONE, parser::VarDecl::VAR, np.tpe, null)
+                let value = scope::create_variable(inner_scope, np.node, parser::ShareMarker::NONE, parser::VarDecl::VAR, tpe2, null)
                 np.node.svalue = value
             }
         }
@@ -4319,12 +4348,12 @@ export def append_arguments(arguments: &Vector(NamedParameter)) -> Str {
     return res
 }
 
-def compile_function(function: *&scope::Value, arguments: &Vector(typechecking::NamedParameter)) {
+def compile_function(function: *&scope::Value, context: &scope::Scope, arguments: &Vector(typechecking::NamedParameter)) {
     if consteval::is_static and @function {
         if not (@function).imported {
             consteval::load_function(@function)
         }
-        @function = consteval::compile_function(@function, arguments)
+        @function = consteval::compile_function(@function, context, arguments)
     }
 }
 
@@ -4421,7 +4450,7 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
                     scope::add_reference(function, left)
                 }
 
-                compile_function(*function, arguments)
+                compile_function(*function, state.scope, arguments)
 
                 if left.value.identifier.types {
                     if not function {
@@ -4464,7 +4493,10 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
                 scope::create_dependency(state.current_value(), function)
                 if function.polymorph {
                     // Pull in dependencies of generic function
-                    state.current_value().dependencies.add_all(function.dependencies)
+                    let cvar = state.current_value()
+                    if cvar.dependencies and function.dependencies {
+                        cvar.dependencies.add_all(function.dependencies)
+                    }
                 }
                 
                 tpe = copy(function.tpe)
@@ -5012,7 +5044,7 @@ def walk_ArraySubscript(node: &parser::Node, state: &State) {
 
             let set_item = scope::get_function(state.scope, parser::make_identifier("set_item"), args)
             if set_item {
-                compile_function(*set_item, args)
+                compile_function(*set_item, state.scope, args)
                 return
             } 
         }
@@ -5187,7 +5219,7 @@ def walk_ComparisionOp(node: &parser::Node, state: &State) {
     if node.kind != parser::NodeKind::FUNC_CALL {
         if builtins::Type_ and equals(left.tpe, pointer(builtins::Type_)) {
             let equals = scope::get(toolchain::runtime_.scope, parser::make_identifier("equals"), not consteval::is_static)
-            consteval::compile_function(equals)
+            consteval::compile_function(equals, toolchain::runtime_.scope)
         }
 
         // TODO We can compare almost everything
@@ -5234,8 +5266,9 @@ def walk_Assert(node: &parser::Node, state: &State) {
     walk(node, msg, state)
     
     if consteval::is_static {
-        let stderr_fun = get(toolchain::find_module("std").scope, parser::make_identifier("stderr"), force_compile = false)
-        consteval::compile_function(stderr_fun)
+        let context = toolchain::find_module("std").scope
+        let stderr_fun = get(context, parser::make_identifier("stderr"), force_compile = false)
+        consteval::compile_function(stderr_fun, context)
     }
 
     if cond and not is_boolean(cond.tpe, state.module) {
@@ -5442,13 +5475,63 @@ def find_dependencies(type_variables: &Vector(&scope::Value), tpe: &Type) {
     }
 }
 
-export def walk_Def_with_type_argument(node: &parser::Node, parameter_t: &Vector(NamedParameter), state: &State) -> &parser::Node {
+export def make_interface_impl(intf: &Type, wrap: &Type, context: &scope::Scope) -> &Type {
+    let module = context.module
+    if not module {
+        return wrap
+    }
+    
+    var impl = module.get_impl(intf, wrap)
+    if impl { return impl }
+    impl = make_type_raw(TypeKind::INTERFACE_IMPL)
+
+    let variants = set::make(type &typechecking::Type)
+    for var member in intf.members {
+        let param = copy_parameter_t(member.parameter_t)
+        param.insert(0, { _tpe = wrap } !NamedParameter)
+        let fun = scope::get_function(context, parser::make_identifier(member.name), param, dry_run = true)
+        if not fun { return wrap }
+        variants.add(fun.tpe)
+    }
+    impl.variants = variants
+    impl._tpe = wrap
+    impl.intf = intf
+    impl.module = module
+
+    if not consteval::is_static {
+        module.add_impl(intf, wrap, impl)
+    }
+    return impl
+}
+
+export def walk_Def_with_type_argument(node: &parser::Node, parameter_t: &Vector(NamedParameter), context: &scope::Scope, state: &State) -> &parser::Node {
     let old_node = node
     node = parser::deep_copy_node(node)
     node.value.def_.function = null
     node.value.def_.is_generic_instance = true
     node.tpe = lookup_parameters(node, state)
+
+    // Unbox
+    let module = context.module
+    context = module.scope
+
+    var in_context = false
+    var super_scope = node.scope
+    while super_scope.parent and super_scope.parent != builtins::builtins {
+        if super_scope !* == context !* {
+            break
+        }
+        super_scope = super_scope.parent
+    }
+    if super_scope == context { in_context = true }
+
+    // Temporarily change parent scope to get into the context of the invocation
+    if not in_context {
+        super_scope.parent = context
+    }
+    
     node.inner_scope = scope::enter_function_scope(node.scope)
+    node.inner_scope.module = module
 
     let share = node.value.def_.share
     var tpe = node.tpe
@@ -5476,7 +5559,7 @@ export def walk_Def_with_type_argument(node: &parser::Node, parameter_t: &Vector
     }
 
     let types_map = map::make(type &Type)
-    replace_type_defs(tpe.parameter_t, tpe.return_t, parameter_t, types_map, state.module)
+    replace_type_defs(tpe.parameter_t, tpe.return_t, parameter_t, types_map, context.module)
     tpe.type_name = mangle_function_name(append_module(tpe.name, tpe.module.module), tpe.parameter_t, test)
 
     // TODO This is quite hacky but we need to copy the nodes
@@ -5519,6 +5602,11 @@ export def walk_Def_with_type_argument(node: &parser::Node, parameter_t: &Vector
 
     // This makes sure that the function is walked by the compiler
     state.module.node.body.push(node)
+    
+    if not in_context {
+        super_scope.parent = builtins::builtins
+    }
+    
     return node
 }
 
