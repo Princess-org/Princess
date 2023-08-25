@@ -415,25 +415,20 @@ def parse_struct(name: str, inner: clang.Type, file: File, lookup: bool = False)
     else: name = None
     
     declaration = inner.get_declaration()
-    children = declaration.get_children()
+    children = list(declaration.get_children())
 
     fields = []
     field: clang.Cursor
     index = 0
-    last_unnamed_struct: clang.Cursor = None
 
-    for field in children:
+    for i, field in enumerate(children):
         if field.kind == clang.CursorKind.STRUCT_DECL: 
             if len(list(field.get_children())) == 0: continue
         field_type = parse_type(field.type, file, is_in_struct = True)
         if not field_type: return None
 
-        if last_unnamed_struct and field.type.get_declaration() == last_unnamed_struct:
-            del fields[-1]
-        
-        last_unnamed_struct = None
-        if is_anonymous(field.type.spelling):
-            last_unnamed_struct = field.type.get_declaration()
+        if is_anonymous(field.spelling) and i + 1 < len(children) and field.type.get_declaration() == children[i + 1].type.get_declaration():
+            continue
 
         spelling = field.spelling
         if not spelling: 
