@@ -31,4 +31,6 @@ void *f_log10l = &log10l;
 void *f_modfl = &modfl;
 void *f_tanhl = &tanhl;
 
+void *f_timespec_get = &timespec_get;
+
 #endif
