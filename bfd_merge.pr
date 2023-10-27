@@ -1,0 +1,333 @@
+import bfd
+import map
+import vector
+
+const file_a = "A.o"
+const file_b = "B.o"
+const file_r = "AB2.o"
+
+type Section = struct {
+    offsets: &Map(&Section, size_t)
+    section: *s_bfd_section
+    name: &string
+    size: size_t // Size of the entire section
+    data: *
+}
+
+export def hash(sec: &Section) -> uint64 {
+    return sec !*uint64 !uint64
+}
+
+type Object = struct {
+    bfd: *s_bfd
+    sections: &SMap(&Section)
+    symtab: **s_bfd_symbol
+    symbols: &SMap(&Symbol)
+}
+
+def open_object_read(file: Str) -> &Object {
+    let abfd = bfd_openr(file.to_array().value, null)
+    bfd_check_format(abfd, e_bfd_format::bfd_object)
+    return { abfd, sections = map::make(type &Section), symbols = map::make(type &Symbol) } !&Object
+}
+
+def open_object_write(file: Str) -> &Object {
+    let abfd = bfd_openw(file.to_array().value, null)
+    bfd_set_format(abfd, e_bfd_format::bfd_object)
+    return { abfd, sections = map::make(type &Section), symbols = map::make(type &Symbol) } !&Object
+}
+
+def copy_arch_mach(to: &Object, frm: &Object) {
+    to.bfd.xvec._bfd_set_arch_mach(to.bfd, bfd_get_arch(frm.bfd), bfd_get_mach(frm.bfd))
+}
+
+def delete(obj: &Object) {
+    bfd_close(obj.bfd)
+    free(obj.symtab)
+    for var name in @obj.sections.keys() {
+        let section = obj.sections[name]
+        free(section.data)
+    }
+}
+
+type Symbol = struct {
+    symbol: *s_bfd_symbol
+    section: &Section
+    offset: size_t
+    size: size_t
+}
+
+def bfd_asymbol_value(sy: *s_bfd_symbol) -> size_t {
+    return sy.section.vma + sy.value
+}
+
+def initialize_section(res: &Object, name: Str) {
+    let sec = bfd_get_section_by_name(res.bfd, name.to_array().value)
+    res.sections[name] = { section = sec, name = name.to_array(), offsets = map::make(type &Section, size_t), size = sec.size} !&Section
+}
+
+def merge_section(res: &Object, obj_a: &Object, name: Str) {
+    let a_sec = obj_a.sections[name]
+
+    if res.sections.contains(name) {
+        return
+    }
+
+    let section_name = name.to_array()
+    let new_sec = bfd_make_section(res.bfd, section_name.value)
+    bfd_set_section_flags(new_sec, a_sec.section.flags)
+    bfd_set_section_size(new_sec, a_sec.section.size)
+    new_sec.alignment_power = a_sec.section.alignment_power
+
+    res.sections[name] = { section = new_sec, name = section_name, offsets = map::make(type &Section, size_t), size = a_sec.size } !&Section
+}
+
+def load_section_data(obj: &Object, name: Str) {
+    let section = obj.sections[name]
+    var data = allocate(section.section.size)
+    bfd_get_section_contents(obj.bfd, section.section, data, 0, section.section.size)
+    section.data = data
+}
+
+def merge_section_data(res: &Object, obj_a: &Object, name: Str) {
+    merge_section(res, obj_a, name)
+
+    let a_sec = obj_a.sections[name]
+    let new_sec = res.sections[name]
+
+    let sz = a_sec.section.size
+    	
+    var offset: size_t = new_sec.size
+    var data = reallocate(new_sec.data !*char, offset + sz)
+
+    memcopy(a_sec.data, data ++ offset, a_sec.section.size)
+    new_sec.offsets[a_sec] = offset
+
+    new_sec.data = data
+    new_sec.size += sz
+
+    bfd_set_section_size(new_sec.section, new_sec.size)
+}
+
+def write_section_data(res: &Object, name: Str) {
+    let sec = res.sections[name]
+    bfd_set_section_contents(res.bfd, sec.section, sec.data, 0, sec.size)
+}
+
+def load_symbols(res: &Object) {
+    let a_sz = res.bfd.xvec._bfd_get_symtab_upper_bound(res.bfd)
+    let syms = allocate(a_sz) !**s_bfd_symbol
+    let cnta = res.bfd.xvec._bfd_canonicalize_symtab(res.bfd, syms)
+    
+    res.symtab = syms
+
+    // TODO This relies on symbols being ordered
+    var i = 0
+    while i < cnta {
+        var sym = syms[i]
+        let name = make_string(sym.section.name)
+
+        var section: &Section
+        if sym.section != *_bfd_std_section[2] and res.sections.contains(name) {
+            section = res.sections[name]
+        }
+
+        var offset: size_t = bfd_asymbol_value(sym) 
+        var size: size_t = 0
+
+        if section {
+            if i + 1 < cnta {
+                let next_sym = syms[i + 1]
+                if make_string(next_sym.section.name) != name {
+                    size = section.size - offset
+                } else {
+                    size = bfd_asymbol_value(next_sym) - offset
+                }
+            } else {
+                size = section.size - offset
+            }
+        }
+        
+        let out_sym = { sym, section, offset, size } !&Symbol
+        res.symbols[make_string(sym.name)] = out_sym
+
+        i += 1
+    }
+}
+
+def remove_symbol(res: &Object, name: Str) {
+    if not res.symbols.contains(name) { return }
+    let sym = res.symbols[name]
+    let sec = sym.section
+
+    // Purge the symbol from the section
+    let data = allocate(sec.size - sym.size)
+    memcopy(sec.data, data, sym.offset)
+    memcopy(sec.data ++ sym.offset ++ sym.size, data ++ sym.offset, sec.size - sym.offset - sym.size)
+
+    var i = 0
+    while i < res.symbols.size {
+        if make_string(res.symtab[i].name) == name {
+            break
+        }
+        i += 1
+    }
+
+    let symtab = allocate(size_of **s_bfd_symbol * (res.symbols.size - 1)) !**s_bfd_symbol
+    memcopy(res.symtab, symtab, i * size_of **s_bfd_symbol)
+    memcopy(res.symtab ++ i ++ 1, symtab ++ i, (res.symbols.size - i - 1) * size_of **s_bfd_symbol) 
+
+
+    free(sec.data)
+    free(res.symtab)
+
+    res.symtab = symtab
+    sec.data = data
+    res.symbols.remove(name)
+
+    for var i in 0..res.symbols.size {
+        let sym2 = res.symtab[i]
+        if sym2.value > sym.offset and sym.section == sec.section {
+            sym2.value -= sym.size
+        } 
+    }
+}
+
+def copy_symbols(to: &Object, frm: &Object) {
+    to.symtab = reallocate(to.symtab, size_of *s_bfd_symbol * (frm.symbols.size + to.symbols.size)) !**s_bfd_symbol
+
+    var i = to.symbols.size
+    for var name in @frm.symbols.keys() {
+        let sym = frm.symbols[name]
+        let new_sym = to.bfd.xvec._bfd_make_empty_symbol(to.bfd)
+        let section = frm.sections[sym.section.name] if sym.section else null
+        let to_section = to.sections[sym.section.name] if sym.section else null
+
+        var offset: size_t = 0
+        if to_section and to_section.offsets.contains(section) {
+            offset = to_section.offsets[section]
+        }
+
+        new_sym.name = sym.symbol.name
+        if to_section {
+            new_sym.section = to_section.section
+        } else {
+            new_sym.section = sym.symbol.section
+        }
+        new_sym.flags = sym.symbol.flags
+        new_sym.value = sym.symbol.value + offset
+
+        to.symtab[i] = new_sym
+        let symbol = { new_sym, to_section, sym.offset, sym.size } !&Symbol
+        
+        if not to.symbols.contains(name) {
+            to.symbols[name] = symbol
+            i += 1
+        }
+    }
+}
+
+def write_symbols(res: &Object) {
+    bfd_set_symtab(res.bfd, res.symtab, res.symbols.size !uint)
+}
+
+def main {
+    let obj_a = open_object_read(file_a)
+    let obj_b = open_object_read(file_b)
+    let new_obj = open_object_write(file_r)
+    new_obj.copy_arch_mach(obj_a)
+
+    obj_a.initialize_section(".text")
+    obj_a.initialize_section(".data")
+    obj_b.initialize_section(".text")
+    obj_b.initialize_section(".data")
+    obj_a.initialize_section(".llvm_addrsig")
+    obj_b.initialize_section(".llvm_addrsig")
+    
+    // Debug Symbols
+    obj_a.initialize_section(".debug_abbrev")
+    obj_a.initialize_section(".debug_info")
+    obj_a.initialize_section(".debug_ranges")
+    obj_a.initialize_section(".debug_str")
+    obj_a.initialize_section(".debug_line")
+    obj_a.initialize_section(".debug_pubnames")
+    obj_a.initialize_section(".debug_pubtypes")
+
+    obj_b.initialize_section(".debug_abbrev")
+    obj_b.initialize_section(".debug_info")
+    obj_b.initialize_section(".debug_ranges")
+    obj_b.initialize_section(".debug_str")
+    obj_b.initialize_section(".debug_line")
+    obj_b.initialize_section(".debug_pubnames")
+    obj_b.initialize_section(".debug_pubtypes")
+
+    obj_a.load_symbols()
+    obj_b.load_symbols()
+
+    obj_a.load_section_data(".text")
+    obj_a.load_section_data(".data")
+    obj_a.load_section_data(".debug_abbrev")
+    obj_a.load_section_data(".debug_info")
+    obj_a.load_section_data(".debug_ranges")
+    obj_a.load_section_data(".debug_str")
+    obj_a.load_section_data(".debug_line")
+    obj_a.load_section_data(".debug_pubnames")
+    obj_a.load_section_data(".debug_pubtypes")
+    obj_a.load_section_data(".llvm_addrsig")
+
+    obj_b.load_section_data(".text")
+    obj_b.load_section_data(".data")
+    obj_b.load_section_data(".debug_abbrev")
+    obj_b.load_section_data(".debug_info")
+    obj_b.load_section_data(".debug_ranges")
+    obj_b.load_section_data(".debug_str")
+    obj_b.load_section_data(".debug_line")
+    obj_b.load_section_data(".debug_pubnames")
+    obj_b.load_section_data(".debug_pubtypes")
+    obj_b.load_section_data(".llvm_addrsig")
+
+    new_obj.merge_section_data(obj_a, ".text")
+    new_obj.merge_section_data(obj_a, ".data")
+    new_obj.merge_section_data(obj_a, ".debug_abbrev")
+    new_obj.merge_section_data(obj_a, ".debug_info")
+    new_obj.merge_section_data(obj_a, ".debug_ranges")
+    new_obj.merge_section_data(obj_a, ".debug_str")
+    new_obj.merge_section_data(obj_a, ".debug_line")
+    new_obj.merge_section_data(obj_a, ".debug_pubnames")
+    new_obj.merge_section_data(obj_a, ".debug_pubtypes")
+    new_obj.merge_section_data(obj_a, ".llvm_addrsig")
+
+    new_obj.merge_section_data(obj_b, ".text")
+    new_obj.merge_section_data(obj_b, ".data")
+    new_obj.merge_section_data(obj_b, ".debug_abbrev")
+    new_obj.merge_section_data(obj_b, ".debug_info")
+    new_obj.merge_section_data(obj_b, ".debug_ranges")
+    new_obj.merge_section_data(obj_b, ".debug_str")
+    new_obj.merge_section_data(obj_b, ".debug_line")
+    new_obj.merge_section_data(obj_b, ".debug_pubnames")
+    new_obj.merge_section_data(obj_b, ".debug_pubtypes")
+    new_obj.merge_section_data(obj_b, ".llvm_addrsig")
+
+    new_obj.copy_symbols(obj_a)
+    new_obj.copy_symbols(obj_b)
+
+    //new_obj.remove_symbol("useless_function")
+
+    new_obj.write_symbols()
+
+    new_obj.write_section_data(".text")
+    new_obj.write_section_data(".data")
+    new_obj.write_section_data(".debug_abbrev")
+    new_obj.write_section_data(".debug_info")
+    new_obj.write_section_data(".debug_ranges")
+    new_obj.write_section_data(".debug_str")
+    new_obj.write_section_data(".debug_line")
+    new_obj.write_section_data(".debug_pubnames")
+    new_obj.write_section_data(".llvm_addrsig")
+
+    delete(new_obj)
+    delete(obj_a)
+    delete(obj_b)
+}
+
+main

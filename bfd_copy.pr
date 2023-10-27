@@ -1,0 +1,101 @@
+import bfd
+
+if args.size < 2 {
+    error("Incorrect number of arguments\n")
+    exit(1)
+}
+
+let file = args[1]
+var output: string
+if args.size > 2 {
+    output = args[2]
+}
+
+bfd_init()
+
+let abfd = bfd_openr(file.value, null)
+assert bfd_check_format(abfd, e_bfd_format::bfd_object)
+
+let sym_sz = abfd.xvec._bfd_get_symtab_upper_bound(abfd)
+var syms = malloc(sym_sz) !**s_bfd_symbol
+let symcount = abfd.xvec._bfd_canonicalize_symtab(abfd, syms)
+
+if output.value {
+    let new_bfd = bfd_openw(output.value, null)
+    bfd_set_format(new_bfd, abfd.format)
+    new_bfd.xvec._bfd_set_arch_mach(new_bfd, bfd_get_arch(abfd), bfd_get_mach(abfd))
+    abfd.xvec._bfd_copy_private_bfd_data(abfd, new_bfd)
+
+    var sec = abfd.sections
+    while sec != null {
+        print("Making section: ", sec.name, " with size ", sec.size, " and flags: ", sec.flags, "\n")
+        let new_sec = bfd_make_section(new_bfd, sec.name)
+        bfd_set_section_flags(new_sec, sec.flags)
+        bfd_set_section_size(new_sec, sec.size)
+        new_sec.alignment_power = sec.alignment_power
+        new_bfd.xvec._bfd_copy_private_section_data(abfd, sec, new_bfd, new_sec)
+
+        sec = sec.next
+    }
+
+    for var i in 0..symcount {
+        let sym = syms[i]
+        let new_sec = bfd_get_section_by_name(new_bfd, sym.section.name)
+        if new_sec {
+            sym.section = new_sec
+        }
+    }
+
+    if not bfd_set_symtab(new_bfd, syms, symcount !uint) {
+        error("Failed to set symtab!\n")
+        error("Error: ", bfd_get_error(), "\n")
+    }
+
+    var new_sec = new_bfd.sections
+    while new_sec != null {
+        let sec = bfd_get_section_by_name(abfd, new_sec.name)
+
+        // Relocations
+        let rel_sz = bfd_get_reloc_upper_bound(abfd, sec)
+        let relent = malloc(rel_sz) !**s_reloc_cache_entry
+
+        let count = bfd_canonicalize_reloc(abfd, sec, relent, syms)
+        if count > 0 {
+            print("Writing relocations for ", new_sec.name, "\n")
+            for var i in 0..count {
+                // Adjusting symbol 
+                let relent = relent[i]
+                let sym_name = (@relent.sym_ptr_ptr).name
+                var sym: **s_bfd_symbol
+                for var i in 0..new_bfd.symcount {
+                    sym = *new_bfd.outsymbols[i]
+                    if cstd::strcmp((@sym).name, sym_name) == 0 {
+                        break
+                    }
+                }
+                relent.sym_ptr_ptr = sym
+            }
+            new_bfd.xvec._bfd_set_reloc(new_bfd, new_sec, relent, count !uint)
+        }
+
+        //free(relent)
+
+        var data = malloc(sec.size)
+        let contents = bfd_get_section_contents(abfd, sec, data, 0, sec.size)
+        if contents {
+            if not bfd_set_section_contents(new_bfd, new_sec, data, 0, sec.size) {
+                error("Failed to write to section!\n")
+                error("Error: ", bfd_get_error(), "\n")
+                exit(1)
+            }
+        }
+        free(data)
+        new_sec = new_sec.next
+    }
+
+    bfd_close(new_bfd)
+
+    free(syms)
+}
+
+bfd_close(abfd)
