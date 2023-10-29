@@ -12,6 +12,14 @@ type Section = struct {
     name: &string
     size: size_t // Size of the entire section
     data: *
+    relocations: Relocations
+}
+
+type Relocations = struct {
+    offset: size_t
+    count: size_t
+    reloc: **s_reloc_cache_entry
+    src: &Vector(&Section)
 }
 
 export def hash(sec: &Section) -> uint64 {
@@ -47,6 +55,7 @@ def delete(obj: &Object) {
     for var name in @obj.sections.keys() {
         let section = obj.sections[name]
         free(section.data)
+        free(section.relocations.reloc)
     }
 }
 
@@ -63,10 +72,20 @@ def bfd_asymbol_value(sy: *s_bfd_symbol) -> size_t {
 
 def initialize_section(res: &Object, name: Str) {
     let sec = bfd_get_section_by_name(res.bfd, name.to_array().value)
+    if not sec { return }
     res.sections[name] = { section = sec, name = name.to_array(), offsets = map::make(type &Section, size_t), size = sec.size} !&Section
 }
 
+def load_section_data(obj: &Object, name: Str) {
+    if not obj.sections.contains(name) { return }
+    let section = obj.sections[name]
+    var data = allocate(section.section.size)
+    bfd_get_section_contents(obj.bfd, section.section, data, 0, section.section.size)
+    section.data = data
+}
+
 def merge_section(res: &Object, obj_a: &Object, name: Str) {
+    if not obj_a.sections.contains(name) { return }
     let a_sec = obj_a.sections[name]
 
     if res.sections.contains(name) {
@@ -79,26 +98,49 @@ def merge_section(res: &Object, obj_a: &Object, name: Str) {
     bfd_set_section_size(new_sec, a_sec.section.size)
     new_sec.alignment_power = a_sec.section.alignment_power
 
-    res.sections[name] = { section = new_sec, name = section_name, offsets = map::make(type &Section, size_t), size = a_sec.size } !&Section
-}
-
-def load_section_data(obj: &Object, name: Str) {
-    let section = obj.sections[name]
-    var data = allocate(section.section.size)
-    bfd_get_section_contents(obj.bfd, section.section, data, 0, section.section.size)
-    section.data = data
+    let section = { section = new_sec, name = section_name, offsets = map::make(type &Section, size_t), size = 0 } !&Section
+    section.relocations.src = vector::make(type &Section)
+    res.sections[name] = section
 }
 
 def merge_section_data(res: &Object, obj_a: &Object, name: Str) {
+    if not obj_a.sections.contains(name) { return }
+
     merge_section(res, obj_a, name)
 
     let a_sec = obj_a.sections[name]
     let new_sec = res.sections[name]
 
     let sz = a_sec.section.size
-    	
+    
     var offset: size_t = new_sec.size
     var data = reallocate(new_sec.data !*char, offset + sz)
+
+    // Initialize relocations
+    let rel_sz = bfd_get_reloc_upper_bound(obj_a.bfd, a_sec.section)
+    if rel_sz > 0 {
+        let relent = allocate(rel_sz) !**s_reloc_cache_entry
+        let count = bfd_canonicalize_reloc(obj_a.bfd, a_sec.section, relent, obj_a.symtab)
+
+        if count > 0 {
+            let new_sz = (count + new_sec.relocations.count) * size_of *s_reloc_cache_entry
+            let out = reallocate(new_sec.relocations.reloc, new_sz)
+            memcopy(relent, out ++ new_sec.relocations.count, count * size_of *s_reloc_cache_entry)
+
+            new_sec.relocations.reloc = out
+            new_sec.relocations.count += count
+
+            for var i in 0..count {
+                let rel = relent[i]
+                let sym_name = make_string((@rel.sym_ptr_ptr).name)
+                let sym = obj_a.symbols[sym_name]
+                new_sec.relocations.src.push(sym.section)
+                rel.address += offset
+            }
+        }
+
+        free(relent)
+    }
 
     memcopy(a_sec.data, data ++ offset, a_sec.section.size)
     new_sec.offsets[a_sec] = offset
@@ -110,8 +152,31 @@ def merge_section_data(res: &Object, obj_a: &Object, name: Str) {
 }
 
 def write_section_data(res: &Object, name: Str) {
+    if not res.sections.contains(name) { return }
     let sec = res.sections[name]
     bfd_set_section_contents(res.bfd, sec.section, sec.data, 0, sec.size)
+
+    // Write relocations
+    let count = sec.relocations.count
+    let relent = sec.relocations.reloc
+    if count > 0 {
+        for var i in 0..count {
+            let rel = relent[i]
+            let sym_name = make_string((@rel.sym_ptr_ptr).name)
+            let sym = res.symbols[sym_name]
+            let src_sec = sec.relocations.src[i]
+            var offset: size_t = 0
+
+            if src_sec {
+                let dst_sec = res.sections[src_sec.name]
+                offset = dst_sec.offsets[src_sec]
+            }
+
+            rel.sym_ptr_ptr = *sym.symbol
+            rel.addend += offset
+        }
+        res.bfd.xvec._bfd_set_reloc(res.bfd, sec.section, relent, count !uint)
+    }
 }
 
 def load_symbols(res: &Object) {
@@ -128,7 +193,7 @@ def load_symbols(res: &Object) {
         let name = make_string(sym.section.name)
 
         var section: &Section
-        if sym.section != *_bfd_std_section[2] and res.sections.contains(name) {
+        if not is_abs_section(sym.section) and res.sections.contains(name) {
             section = res.sections[name]
         }
 
@@ -193,6 +258,15 @@ def remove_symbol(res: &Object, name: Str) {
     }
 }
 
+// TODO There are in fact ways to do this without a string compare but it doesn't seem to work
+def #inline is_und_section(section: *s_bfd_section) -> bool {
+    return cstd::strcmp(section.name, "*UND*".value) == 0
+}
+
+def #inline is_abs_section(section: *s_bfd_section) -> bool {
+    return cstd::strcmp(section.name, "*ABS*".value) == 0
+}
+
 def copy_symbols(to: &Object, frm: &Object) {
     to.symtab = reallocate(to.symtab, size_of *s_bfd_symbol * (frm.symbols.size + to.symbols.size)) !**s_bfd_symbol
 
@@ -219,8 +293,8 @@ def copy_symbols(to: &Object, frm: &Object) {
 
         to.symtab[i] = new_sym
         let symbol = { new_sym, to_section, sym.offset, sym.size } !&Symbol
-        
-        if not to.symbols.contains(name) {
+
+        if not is_und_section(sym.symbol.section) and not to.symbols.contains(name) {
             to.symbols[name] = symbol
             i += 1
         }
@@ -239,9 +313,10 @@ def main {
 
     obj_a.initialize_section(".text")
     obj_a.initialize_section(".data")
+    obj_a.initialize_section(".llvm_addrsig")
+
     obj_b.initialize_section(".text")
     obj_b.initialize_section(".data")
-    obj_a.initialize_section(".llvm_addrsig")
     obj_b.initialize_section(".llvm_addrsig")
     
     // Debug Symbols
