@@ -30,19 +30,37 @@ type Object = struct {
     bfd: *s_bfd
     sections: &SMap(&Section)
     symtab: **s_bfd_symbol
-    symbols: &SMap(&Symbol)
+    symbols: &Vector(&Symbol)
+    sym_size: size_t
+}
+
+def find_symbol(o: &Object, name: Str) -> &Symbol {
+    for var sym in o.symbols {
+        if sym.name == name { return sym }
+    }
+    return null
+}
+
+def delete_symbol(o: &Object, name: Str) {
+    for var i in 0..o.symbols.length {
+        let sym = o.symbols[i]
+        if sym.name == name {
+            o.symbols.remove(i)
+            return
+        }
+    }
 }
 
 def open_object_read(file: Str) -> &Object {
     let abfd = bfd_openr(file.to_array().value, null)
     bfd_check_format(abfd, e_bfd_format::bfd_object)
-    return { abfd, sections = map::make(type &Section), symbols = map::make(type &Symbol) } !&Object
+    return { abfd, sections = map::make(type &Section), symbols = vector::make(type &Symbol) } !&Object
 }
 
 def open_object_write(file: Str) -> &Object {
     let abfd = bfd_openw(file.to_array().value, null)
     bfd_set_format(abfd, e_bfd_format::bfd_object)
-    return { abfd, sections = map::make(type &Section), symbols = map::make(type &Symbol) } !&Object
+    return { abfd, sections = map::make(type &Section), symbols = vector::make(type &Symbol) } !&Object
 }
 
 def copy_arch_mach(to: &Object, frm: &Object) {
@@ -60,10 +78,11 @@ def delete(obj: &Object) {
 }
 
 type Symbol = struct {
+    name: Str
     symbol: *s_bfd_symbol
     section: &Section
-    offset: size_t
     size: size_t
+    offset: size_t // Offset based on deleted sections
 }
 
 def bfd_asymbol_value(sy: *s_bfd_symbol) -> size_t {
@@ -133,7 +152,7 @@ def merge_section_data(res: &Object, obj_a: &Object, name: Str) {
             for var i in 0..count {
                 let rel = relent[i]
                 let sym_name = make_string((@rel.sym_ptr_ptr).name)
-                let sym = obj_a.symbols[sym_name]
+                let sym = find_symbol(obj_a, sym_name)
                 new_sec.relocations.src.push(sym.section)
                 rel.address += offset
             }
@@ -163,9 +182,9 @@ def write_section_data(res: &Object, name: Str) {
         for var i in 0..count {
             let rel = relent[i]
             let sym_name = make_string((@rel.sym_ptr_ptr).name)
-            let sym = res.symbols[sym_name]
+            let sym = find_symbol(res, sym_name)
             let src_sec = sec.relocations.src[i]
-            var offset: size_t = 0
+            var offset: size_t = sym.offset
 
             if src_sec {
                 let dst_sec = res.sections[src_sec.name]
@@ -190,20 +209,21 @@ def load_symbols(res: &Object) {
     var i = 0
     while i < cnta {
         var sym = syms[i]
-        let name = make_string(sym.section.name)
+        let sec_name = make_string(sym.section.name)
+        let sym_name = make_string(sym.name)
 
         var section: &Section
-        if not is_abs_section(sym.section) and res.sections.contains(name) {
-            section = res.sections[name]
+        if not is_abs_section(sym.section) and res.sections.contains(sec_name) {
+            section = res.sections[sec_name]
         }
 
         var offset: size_t = bfd_asymbol_value(sym) 
         var size: size_t = 0
 
-        if section {
+        if section and sec_name != sym_name {
             if i + 1 < cnta {
                 let next_sym = syms[i + 1]
-                if make_string(next_sym.section.name) != name {
+                if make_string(next_sym.section.name) != sec_name {
                     size = section.size - offset
                 } else {
                     size = bfd_asymbol_value(next_sym) - offset
@@ -213,49 +233,69 @@ def load_symbols(res: &Object) {
             }
         }
         
-        let out_sym = { sym, section, offset, size } !&Symbol
-        res.symbols[make_string(sym.name)] = out_sym
-
+        let out_sym = { sym_name, sym, section, size } !&Symbol
+        res.symbols.push(out_sym)
+        res.sym_size += 1
         i += 1
     }
 }
 
 def remove_symbol(res: &Object, name: Str) {
-    if not res.symbols.contains(name) { return }
-    let sym = res.symbols[name]
+    if find_symbol(res, name) == null { return }
+    let sym = find_symbol(res, name)
     let sec = sym.section
 
-    // Purge the symbol from the section
-    let data = allocate(sec.size - sym.size)
-    memcopy(sec.data, data, sym.offset)
-    memcopy(sec.data ++ sym.offset ++ sym.size, data ++ sym.offset, sec.size - sym.offset - sym.size)
+    delete_symbol(res, name)
+
+    // TODO Can't compact sections due to relative branching
+    /*if sec { 
+        // Purge the symbol from the section
+        let data = allocate(sec.size - sym.size)
+        memcopy(sec.data, data, sym.symbol.value)
+        memcopy(sec.data ++ sym.symbol.value ++ sym.size, data ++ sym.symbol.value, sec.size - sym.symbol.value - sym.size)
+        free(sec.data)
+
+        sec.data = data
+
+        // Update section offsets
+        for var off_sec in @sec.offsets.keys() {
+            let offset = sec.offsets[off_sec]
+            if offset >= sym.symbol.value {
+                sec.offsets[off_sec] = offset - sym.size
+            }
+        }
+
+        // Actually shrink the section
+        sec.size -= sym.size
+    }*/
 
     var i = 0
-    while i < res.symbols.size {
+    while i < res.sym_size {
         if make_string(res.symtab[i].name) == name {
             break
         }
         i += 1
     }
 
-    let symtab = allocate(size_of **s_bfd_symbol * (res.symbols.size - 1)) !**s_bfd_symbol
+    let symtab = allocate(size_of **s_bfd_symbol * (res.sym_size - 1)) !**s_bfd_symbol
     memcopy(res.symtab, symtab, i * size_of **s_bfd_symbol)
-    memcopy(res.symtab ++ i ++ 1, symtab ++ i, (res.symbols.size - i - 1) * size_of **s_bfd_symbol) 
+    if res.sym_size - i > 0 {
+        memcopy(res.symtab ++ i ++ 1, symtab ++ i, (res.sym_size - i - 1) * size_of **s_bfd_symbol) 
+    }
 
-
-    free(sec.data)
     free(res.symtab)
 
     res.symtab = symtab
-    sec.data = data
-    res.symbols.remove(name)
+    res.sym_size -= 1
 
-    for var i in 0..res.symbols.size {
-        let sym2 = res.symtab[i]
-        if sym2.value > sym.offset and sym.section == sec.section {
-            sym2.value -= sym.size
-        } 
-    }
+    /*if sec {
+        for var sym2 in res.symbols {
+            if sym.section and sym2.symbol.value > sym.symbol.value and sym.section == sym2.section {
+                sym2.symbol.value -= sym.size
+                sym2.offset -= sym.size
+            }
+        }
+    }*/
 }
 
 // TODO There are in fact ways to do this without a string compare but it doesn't seem to work
@@ -267,12 +307,19 @@ def #inline is_abs_section(section: *s_bfd_section) -> bool {
     return cstd::strcmp(section.name, "*ABS*".value) == 0
 }
 
-def copy_symbols(to: &Object, frm: &Object) {
-    to.symtab = reallocate(to.symtab, size_of *s_bfd_symbol * (frm.symbols.size + to.symbols.size)) !**s_bfd_symbol
+type DuplicateEntry = struct {
+    symbol: &Symbol
+    from_section: &Section
+}
 
-    var i = to.symbols.size
-    for var name in @frm.symbols.keys() {
-        let sym = frm.symbols[name]
+def copy_symbols(to: &Object, frm: &Object) {
+    to.symtab = reallocate(to.symtab, size_of *s_bfd_symbol * (frm.sym_size + to.sym_size)) !**s_bfd_symbol
+
+    let duplicates = map::make(DuplicateEntry)
+    
+    var i = to.sym_size
+    for var sym in frm.symbols {
+        let name = sym.name
         let new_sym = to.bfd.xvec._bfd_make_empty_symbol(to.bfd)
         let section = frm.sections[sym.section.name] if sym.section else null
         let to_section = to.sections[sym.section.name] if sym.section else null
@@ -292,17 +339,44 @@ def copy_symbols(to: &Object, frm: &Object) {
         new_sym.value = sym.symbol.value + offset
 
         to.symtab[i] = new_sym
-        let symbol = { new_sym, to_section, sym.offset, sym.size } !&Symbol
+        let symbol = { name, new_sym, to_section, sym.size } !&Symbol
 
-        if not is_und_section(sym.symbol.section) and not to.symbols.contains(name) {
-            to.symbols[name] = symbol
-            i += 1
+        if not is_und_section(sym.symbol.section) {
+            if find_symbol(to, name) != null {
+                if name.starts_with(".") { continue }
+                
+                duplicates[name] = { symbol, section } !DuplicateEntry
+                new_sym.value = sym.symbol.value
+            } else {
+                to.symbols.push(symbol)
+                to.sym_size += 1
+                i += 1
+            }
         }
+    }
+
+    for var name in @duplicates.keys() {
+        remove_symbol(to, name)
+    }
+
+    to.symtab = reallocate(to.symtab, size_of *s_bfd_symbol * (frm.sym_size + duplicates.size)) !**s_bfd_symbol
+
+    for var name in @duplicates.keys() {
+        let entry = duplicates[name]
+        let sym = entry.symbol
+        
+        if entry.symbol.section {
+            sym.symbol.value += entry.symbol.section.offsets[entry.from_section]
+        }
+
+        to.symbols.push(sym)
+        to.symtab[to.sym_size] = sym.symbol
+        to.sym_size += 1
     }
 }
 
 def write_symbols(res: &Object) {
-    bfd_set_symtab(res.bfd, res.symtab, res.symbols.size !uint)
+    bfd_set_symtab(res.bfd, res.symtab, res.sym_size !uint)
 }
 
 def main {
@@ -385,8 +459,6 @@ def main {
 
     new_obj.copy_symbols(obj_a)
     new_obj.copy_symbols(obj_b)
-
-    //new_obj.remove_symbol("useless_function")
 
     new_obj.write_symbols()
 
