@@ -655,11 +655,11 @@ def process_module(name: str, *libs):
 def main():
     if sys.platform != "win32":
         process_module("linux")
+        process_module("libdwarf")
         
     process_module("bfd")
     process_module("cstd")
     process_module("ffi")
-    process_module("clang")
 
     if sys.platform == "win32":
         process_module("windows", "User32.lib", "Kernel32.lib", "Dbghelp.lib")

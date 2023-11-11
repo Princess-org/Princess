@@ -1,6 +1,8 @@
 import bfd
+import libdwarf
 import map
 import vector
+import linux
 
 const file_a = "A.o"
 const file_b = "B.o"
@@ -33,6 +35,12 @@ type Object = struct {
     symtab: **s_bfd_symbol
     symbols: &Vector(&Symbol)
     sym_size: size_t
+
+    // DWARF
+    dbg: *s_Dwarf_Debug_s
+    pdbg: *s_Dwarf_P_Debug_s
+
+    section_index: int
 }
 
 def find_symbol(o: &Object, name: Str) -> &Symbol {
@@ -66,15 +74,60 @@ def delete_symbol(o: &Object, name: Str) {
 }
 
 def open_object_read(file: Str) -> &Object {
-    let abfd = bfd_openr(file.to_array().value, null)
+    let path = file.to_array()
+    let abfd = bfd_openr(path.value, null)
     bfd_check_format(abfd, e_bfd_format::bfd_object)
-    return { abfd, sections = map::make(type &Section), symbols = vector::make(type &Symbol) } !&Object
+
+    let obj = { abfd, sections = map::make(type &Section), symbols = vector::make(type &Symbol) } !&Object
+
+    var error: *s_Dwarf_Error_s
+    if dwarf_init_path(path.value, null, 0, 0, 0, null, null, *obj.dbg, null, 0, null, *error) == DW_DLV_ERROR {
+        dwarf_error(error)
+    }
+
+    return obj
+}
+
+def bfd_write_callback(
+    name: *char, size: int, tpe: uint64, 
+    flags: uint64, link: uint64, info: uint64, 
+    sect_name_index: *uint64, user_data: *, errorcode: *int) -> int {
+
+    let obj = user_data !*Object
+    var bytes: *
+    var section_index: int64
+    var section_length: uint64
+
+    print("Writing debug section ", name, "\n")
+
+    var error: *s_Dwarf_Error_s
+    if dwarf_get_section_bytes_a(obj.pdbg, obj.section_index, *section_index, *section_length, *bytes, *error) == DW_DLV_ERROR {
+        @errorcode = 1
+        return -1
+    }
+
+    let section = bfd_make_section_with_flags(obj.bfd, name, flags !int)
+    bfd_set_section_size(section, size)
+    bfd_set_section_contents(obj.bfd, section, bytes, 0, size)
+
+    obj.section_index += 1
+
+    return obj.section_index - 1
 }
 
 def open_object_write(file: Str) -> &Object {
-    let abfd = bfd_openw(file.to_array().value, null)
+    let path = file.to_array()
+    let abfd = bfd_openw(path.value, null)
     bfd_set_format(abfd, e_bfd_format::bfd_object)
-    return { abfd, sections = map::make(type &Section), symbols = vector::make(type &Symbol) } !&Object
+
+    let obj = { abfd, sections = map::make(type &Section), symbols = vector::make(type &Symbol) } !&Object
+    
+    var error: *s_Dwarf_Error_s
+    if dwarf_producer_init(DW_DLC_WRITE, *bfd_write_callback, null, null, obj !*, "x86_64".value, "V4".value, null, *obj.pdbg, *error) == DW_DLV_ERROR {
+        dwarf_error(error)
+    }
+
+    return obj
 }
 
 def copy_arch_mach(to: &Object, frm: &Object) {
@@ -83,11 +136,26 @@ def copy_arch_mach(to: &Object, frm: &Object) {
 
 def delete(obj: &Object) {
     bfd_close(obj.bfd)
+
+    if obj.dbg {
+        var error: *s_Dwarf_Error_s
+        if dwarf_finish(obj.dbg, *error) == DW_DLV_ERROR {
+            dwarf_error(error)
+        }
+    }
+
     free(obj.symtab)
     for var name in @obj.sections.keys() {
         let section = obj.sections[name]
         free(section.data)
         free(section.relocations.reloc)
+    }
+}
+
+def write_debug_info(res: &Object) {
+    var error: *s_Dwarf_Error_s
+    if dwarf_producer_finish_a(res.pdbg, *error) == DW_DLV_ERROR {
+        dwarf_error(error)
     }
 }
 
@@ -387,6 +455,133 @@ def copy_symbols(to: &Object, frm: &Object) {
         to.symtab[to.sym_size] = sym.symbol
         to.sym_size += 1
     }
+
+    // DWARF
+    read_dwarf_symbols(frm)
+}
+
+def dwarf_die_handler(dbg: *s_Dwarf_Debug_s, die: *s_Dwarf_Die_s) {
+    
+    var error: *s_Dwarf_Error_s
+    var atlist: **s_Dwarf_Attribute_s
+    var atcount: int64
+    var res: int
+
+    res = dwarf_attrlist(die, *atlist, *atcount, *error)
+    if res != DW_DLV_OK {
+        dwarf_error(error)
+    }
+
+    for var i in 0..atcount {
+        var attrnum: ushort
+        var attrname: *char 
+
+        res = dwarf_whatattr(atlist[i], *attrnum, *error)
+        if res != DW_DLV_OK {
+            dwarf_error(error)
+        }
+        dwarf_get_AT_name(attrnum, *attrname)
+
+        var value: *char
+        dwarf_die_text(die, attrnum, *value, *error)
+        if res != DW_DLV_OK {
+            dwarf_error(error)
+        }
+
+        print("Value ", attrname, ": ", value, "\n")
+
+        dwarf_dealloc(dbg, atlist[i], DW_DLA_ATTR)
+    }
+
+    dwarf_dealloc(dbg, atlist, DW_DLA_LIST)
+}
+
+const DW_DLA_STRING = 0x01
+const DW_DLA_DIE = 0x08
+const DW_DLA_LIST = 0x0f
+const DW_DLA_ATTR = 0x0a
+
+const DW_DLV_NO_ENTRY = -1
+
+def dwarf_error(err: *s_Dwarf_Error_s) {
+    error(dwarf_errmsg(err), "\n")
+    abort()
+}
+
+def read_dwarf_die(dbg: *s_Dwarf_Debug_s, in_die: *s_Dwarf_Die_s, is_info: int, in_level: int) {
+
+    var error: *s_Dwarf_Error_s
+    var res = DW_DLV_OK
+    var cur_die = in_die
+    var child: *s_Dwarf_Die_s
+
+    dwarf_die_handler(dbg, in_die)
+
+    loop {
+        var sib_die: *s_Dwarf_Die_s
+        res = dwarf_child(cur_die, *child, *error)
+        if res == DW_DLV_ERROR { dwarf_error(error) }
+        if res == DW_DLV_OK {
+            read_dwarf_die(dbg, child, is_info, in_level + 1)
+            dwarf_dealloc(dbg, child, DW_DLA_DIE)
+            child = null
+        }
+        res = dwarf_siblingof_b(dbg, cur_die, is_info, *sib_die, *error)
+        if res == DW_DLV_ERROR { dwarf_error(error) }
+        if res == DW_DLV_NO_ENTRY { break }
+
+        if cur_die != in_die {
+            dwarf_dealloc(dbg, cur_die, DW_DLA_DIE)
+            cur_die = null
+        }
+        cur_die = sib_die
+        dwarf_die_handler(dbg, sib_die)
+    }
+}
+
+def read_dwarf_symbols(o: &Object) {
+
+    var error: *s_Dwarf_Error_s
+
+    var abbrev_offset: uint64
+    var address_size: ushort
+    var version_stamp: ushort
+    var offset_size: ushort
+    var extension_size: ushort
+    var signature: s_Dwarf_Sig8_s
+    var typeoffset: uint64
+    var next_cu_hader: uint64
+    var header_cu_type: ushort
+
+    var is_info: int = 1
+    var res = 0
+
+    loop {
+        var no_die: *s_Dwarf_Die_s
+        var cu_die: *s_Dwarf_Die_s
+        var cu_header_length: uint64
+
+        res = dwarf_next_cu_header_d(o.dbg, is_info, *cu_header_length,
+            *version_stamp, *abbrev_offset,
+            *address_size, *offset_size,
+            *extension_size, *signature,
+            *typeoffset, *next_cu_hader,
+            *header_cu_type, *error)
+        
+        if res == DW_DLV_ERROR { dwarf_error(error) }
+        if res == DW_DLV_NO_ENTRY {
+            if is_info { 
+                is_info = 0
+                continue
+            }
+            else { return }
+        }
+        res = dwarf_siblingof_b(o.dbg, no_die, is_info, *cu_die, *error)
+
+        if res == DW_DLV_ERROR { dwarf_error(error) }
+        if res == DW_DLV_NO_ENTRY { dwarf_error(error) }
+        read_dwarf_die(o.dbg, cu_die, is_info, 0)
+    }
 }
 
 def write_symbols(res: &Object) {
@@ -406,69 +601,24 @@ def main {
     obj_b.initialize_section(".text")
     obj_b.initialize_section(".data")
     obj_b.initialize_section(".llvm_addrsig")
-    
-    // Debug Symbols
-    obj_a.initialize_section(".debug_abbrev")
-    obj_a.initialize_section(".debug_info")
-    obj_a.initialize_section(".debug_ranges")
-    obj_a.initialize_section(".debug_str")
-    obj_a.initialize_section(".debug_line")
-    obj_a.initialize_section(".debug_pubnames")
-    obj_a.initialize_section(".debug_pubtypes")
-
-    obj_b.initialize_section(".debug_abbrev")
-    obj_b.initialize_section(".debug_info")
-    obj_b.initialize_section(".debug_ranges")
-    obj_b.initialize_section(".debug_str")
-    obj_b.initialize_section(".debug_line")
-    obj_b.initialize_section(".debug_pubnames")
-    obj_b.initialize_section(".debug_pubtypes")
 
     obj_a.load_symbols()
     obj_b.load_symbols()
 
     obj_a.load_section_data(".text")
     obj_a.load_section_data(".data")
-    obj_a.load_section_data(".debug_abbrev")
-    obj_a.load_section_data(".debug_info")
-    obj_a.load_section_data(".debug_ranges")
-    obj_a.load_section_data(".debug_str")
-    obj_a.load_section_data(".debug_line")
-    obj_a.load_section_data(".debug_pubnames")
-    obj_a.load_section_data(".debug_pubtypes")
     obj_a.load_section_data(".llvm_addrsig")
 
     obj_b.load_section_data(".text")
     obj_b.load_section_data(".data")
-    obj_b.load_section_data(".debug_abbrev")
-    obj_b.load_section_data(".debug_info")
-    obj_b.load_section_data(".debug_ranges")
-    obj_b.load_section_data(".debug_str")
-    obj_b.load_section_data(".debug_line")
-    obj_b.load_section_data(".debug_pubnames")
-    obj_b.load_section_data(".debug_pubtypes")
     obj_b.load_section_data(".llvm_addrsig")
 
     new_obj.merge_section_data(obj_a, ".text")
     new_obj.merge_section_data(obj_a, ".data")
-    new_obj.merge_section_data(obj_a, ".debug_abbrev")
-    new_obj.merge_section_data(obj_a, ".debug_info")
-    new_obj.merge_section_data(obj_a, ".debug_ranges")
-    new_obj.merge_section_data(obj_a, ".debug_str")
-    new_obj.merge_section_data(obj_a, ".debug_line")
-    new_obj.merge_section_data(obj_a, ".debug_pubnames")
-    new_obj.merge_section_data(obj_a, ".debug_pubtypes")
     new_obj.merge_section_data(obj_a, ".llvm_addrsig")
 
     new_obj.merge_section_data(obj_b, ".text")
     new_obj.merge_section_data(obj_b, ".data")
-    new_obj.merge_section_data(obj_b, ".debug_abbrev")
-    new_obj.merge_section_data(obj_b, ".debug_info")
-    new_obj.merge_section_data(obj_b, ".debug_ranges")
-    new_obj.merge_section_data(obj_b, ".debug_str")
-    new_obj.merge_section_data(obj_b, ".debug_line")
-    new_obj.merge_section_data(obj_b, ".debug_pubnames")
-    new_obj.merge_section_data(obj_b, ".debug_pubtypes")
     new_obj.merge_section_data(obj_b, ".llvm_addrsig")
 
     new_obj.copy_symbols(obj_a)
@@ -478,13 +628,9 @@ def main {
 
     new_obj.write_section_data(".text")
     new_obj.write_section_data(".data")
-    new_obj.write_section_data(".debug_abbrev")
-    new_obj.write_section_data(".debug_info")
-    new_obj.write_section_data(".debug_ranges")
-    new_obj.write_section_data(".debug_str")
-    new_obj.write_section_data(".debug_line")
-    new_obj.write_section_data(".debug_pubnames")
     new_obj.write_section_data(".llvm_addrsig")
+
+    new_obj.write_debug_info()
 
     delete(new_obj)
     delete(obj_a)
