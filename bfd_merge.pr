@@ -115,10 +115,21 @@ def bfd_write_callback(
     sect_name_index: *uint64, user_data: *, errorcode: *int) -> int {
 
     let obj = user_data !*Object
-    
+
     if tpe != 9 { // 9 is for the rel section but don't ask me why
         
         let section = bfd_make_section(obj.bfd, name)
+
+        obj.symtab = reallocate(obj.symtab, (obj.sym_size + 1) * size_of *s_bfd_symbol)
+        let symbol = obj.bfd.xvec._bfd_make_empty_symbol(obj.bfd)
+        symbol.section = section
+        symbol.flags = 0x1 /* BSF_LOCAL */ | 0x100 /* BSF_SECTION_SYM */
+
+        obj.symtab[obj.sym_size] = symbol
+        @sect_name_index = obj.sym_size
+
+        obj.symbols.push({ null, make_string(name), symbol, null, 0, 0, 0, obj.sym_size } !&Symbol)
+        obj.sym_size += 1
 
         obj.debug_sections.push({
             section = section,
@@ -187,12 +198,14 @@ def write_debug_info(res: &Object) {
     if dwarf_add_AT_name_a(die, "test.c".value, *name, *error) == DW_DLV_ERROR {
         dwarf_error(error)
     }
+
+    let text_index = find_symbol(res, ".text").index
     var low_pc: *s_Dwarf_P_Attribute_s
-    if dwarf_add_AT_targ_address_c(res.pdbg, die, DW_AT_low_pc, 0, 0, *low_pc, *error) == DW_DLV_ERROR {
+    if dwarf_add_AT_targ_address_c(res.pdbg, die, DW_AT_low_pc, 0, text_index, *low_pc, *error) == DW_DLV_ERROR {
         dwarf_error(error)
     }
     var high_pc: *s_Dwarf_P_Attribute_s
-    if dwarf_add_AT_targ_address_c(res.pdbg, die, DW_AT_high_pc, 0x6A, 0, *high_pc, *error) == DW_DLV_ERROR {
+    if dwarf_add_AT_unsigned_const_a(res.pdbg, die, DW_AT_high_pc, 0x6A, *high_pc, *error) == DW_DLV_ERROR {
         dwarf_error(error)
     }
 
@@ -244,9 +257,9 @@ def write_debug_info(res: &Object) {
         for var j in 0..relocation_buffer_count {
             let relent = zero_allocate(s_reloc_cache_entry)
             
-            relent.sym_ptr_ptr = *res.symbols[reld.drd_symbol_index].symbol
+            relent.sym_ptr_ptr = *res.symbols[reld[j].drd_symbol_index].symbol
             relent.addend = 0
-            relent.address = reld.drd_offset
+            relent.address = reld[j].drd_offset
             relent.howto = bfd_reloc_type_lookup(res.bfd, e_bfd_reloc_code_real::BFD_RELOC_32 if reld.drd_length == 4 else e_bfd_reloc_code_real::BFD_RELOC_64)
             relocations[j] = relent
         }
@@ -255,18 +268,20 @@ def write_debug_info(res: &Object) {
         bfd_set_section_flags(section, section.flags | 0x4 /* SEC_RELOC `*/)
         res.bfd.xvec._bfd_set_reloc(res.bfd, section, relocations, relocation_buffer_count !uint)
     }
+}
 
-    for var i in 0..nbufs {
+def write_debug_sections(res: &Object) {
+    for var i in 0..res.debug_sections.length {
         let section = res.debug_sections[i]
 
         print("Writing section ", section.name, " with size ", section.size, "\n")
         bfd_set_section_contents(res.bfd, section.section, section.data, 0, section.size)
     }
 
+    var error: *s_Dwarf_Error_s
     if dwarf_producer_finish_a(res.pdbg, *error) == DW_DLV_ERROR {
         dwarf_error(error)
     }
-    print("Finished writing!\n")
 }
 
 type Symbol = struct {
@@ -277,6 +292,7 @@ type Symbol = struct {
     size: size_t
     offset: int64 // Offset based on deleted sections
     location: size_t // Original location based on the offset within a file
+    index: size_t
 }
 
 def bfd_asymbol_value(sy: *s_bfd_symbol) -> size_t {
@@ -425,7 +441,7 @@ def load_symbols(res: &Object) {
             }
         }
         
-        let out_sym = { res, sym_name, sym, section, size } !&Symbol
+        let out_sym = { res, sym_name, sym, section, size, index = res.symbols.length } !&Symbol
         res.symbols.push(out_sym)
         res.sym_size += 1
         i += 1
@@ -536,6 +552,7 @@ def copy_symbols(to: &Object, frm: &Object) {
                 duplicates[name] = { symbol, section } !DuplicateEntry
                 new_sym.value = sym.symbol.value
             } else {
+                symbol.index = to.symbols.length
                 to.symbols.push(symbol)
                 to.sym_size += 1
                 i += 1
@@ -561,6 +578,7 @@ def copy_symbols(to: &Object, frm: &Object) {
         sym.symbol.value = sym.symbol.value !int + size_diff
         sym.offset += size_diff
 
+        sym.index = to.symbols.length
         to.symbols.push(sym)
         to.symtab[to.sym_size] = sym.symbol
         to.sym_size += 1
@@ -725,8 +743,9 @@ def main {
     new_obj.copy_symbols(obj_a)
     new_obj.copy_symbols(obj_b)
 
-    new_obj.write_symbols()
     new_obj.write_debug_info()
+    new_obj.write_symbols()
+    new_obj.write_debug_sections()
 
     new_obj.write_section_data(".text")
     new_obj.write_section_data(".data")
