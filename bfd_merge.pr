@@ -8,6 +8,18 @@ const file_a = "A.o"
 const file_b = "B.o"
 const file_r = "AB2.o"
 
+const DW_AT_low_pc: ushort = 0x11
+const DW_AT_high_pc: ushort = 0x12
+
+const DW_DLA_STRING = 0x01
+const DW_DLA_DIE = 0x08
+const DW_DLA_LIST = 0x0f
+const DW_DLA_ATTR = 0x0a
+
+const DW_DLV_NO_ENTRY = -1
+
+const DW_TAG_compile_unit = 0x11
+
 type Section = struct {
     offsets: &Map(&Section, size_t)
     section: *s_bfd_section
@@ -15,6 +27,14 @@ type Section = struct {
     size: size_t // Size of the entire section
     data: *
     relocations: Relocations
+}
+
+type DebugSection = struct {
+    section: *s_bfd_section
+    name: Str
+    index: int
+    size: size_t
+    data: *
 }
 
 type Relocations = struct {
@@ -41,6 +61,7 @@ type Object = struct {
     pdbg: *s_Dwarf_P_Debug_s
 
     section_index: int
+    debug_sections: &Vector(&DebugSection)
 }
 
 def find_symbol(o: &Object, name: Str) -> &Symbol {
@@ -94,24 +115,19 @@ def bfd_write_callback(
     sect_name_index: *uint64, user_data: *, errorcode: *int) -> int {
 
     let obj = user_data !*Object
-    var bytes: *
-    var section_index: int64
-    var section_length: uint64
+    
+    if tpe != 9 { // 9 is for the rel section but don't ask me why
+        
+        let section = bfd_make_section(obj.bfd, name)
 
-    print("Writing debug section ", name, "\n")
-
-    var error: *s_Dwarf_Error_s
-    if dwarf_get_section_bytes_a(obj.pdbg, obj.section_index, *section_index, *section_length, *bytes, *error) == DW_DLV_ERROR {
-        @errorcode = 1
-        return -1
+        obj.debug_sections.push({
+            section = section,
+            name = make_string(name),
+            index = obj.section_index
+        } !&DebugSection)
     }
-
-    let section = bfd_make_section_with_flags(obj.bfd, name, flags !int)
-    bfd_set_section_size(section, size)
-    bfd_set_section_contents(obj.bfd, section, bytes, 0, size)
-
+    
     obj.section_index += 1
-
     return obj.section_index - 1
 }
 
@@ -120,10 +136,12 @@ def open_object_write(file: Str) -> &Object {
     let abfd = bfd_openw(path.value, null)
     bfd_set_format(abfd, e_bfd_format::bfd_object)
 
-    let obj = { abfd, sections = map::make(type &Section), symbols = vector::make(type &Symbol) } !&Object
+    let obj = { abfd, sections = map::make(type &Section), symbols = vector::make(type &Symbol), debug_sections = vector::make(type &DebugSection) } !&Object
     
     var error: *s_Dwarf_Error_s
-    if dwarf_producer_init(DW_DLC_WRITE, *bfd_write_callback, null, null, obj !*, "x86_64".value, "V4".value, null, *obj.pdbg, *error) == DW_DLV_ERROR {
+    if dwarf_producer_init(
+        DW_DLC_WRITE | /*symbolic relocations*/ 0x04000000 | /*little endian*/ 0x00100000 | /* 32 bit pointers */ 0x20000000,
+        *bfd_write_callback, null, null, obj !*, "x86_64".value, "V4".value, null, *obj.pdbg, *error) == DW_DLV_ERROR {
         dwarf_error(error)
     }
 
@@ -153,10 +171,102 @@ def delete(obj: &Object) {
 }
 
 def write_debug_info(res: &Object) {
+    // Test debug info
+    var die: *s_Dwarf_P_Die_s
     var error: *s_Dwarf_Error_s
+
+    if dwarf_new_die_a(res.pdbg, DW_TAG_compile_unit, null, null, null, null, *die, *error) == DW_DLV_ERROR {
+        dwarf_error(error)
+    }
+
+    var producer: *s_Dwarf_P_Attribute_s
+    if dwarf_add_AT_producer_a(die, "Princess!".value, *producer, *error) == DW_DLV_ERROR {
+        dwarf_error(error)
+    }
+    var name: *s_Dwarf_P_Attribute_s
+    if dwarf_add_AT_name_a(die, "test.c".value, *name, *error) == DW_DLV_ERROR {
+        dwarf_error(error)
+    }
+    var low_pc: *s_Dwarf_P_Attribute_s
+    if dwarf_add_AT_targ_address_c(res.pdbg, die, DW_AT_low_pc, 0, 0, *low_pc, *error) == DW_DLV_ERROR {
+        dwarf_error(error)
+    }
+    var high_pc: *s_Dwarf_P_Attribute_s
+    if dwarf_add_AT_targ_address_c(res.pdbg, die, DW_AT_high_pc, 0x6A, 0, *high_pc, *error) == DW_DLV_ERROR {
+        dwarf_error(error)
+    }
+
+    if dwarf_add_die_to_debug_a(res.pdbg, die, *error) == DW_DLV_ERROR {
+        dwarf_error(error)
+    }
+
+    var nbufs: int64
+    if dwarf_transform_to_disk_form_a(res.pdbg, *nbufs, *error) == DW_DLV_ERROR {
+        dwarf_error(error)
+    }
+
+    for var i in 0..nbufs {
+        let section = res.debug_sections[i]
+        var section_index: int64
+
+        var error: *s_Dwarf_Error_s
+        if dwarf_get_section_bytes_a(res.pdbg, i, *section_index, *section.size, *section.data, *error) == DW_DLV_ERROR {
+            dwarf_error(error)
+        }
+
+        bfd_set_section_size(section.section, section.size)
+        bfd_set_section_flags(section.section, section.section.flags | 0x8 /*SEC_READONLY*/ | 0x100 /*SEC_CONTENTS*/ )
+    }
+
+    var nrelocs: uint64
+    var drd_version: int
+    if dwarf_get_relocation_info_count(res.pdbg, *nrelocs, *drd_version, *error) == DW_DLV_ERROR {
+        dwarf_error(error)
+    }
+
+    for var i in 0..nrelocs {
+        var elf_section_index: int64
+        var elf_section_index_link: int64
+        var relocation_buffer_count: uint64
+        var reld: *s_Dwarf_Relocation_Data_s
+
+        if dwarf_get_relocation_info(res.pdbg,
+            *elf_section_index,
+            *elf_section_index_link,
+            *relocation_buffer_count,
+            *reld, *error) == DW_DLV_ERROR {
+
+            dwarf_error(error)
+        }
+
+        var relocations = allocate(relocation_buffer_count * size_of *s_reloc_cache_entry) !**s_reloc_cache_entry
+
+        for var j in 0..relocation_buffer_count {
+            let relent = zero_allocate(s_reloc_cache_entry)
+            
+            relent.sym_ptr_ptr = *res.symbols[reld.drd_symbol_index].symbol
+            relent.addend = 0
+            relent.address = reld.drd_offset
+            relent.howto = bfd_reloc_type_lookup(res.bfd, e_bfd_reloc_code_real::BFD_RELOC_32 if reld.drd_length == 4 else e_bfd_reloc_code_real::BFD_RELOC_64)
+            relocations[j] = relent
+        }
+        
+        let section = res.debug_sections[elf_section_index_link].section
+        bfd_set_section_flags(section, section.flags | 0x4 /* SEC_RELOC `*/)
+        res.bfd.xvec._bfd_set_reloc(res.bfd, section, relocations, relocation_buffer_count !uint)
+    }
+
+    for var i in 0..nbufs {
+        let section = res.debug_sections[i]
+
+        print("Writing section ", section.name, " with size ", section.size, "\n")
+        bfd_set_section_contents(res.bfd, section.section, section.data, 0, section.size)
+    }
+
     if dwarf_producer_finish_a(res.pdbg, *error) == DW_DLV_ERROR {
         dwarf_error(error)
     }
+    print("Finished writing!\n")
 }
 
 type Symbol = struct {
@@ -438,7 +548,7 @@ def copy_symbols(to: &Object, frm: &Object) {
         size_diff += remove_symbol(to, name)
     }
 
-    to.symtab = reallocate(to.symtab, size_of *s_bfd_symbol * (frm.sym_size + duplicates.size)) !**s_bfd_symbol
+    to.symtab = reallocate(to.symtab, size_of *s_bfd_symbol * (to.sym_size + duplicates.size)) !**s_bfd_symbol
 
     for var name in @duplicates.keys() {
         let entry = duplicates[name]
@@ -488,20 +598,11 @@ def dwarf_die_handler(dbg: *s_Dwarf_Debug_s, die: *s_Dwarf_Die_s) {
             dwarf_error(error)
         }
 
-        print("Value ", attrname, ": ", value, "\n")
-
         dwarf_dealloc(dbg, atlist[i], DW_DLA_ATTR)
     }
 
     dwarf_dealloc(dbg, atlist, DW_DLA_LIST)
 }
-
-const DW_DLA_STRING = 0x01
-const DW_DLA_DIE = 0x08
-const DW_DLA_LIST = 0x0f
-const DW_DLA_ATTR = 0x0a
-
-const DW_DLV_NO_ENTRY = -1
 
 def dwarf_error(err: *s_Dwarf_Error_s) {
     error(dwarf_errmsg(err), "\n")
@@ -625,12 +726,11 @@ def main {
     new_obj.copy_symbols(obj_b)
 
     new_obj.write_symbols()
+    new_obj.write_debug_info()
 
     new_obj.write_section_data(".text")
     new_obj.write_section_data(".data")
     new_obj.write_section_data(".llvm_addrsig")
-
-    new_obj.write_debug_info()
 
     delete(new_obj)
     delete(obj_a)
