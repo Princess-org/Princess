@@ -1,4 +1,5 @@
 #ifndef _WIN32
-    #include <libdwarf/libdwarf.h>
-    #include <libdwarf/dwarf.h>
+    #include <libdwarf-0/libdwarf.h>
+    #include <libdwarf-0/libdwarfp.h>
+    #include <libdwarf-0/dwarf.h>
 #endif
