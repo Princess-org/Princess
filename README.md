@@ -1,4 +1,6 @@
-# Princess 
+<img src="https://raw.githubusercontent.com/Princess-org/vscode-Princess/7d8a22d355a42f6c04401421898cf6c0fcc50732/icons/crown.svg" width="120" align="left"/>
+
+# Princess
 ![Build Status](https://github.com/Princess-org/Princess/actions/workflows/build-and-test.yml/badge.svg)
 ![Build on Windows](https://github.com/Princess-org/Princess/actions/workflows/windows.yml/badge.svg)
 
