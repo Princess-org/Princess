@@ -48,6 +48,7 @@ type DebugSection = struct {
     size: size_t
     data: *
     relocations: Relocations
+    last_size: size_t
 }
 
 type Relocations = struct {
@@ -246,7 +247,9 @@ def write_debug_info(o: &Object, die: &DIE, parent: *s_Dwarf_P_Die_s = null, lef
     for var attr in die.attributes {
         var dwattr: *s_Dwarf_Attribute_s
         //print("Writing attribute ", ref_type(attr).tpe.name, "\n")
-        attr.write(o, die, *dwattr, *error)
+        if attr.write(o, die, *dwattr, *error) == DW_DLV_ERROR {
+            dwarf_error(error)
+        }
     }
     
     if die.child {
@@ -310,7 +313,6 @@ export def write_debug_info(res: &Object) {
             dwarf_error(error)
         }
 
-        var info_section_offset: size_t = 0
         for var i in 0..nbufs {
             let section = res.debug_sections[i]
             var section_index: uint64
@@ -325,13 +327,13 @@ export def write_debug_info(res: &Object) {
             if section.name == ".debug_info" {
                 var abbr_offset = ((data !*uint8) ++ 6) !*uint32
                 @abbr_offset = abbrev_offset
-
-                info_section_offset = section.size
             } else if section.name == ".debug_abbrev" {
                 abbrev_offset += new_section_size
             } else if section.name == ".debug_str" {
                 section.size = 0 // Apparently we write the same data multiple times, there seems to be some data still in the buffer
             }
+
+            section.last_size = section.size
             
             section.data = reallocate(section.data !*uint8, section.size + new_section_size) !*
             memcopy(data, section.data ++ section.size, new_section_size)
@@ -349,7 +351,6 @@ export def write_debug_info(res: &Object) {
             dwarf_error(error)
         }
 
-        print("Info section size ", info_section_offset, "\n")
         for var i in 0..nrelocs {
             var elf_section_index: uint64
             var elf_section_index_link: uint64
@@ -374,15 +375,15 @@ export def write_debug_info(res: &Object) {
                 let relent = zero_allocate(s_reloc_cache_entry)
                 
                 relent.sym_ptr_ptr = *res.symbols[reld[j].drd_symbol_index].symbol
-                relent.address = reld[j].drd_offset + info_section_offset
-                relent.addend = @((sec.data !*uint8 ++ relent.address) !*uint32)
-                print(relent.addend, "\n")
+                relent.address = reld[j].drd_offset + sec.last_size
+                relent.addend = @((sec.data !*uint8 ++ relent.address) !*int32)
                 relent.howto = bfd_reloc_type_lookup(res.bfd, e_bfd_reloc_code_real::BFD_RELOC_32 if reld.drd_length == 4 else e_bfd_reloc_code_real::BFD_RELOC_64)
+                print(sec.name, " ", relent.address, "\n")
                 sec.relocations.reloc[sec.relocations.count + j] = relent
             }
             
             sec.relocations.count += relocation_buffer_count
-            bfd_set_section_flags(sec.section, sec.section.flags | 0x4 /* SEC_RELOC `*/)
+            bfd_set_section_flags(sec.section, sec.section.flags | 0x4 /* SEC_RELOC */)
             res.bfd.xvec._bfd_set_reloc(res.bfd, sec.section, sec.relocations.reloc, sec.relocations.count !uint)
         }
 
@@ -707,7 +708,7 @@ export def copy_symbols(to: &Object, frm: &Object) {
     read_dwarf_symbols(frm)
 }
 
-def dwarf_die_handler(dbg: *s_Dwarf_Debug_s, die: *s_Dwarf_Die_s, my_die: &DIE) {
+def dwarf_die_handler(obj: &Object, die: *s_Dwarf_Die_s, my_die: &DIE) {
     
     var error: *s_Dwarf_Error_s
     var atlist: **s_Dwarf_Attribute_s
@@ -727,16 +728,16 @@ def dwarf_die_handler(dbg: *s_Dwarf_Debug_s, die: *s_Dwarf_Die_s, my_die: &DIE) 
         if res != DW_DLV_OK {
             dwarf_error(error)
         }
-        let attr = parse(atlist[i], *error)
+        let attr = parse(obj, die, atlist[i], *error)
         if attr { my_die.attributes.push(attr) }
 
-        dwarf_dealloc(dbg, atlist[i], DW_DLA_ATTR)
+        dwarf_dealloc(obj.dbg, atlist[i], DW_DLA_ATTR)
     }
 
-    dwarf_dealloc(dbg, atlist, DW_DLA_LIST)
+    dwarf_dealloc(obj.dbg, atlist, DW_DLA_LIST)
 }
 
-def dwarf_error(err: *s_Dwarf_Error_s) {
+export def dwarf_error(err: *s_Dwarf_Error_s) {
     error(dwarf_errno(err), "\n")
     abort()
 }
@@ -757,7 +758,7 @@ def read_dwarf_die(obj: &Object, in_die: *s_Dwarf_Die_s, is_info: int, in_level:
 
     var res_die = first_die
 
-    dwarf_die_handler(obj.dbg, in_die, first_die)
+    dwarf_die_handler(obj, in_die, first_die)
 
     loop {
         var sib_die: *s_Dwarf_Die_s
@@ -791,7 +792,7 @@ def read_dwarf_die(obj: &Object, in_die: *s_Dwarf_Die_s, is_info: int, in_level:
         res_die.right = new_die
         res_die = new_die
 
-        dwarf_die_handler(obj.dbg, sib_die, res_die)
+        dwarf_die_handler(obj, sib_die, res_die)
     }
 
     return first_die

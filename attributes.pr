@@ -1,12 +1,14 @@
 import libdwarf
 import map
+import vector
 
 import merge
 
+const DW_DLV_NO_ENTRY = -1
+
 export type Attr = interface {
-    // TODO These should both return a status I think
-    def read(attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s)
-    def write(obj: &merge::Object, die: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, err: **s_Dwarf_Error_s)
+    def read(obj: &merge::Object, die: *s_Dwarf_Die_s, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) -> int
+    def write(obj: &merge::Object, die: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, err: **s_Dwarf_Error_s) -> int
 }
 
 type AddressData = struct {
@@ -17,6 +19,19 @@ type ExpressionData = struct {
     op: uint8
     val1: uint64
     val2: uint64
+}
+type Line = struct {
+    file_index: uint64
+    lineno: uint64
+    columnno: uint64
+    prologue_end: int
+    epilogue_begin: int
+    isa: uint64
+    discriminator: uint64
+    begin_stmt: int
+    lineblock: int
+    endsequence: int
+    lineaddr: uint64
 }
 
 let attributes = map::make(int, type *runtime::Type)
@@ -33,10 +48,15 @@ attributes[0x40] = type AT_frame_base
 attributes[0x25] = type AT_producer
 attributes[0x13] = type AT_language
 attributes[0x1b] = type AT_comp_dir
+attributes[0x02] = type AT_location
+attributes[0x3e] = type AT_encoding
+attributes[0x0b] = type AT_byte_size
+attributes[0x10] = type AT_stmt_list
 
-export def parse(attribute: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) -> &Attr {
+export def parse(object: &merge::Object, die: *s_Dwarf_Die_s, attribute: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) -> &Attr {
     var kind: ushort
     dwarf_whatattr(attribute, *kind, err)
+    if kind == 0x01 { return null } // Sibling, we can ignore this as it is generating them automatically
 
     if not attributes.contains(kind) {
         error("Unknown attribute: ", kind, ", skipping\n")
@@ -48,129 +68,278 @@ export def parse(attribute: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) -> &At
     let ref = make_ref(tpe, instance)
     let attr = ref !&Attr
 
-    attr.read(attribute, err)
+    if attr.read(object, die, attribute, err) == DW_DLV_ERROR {
+        dwarf_error(@err)
+    }
     //print("Read attribute of type ", tpe.name, "\n")
     return attr
 }
 
+// TODO don't assume version 4 here, get it from somewhere
+def read_location_expression(obj: &merge::Object, die: *s_Dwarf_Die_s, data: *, length: size_t, out: &Vector(ExpressionData), err: **s_Dwarf_Error_s) -> int {
+    var address_size: ushort
+    var offset_size: ushort
+    var version: ushort
+    if dwarf_get_address_size(obj.dbg, *address_size, err) == DW_DLV_ERROR { return DW_DLV_ERROR }
+    dwarf_get_version_of_die(die, *offset_size, *version)
+
+    var head: *s_Dwarf_Loc_Head_c_s
+    var listlen: uint64
+    if dwarf_loclist_from_expr_c(obj.dbg, data, length, address_size, offset_size, version !uint8, *head, *listlen, err) == DW_DLV_ERROR { return DW_DLV_ERROR }
+
+
+    var lle_value_out: uint8
+    var rawlowpc: uint64
+    var rawhipc: uint64
+    var debug_addr_unavailable: int
+    var lowpc_cooked: uint64
+    var hipc_cooked: uint64
+    var locexpr_op_count_out: uint64
+    var locentry_out: *s_Dwarf_Locdesc_c_s
+    var loclist_source_out: uint8
+    var expression_offset_out: uint64
+    var locdesc_offset_out: uint64
+
+    let res = dwarf_get_locdesc_entry_d(
+        head, 0, *lle_value_out, *rawlowpc, 
+        *rawhipc, *debug_addr_unavailable, *lowpc_cooked, 
+        *hipc_cooked, *locexpr_op_count_out, *locentry_out, 
+        *loclist_source_out, *expression_offset_out, 
+        *locdesc_offset_out, err)
+
+
+    if res == DW_DLV_ERROR or res == DW_DLV_NO_ENTRY {
+        dwarf_dealloc_loc_head_c(head)
+        return res
+    }
+
+    for var i in 0..locexpr_op_count_out {
+        var expr = {} !ExpressionData
+        var opd3: uint64 // For some reason this has three operands but libdwarfp can only handle two
+        var offsetforbranch: uint64
+
+        let res = dwarf_get_location_op_value_c(
+            locentry_out, i, *expr.op, *expr.val1, 
+            *expr.val2, *opd3, *offsetforbranch, err)
+
+        if res != DW_DLV_OK {
+            dwarf_dealloc_loc_head_c(head)
+            return res
+        }
+
+        out.push(expr)
+    }
+
+    dwarf_dealloc_loc_head_c(head)
+    return DW_DLV_OK
+}
+
 // Attributes
 type AT_external = struct { data: bool }
-export def read(at: &AT_external, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) {
+export def read(at: &AT_external, obj: &merge::Object, die: *s_Dwarf_Die_s, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) -> int {
     var flag: int
-    dwarf_formflag(attr, *flag, err)
+    let res = dwarf_formflag(attr, *flag, err)
     at.data = flag !bool
+    return res
 }
-export def write(at: &AT_external, obj: &merge::Object, pdie: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, error: **s_Dwarf_Error_s) {
-    dwarf_add_AT_flag_a(obj.pdbg, pdie.die, 0x3f !ushort, at.data !uint8, attr, error)
+export def write(at: &AT_external, obj: &merge::Object, pdie: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, error: **s_Dwarf_Error_s) -> int {
+    return dwarf_add_AT_flag_a(obj.pdbg, pdie.die, 0x3f !ushort, at.data !uint8, attr, error)
 }
 
 type AT_name = struct { data: Str }
-export def read(at: &AT_name, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) {
+export def read(at: &AT_name, obj: &merge::Object, die: *s_Dwarf_Die_s, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) -> int {
     var str: *char
-    dwarf_formstring(attr, *str, err)
+    let res = dwarf_formstring(attr, *str, err)
     at.data = make_string(str)
+    return res
 }
-export def write(at: &AT_name, obj: &merge::Object, pdie: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, error: **s_Dwarf_Error_s) {
-    dwarf_add_AT_name_a(pdie.die, at.data.to_array().value, attr, error)
+export def write(at: &AT_name, obj: &merge::Object, pdie: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, error: **s_Dwarf_Error_s) -> int {
+    return dwarf_add_AT_name_a(pdie.die, at.data.to_array().value, attr, error)
 }
 
 type AT_producer = struct { data: Str }
-export def read(at: &AT_producer, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) {
+export def read(at: &AT_producer, obj: &merge::Object, die: *s_Dwarf_Die_s, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) -> int {
     var str: *char
-    dwarf_formstring(attr, *str, err)
+    let res = dwarf_formstring(attr, *str, err)
     at.data = make_string(str)
+    return res
 }
-export def write(at: &AT_producer, obj: &merge::Object, pdie: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, error: **s_Dwarf_Error_s) {
-    dwarf_add_AT_producer_a(pdie.die, at.data.to_array().value, attr, error)
+export def write(at: &AT_producer, obj: &merge::Object, pdie: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, error: **s_Dwarf_Error_s) -> int {
+    return dwarf_add_AT_producer_a(pdie.die, at.data.to_array().value, attr, error)
 }
 
 type AT_decl_file = struct { data: uint64 }
-export def read(at: &AT_decl_file, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) {
-    dwarf_formudata(attr, *at.data, err)
+export def read(at: &AT_decl_file, obj: &merge::Object, die: *s_Dwarf_Die_s, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) -> int {
+    return dwarf_formudata(attr, *at.data, err)
 }
-export def write(at: &AT_decl_file, obj: &merge::Object, pdie: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, error: **s_Dwarf_Error_s) {
-    dwarf_add_AT_unsigned_const_a(obj.pdbg, pdie.die, 0x3a !ushort, at.data, attr, error)
+export def write(at: &AT_decl_file, obj: &merge::Object, pdie: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, error: **s_Dwarf_Error_s) -> int {
+    return dwarf_add_AT_unsigned_const_a(obj.pdbg, pdie.die, 0x3a !ushort, at.data, attr, error)
 }
 
 type AT_decl_line = struct { data: uint64 }
-export def read(at: &AT_decl_line, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) {
-    dwarf_formudata(attr, *at.data, err)
+export def read(at: &AT_decl_line, obj: &merge::Object, die: *s_Dwarf_Die_s, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) -> int {
+    return dwarf_formudata(attr, *at.data, err)
 }
-export def write(at: &AT_decl_line, obj: &merge::Object, pdie: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, error: **s_Dwarf_Error_s) {
-    dwarf_add_AT_unsigned_const_a(obj.pdbg, pdie.die, 0x3b !ushort, at.data, attr, error)
+export def write(at: &AT_decl_line, obj: &merge::Object, pdie: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, error: **s_Dwarf_Error_s) -> int {
+    return dwarf_add_AT_unsigned_const_a(obj.pdbg, pdie.die, 0x3b !ushort, at.data, attr, error)
 }
 
 type AT_decl_column = struct { data: uint64 }
-export def read(at: &AT_decl_column, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) {
-    dwarf_formudata(attr, *at.data, err)
+export def read(at: &AT_decl_column, obj: &merge::Object, die: *s_Dwarf_Die_s, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) -> int {
+    return dwarf_formudata(attr, *at.data, err)
 }
-export def write(at: &AT_decl_column, obj: &merge::Object, pdie: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, error: **s_Dwarf_Error_s) {
-    dwarf_add_AT_unsigned_const_a(obj.pdbg, pdie.die, 0x39 !ushort, at.data, attr, error)
+export def write(at: &AT_decl_column, obj: &merge::Object, pdie: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, error: **s_Dwarf_Error_s) -> int {
+    return dwarf_add_AT_unsigned_const_a(obj.pdbg, pdie.die, 0x39 !ushort, at.data, attr, error)
 }
 
 type AT_prototyped = struct { data: bool }
-export def read(at: &AT_prototyped, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) {
+export def read(at: &AT_prototyped, obj: &merge::Object, die: *s_Dwarf_Die_s, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) -> int {
     var flag: int
-    dwarf_formflag(attr, *flag, err)
+    let res = dwarf_formflag(attr, *flag, err)
     at.data = flag !bool
+    return res
 }
-export def write(at: &AT_prototyped, obj: &merge::Object, pdie: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, error: **s_Dwarf_Error_s) {
-    dwarf_add_AT_flag_a(obj.pdbg, pdie.die, 0x27 !ushort, at.data !uint8, attr, error)
+export def write(at: &AT_prototyped, obj: &merge::Object, pdie: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, error: **s_Dwarf_Error_s) -> int {
+    return dwarf_add_AT_flag_a(obj.pdbg, pdie.die, 0x27 !ushort, at.data !uint8, attr, error)
 }
 
 type AT_type = struct { data: uint64 }
-export def read(at: &AT_type, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) {
+export def read(at: &AT_type, obj: &merge::Object, die: *s_Dwarf_Die_s, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) -> int {
     var is_info: int
-    dwarf_formref(attr, *at.data, *is_info, err)
+    return dwarf_formref(attr, *at.data, *is_info, err)
 }
-export def write(at: &AT_type, obj: &merge::Object, pdie: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, error: **s_Dwarf_Error_s) {
-    dwarf_add_AT_reference_c(obj.pdbg, pdie.die, 0x49 !ushort, null, attr, error)
+export def write(at: &AT_type, obj: &merge::Object, pdie: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, error: **s_Dwarf_Error_s) -> int {
+    let res = dwarf_add_AT_reference_c(obj.pdbg, pdie.die, 0x49 !ushort, null, attr, error)
     obj.add_reference_marker(pdie, 0x49 !ushort, at.data)
+    return res
 }
 
 type AT_low_pc = struct { data: AddressData }
-export def read(at: &AT_low_pc, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) {
-    dwarf_formaddr(attr, *at.data.offset, err) // TODO find the symbol
+export def read(at: &AT_low_pc, obj: &merge::Object, die: *s_Dwarf_Die_s, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) -> int {
+    return dwarf_formaddr(attr, *at.data.offset, err) // TODO find the symbol
 }
-export def write(at: &AT_low_pc, obj: &merge::Object, pdie: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, error: **s_Dwarf_Error_s) {
-    dwarf_add_AT_targ_address_c(obj.pdbg, pdie.die, 0x11 !ushort, at.data.offset, at.data.symbol, attr, error) 
+export def write(at: &AT_low_pc, obj: &merge::Object, pdie: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, error: **s_Dwarf_Error_s) -> int {
+    return dwarf_add_AT_targ_address_c(obj.pdbg, pdie.die, 0x11 !ushort, at.data.offset, at.data.symbol, attr, error) 
 }
 
 type AT_high_pc = struct { data: uint64 }
-export def read(at: &AT_high_pc, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) {
-    dwarf_formudata(attr, *at.data, err)
+export def read(at: &AT_high_pc, obj: &merge::Object, die: *s_Dwarf_Die_s, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) -> int {
+    return dwarf_formudata(attr, *at.data, err)
 }
-export def write(at: &AT_high_pc, obj: &merge::Object, pdie: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, error: **s_Dwarf_Error_s) {
-    dwarf_add_AT_unsigned_const_a(obj.pdbg, pdie.die, 0x12 !ushort, at.data, attr, error) 
+export def write(at: &AT_high_pc, obj: &merge::Object, pdie: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, error: **s_Dwarf_Error_s) -> int {
+    return dwarf_add_AT_unsigned_const_a(obj.pdbg, pdie.die, 0x12 !ushort, at.data, attr, error) 
 }
 
-type AT_frame_base = struct { data: ExpressionData }
-export def read(at: &AT_frame_base, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) {
+type AT_encoding = struct { data: uint64 }
+export def read(at: &AT_encoding, obj: &merge::Object, die: *s_Dwarf_Die_s, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) -> int {
+    return dwarf_formudata(attr, *at.data, err)
+}
+export def write(at: &AT_encoding, obj: &merge::Object, pdie: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, error: **s_Dwarf_Error_s) -> int {
+    return dwarf_add_AT_unsigned_const_a(obj.pdbg, pdie.die, 0x3e !ushort, at.data, attr, error) 
+}
+
+type AT_byte_size = struct { data: uint64 }
+export def read(at: &AT_byte_size, obj: &merge::Object, die: *s_Dwarf_Die_s, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) -> int {
+    return dwarf_formudata(attr, *at.data, err)
+}
+export def write(at: &AT_byte_size, obj: &merge::Object, pdie: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, error: **s_Dwarf_Error_s) -> int {
+    return dwarf_add_AT_unsigned_const_a(obj.pdbg, pdie.die, 0x0b !ushort, at.data, attr, error) 
+}
+
+type AT_frame_base = struct { data: &Vector(ExpressionData) }
+export def read(at: &AT_frame_base, obj: &merge::Object, die: *s_Dwarf_Die_s, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) -> int {
+    at.data = vector::make(ExpressionData)
     var length: uint64
     var data: *
-    dwarf_formexprloc(attr, *length, *data, err)
+    if dwarf_formexprloc(attr, *length, *data, err) == DW_DLV_ERROR { return DW_DLV_ERROR }
+    return read_location_expression(obj, die, data, length, at.data, err)
 }
-export def write(at: &AT_frame_base, obj: &merge::Object, pdie: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, error: **s_Dwarf_Error_s) {
+export def write(at: &AT_frame_base, obj: &merge::Object, pdie: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, error: **s_Dwarf_Error_s) -> int {
     var expr: *s_Dwarf_P_Expr_s
-    dwarf_new_expr_a(obj.pdbg, *expr, error)
-    dwarf_add_expr_gen_a(expr, at.data.op, at.data.val1, at.data.val2, null, error)
-    dwarf_add_AT_location_expr_a(obj.pdbg, pdie.die, 0x40 !ushort, expr, attr, error) 
+    if dwarf_new_expr_a(obj.pdbg, *expr, error) == DW_DLV_ERROR { return DW_DLV_ERROR }
+    var stream_length_out: uint64
+    for var data in at.data {
+        if dwarf_add_expr_gen_a(expr, data.op, data.val1, data.val2, *stream_length_out, error) == DW_DLV_ERROR { return DW_DLV_ERROR }
+    }
+    return dwarf_add_AT_location_expr_a(obj.pdbg, pdie.die, 0x40 !ushort, expr, attr, error)
+}
+
+type AT_location = struct { data: &Vector(ExpressionData) }
+export def read(at: &AT_location, obj: &merge::Object, die: *s_Dwarf_Die_s, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) -> int {
+    at.data = vector::make(ExpressionData)
+    var length: uint64
+    var data: *
+    if dwarf_formexprloc(attr, *length, *data, err) == DW_DLV_ERROR { return DW_DLV_ERROR }
+    return read_location_expression(obj, die, data, length, at.data, err)
+}
+export def write(at: &AT_location, obj: &merge::Object, pdie: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, error: **s_Dwarf_Error_s) -> int {
+    var expr: *s_Dwarf_P_Expr_s
+    if dwarf_new_expr_a(obj.pdbg, *expr, error) == DW_DLV_ERROR { return DW_DLV_ERROR }
+    var stream_length_out: uint64
+    for var data in at.data {
+        if dwarf_add_expr_gen_a(expr, data.op, data.val1, data.val2, *stream_length_out, error) == DW_DLV_ERROR { return DW_DLV_ERROR }
+    }
+    return dwarf_add_AT_location_expr_a(obj.pdbg, pdie.die, 0x02 !ushort, expr, attr, error)
 }
 
 type AT_language = struct { data: uint64 }
-export def read(at: &AT_language, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) {
-    dwarf_formudata(attr, *at.data, err)
+export def read(at: &AT_language, obj: &merge::Object, die: *s_Dwarf_Die_s, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) -> int {
+    return dwarf_formudata(attr, *at.data, err)
 }
-export def write(at: &AT_language, obj: &merge::Object, pdie: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, error: **s_Dwarf_Error_s) {
-    dwarf_add_AT_unsigned_const_a(obj.pdbg, pdie.die, 0x13 !ushort, at.data, attr, error)
+export def write(at: &AT_language, obj: &merge::Object, pdie: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, error: **s_Dwarf_Error_s) -> int {
+    return dwarf_add_AT_unsigned_const_a(obj.pdbg, pdie.die, 0x13 !ushort, at.data, attr, error)
 }
 
 type AT_comp_dir = struct { data: Str }
-export def read(at: &AT_comp_dir, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) {
+export def read(at: &AT_comp_dir, obj: &merge::Object, die: *s_Dwarf_Die_s, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) -> int {
     var str: *char
-    dwarf_formstring(attr, *str, err)
+    let res = dwarf_formstring(attr, *str, err)
     at.data = make_string(str)
+    return res
 }
-export def write(at: &AT_comp_dir, obj: &merge::Object, pdie: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, error: **s_Dwarf_Error_s) {
-    dwarf_add_AT_comp_dir_a(pdie.die, at.data.to_array().value, attr, error)
+export def write(at: &AT_comp_dir, obj: &merge::Object, pdie: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, error: **s_Dwarf_Error_s) -> int {
+    return dwarf_add_AT_comp_dir_a(pdie.die, at.data.to_array().value, attr, error)
+}
+
+type AT_stmt_list = struct { data: &Vector(Line) }
+export def read(at: &AT_stmt_list, obj: &merge::Object, die: *s_Dwarf_Die_s, attr: *s_Dwarf_Attribute_s, err: **s_Dwarf_Error_s) -> int {
+    var count: int64
+    var context: *s_Dwarf_Line_Context_s
+    var linebuf: **s_Dwarf_Line_s
+    var table_count: uint8
+    var version: uint64
+
+    if dwarf_srclines_b(die, *version, *table_count, *context, err) == DW_DLV_ERROR { return DW_DLV_ERROR }
+    if dwarf_srclines_from_linecontext(context, *linebuf, *count, err) == DW_DLV_ERROR {
+        dwarf_srclines_dealloc_b(context)
+    }
+
+    at.data = vector::make(Line)
+    for var i in 0..count {
+        let line = linebuf[i]
+        var outline: Line
+
+        if dwarf_line_srcfileno(line, *outline.file_index, err) == DW_DLV_ERROR { return DW_DLV_ERROR }
+        if dwarf_lineno(line, *outline.lineno, err) == DW_DLV_ERROR { return DW_DLV_ERROR }
+        if dwarf_lineoff_b(line, *outline.columnno, err) == DW_DLV_ERROR { return DW_DLV_ERROR }
+        if dwarf_prologue_end_etc(line, *outline.prologue_end, *outline.epilogue_begin, *outline.isa, *outline.discriminator, err) == DW_DLV_ERROR { return DW_DLV_ERROR }
+        if dwarf_lineblock(line, *outline.lineblock, err) == DW_DLV_ERROR { return DW_DLV_ERROR }
+        if dwarf_linebeginstatement(line, *outline.begin_stmt, err) == DW_DLV_ERROR { return DW_DLV_ERROR }
+        if dwarf_lineendsequence(line, *outline.endsequence, err) == DW_DLV_ERROR { return DW_DLV_ERROR }
+        if dwarf_lineaddr(line, *outline.lineaddr, err) == DW_DLV_ERROR { return DW_DLV_ERROR }
+
+        at.data.push(outline)
+    }
+
+    return DW_DLV_OK
+}
+export def write(at: &AT_stmt_list, obj: &merge::Object, pdie: &merge::DIE, attr: **s_Dwarf_P_Attribute_s, error: **s_Dwarf_Error_s) -> int {
+    for var line in at.data {
+        /*if dwarf_add_line_entry_c(
+            obj.pdbg, line.file_index, line.lineaddr, 
+            line.lineno, line.columnno, line.begin_stmt, 
+            line.lineblock, line.epilogue_begin, line.prologue_end, 
+            line.isa, line.discriminator, error) == DW_DLV_ERROR { return DW_DLV_ERROR }*/
+    }
+    return DW_DLV_OK
 }
