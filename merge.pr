@@ -3,6 +3,7 @@ import libdwarf
 import map
 import vector
 import linux
+import set
 
 import attributes
 
@@ -17,6 +18,7 @@ const DW_DLA_ATTR = 0x0a
 const DW_DLV_NO_ENTRY = -1
 
 const DW_TAG_compile_unit = 0x11
+const DW_TAG_subprogram = 0x2e
 
 export type DIE = struct {
     obj: weak_ref(Object) // Owner
@@ -63,6 +65,21 @@ export def hash(sec: &Section) -> uint64 {
     return sec !*uint64 !uint64
 }
 
+export type Symbol = struct {
+    origin: &Object
+    name: Str
+    symbol: *s_bfd_symbol
+    section: &Section
+    size: size_t
+    offset: int64 // Offset based on deleted sections
+    location: size_t // Original location based on the offset within a file
+    index: size_t
+}
+
+def bfd_asymbol_value(sy: *s_bfd_symbol) -> size_t {
+    return sy.section.vma + sy.value
+}
+
 export type Object = struct {
     bfd: *s_bfd
     sections: &SMap(&Section)
@@ -79,6 +96,8 @@ export type Object = struct {
     section_index: int
     debug_sections: &Vector(&DebugSection)
     reference_markers: &Vector(ReferenceMarker)
+
+    duplicates: &SSet
 }
 
 export type ReferenceMarker = struct {
@@ -87,14 +106,31 @@ export type ReferenceMarker = struct {
     addr: uint64
 }
 
+def find_debug_section(o: &Object, name: Str) -> &DebugSection {
+    for var sec in o.debug_sections {
+        if sec.name == name {
+            return sec
+        }
+    }
+    return null
+}
+
 export def add_reference_marker(o: &Object, die: &DIE, attr: ushort, addr: uint64) {
     //print("Inserting marker for die ", die.die !*, "\n")
     o.reference_markers.push({die, attr, addr} !ReferenceMarker)
 }
 
-def find_symbol(o: &Object, name: Str) -> &Symbol {
+export def find_symbol(o: &Object, name: Str) -> &Symbol {
     for var sym in o.symbols {
         if sym.name == name { return sym }
+    }
+    return null
+}
+
+export def find_symbol(o: &Object, offset: uint64, section_name: Str) -> &Symbol {
+    for var sym in o.symbols {
+        if not sym.section or sym.section.name != section_name or sym.name.starts_with(".") { continue }
+        if sym.location == offset { return sym }
     }
     return null
 }
@@ -200,7 +236,8 @@ export def open_object_write(file: Str) -> &Object {
         debug_sections = vector::make(type &DebugSection), 
         dies = vector::make(type &DIE),
         all_dies = vector::make(type weak_ref(DIE)),
-        reference_markers = vector::make(ReferenceMarker)
+        reference_markers = vector::make(ReferenceMarker),
+        duplicates = set::make()
     } !&Object
 
     return obj
@@ -314,7 +351,6 @@ export def write_debug_info(res: &Object) {
         }
 
         for var i in 0..nbufs {
-            let section = res.debug_sections[i]
             var section_index: uint64
             var new_section_size: uint64
             var data: *
@@ -323,6 +359,8 @@ export def write_debug_info(res: &Object) {
             if dwarf_get_section_bytes_a(res.pdbg, i, *section_index, *new_section_size, *data, *error) == DW_DLV_ERROR {
                 dwarf_error(error)
             }
+
+            let section = res.debug_sections[section_index]
 
             if section.name == ".debug_info" {
                 var abbr_offset = ((data !*uint8) ++ 6) !*uint32
@@ -374,11 +412,24 @@ export def write_debug_info(res: &Object) {
             for var j in 0..relocation_buffer_count {
                 let relent = zero_allocate(s_reloc_cache_entry)
                 
-                relent.sym_ptr_ptr = *res.symbols[reld[j].drd_symbol_index].symbol
+                let sym = res.symbols[reld[j].drd_symbol_index]
+                relent.sym_ptr_ptr = *sym.symbol
                 relent.address = reld[j].drd_offset + sec.last_size
-                relent.addend = @((sec.data !*uint8 ++ relent.address) !*int32)
+
+                let addendptr = (sec.data !*uint8 ++ relent.address) !*int32
+                relent.addend = @addendptr
+                @addendptr = 0 // GDB Doesn't like data to exist in this place
+
+                if sym.name == ".debug_line" {
+                    let sym_sec = res.find_debug_section(sym.name)
+                    relent.addend += sym_sec.last_size
+                }
+
+                if sec.name == ".debug_line" {
+                    print("DRD: ", reld[j].drd_offset, "\n")
+                }
+
                 relent.howto = bfd_reloc_type_lookup(res.bfd, e_bfd_reloc_code_real::BFD_RELOC_32 if reld.drd_length == 4 else e_bfd_reloc_code_real::BFD_RELOC_64)
-                print(sec.name, " ", relent.address, "\n")
                 sec.relocations.reloc[sec.relocations.count + j] = relent
             }
             
@@ -402,21 +453,6 @@ export def write_debug_sections(res: &Object) {
         print("Writing section ", section.name, " with size ", section.size, "\n")
         bfd_set_section_contents(res.bfd, section.section, section.data, 0, section.size)
     }
-}
-
-type Symbol = struct {
-    origin: &Object
-    name: Str
-    symbol: *s_bfd_symbol
-    section: &Section
-    size: size_t
-    offset: int64 // Offset based on deleted sections
-    location: size_t // Original location based on the offset within a file
-    index: size_t
-}
-
-def bfd_asymbol_value(sy: *s_bfd_symbol) -> size_t {
-    return sy.section.vma + sy.value
 }
 
 export def initialize_section(res: &Object, name: Str) {
@@ -561,7 +597,7 @@ export def load_symbols(res: &Object) {
             }
         }
         
-        let out_sym = { res, sym_name, sym, section, size, index = res.symbols.length } !&Symbol
+        let out_sym = { res, sym_name, sym, section, size, 0, offset, index = res.symbols.length } !&Symbol
         res.symbols.push(out_sym)
         res.sym_size += 1
         i += 1
@@ -706,6 +742,72 @@ export def copy_symbols(to: &Object, frm: &Object) {
 
     // DWARF
     read_dwarf_symbols(frm)
+}
+
+export def find_attribute(die: &DIE, type T) -> &T {
+    for var attr in die.attributes {
+        if ref_type(attr) == (type &T) {
+            return attr !&T
+        }
+    }
+    return null
+}
+
+export def remove_dwarf_duplicates(to: &Object, frm: &Object) {
+    for var cu in frm.dies {
+        var min_pc: uint64 = MAX_UINT64
+        var max_pc: uint64 = 0
+
+        let cu_low_pc = cu.find_attribute(attributes::AT_low_pc)
+        let cu_high_pc = cu.find_attribute(attributes::AT_high_pc)
+
+        var child = cu.child
+        while child {
+            if child.tag == DW_TAG_subprogram {
+                let name_attr = child.find_attribute(attributes::AT_name)
+                let low_pc = child.find_attribute(attributes::AT_low_pc)
+                let high_pc = child.find_attribute(attributes::AT_high_pc)
+
+                if not name_attr { continue }
+
+                if to.duplicates.contains(name_attr.data) {
+                    // Remove from chain
+                    let left = child.left
+                    child = child.right
+                    if left { left.right = child }
+                    else { 
+                        // Replace CU child
+                        cu.child = child 
+                        child.parent = cu
+                    }
+                    if child { child.left = left }
+                    
+                    continue
+                } else {
+                    // Set the correct location of the symbol
+                    let sym = find_symbol(to, name_attr.data)
+                    let loc = sym.location + sym.offset
+                    let size = sym.size
+
+                    low_pc.data.offset = loc
+                    high_pc.data = size
+
+                    if loc < min_pc {
+                        min_pc = loc
+                    }
+                    if loc + size > max_pc {
+                        max_pc = loc + size
+                    }
+                }
+
+                to.duplicates.add(name_attr.data)
+            }
+            child = child.right
+        }
+
+        cu_low_pc.data.offset = min_pc
+        cu_high_pc.data = max_pc - min_pc
+    }
 }
 
 def dwarf_die_handler(obj: &Object, die: *s_Dwarf_Die_s, my_die: &DIE) {
