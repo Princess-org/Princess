@@ -10,7 +10,13 @@ https://princess.sh
 Site hosted by github-pages. Source over at https://github.com/Princess-org/Princess-org.github.io
 
 ## Build instructions
-Note: The linux release does only work properly on Ubuntu 20.04 and derivatives, due to its dependencies.
+
+<s>Note: The linux release does only work properly on Ubuntu 20.04 and derivatives, due to its dependencies.</s>
+
+There is now a bootstrap compiler provided on the releases page. This compiler doesn't have any dependencies (except clang >= 13) and is statically linked using MUSL.
+In order to use it you need to download the .tar.gz file, extract it and place `princess` in the bin directory. The other alternative is cloning the repo and doing the same there.
+
+Building the bootstrap compiler is not very straight forward but will eventually be handled by the CI process.
 
 There is a native Windows version, but for working on the compiler it is recommended to use 
 WSL in order to get a Linux environment. This is because the tests currently don't run on Windows since
@@ -23,7 +29,6 @@ $ pip install -r requirements.txt
 
 In order to bootstrap the compiler simply run:
 ```
-$ ./build.py download
 $ ./build.py -p
 ```
 
