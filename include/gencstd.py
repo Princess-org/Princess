@@ -622,7 +622,7 @@ def process_module(name: str, *libs):
                             except ValueError: pass        
 
         index = clang.Index.create()
-        tu = index.parse(folder / f"{name}.h", options = 
+        tu = index.parse(folder / f"{name}.h", args = ["-DMUSL"], options = 
                          clang.TranslationUnit.PARSE_DETAILED_PROCESSING_RECORD
                          | clang.TranslationUnit.PARSE_SKIP_FUNCTION_BODIES 
                          | clang.TranslationUnit.PARSE_PRECOMPILED_PREAMBLE 
