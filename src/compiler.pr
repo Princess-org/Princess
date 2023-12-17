@@ -563,7 +563,7 @@ export type State = struct {
     // Vector of LoopState 
     loops: &Vector(LoopState)
     // Map of Value
-    ditypes: &SMap(&Value)
+    ditypes: &Map(&typechecking::Type, &Value)
     difile: &Value
     diunit: &Value
     // Vector of Value
@@ -1118,7 +1118,7 @@ def import_cstd_function(name: Str, state: &State) {
     if not func { return }
     predeclare_function(func.tpe, state.module)
     if consteval::is_static {
-        consteval::compile_function(func)
+        consteval::compile_function(func, state.scope)
     }
     state.module.imported.add(name)
 }
@@ -1321,6 +1321,63 @@ def do_create_type(tpe: &typechecking::Type, module: &toolchain::Module) -> Valu
     let value = create_type(tpe, module)
     if value { return @value }
     return { kind = ValueKind::NULL, tpe = typechecking::pointer(builtins::Type_) } !Value
+}
+
+// Variants are a type followed by a union
+def convert_value_to_variant(tpe: &typechecking::Type, value: Value, loc: &Value, state: &State) -> Value {
+    let ptr_variant = state.alloca(tpe, loc, no_yield_capture = true)
+    state.store(ptr_variant, { kind = ValueKind::ZEROINITIALIZER, tpe = tpe } !Value, loc)
+
+    let union_tpe = pointer({ typechecking::TypeKind::WORD, size = tpe.tpe.align } !&typechecking::Type)
+    var tptr = state.gep(pointer(pointer(builtins::Type_)), tpe, ptr_variant, [make_int_value(0), make_int_value(0)], loc)
+    var vptr = state.gep(union_tpe, tpe, ptr_variant, [make_int_value(0), make_int_value(1), make_int_value(0)], loc)
+    vptr = state.bitcast(pointer(value.tpe), vptr, loc)
+
+    state.store(vptr, value, loc)
+    let ctpe = do_create_type(value.tpe, state.module)
+    state.store(tptr, ctpe, loc)
+
+    return state.load(tpe, ptr_variant, loc)
+}
+
+def convert_variant_to_variant(tpe: &typechecking::Type, value: Value, loc: &Value, state: &State) -> Value {
+    if value.addr { // Make it work with values that don't have an address
+        value = @value.addr
+    } else {
+        var tmp = state.alloca(value.tpe, loc, no_yield_capture = true)
+        state.store(value, tmp, loc)
+        value = tmp
+    }
+    
+    let ptr_variant = state.alloca(tpe, loc, no_yield_capture = true)
+    
+    var ptpein = state.gep(pointer(pointer(builtins::Type_)), value.tpe.tpe, value, [make_int_value(0), make_int_value(0)], loc)
+    var ptpeout = state.gep(pointer(pointer(builtins::Type_)), tpe, ptr_variant, [make_int_value(0), make_int_value(0)], loc)
+    var vin = state.gep(pointer(value.tpe.tpe.tpe), value.tpe.tpe, value, [make_int_value(0), make_int_value(1)], loc)
+    var vout = state.gep(pointer(tpe.tpe), tpe, ptr_variant, [make_int_value(0), make_int_value(1)], loc)
+
+    let vptr = state.bitcast(pointer(tpe.tpe), vin, loc)
+    let v = state.load(tpe.tpe, vptr, loc)
+    state.store(vout, v, loc)
+
+    let ptpe = state.load(pointer(builtins::Type_), ptpein, loc)
+    state.store(ptpeout, ptpe)
+    return state.load(tpe, ptr_variant, loc)
+}
+
+def convert_variant_to_value(tpe: &typechecking::Type, value: Value, loc: &Value, state: &State) -> Value {
+    if value.addr { // Make it work with values that don't have an address
+        value = @value.addr
+    } else {
+        var tmp = state.alloca(value.tpe, loc, no_yield_capture = true)
+        state.store(value, tmp, loc)
+        value = tmp
+    }
+
+    let union_tpe = pointer({ typechecking::TypeKind::WORD, size = value.tpe.tpe.tpe.align } !&typechecking::Type)
+    var vptr = state.gep(union_tpe, value.tpe.tpe, value, [make_int_value(0), make_int_value(1), make_int_value(0)], loc)
+    vptr = state.bitcast(pointer(tpe), vptr, loc)
+    return state.load(tpe, vptr, loc)
 }
 
 def convert_ref_to_ref(tpe: &typechecking::Type, value: Value, loc: &Value, state: &State) -> Value {
@@ -1912,7 +1969,7 @@ def convert_to(loc: &Value, value: Value, tpe: &typechecking::Type, state: &Stat
         let conv = scope::find_implicit_function(state.scope, parameter_t, tpe)
         if conv {
             if consteval::is_static {
-                consteval::compile_function(conv)
+                consteval::compile_function(conv, state.scope)
             }
 
             import_structures(conv.tpe, state.module)
@@ -1934,6 +1991,15 @@ def convert_to(loc: &Value, value: Value, tpe: &typechecking::Type, state: &Stat
             create_temporary(addr, value, loc, state)
             return value
         }
+    }
+    if tpe.kind == typechecking::TypeKind::TUNION {
+        if value.tpe.kind == typechecking::TypeKind::TUNION {
+            return convert_variant_to_variant(tpe, value, loc, state)
+        } else {
+            return convert_value_to_variant(tpe, load_value(value, loc, state), loc, state)
+        }
+    } else if value.tpe.kind == typechecking::TypeKind::TUNION {
+        return convert_variant_to_value(tpe, value, loc, state)
     }
 
     if typechecking::is_ref_or_weak(tpe) and typechecking::equals(value.tpe, builtins::Ref_) {
@@ -2599,6 +2665,16 @@ def insert_call(
     node: &parser::Node, name_v: Value, args: &[Value], proto: &[typechecking::NamedParameter], ret: &typechecking::Type, 
     varargs_loc: &Vector(&Value), addr: Value, loc: &Value, 
     multiple_returns: bool, state: &State) {
+
+    for var i in 0..args.size {
+        if i >= proto.size { continue }
+        // Replace interfaces in proto with the actual type
+        let np = proto[i]
+        if np._tpe and np._tpe.kind == typechecking::TypeKind::STRUCTURAL {
+            np._tpe = typechecking::make_interface_impl(np._tpe, args[i].tpe, state.scope)
+            proto[i] = np
+        }
+    }
     
     let value = state.call(name_v, ret, args, node.value.func_call.inline, proto, loc)
 
@@ -3070,7 +3146,7 @@ def insert_copy_constructor(addr: Value, value: Value, loc: &Value, state: &Stat
         var ctor = typechecking::get_constructor(addr.tpe.tpe)
         if not ctor { return NO_VALUE }
         if consteval::is_static {
-            consteval::compile_function(ctor)
+            consteval::compile_function(ctor, state.scope)
         }
         predeclare_function(ctor.tpe, state.module)
         state.module.imported.add(ctor.tpe.type_name)
@@ -3149,7 +3225,7 @@ def insert_destructor(value: Value, loc: &Value, state: &State) {
         if consteval::is_static {
             let udtor = get_user_defined_destructor(value.tpe.tpe)
             if udtor {
-                consteval::compile_function(udtor)
+                consteval::compile_function(udtor, state.scope)
             }
         }
 
@@ -3895,6 +3971,19 @@ def walk_MemberAccess(node: &parser::Node, state: &State) -> Value {
     // TODO This might double error
     let name = typechecking::last_ident_to_str(right)
 
+    if name == "type" {
+        var res = NO_VALUE
+        if typechecking::is_ref_or_weak(tpe) {
+            value = load_value(value, loc, state)
+            res = state.extract_value(pointer(builtins::Type_), value, [2], loc)
+        } else if tpe.kind == typechecking::TypeKind::TUNION {
+            value = load_value(value, loc, state)
+            res = state.extract_value(pointer(builtins::Type_), value, [0], loc)
+        }
+
+        return res
+    }
+
     if tpe.kind == typechecking::TypeKind::STATIC_ARRAY {
         if name == "size" {
             let i = make_int_value(tpe.length !int)
@@ -4142,7 +4231,7 @@ def compare(node: &parser::Node, left: Value, right: Value, state: &State) -> Va
         } else if builtins::Type_ and typechecking::equals(left.tpe, typechecking::pointer(builtins::Type_)) {
             let svalue = scope::get(toolchain::runtime_.scope, parser::make_identifier("equals"), not consteval::is_static)
             if consteval::is_static {
-                consteval::compile_function(svalue)
+                consteval::compile_function(svalue, state.scope)
             }
             predeclare_function(svalue.tpe, state.module)
             state.module.imported.add(svalue.tpe.type_name)
@@ -6341,10 +6430,7 @@ def di_type(tpe: &typechecking::Type, state: &State) -> &Value {
     }
 
     let anonymous = tpe.type_name == null
-    var ditpe: &Value = null
-    if not anonymous {
-        ditpe = state.ditypes.get_or_default(tpe.type_name, null)
-    }
+    var ditpe = state.ditypes.get_or_default(tpe, null)
     if ditpe { return ditpe }
 
     var name = tpe.type_name
@@ -6352,11 +6438,13 @@ def di_type(tpe: &typechecking::Type, state: &State) -> &Value {
         name = "<anonymous>"
     }
 
+    if tpe.kind == typechecking::TypeKind::INTERFACE_IMPL {
+        return di_type(tpe.tpe, state)
+    }
+
     ditpe = {} !&Value
     let ditpep = push_meta(ditpe, state)
-    if not anonymous {
-        (@state).ditypes[tpe.type_name] = ditpep
-    }
+    (@state).ditypes[tpe] = ditpep
 
     if tpe.kind == typechecking::TypeKind::BOX {
         tpe = tpe.weak
@@ -6400,6 +6488,11 @@ def di_type(tpe: &typechecking::Type, state: &State) -> &Value {
             @ditpe = @di_forward_declare(tpe, name, state)
         case typechecking::TypeKind::TYPE:
             @ditpe = @di_composite_type(ditpep, builtins::Type_, "<type>", "DW_TAG_structure_type", state)
+        case typechecking::TypeKind::TUNION:
+            let members = allocate_ref(StructMember, 2)
+            members[0] = { tpe = pointer(builtins::Type_), name = "tpe" } !StructMember
+            members[1] = { tpe = tpe.tpe, name = "union" } !StructMember
+            @ditpe = @di_composite_type(ditpep, typechecking::make_struct_type(members), "<tagged_union>", "DW_TAG_structure_type", state)
         case:
             error(tpe.kind, "\n") 
             assert(false)
@@ -6964,6 +7057,8 @@ export def create_function(
         block = make_block()
     }
 
+    debug::trace("Compiling function " + function.name)
+
     function.forward_declare = false
     function.allocas = vector::make(type &Insn)
     let current_function = errors::current_function
@@ -7136,6 +7231,9 @@ export def create_function(
         for var i in 0..vector::length(function.args) {
             let np = function.args[i]
             var value = np.tpe
+            if value and value.kind == typechecking::TypeKind::INTERFACE_IMPL {
+                value = value.tpe
+            }
             if np.varargs and value {
                 value = typechecking::array(value)
             }
@@ -7693,7 +7791,7 @@ def walk_top_Import(node: &parser::Node, body: &Vector(&parser::Node), state: &S
 
         let module = toolchain::compile_module(name, state.module)
         toolchain::progress_update(state.module, toolchain::ProgressUpdate::CONTINUE)
-        insert_module_main(module , name, node.scope, body, state)
+        insert_module_main(module, name, node.scope, body, state)
     }
 }
 
@@ -7806,7 +7904,50 @@ def create_constructor(copy: Value, this: Value, state: &State) {
         br.value.br.if_true = loop_end
     } else {
         let stpe = this.tpe.tpe
-        if stpe.kind != typechecking::TypeKind::UNION {
+        if stpe.kind == typechecking::TypeKind::TUNION {
+            let tpeptrptr = state.gep(pointer(pointer(builtins::Type_)), stpe, this, [make_int_value(0), make_int_value(0)])
+            let tpeptr = state.load(pointer(builtins::Type_), tpeptrptr)
+            let tpev = state.load(builtins::Type_, tpeptr)
+            let tpe_id = state.extract_value(builtins::int64_, tpev, [14])
+            
+            let union_tpe = pointer({ typechecking::TypeKind::WORD, size = this.tpe.tpe.tpe.align } !&typechecking::Type)
+            let frm = state.gep(union_tpe, stpe, this, [make_int_value(0), make_int_value(1), make_int_value(0)])
+            let to = state.gep(union_tpe, stpe, copy, [make_int_value(0), make_int_value(1), make_int_value(0)])
+        
+            let switch_values = vector::make(SwitchValue)
+
+            let swtch = make_insn(InsnKind::SWITCH)
+            (@swtch).value.switch_ = {
+                value = tpe_id,
+                switch_values = switch_values
+            } !InsnSwitch
+            push_insn(swtch, state)
+
+            for var variant in @stpe.variants.keys() {
+                if has_copy_constructor(variant) {
+                    let constructor = typechecking::get_builtin_constructor(variant)
+                    let if_true = make_label(state)
+                    push_label(if_true, state)
+
+                    let svalue = {
+                        label_ = if_true,
+                        value = { kind = ValueKind::INT, i = variant.hash !int64, tpe = builtins::int64_ } !Value
+                    } !SwitchValue
+                    switch_values.push(svalue)
+
+                    var casted_from = state.bitcast(pointer(variant), frm)
+                    let casted_to = state.bitcast(pointer(variant), to)
+                    casted_from = state.load(variant, casted_from) // This shouldn't be necessary
+
+                    insert_copy_constructor(casted_to, casted_from, null, state)
+                    state.ret(NO_VALUE)
+                }
+            }
+            var end = state.make_label()
+            push_label(end, state)
+            swtch.value.switch_.otherwise = end
+
+        } else if stpe.kind != typechecking::TypeKind::UNION {
             assert stpe.kind == typechecking::TypeKind::STRUCT or stpe.kind == typechecking::TypeKind::CLOSURE
 
             for var i in 0..vector::length(stpe.field_types) {
@@ -7887,6 +8028,49 @@ export def create_destructor(tpe: &typechecking::Type) {
 def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
     if typechecking::is_polymorph(tpe) { return }
     assert tpe.kind == typechecking::TypeKind::POINTER
+
+    if tpe.tpe and tpe.tpe.kind == typechecking::TypeKind::TUNION {
+        let stpe = tpe.tpe
+        let tpeptrptr = state.gep(pointer(pointer(builtins::Type_)), stpe, value, [make_int_value(0), make_int_value(0)])
+        let tpeptr = state.load(pointer(builtins::Type_), tpeptrptr)
+        let tpev = state.load(builtins::Type_, tpeptr)
+        let tpe_id = state.extract_value(builtins::int64_, tpev, [14])
+        
+        let union_tpe = pointer({ typechecking::TypeKind::WORD, size = stpe.tpe.align } !&typechecking::Type)
+        let val = state.gep(union_tpe, stpe, value, [make_int_value(0), make_int_value(1), make_int_value(0)])
+    
+        let switch_values = vector::make(SwitchValue)
+
+        let swtch = make_insn(InsnKind::SWITCH)
+        (@swtch).value.switch_ = {
+            value = tpe_id,
+            switch_values = switch_values
+        } !InsnSwitch
+        push_insn(swtch, state)
+
+        for var variant in @stpe.variants.keys() {
+            if has_copy_constructor(variant) {
+                let constructor = typechecking::get_builtin_constructor(variant)
+                let if_true = make_label(state)
+                push_label(if_true, state)
+
+                let svalue = {
+                    label_ = if_true,
+                    value = { kind = ValueKind::INT, i = variant.hash !int64, tpe = builtins::int64_ } !Value
+                } !SwitchValue
+                switch_values.push(svalue)
+
+                var casted_val = state.bitcast(pointer(variant), val)
+                insert_destructor(casted_val, null, state)
+                state.ret(NO_VALUE)
+            }
+        }
+        var end = state.make_label()
+        push_label(end, state)
+        swtch.value.switch_.otherwise = end
+
+        return
+    }
 
     var structure_type = tpe.tpe
     var ref: Value, ref_count_ptr: Value
@@ -7991,7 +8175,7 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
         
         let equals = scope::get(toolchain::runtime_.scope, parser::make_identifier("equals"), not consteval::is_static)
         if consteval::is_static {
-            consteval::compile_function(equals)
+            consteval::compile_function(equals, state.scope)
         }
 
         predeclare_function(equals.tpe, state.module)
@@ -8391,6 +8575,24 @@ def push_enum_values(tpe: &typechecking::Type, global: Value, module: &toolchain
     push_insn(store, state)
 }
 
+def push_variants(tpe: &typechecking::Type, global: Value, module: &toolchain::Module, state: &State, cache: &Vector(TypeEntry)) {
+    let values_sarray = make_static_array(pointer(builtins::Type_), tpe.variants.size)
+    let values = make_global_value(values_sarray, "values", null, state)
+
+    var i = 0
+    for var variant in @tpe.variants.keys() {
+        let val = create_type(variant, module, cache)
+        let slot = state.gep(pointer(pointer(builtins::Type_)), values_sarray, values, [make_int_value(0), make_int_value(i)])
+        state.store(slot, @val)
+
+        i += 1
+    }
+
+    let gep_ret = state.gep(pointer(pointer(builtins::Type_)), values_sarray, values, [make_int_value(0), make_int_value(0)])
+    let gep2_ret = state.gep(pointer(pointer(pointer(builtins::Type_))), builtins::Type_, global, [make_int_value(0), make_int_value(8), make_int_value(1)])
+    state.store(gep2_ret, gep_ret)
+}
+
 def push_type_member(
     exported: bool, 
     f_name: Str, 
@@ -8728,6 +8930,16 @@ def do_create_type(tpe: &typechecking::Type, svalue: &scope::Value, module: &too
         case typechecking::TypeKind::GENERIC, typechecking::TypeKind::TYPE_CONSTRUCTOR:
         case typechecking::TypeKind::TYPE:
             value.values[0] = { kind = ValueKind::INT, tpe = builtins::int_, i = 15 } !Value
+        case typechecking::TypeKind::TUNION:
+            value.values[0] = { kind = ValueKind::INT, tpe = builtins::int_, i = 16 } !Value
+            
+            let array_values = allocate_ref(Value, 2)
+            array_values[0] = { kind = ValueKind::INT, tpe = builtins::int64_, i = tpe.variants.size } !Value
+            array_values[1] = { kind = ValueKind::UNDEF, tpe = pointer(pointer(builtins::Type_)) } !Value
+
+            value.values[8] = { kind = ValueKind::STRUCT, tpe = array(pointer(builtins::Type_)), values = array_values } !Value
+
+            push_variants(tpe, global, module, state, cache)
         case:
             error(tpe.kind, "\n")
             assert(false)
@@ -8870,7 +9082,7 @@ export def make_state(module: &toolchain::Module) -> &State {
     let state = {
         module = module,
         loops = vector::make(LoopState),
-        ditypes = map::make(type &Value),
+        ditypes = map::make(type &typechecking::Type, type &Value),
         discope = vector::make(type &Value),
         current_block = make_block(),
         globals = map::make(type *),
@@ -9003,7 +9215,7 @@ def generate_vtable_function(function: &Function, tpe: &typechecking::Type, stat
 
                 if consteval::is_static {
                     let fun = scope::get_function(module.scope, parser::make_identifier(tpe.name), parameter_t, false, false, false)
-                    let val = consteval::compile_function(fun)
+                    let val = consteval::compile_function(fun, state.scope)
                     import_structures(val.tpe, state.module)
                 }
             }

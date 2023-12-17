@@ -119,6 +119,7 @@ export type NodeKind = enum {
     STRUCTURAL_T
     STRUCTURAL_T_MEMBER
     TYPE_CONSTRUCTOR
+    VARIANT_T
 }
 
 export type ShareMarker = enum {
@@ -214,6 +215,10 @@ export type NodePtrArrayT = struct {
 export type NodeFunctionT = struct {
     args: &Vector(&Node)
     ret: &Vector(&Node)
+}
+
+export type NodeVariantT = struct {
+    variants: &Vector(&Node)
 }
 
 export type NodeIdDecl = struct {
@@ -369,6 +374,7 @@ export type NodeValue = struct #union {
     t_func: NodeFunctionT
     t_parr: NodePtrArrayT
     t_arrs: NodeArrayStaticT
+    t_variant: NodeVariantT
     structural_member: NodeStructuralMember
     func_call: NodeFuncCall
     assign: NodeAssign
@@ -563,6 +569,8 @@ export def destruct(node: *Node) {
             __destruct__(*node.value.t_arrs)
         case NodeKind::STRUCTURAL_T_MEMBER:
             __destruct__(*node.value.structural_member)
+        case NodeKind::VARIANT_T:
+            __destruct__(*node.value.t_variant)
         case NodeKind::ERROR, NodeKind::DEFINED, NodeKind::SIZE_OF, NodeKind::ALIGN_OF, NodeKind::TYPE_OF_T,
             NodeKind::UADD..=NodeKind::NOT, NodeKind::ID_ASSIGN, NodeKind::UNSIGNED_T, NodeKind::TYPE_T, NodeKind::YIELD_FROM:
             __destruct__(*node.value.expr)
@@ -674,6 +682,8 @@ export def construct(copy: *Node, node: *Node) {
             copy.value.t_parr = node.value.t_parr
         case NodeKind::ARRAY_STATIC_T:
             copy.value.t_arrs = node.value.t_arrs
+        case NodeKind::VARIANT_T:
+            copy.value.t_variant = node.value.t_variant
         case NodeKind::STRUCTURAL_T_MEMBER:
             copy.value.structural_member = node.value.structural_member
         case NodeKind::ERROR, NodeKind::DEFINED, NodeKind::SIZE_OF, NodeKind::ALIGN_OF, NodeKind::TYPE_OF_T,
@@ -815,6 +825,8 @@ export def offset(node: &Node, changes: &[server::TextDocumentChangeEvent]) {
             offset(node.value.t_parr.tpe, changes)
         case NodeKind::ARRAY_STATIC_T:
             offset(node.value.t_arrs.tpe, changes)
+        case NodeKind::VARIANT_T:
+            offset(node.value.t_variant.variants, changes)
         case NodeKind::STRUCTURAL_T_MEMBER:
             offset(node.value.structural_member.name, changes)
             offset(node.value.structural_member.params, changes)
@@ -944,6 +956,8 @@ export def clear(node: &Node) {
             clear(node.value.t_parr.tpe)
         case NodeKind::ARRAY_STATIC_T:
             clear(node.value.t_arrs.tpe)
+        case NodeKind::VARIANT_T:
+            clear(node.value.t_variant.variants)
         case NodeKind::STRUCTURAL_T_MEMBER:
             clear(node.value.structural_member.name)
             clear(node.value.structural_member.params)
@@ -1143,6 +1157,9 @@ export def find(node: &Node, line: int, column: int) -> &Node {
                 var n2 = find(node.value.t_arrs.n, line, column)
                 if n2 { return n2 }
                 n2 = find(node.value.t_arrs.tpe, line, column)
+                if n2 { return n2 }
+            case NodeKind::VARIANT_T:
+                var n2 = find(node.value.t_variant.variants, line, column)
                 if n2 { return n2 }
             case NodeKind::STRUCTURAL_T_MEMBER:
                 var n2 = find(node.value.structural_member.name, line, column)
@@ -1347,6 +1364,8 @@ export def deep_copy_node(node: &Node, clear_svalue: bool = true) -> &Node {
             copy.value.t_parr.tpe = deep_copy_node(node.value.t_parr.tpe, clear_svalue)
         case NodeKind::ARRAY_STATIC_T:
             copy.value.t_arrs.tpe = deep_copy_node(node.value.t_arrs.tpe, clear_svalue)
+        case NodeKind::VARIANT_T:
+            copy.value.t_variant.variants = deep_copy_vector_of_nodes(node.value.t_variant.variants, clear_svalue)
         case NodeKind::STRUCTURAL_T_MEMBER:
             copy.value.structural_member.name = deep_copy_node(node.value.structural_member.name, clear_svalue)
             copy.value.structural_member.params = deep_copy_vector_of_nodes(node.value.structural_member.params, clear_svalue)
@@ -1409,7 +1428,19 @@ export def identifier_to_str(node: &Node, types: bool = true) -> Str {
 
 def make_node(kind: NodeKind, line: int, column: int, state: &ParseState) -> &Node {
     state.last_string = null
-    let current_token = peek(state)
+
+    var end_line = 0
+    var end_column = 0
+
+    if state.last_token {
+        end_line = state.last_token.value.end_line
+        end_column = state.last_token.value.end_column
+    } else {
+        let current_token = peek(state)
+        end_line = current_token.line
+        end_column = current_token.column
+    }
+
     return {
         kind = kind,
         loc = {
@@ -1418,8 +1449,8 @@ def make_node(kind: NodeKind, line: int, column: int, state: &ParseState) -> &No
             state.module,
             line,
             column,
-            current_token.line,
-            current_token.column
+            end_line,
+            end_column
         } !SourceLoc
     } !Node
 }
@@ -2187,6 +2218,35 @@ def parse_type_identifier(parse_state: &ParseState, inline_types: bool) -> &Node
     return name
 }
 
+def parse_variant_type(parse_state: &ParseState, inline_types: bool) -> &Node {
+    var token = peek(parse_state)
+    let start_token = token
+    var node = parse_type2(parse_state, inline_types)
+    
+    var variant: &Node
+    loop {
+        if next_token(parse_state, lexer::TokenType::OP_BOR) {
+            if not variant {
+                variant = make_node(NodeKind::VARIANT_T, start_token.line, start_token.column, parse_state)
+                variant.value.t_variant.variants = vector::make(type &Node)
+                variant.value.t_variant.variants.push(node)
+            }
+
+            skip_newline(parse_state)
+            node = parse_type2(parse_state, inline_types)
+            variant.value.t_variant.variants.push(node)
+        } else { break }
+        token = peek(parse_state)
+    }
+    if variant {
+        variant.loc.end_line = token.line
+        variant.loc.end_column = token.column
+        variant._hash = combine_hashes(NodeKind::VARIANT_T !uint64, hash(variant.value.t_variant.variants))
+        return variant
+    }
+    return node
+}
+
 def parse_type2(parse_state: &ParseState, inline_types: bool) -> &Node {
     var tok = pop(parse_state)
 
@@ -2280,7 +2340,7 @@ def parse_type_list(parse_state: &ParseState, sw: bool, inline_types: bool) -> &
         if sw {
             node = parse_type(parse_state, inline_types)
         } else {
-            node = parse_type2(parse_state, inline_types)
+            node = parse_variant_type(parse_state, inline_types)
         }
 
         if node {
@@ -2642,11 +2702,20 @@ def parse_post_expression(parse_state: &ParseState) -> &Node {
             node = expect_func_args(parse_state, node)
         } else if next_token(parse_state, lexer::TokenType::O_SQUARE) {
             skip_newline(parse_state)
-            node = make_bin_op(parse_state, token, NodeKind::ARRAY_SUBSCRIPT, node, parse_expression(parse_state))
+            let expr = parse_expression(parse_state)
             skip_newline(parse_state)
             expect(parse_state, lexer::TokenType::C_SQUARE, "Expected ']'")
+            node = make_bin_op(parse_state, token, NodeKind::ARRAY_SUBSCRIPT, node, expr)
         } else if next_token(parse_state, lexer::TokenType::DOT) {
-            node = make_bin_op(parse_state, token, NodeKind::MEMBER_ACCESS, node, expect_identifier(parse_state))
+            token = peek(parse_state)
+            var right: &Node
+            if token.tpe == lexer::TokenType::K_TYPE {
+                right = make_operator_ident("type", token, parse_state)
+                pop(parse_state)
+            } else {
+                right = expect_identifier(parse_state)
+            }
+            node = make_bin_op(parse_state, token, NodeKind::MEMBER_ACCESS, node, right)
         } else {
             return node
         }
@@ -2722,7 +2791,7 @@ def parse_cast_expression(parse_state: &ParseState) -> &Node {
     loop {
         if next_token(parse_state, lexer::TokenType::OP_CAST) {
             skip_newline(parse_state)
-            node = make_bin_op(parse_state, token, NodeKind::CAST, node, parse_type(parse_state))
+            node = make_bin_op(parse_state, token, NodeKind::CAST, node, parse_type2(parse_state, false))
         } else {
             return node
         }

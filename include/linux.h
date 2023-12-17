@@ -3,6 +3,11 @@
 %EXCLUDE shm_open crypt shm_unlink
 %EXCLUDE __builtin_bswap32 __builtin_bswap64 profil add_profil unwhiteout UUID_NULL
 %EXCLUDE __bswap_16 __bswap_32 __bswap_64 __uint16_identity __uint32_identity __uint64_identity
+
+MUSL Doesn't provide these
+%EXCLUDE gsignal sigblock sigsetmask __getpgid ttyslot sethostid strtoq strtouq random_r srandom_r initstate_r
+%EXCLUDE setstate_r drand48_r erand48_r lrand48_r nrand48_r mrand48_r jrand48_r srand48_r seed48_r lcong48_r 
+%EXCLUDE on_exit qecvt qfcvt qgcvt ecvt_r fcvt_r qecvt_r qfcvt_r rpmatch getdirentries ssignal
 */
 
 #ifndef _WIN32
@@ -29,5 +34,7 @@
     #include <fnmatch.h>
     #include <dirent.h>
     #include <errno.h>
+#ifndef MUSL
     #include <execinfo.h>
+#endif
 #endif

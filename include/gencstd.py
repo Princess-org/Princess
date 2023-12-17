@@ -1,4 +1,4 @@
-#!/usr/bin/python3.9
+#!/usr/bin/python3
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -345,7 +345,7 @@ class FunctionDecl(Declaration):
     def to_symbol(self, n: int, file: File) -> str:
         function = ""
         if not self.dllimport:
-            function = f", function = *{self.name} !def () -> ()"
+            function = f", function = *{self.name} !(def () -> ())"
 
         ret = f"__SYMBOLS[{n}] = {{ kind = symbol::SymbolKind::FUNCTION, dllimport = {'true' if self.dllimport else 'false'}, name = \"{self.name}\"{function}}} !symbol::Symbol"
         return ret
@@ -415,25 +415,20 @@ def parse_struct(name: str, inner: clang.Type, file: File, lookup: bool = False)
     else: name = None
     
     declaration = inner.get_declaration()
-    children = declaration.get_children()
+    children = list(declaration.get_children())
 
     fields = []
     field: clang.Cursor
     index = 0
-    last_unnamed_struct: clang.Cursor = None
 
-    for field in children:
+    for i, field in enumerate(children):
         if field.kind == clang.CursorKind.STRUCT_DECL: 
             if len(list(field.get_children())) == 0: continue
         field_type = parse_type(field.type, file, is_in_struct = True)
         if not field_type: return None
 
-        if last_unnamed_struct and field.type.get_declaration() == last_unnamed_struct:
-            del fields[-1]
-        
-        last_unnamed_struct = None
-        if is_anonymous(field.type.spelling):
-            last_unnamed_struct = field.type.get_declaration()
+        if is_anonymous(field.spelling) and i + 1 < len(children) and field.type.get_declaration() == children[i + 1].type.get_declaration():
+            continue
 
         spelling = field.spelling
         if not spelling: 
@@ -566,8 +561,12 @@ def process_module(name: str, *libs):
                         args.append((spelling, parse_type(child.type, file)))
 
                 ret = parse_type(node.result_type, file)
+                
+                is_variadic = False
+                if node.type.kind == clang.TypeKind.FUNCTIONPROTO:
+                    is_variadic = node.type.is_function_variadic()
 
-                file.GLOBALS[name] = FunctionDecl(name, ret, args, node.type.is_function_variadic(), dllimport)
+                file.GLOBALS[name] = FunctionDecl(name, ret, args, is_variadic, dllimport)
             elif node.kind == clang.CursorKind.VAR_DECL:
                 if node.storage_class == clang.StorageClass.EXTERN:
                     dllimport = False
@@ -623,7 +622,7 @@ def process_module(name: str, *libs):
                             except ValueError: pass        
 
         index = clang.Index.create()
-        tu = index.parse(folder / f"{name}.h", options = 
+        tu = index.parse(folder / f"{name}.h", args = ["-DMUSL"], options = 
                          clang.TranslationUnit.PARSE_DETAILED_PROCESSING_RECORD
                          | clang.TranslationUnit.PARSE_SKIP_FUNCTION_BODIES 
                          | clang.TranslationUnit.PARSE_PRECOMPILED_PREAMBLE 

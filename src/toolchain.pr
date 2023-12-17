@@ -27,6 +27,9 @@ modules["builtin"] = builtins::builtins_module
 
 export def find_module(name: Str) -> &Module {
     let keys = modules.keys()
+    if name == main_module_name {
+        name = "main"
+    }
     for var i in 0..keys.size {
         let module = modules[keys[i]]
         if module.module == name {
@@ -37,6 +40,7 @@ export def find_module(name: Str) -> &Module {
 }
 
 export def find_module_by_path(path: Str) -> &Module {
+    path = absolute_path(path)
     let keys = modules.keys()
     for var i in 0..keys.size {
         let module = modules[keys[i]]
@@ -105,7 +109,7 @@ export var outfolder: Str = ".princess"
     let clang = "clang.exe"
 } else {
     export var outfile: Str = "a.out"
-    let clang = "clang-13"
+    let clang = "clang" // FIXME Minimum version 13, Actually check for this!
 }
 
 // Debug stuff 
@@ -120,6 +124,7 @@ export var debug_sym = false
 export var main_file_name: Str
 
 var main_module_file: Str
+var main_module_name: Str
 
 export def add_define(define: Str) {
     let tokens = lexer::lex(define)
@@ -229,7 +234,32 @@ export type Module = struct {
 
     // This exists to make sure that we filter out modules that got deleted
     // without invalidating all of the scope::Idents out there
+    // TODO Use some sort of module reference struct instead
     is_deleted: bool
+
+    // We keep track of interface implementations for this module
+    interfaces: &Map(&typechecking::Type, &Map(&typechecking::Type, &typechecking::Type))
+}
+
+export def get_impl(module: &Module, intf: &typechecking::Type, wrap: &typechecking::Type) -> &typechecking::Type {
+    if module.interfaces.contains(intf) {
+        let m = module.interfaces[intf]
+        if m.contains(wrap) {
+            return m[wrap]
+        }
+    }
+    return null
+}
+
+export def add_impl(module: &Module, intf: &typechecking::Type, wrap: &typechecking::Type, impl: &typechecking::Type) {
+    var interfaces: &Map(&typechecking::Type, &typechecking::Type)
+    if not module.interfaces.contains(intf) {
+        interfaces = map::make(type &typechecking::Type, type &typechecking::Type)
+        module.interfaces[intf] = interfaces
+    } else {
+        interfaces = module.interfaces[intf]
+    }
+    interfaces[wrap] = impl
 }
 
 export def destruct(module: *Module) {
@@ -273,7 +303,8 @@ export def make_module(
         unresolved = map::make(scope::Ident, type weak_ref(scope::Value)),
         inlay_hints = vector::make(type &parser::Node),
         closures = vector::make(type &scope::Value),
-        is_dirty = no_incremental
+        is_dirty = no_incremental,
+        interfaces = map::make(type &typechecking::Type, type &map::Map(&typechecking::Type, &typechecking::Type))
     } !&Module
     module.compiler_state = compiler::make_state(module)
     module.file = util::replace_all(module.module, "::", ".")
@@ -415,14 +446,13 @@ export def create_module_if_absent(filename: String, modulename: String, display
     if modulename == "runtime" {
         return runtime_
     }
-    var module = modules.get_or_default(filename, null)
-    if module and not recompile {
-        return module   
+    var module = find_module_by_path(filename)
+    if module {
+        return module
     }
-    if not module {
-        module = {} !&Module
-    }
-
+    
+    module = {} !&Module
+    
     let buf = file_loader(filename)
     if not buf {
         error("File \"", filename, "\" doesn't exist\n")
@@ -744,8 +774,10 @@ export def compile_main_file(filename: String) {
     prepare_preload()
     create_types_main()
 
-    main_module_file = filename
-    var module = create_module_if_absent(filename, "main", display_name = main_file_name) 
+    main_module_file = absolute_path(filename)
+    main_module_name = extract_module_name(filename)
+
+    var module = create_module_if_absent(main_module_file, "main", display_name = main_file_name)
     if not module { exit(1) }
 
     serialize::resolver_pass(module)
