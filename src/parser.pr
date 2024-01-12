@@ -120,6 +120,7 @@ export type NodeKind = enum {
     STRUCTURAL_T_MEMBER
     TYPE_CONSTRUCTOR
     VARIANT_T
+    TUPLE_T // Uses variant_t
 }
 
 export type ShareMarker = enum {
@@ -569,7 +570,7 @@ export def destruct(node: *Node) {
             __destruct__(*node.value.t_arrs)
         case NodeKind::STRUCTURAL_T_MEMBER:
             __destruct__(*node.value.structural_member)
-        case NodeKind::VARIANT_T:
+        case NodeKind::VARIANT_T, NodeKind::TUPLE_T:
             __destruct__(*node.value.t_variant)
         case NodeKind::ERROR, NodeKind::DEFINED, NodeKind::SIZE_OF, NodeKind::ALIGN_OF, NodeKind::TYPE_OF_T,
             NodeKind::UADD..=NodeKind::NOT, NodeKind::ID_ASSIGN, NodeKind::UNSIGNED_T, NodeKind::TYPE_T, NodeKind::YIELD_FROM:
@@ -682,7 +683,7 @@ export def construct(copy: *Node, node: *Node) {
             copy.value.t_parr = node.value.t_parr
         case NodeKind::ARRAY_STATIC_T:
             copy.value.t_arrs = node.value.t_arrs
-        case NodeKind::VARIANT_T:
+        case NodeKind::VARIANT_T, NodeKind::TUPLE_T:
             copy.value.t_variant = node.value.t_variant
         case NodeKind::STRUCTURAL_T_MEMBER:
             copy.value.structural_member = node.value.structural_member
@@ -825,7 +826,7 @@ export def offset(node: &Node, changes: &[server::TextDocumentChangeEvent]) {
             offset(node.value.t_parr.tpe, changes)
         case NodeKind::ARRAY_STATIC_T:
             offset(node.value.t_arrs.tpe, changes)
-        case NodeKind::VARIANT_T:
+        case NodeKind::VARIANT_T, NodeKind::TUPLE_T:
             offset(node.value.t_variant.variants, changes)
         case NodeKind::STRUCTURAL_T_MEMBER:
             offset(node.value.structural_member.name, changes)
@@ -956,7 +957,7 @@ export def clear(node: &Node) {
             clear(node.value.t_parr.tpe)
         case NodeKind::ARRAY_STATIC_T:
             clear(node.value.t_arrs.tpe)
-        case NodeKind::VARIANT_T:
+        case NodeKind::VARIANT_T, NodeKind::TUPLE_T:
             clear(node.value.t_variant.variants)
         case NodeKind::STRUCTURAL_T_MEMBER:
             clear(node.value.structural_member.name)
@@ -1158,7 +1159,7 @@ export def find(node: &Node, line: int, column: int) -> &Node {
                 if n2 { return n2 }
                 n2 = find(node.value.t_arrs.tpe, line, column)
                 if n2 { return n2 }
-            case NodeKind::VARIANT_T:
+            case NodeKind::VARIANT_T, NodeKind::TUPLE_T:
                 var n2 = find(node.value.t_variant.variants, line, column)
                 if n2 { return n2 }
             case NodeKind::STRUCTURAL_T_MEMBER:
@@ -1364,7 +1365,7 @@ export def deep_copy_node(node: &Node, clear_svalue: bool = true) -> &Node {
             copy.value.t_parr.tpe = deep_copy_node(node.value.t_parr.tpe, clear_svalue)
         case NodeKind::ARRAY_STATIC_T:
             copy.value.t_arrs.tpe = deep_copy_node(node.value.t_arrs.tpe, clear_svalue)
-        case NodeKind::VARIANT_T:
+        case NodeKind::VARIANT_T, NodeKind::TUPLE_T:
             copy.value.t_variant.variants = deep_copy_vector_of_nodes(node.value.t_variant.variants, clear_svalue)
         case NodeKind::STRUCTURAL_T_MEMBER:
             copy.value.structural_member.name = deep_copy_node(node.value.structural_member.name, clear_svalue)
@@ -1718,7 +1719,7 @@ def parse_array_n(parse_state: &ParseState) -> &Node {
     return node
 }
 
-def expect_array(parse_state: &ParseState) -> &Node {
+def expect_array_or_tuple(parse_state: &ParseState) -> &Node {
     var tok = peek(parse_state)
     let line = tok.line
     let column = tok.column
@@ -1733,18 +1734,62 @@ def expect_array(parse_state: &ParseState) -> &Node {
 
     tok = expect(parse_state, lexer::TokenType::O_SQUARE, "Expected '['")
 
+    tok = peek(parse_state)
+    if tok.tpe == lexer::TokenType::C_SQUARE {
+        pop(parse_state)
+
+        node = make_node(NodeKind::TUPLE_T, line, column, parse_state)
+        node.value.t_variant = {
+            variants = vector::make(type &Node)
+        } !NodeVariantT
+        node._hash = node.kind !uint64
+
+        return node
+    }
+
     // [let T], [var T] and [T]
+
+    var may_be_tuple = true
 
     var kw = VarDecl::VAR
     tok = peek(parse_state)
     if tok.tpe == lexer::TokenType::K_VAR {
         pop(parse_state)
+        may_be_tuple = false
     } else if tok.tpe == lexer::TokenType::K_LET {
         pop(parse_state)
         kw = VarDecl::LET
+        may_be_tuple = false
     }
 
-    let tpe = expect_type(parse_state)
+    var tpe = expect_type(parse_state)
+    tok = peek(parse_state)
+
+    if may_be_tuple {
+        skip_newline(parse_state)
+        if tok.tpe == lexer::TokenType::COMMA {
+            let variants = vector::make(type &Node)
+
+            while tok.tpe == lexer::TokenType::COMMA {
+                variants.push(tpe)
+                pop(parse_state)
+
+                tpe = expect_type(parse_state)
+                skip_newline(parse_state)
+                tok = peek(parse_state)
+            }
+
+            tok = expect(parse_state, lexer::TokenType::C_SQUARE, "Expected ']'")
+            
+            node = make_node(NodeKind::TUPLE_T, line, column, parse_state)
+            node.value.t_variant = {
+                variants = variants
+            } !NodeVariantT
+            node._hash = combine_hashes(node.kind !uint64, hash(variants))
+            
+            return node
+        }
+    }
 
     tok = expect(parse_state, lexer::TokenType::C_SQUARE, "Expected ']'")
 
@@ -2288,7 +2333,7 @@ def parse_type2(parse_state: &ParseState, inline_types: bool) -> &Node {
         return node
     } else if tok.tpe == lexer::TokenType::O_SQUARE {
         back(parse_state)
-        return expect_array(parse_state)
+        return expect_array_or_tuple(parse_state)
     } else if tok.tpe == lexer::TokenType::OP_MUL or
         tok.tpe == lexer::TokenType::OP_BAND {
         back(parse_state)
@@ -2411,7 +2456,7 @@ def expect_array_lit(parse_state: &ParseState) -> &Node {
     // [var N]
     if token.tpe == lexer::TokenType::K_VAR or token.tpe == lexer::TokenType::K_LET {
         parse_state.tokens = tokens
-        return expect_array(parse_state)
+        return expect_array_or_tuple(parse_state)
     }
 
     if token.tpe != lexer::TokenType::C_SQUARE {
