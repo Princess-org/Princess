@@ -2330,18 +2330,18 @@ export def type_lookup(node: &parser::Node, state: &State, current_type: &Type =
 }
 
 def convert_ambiguous_expr_to_type(node: &parser::Node, state: &State) -> &Node {
-    if node.kind == parser::NodeKind::ARRAY_LIT {
-        if node.value.body.length == 1 {
+    if node.kind == parser::NodeKind::STRUCT_LIT and node.value.struct_lit.kwargs.length == 0 {
+        if node.value.struct_lit.args.length == 1 {
             var res = { kind = parser::NodeKind::ARRAY_T } !&parser::Node
-            res.value.t_parr.tpe = convert_ambiguous_expr_to_type(node.value.body[0], state)
+            res.value.t_parr.tpe = convert_ambiguous_expr_to_type(node.value.struct_lit.args[0], state)
             walk(null, res, state)
             res.tpe.node = null // This may be needed to avoid a dangling weak reference
             return res
         } else {
             var res = { kind = parser::NodeKind::TUPLE_T } !&parser::Node
             var types = vector::make(type &parser::Node)
-            for var node in node.value.body {
-                types.push(convert_ambiguous_expr_to_type(node, state))
+            for var n in node.value.struct_lit.args {
+                types.push(convert_ambiguous_expr_to_type(n, state))
             }
             res.value.body = types
 
@@ -3222,7 +3222,7 @@ def collapse_types(
         var ltpe: &Type = null
         if k < vector::length(ltypes) {
             ltpe = ltypes[k]
-            infer_struct_type(value, ltpe)
+            //infer_struct_type(value, ltpe)
         }
         
         if not value.is_assign_right {
@@ -3237,7 +3237,7 @@ def collapse_types(
             }
         }
         let rtpe = (@value).tpe
-        if rtpe and (@rtpe).kind == TypeKind::TUPLE {
+        if rtpe and (@rtpe).kind == TypeKind::TUPLE and left.length > 1 {
             for var j in 0..vector::length((@rtpe).return_t) {
                 let t = (@rtpe).return_t[j]
                 rtypes.push(t)
@@ -3807,11 +3807,18 @@ def walk_Cast(node: &parser::Node, state: &State) {
         return
     }
 
-    if (@left).kind == parser::NodeKind::STRUCT_LIT {
-        if (@rtpe).kind != TypeKind::STRUCT and
-            (@rtpe).kind != TypeKind::UNION and 
+    if left.kind == parser::NodeKind::STRUCT_LIT {
+        if rtpe.kind != TypeKind::STRUCT and
+            rtpe.kind != TypeKind::UNION and
+            rtpe.kind != TypeKind::STATIC_ARRAY and
+            rtpe.kind != TypeKind::ARRAY and
             not (rtpe.kind == TypeKind::REFERENCE and rtpe.tpe and 
-                (rtpe.tpe.kind == TypeKind::STRUCT or rtpe.tpe.kind == TypeKind::UNION)) {
+                (rtpe.tpe.kind == TypeKind::STRUCT or 
+                 rtpe.tpe.kind == TypeKind::UNION or
+                 rtpe.tpe.kind == TypeKind::TUPLE or 
+                 rtpe.tpe.kind == TypeKind::STATIC_ARRAY or
+                 rtpe.tpe.kind == TypeKind::ARRAY)) {
+
             errors::errorn(left, "Invalid cast")
             return
         }
@@ -3819,7 +3826,7 @@ def walk_Cast(node: &parser::Node, state: &State) {
         walk(node, left, state)
         return
     }
-    if (@left).kind == parser::NodeKind::ARRAY_LIT {
+    /*if (@left).kind == parser::NodeKind::ARRAY_LIT {
         if (@rtpe).kind != TypeKind::ARRAY and 
             (@rtpe).kind != TypeKind::STATIC_ARRAY {
             errors::errorn(left, "Invalid cast")
@@ -3828,7 +3835,7 @@ def walk_Cast(node: &parser::Node, state: &State) {
         walk(node, left, state)
         node.tpe = rtpe
         return
-    }
+    }*/
 
     walk(node, left, state)
     var ltpe = left.tpe
@@ -4533,7 +4540,7 @@ def check_for_apply_and_update(node: &parser::Node, left: &parser::Node, argumen
         vector::insert(args, 0, { _tpe = tpe } !NamedParameter)
 
         let ident = parser::make_identifier("apply")
-        let fun = scope::get_function(state.scope, ident, args, true)
+        let fun = scope::get_function(state.scope, ident, args, false, true, force_compile = not consteval::is_static)
         if fun {
             vector::insert(node.value.func_call.args, 0, left)
             @node = @make_function_call(node, ident, node.value.func_call.args) 
@@ -4550,7 +4557,7 @@ def check_for_apply_and_update(node: &parser::Node, left: &parser::Node, argumen
         args.push({ _tpe = value.tpe } !NamedParameter)
 
         let ident = parser::make_identifier("update")
-        let fun = scope::get_function(state.scope, ident, args)
+        let fun = scope::get_function(state.scope, ident, args, false, true, force_compile = not consteval::is_static)
         if fun {
             vector::insert(node.value.func_call.args, 0, left)
             vector::push(node.value.func_call.args, value)
@@ -4560,7 +4567,32 @@ def check_for_apply_and_update(node: &parser::Node, left: &parser::Node, argumen
         }
     }
     
-    if (@tpe).kind == TypeKind::ARRAY or (@tpe).kind == TypeKind::STATIC_ARRAY {
+    if tpe.kind == TypeKind::TUPLE {
+        if arguments.length != 1 {
+            errors::errorn(node, "Tuple can only be indexed using one int argument")
+            return false
+        }
+        let val = consteval::expr(arguments[0].node, state)
+        if val.kind != compiler::ValueKind::INT {
+            errors::errorn(node, "Tuple access needs to be integer")
+            return false
+        }
+        if val.i < 0 {
+            errors::errorn(node, "Tuple access needs to be greater than 0")
+            return false
+        }
+        if val.i >= tpe.return_t.length {
+            errors::errorn(node, "Tuple has " + tpe.return_t.length + " elements, trying to access element " + val.i)
+            return false
+        }
+
+        var argument = arguments[0].node
+        @argument = { kind = parser::NodeKind::INTEGER } !parser::Node
+        argument.value.i = val.i
+        argument.tpe = builtins::uint64_
+
+        node.tpe = tpe.return_t[val.i]
+    } else if (@tpe).kind == TypeKind::ARRAY or (@tpe).kind == TypeKind::STATIC_ARRAY {
         node.kw = tpe.kw
         node.tpe = tpe.tpe
     } else if is_ref(tpe) and tpe.tpe and is_array(tpe.tpe) {
@@ -5233,15 +5265,130 @@ def walk_StructLit(node: &parser::Node, state: &State) {
     let prev_tpe = node.tpe
     var tpe = prev_tpe
 
-    // This instructs compile to skip the struct literal completely
-    node.tpe = null
-
     if is_ref(tpe) {
         tpe = tpe.tpe
     }
 
+    if vector::length(node.value.struct_lit.kwargs) == 0 {
+        // No kwargs means we could have an array or a tuple
+        for var arg in node.value.struct_lit.args {
+            walk(node, arg, state)
+        }
+        var curtpe: &Type
+        var is_tuple = false
+        for var arg in node.value.struct_lit.args {
+            if not curtpe { curtpe = arg.tpe }
+            else if not equals(arg.tpe, curtpe) {
+                is_tuple = true
+                break
+            }
+        }
+
+        if tpe {
+            if tpe.kind == TypeKind::TUPLE {
+                // Check conversion to tuple
+                if tpe.return_t.length != node.value.struct_lit.args.length {
+                    errors::errorn(node, "Wrong number of arguments. Expected " + tpe.return_t.length + " got " + node.value.struct_lit.args.length)
+                    return
+                }
+                for var i in 0..vector::length(node.value.struct_lit.args) {
+                    var n = node.value.struct_lit.args[i]
+                    var etpe = tpe.return_t[i]
+                    implicit_conversion(n, etpe, state)
+                    
+                    if not is_assignable(etpe, n.tpe, state.module) {
+                        errors::errorn(n, "Incompatible types, got " + debug::type_to_str(n.tpe) + " and expected " + debug::type_to_str(etpe))
+                        return
+                    }
+                }
+                return
+            } else if tpe.kind == TypeKind::ARRAY or tpe.kind == TypeKind::STATIC_ARRAY {
+                // Check conversion to array
+                if tpe.kind == TypeKind::STATIC_ARRAY {
+                    if tpe.length != node.value.struct_lit.args.length {
+                        errors::errorn(node, "Wrong number of arguments. Expected " + tpe.length + " got " + node.value.struct_lit.args.length)
+                        return
+                    }
+                }
+
+                for var n in node.value.struct_lit.args {
+                    implicit_conversion(n, tpe.tpe, state)
+
+                    if not is_assignable(tpe.tpe, n.tpe, state.module) {
+                        errors::errorn(n, "Incompatible types, got " + debug::type_to_str(n.tpe) + " and expected " + debug::type_to_str(tpe.tpe))
+                        return
+                    }
+                }
+                return
+            }
+        }
+
+        if not is_tuple and curtpe {
+            let len = node.value.struct_lit.args.length
+
+            let ret_tpe = make_type_raw(TypeKind::STATIC_ARRAY)
+            ret_tpe.line = node.loc.line
+            ret_tpe.length = len
+            ret_tpe._tpe = curtpe
+            ret_tpe.size = len * curtpe.size
+            ret_tpe.align = curtpe.align
+
+            // Check if we have a type array, in this case it might also be a type
+            if equals(curtpe, pointer(builtins::Type_)) or curtpe.may_be_type {
+                ret_tpe.may_be_type = convert_ambiguous_expr_to_type(node, state).tpe
+            }
+
+            node.tpe = ret_tpe
+            return
+        } else if not tpe or (tpe.kind != TypeKind::STRUCT and tpe.kind != TypeKind::UNION) {
+            // This is a tuple
+            let ret_tpe = make_type_raw(TypeKind::TUPLE)
+
+            let fields = vector::make(StructMember)
+            let return_t = vector::make(type &Type)
+
+            for var arg in node.value.struct_lit.args {
+                return_t.push(arg.tpe)
+                fields.push({ tpe = arg.tpe } !StructMember)
+            }
+
+            let struct_type = make_struct_type(fields.to_array()) // TODO Maybe a have a seperate function to calculate align and size
+            ret_tpe.return_t = return_t
+            ret_tpe.align = struct_type.align
+            ret_tpe.size = struct_type.size
+            ret_tpe.line = node.loc.line
+
+            node.tpe = ret_tpe
+            return
+        }
+    }
+
+    // This instructs compile to skip the struct literal completely
+    node.tpe = null
+
     if not tpe {
-        errors::errorn(node, "Need to specify a type for struct literal")
+        // Create anonymous struct literal
+        if vector::length(node.value.struct_lit.args) != 0 {
+            errors::errorn(node, "Can't create anonymous struct with indexed values")
+            return
+        }
+
+        let len = vector::length(node.value.struct_lit.kwargs) 
+        let fields = allocate_ref(StructMember, len)
+
+        for var i in 0..len {
+            let arg = node.value.struct_lit.kwargs[i]
+            let name = parser::identifier_to_str(arg.value.named_arg.name)
+
+            let n = arg.value.named_arg.value
+            walk(node, n, state)
+
+            fields[i] = { name = name, tpe = n.tpe } !StructMember
+        }
+
+        tpe = make_struct_type(fields)
+        node.tpe = tpe
+
         return
     }
 
@@ -5300,44 +5447,6 @@ def walk_StructLit(node: &parser::Node, state: &State) {
     }
 
     node.tpe = prev_tpe
-}
-
-// TODO We might want to allow assignments like
-// let array: [double] = [1, 2, 3, 4] // And convert to double here
-def walk_ArrayLit(node: &parser::Node, state: &State) {
-    var tpe: &Type = null
-    let len = vector::length(node.value.body)
-    for var i in 0..len {
-        let n = node.value.body[i]
-        walk(node, n, state)
-        let t = (@n).tpe
-        if not tpe { tpe = t }
-        else {
-            if not equals(tpe, t) {
-                errors::errorn(n, "Incompatible types, all array elements need to have the same type. Array type ", 
-                    debug::type_to_str(tpe), ", got ", debug::type_to_str(t))
-                // It might be confusing to get multiple errors here
-                break
-            }
-        }
-    }
-    if not tpe {
-        tpe = builtins::char_
-    }
-    
-    let ret_tpe = make_type_raw(TypeKind::STATIC_ARRAY)
-    ret_tpe.line = node.loc.line
-    ret_tpe.length = len
-    ret_tpe._tpe = tpe
-    ret_tpe.size = len * (@tpe).size
-    ret_tpe.align = (@tpe).align
-
-    // Check if we have a type array, in this case it might also be a type
-    if equals(tpe, pointer(builtins::Type_)) or tpe.may_be_type {
-        ret_tpe.may_be_type = convert_ambiguous_expr_to_type(node, state).tpe
-    }
-
-    node.tpe = ret_tpe
 }
 
 def walk_SizeOf(node: &parser::Node, state: &State) {
@@ -5562,8 +5671,6 @@ export def walk(parent: &parser::Node, node: &parser::Node, state: &State) {
             walk_MemberAccess(node, state)
         case parser::NodeKind::STRUCT_LIT:
             walk_StructLit(node, state)
-        case parser::NodeKind::ARRAY_LIT:
-            walk_ArrayLit(node, state)
         case parser::NodeKind::DEFER:
             walk_Defer(node, state)
         case parser::NodeKind::ASSERT:
