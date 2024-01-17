@@ -3548,6 +3548,10 @@ def make_function_call(node: &parser::Node, ident: &parser::Node) -> &parser::No
     args.push(node.value.bin_op.left)
     args.push(node.value.bin_op.right)
 
+    return make_function_call(node, ident, args)
+}
+
+def make_function_call(node: &parser::Node, ident: &parser::Node, args: &Vector(&parser::Node)) -> &Node {
     let function = {
         kind = parser::NodeKind::FUNC_CALL,
         loc = node.loc
@@ -4087,7 +4091,7 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
         arr(state.function_stack.length - 1) = parser::identifier_to_str(name)
 
         // Unpack tuple
-        if node.tpe.return_t and node.tpe.return_t.length == 1 {
+        if node.tpe and node.tpe.return_t and node.tpe.return_t.length == 1 {
             let tuple = node.tpe.return_t(0)
             if tuple and tuple.kind == TypeKind::TUPLE {
                 return_t = tuple.return_t
@@ -4508,6 +4512,71 @@ def compile_function(function: *&scope::Value, context: &scope::Scope, arguments
     }
 }
 
+def check_for_apply_and_update(node: &parser::Node, left: &parser::Node, arguments: &Vector(NamedParameter), state: &State) -> bool {
+    if arguments.length < 1 { return false }
+    let right = arguments(0).node
+    
+    if not left or not right { return false }
+    let tpe = (@left).tpe
+    if not tpe { return false }
+    if is_function(tpe) { return false }
+
+    let parent = node.parent
+
+    var index: int64 = -1
+    if parent.kind == parser::NodeKind::ASSIGN {
+        index = index_of(parent.value.assign.left, node)
+    }
+
+    if index == -1 {
+        let args = vector::copy(arguments)
+        vector::insert(args, 0, { _tpe = tpe } !NamedParameter)
+
+        let ident = parser::make_identifier("apply")
+        let fun = scope::get_function(state.scope, ident, args, true)
+        if fun {
+            vector::insert(node.value.func_call.args, 0, left)
+            @node = @make_function_call(node, ident, node.value.func_call.args) 
+            walk_Call(node, state)
+            return true
+        }
+    } else if index < vector::length(parent.value.assign.right) {
+        let value = parent.value.assign.right(index)
+        value.is_assign_right = true
+        walk(node, value, state)
+
+        let args = vector::copy(arguments)
+        vector::insert(args, 0, { _tpe = tpe } !NamedParameter)        
+        args.push({ _tpe = value.tpe } !NamedParameter)
+
+        let ident = parser::make_identifier("update")
+        let fun = scope::get_function(state.scope, ident, args)
+        if fun {
+            vector::insert(node.value.func_call.args, 0, left)
+            vector::push(node.value.func_call.args, value)
+            @parent = @make_function_call(parent, ident, node.value.func_call.args)
+            walk_Call(parent, state)
+            return true
+        }
+    }
+    
+    if (@tpe).kind == TypeKind::ARRAY or (@tpe).kind == TypeKind::STATIC_ARRAY {
+        node.kw = tpe.kw
+        node.tpe = tpe.tpe
+    } else if is_ref(tpe) and tpe.tpe and is_array(tpe.tpe) {
+        node.kw = tpe.kw
+        node.tpe = tpe.tpe.tpe
+    } else {
+        return false
+    }
+    if not is_arithmetic(right.tpe) {
+        errors::errorn(right, "Array access needs to be of arithmetic type")
+        return false
+    }
+
+    return true
+}
+
 export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool {
     var left = node.value.func_call.left
     if not left { return false }
@@ -4579,86 +4648,76 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
     node.value.func_call.arguments = arguments
 
     if not is_function_pointer(tpe) and (not tpe or tpe.kind != TypeKind::CLOSURE) {
-        let args = vector::copy(arguments)
-        vector::insert(args, 0, { name = "", _tpe = tpe } !NamedParameter)
+        if check_for_apply_and_update(node, left, arguments, state) { return true }
+        if (@left).kind == parser::NodeKind::IDENTIFIER {
+            let only_function = node.value.func_call.is_member_access
+            var exists, function = scope::get_function_check(state.scope, left, arguments, false, dry_run, not consteval::is_static, only_function = only_function)
+            left.svalue = function
 
-        let ident = parser::make_identifier("apply")
-        let fun = scope::get_function(state.scope, ident, args, true)
-        if fun { 
-            @node = @make_function_call(node, ident) 
-            walk_Call(node, state)
-            return true
-        } else {
-            if (@left).kind == parser::NodeKind::IDENTIFIER {
-                let only_function = node.value.func_call.is_member_access
-                var exists, function = scope::get_function_check(state.scope, left, arguments, false, dry_run, not consteval::is_static, only_function = only_function)
-                left.svalue = function
+            if not function {
+                scope::create_dependency(state.current_value(), scope::make_ident(parser::identifier_to_str(left)))
+                if dry_run { return false }
+            } else {
+                scope::add_reference(function, left)
+            }
 
+            compile_function(*function, state.scope, arguments)
+
+            if left.value.identifier.types {
                 if not function {
-                    scope::create_dependency(state.current_value(), scope::make_ident(parser::identifier_to_str(left)))
-                    if dry_run { return false }
-                } else {
-                    scope::add_reference(function, left)
+                    errors::errorn(left, "Function overload not found")
+                    return false
                 }
-
-                compile_function(*function, state.scope, arguments)
-
-                if left.value.identifier.types {
-                    if not function {
-                        errors::errorn(left, "Function overload not found")
-                        return false
-                    }
-                    if overload_score(function.tpe, arguments, state.module, false) < 0 {
-                        var msg: StringBuffer = "Incorrect arguments to overloaded function. "
-                        msg += append_arguments(arguments)
-                        errors::errorn(left, msg)
-                        return false
-                    }
-                }
-
-                if not function and not exists {
-                    for var i in 0..vector::length(arguments) {
-                        // Suppress error message if we got invalid parameters
-                        let np = arguments(i)
-                        if not np.tpe { return false }
-                    }
-
-                    var msg: StringBuffer = "Function `" + parser::identifier_to_str(left) + "` not found. "
+                if overload_score(function.tpe, arguments, state.module, false) < 0 {
+                    var msg: StringBuffer = "Incorrect arguments to overloaded function. "
                     msg += append_arguments(arguments)
                     errors::errorn(left, msg)
+                    return false
                 }
-                if not function {
-                    scope::create_dependency_on_type(state.current_value(), left)
-                    return false 
+            }
+
+            if not function and not exists {
+                for var i in 0..vector::length(arguments) {
+                    // Suppress error message if we got invalid parameters
+                    let np = arguments(i)
+                    if not np.tpe { return false }
                 }
 
-                // Check if all arguments were provided
-                for var i in 0..vector::length(function.tpe.parameter_t) {
-                    let np = function.tpe.parameter_t(i)
-                    if i < vector::length(node.value.func_call.args) { continue }
-                    if not map::contains(parameter_map, np.name) and not np.value and not np.varargs {
-                        errors::errorn(node, "Missing argument `", np.name, "` at position ", to_string(i !&size_t))
-                    }
-                }
-                // Dependencies
-                scope::create_dependency(state.current_value(), function)
-                if function.polymorph {
-                    // Pull in dependencies of generic function
-                    let cvar = state.current_value()
-                    if cvar.dependencies and function.dependencies {
-                        cvar.dependencies.add_all(function.dependencies)
-                    }
-                }
-                
-                tpe = copy(function.tpe)
-            } else if left.kind == parser::NodeKind::MEMBER_ACCESS and left.tpe and arguments.length == 0 {
-                // "Call" a field
-                node.tpe = left.tpe
-                return true
-            } else {
-                errors::errorn(left, "Can't call expression")
-                return false
+                var msg: StringBuffer = "Function `" + parser::identifier_to_str(left) + "` not found. "
+                msg += append_arguments(arguments)
+                errors::errorn(left, msg)
             }
+            if not function {
+                scope::create_dependency_on_type(state.current_value(), left)
+                return false 
+            }
+
+            // Check if all arguments were provided
+            for var i in 0..vector::length(function.tpe.parameter_t) {
+                let np = function.tpe.parameter_t(i)
+                if i < vector::length(node.value.func_call.args) { continue }
+                if not map::contains(parameter_map, np.name) and not np.value and not np.varargs {
+                    errors::errorn(node, "Missing argument `", np.name, "` at position ", to_string(i !&size_t))
+                }
+            }
+            // Dependencies
+            scope::create_dependency(state.current_value(), function)
+            if function.polymorph {
+                // Pull in dependencies of generic function
+                let cvar = state.current_value()
+                if cvar.dependencies and function.dependencies {
+                    cvar.dependencies.add_all(function.dependencies)
+                }
+            }
+            
+            tpe = copy(function.tpe)
+        } else if left.kind == parser::NodeKind::MEMBER_ACCESS and left.tpe and arguments.length == 0 {
+            // "Call" a field
+            node.tpe = left.tpe
+            return true
+        } else {
+            errors::errorn(left, "Can't call expression")
+            return false
         }
     }
 
@@ -5170,62 +5229,6 @@ def walk_MemberAccess_aggregate(node: &parser::Node, ucs: bool, state: &State) -
     return true
 }
 
-def walk_ArraySubscript(node: &parser::Node, state: &State) {
-    let left = node.value.bin_op.left
-    let right = node.value.bin_op.right
-
-    walk(node, left, state)
-    walk(node, right, state)
-
-    if not left or not right { return }
-    let tpe = (@left).tpe
-    if not tpe { return }
-
-    if node.parent.kind == parser::NodeKind::ASSIGN {
-        let index = index_of(node.parent.value.assign.left, node)
-        if index == -1 {
-            let args = create_args(left, right)
-            convert_to_call(node, "get_item", args, state)
-        } else if index < vector::length(node.parent.value.assign.right) {
-            // TODO This is done twice
-            let value = node.parent.value.assign.right(index)
-            value.is_assign_right = true
-            walk(node.parent, value, state)
-
-            let args = vector::make(NamedParameter)
-            args.push({ _tpe = left.tpe } !NamedParameter)
-            args.push({ _tpe = right.tpe } !NamedParameter)
-            args.push({ _tpe = value.tpe } !NamedParameter)
-
-            let set_item = scope::get_function(state.scope, parser::make_identifier("set_item"), args)
-            if set_item {
-                compile_function(*set_item, state.scope, args)
-                return
-            } 
-        }
-    } else {
-        let args = create_args(left, right)
-        convert_to_call(node, "get_item", args, state)
-    }
-    
-    
-    if node.kind != parser::NodeKind::FUNC_CALL {
-        if is_pointer(tpe) or (@tpe).kind == TypeKind::ARRAY or
-            (@tpe).kind == TypeKind::STATIC_ARRAY {
-            node.kw = tpe.kw
-            node.tpe = tpe.tpe
-        } else if is_ref(tpe) and tpe.tpe and is_array(tpe.tpe) {
-            node.kw = tpe.kw
-            node.tpe = tpe.tpe.tpe
-        } else {
-            errors::errorn(left, "Expected array or pointer type, got ", debug::type_to_str(tpe))
-        }
-        if not is_arithmetic((@right).tpe) {
-            errors::errorn(right, "Expected arithmetic type, got ", debug::type_to_str((@right).tpe))
-        }
-    }
-}
-
 def walk_StructLit(node: &parser::Node, state: &State) {
     let prev_tpe = node.tpe
     var tpe = prev_tpe
@@ -5557,8 +5560,6 @@ export def walk(parent: &parser::Node, node: &parser::Node, state: &State) {
             null // NOOP
         case parser::NodeKind::MEMBER_ACCESS:
             walk_MemberAccess(node, state)
-        case parser::NodeKind::ARRAY_SUBSCRIPT:
-            walk_ArraySubscript(node, state)
         case parser::NodeKind::STRUCT_LIT:
             walk_StructLit(node, state)
         case parser::NodeKind::ARRAY_LIT:
