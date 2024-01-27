@@ -1558,6 +1558,16 @@ export def convert_type_score(a: &Type, b: &Type, module: &toolchain::Module, is
         }
     } 
 
+    if a.kind == TypeKind::TUPLE and b.kind == TypeKind::STATIC_ARRAY and a.return_t.length == b.length {
+        var max_conv = 1
+        for var tpe in a.return_t {
+            let conv = convert_type_score(b.tpe, tpe, module, is_type)
+            if conv > max_conv { max_conv = conv }
+            else if conv == -1 { max_conv = -1; break }
+        }
+        if max_conv >= 0 { return max_conv }
+    }
+
     if a.kind == TypeKind::STATIC_ARRAY and b.kind == TypeKind::STATIC_ARRAY {
         if equals(a.tpe, b.tpe) and 
             (a.length == b.length or a.length !uint64 == std::MAX_UINT64) {
@@ -1571,14 +1581,15 @@ export def convert_type_score(a: &Type, b: &Type, module: &toolchain::Module, is
             if conv > max_conv {
                 max_conv = conv
             } else if conv == -1 {
-                return -1
+                max_conv = -1
+                break
             }
         }
 
-        if a.length !uint64 == std::MAX_UINT64 { return 0 }
-        if b.return_t.length != a.length { return -1 }
-
-        return max_conv
+        if max_conv >= 0 {
+            if a.length !uint64 == std::MAX_UINT64 { return max_conv }
+            if b.return_t.length == a.length { return max_conv }
+        }
     }
     if (@a).kind == TypeKind::ARRAY {
         if (@b).kind == TypeKind::STATIC_ARRAY and equals((@a).tpe, (@b).tpe) {
@@ -1594,10 +1605,10 @@ export def convert_type_score(a: &Type, b: &Type, module: &toolchain::Module, is
                 if conv > max_conv {
                     max_conv = conv
                 } else if conv == -1 {
-                    return -1
+                    max_conv = -1
                 }
             }
-            return max_conv
+            if max_conv >= 0 { return max_conv }
         }
     }
     if a.kind == TypeKind::GENERIC {
@@ -3265,7 +3276,7 @@ def collapse_types(
             }
         }
         let rtpe = (@value).tpe
-        if rtpe and (@rtpe).kind == TypeKind::TUPLE and left.length > 1 {
+        if rtpe and (@rtpe).kind == TypeKind::TUPLE and (not left or left.length > 1) {
             for var j in 0..vector::length((@rtpe).return_t) {
                 let t = (@rtpe).return_t[j]
                 rtypes.push(t)
@@ -5303,7 +5314,7 @@ def walk_StructLit(node: &parser::Node, state: &State) {
             walk(node, arg, state)
         }
         var curtpe: &Type
-        var is_tuple = false
+        var is_tuple = node.value.struct_lit.args.length == 0
         for var arg in node.value.struct_lit.args {
             if not curtpe { curtpe = arg.tpe }
             else if not equals(arg.tpe, curtpe) {
@@ -5329,7 +5340,6 @@ def walk_StructLit(node: &parser::Node, state: &State) {
                         return
                     }
                 }
-                return
             } else if tpe.kind == TypeKind::ARRAY or tpe.kind == TypeKind::STATIC_ARRAY {
                 // Check conversion to array
                 if tpe.kind == TypeKind::STATIC_ARRAY {
@@ -5347,47 +5357,48 @@ def walk_StructLit(node: &parser::Node, state: &State) {
                         return
                     }
                 }
-                return
             }
         }
 
-        if not is_tuple and curtpe {
-            let len = node.value.struct_lit.args.length
+        if not tpe or (tpe.kind != TypeKind::STRUCT and tpe.kind != TypeKind::UNION) {
+            if not is_tuple and curtpe {
+                let len = node.value.struct_lit.args.length
 
-            let ret_tpe = make_type_raw(TypeKind::STATIC_ARRAY)
-            ret_tpe.line = node.loc.line
-            ret_tpe.length = len
-            ret_tpe._tpe = curtpe
-            ret_tpe.size = len * curtpe.size
-            ret_tpe.align = curtpe.align
+                let ret_tpe = make_type_raw(TypeKind::STATIC_ARRAY)
+                ret_tpe.line = node.loc.line
+                ret_tpe.length = len
+                ret_tpe._tpe = curtpe
+                ret_tpe.size = len * curtpe.size
+                ret_tpe.align = curtpe.align
 
-            // Check if we have a type array, in this case it might also be a type
-            if equals(curtpe, pointer(builtins::Type_)) or curtpe.may_be_type {
-                ret_tpe.may_be_type = convert_ambiguous_expr_to_type(node, state).tpe
+                // Check if we have a type array, in this case it might also be a type
+                if equals(curtpe, pointer(builtins::Type_)) or curtpe.may_be_type {
+                    ret_tpe.may_be_type = convert_ambiguous_expr_to_type(node, state).tpe
+                }
+
+                node.tpe = ret_tpe
+                return
+            } else {
+                // This is a tuple
+                let ret_tpe = make_type_raw(TypeKind::TUPLE)
+
+                let fields = vector::make(StructMember)
+                let return_t = vector::make(type &Type)
+
+                for var arg in node.value.struct_lit.args {
+                    return_t.push(arg.tpe)
+                    fields.push({ tpe = arg.tpe } !StructMember)
+                }
+
+                let struct_type = make_struct_type(fields.to_array()) // TODO Maybe a have a seperate function to calculate align and size
+                ret_tpe.return_t = return_t
+                ret_tpe.align = struct_type.align
+                ret_tpe.size = struct_type.size
+                ret_tpe.line = node.loc.line
+
+                node.tpe = ret_tpe
+                return
             }
-
-            node.tpe = ret_tpe
-            return
-        } else if not tpe or (tpe.kind != TypeKind::STRUCT and tpe.kind != TypeKind::UNION) {
-            // This is a tuple
-            let ret_tpe = make_type_raw(TypeKind::TUPLE)
-
-            let fields = vector::make(StructMember)
-            let return_t = vector::make(type &Type)
-
-            for var arg in node.value.struct_lit.args {
-                return_t.push(arg.tpe)
-                fields.push({ tpe = arg.tpe } !StructMember)
-            }
-
-            let struct_type = make_struct_type(fields.to_array()) // TODO Maybe a have a seperate function to calculate align and size
-            ret_tpe.return_t = return_t
-            ret_tpe.align = struct_type.align
-            ret_tpe.size = struct_type.size
-            ret_tpe.line = node.loc.line
-
-            node.tpe = ret_tpe
-            return
         }
     }
 
