@@ -1937,6 +1937,57 @@ def convert_fp_to_closure(tpe: &typechecking::Type, value: Value, loc: &Value, s
     return ret
 }
 
+def convert_tuple_to_array(tpe: &typechecking::Type, value: Value, loc: &Value, state: &State) -> Value {
+    let len = value.tpe.return_t.length
+
+    let static_arr_tpe = typechecking::make_static_array(tpe.tpe, len)
+    let arr = state.alloca(static_arr_tpe)
+
+    for var i in 0..value.tpe.return_t.length {
+        let elem = value.tpe.return_t[i]
+        let tuple_elem_ptr = state.gep(pointer(elem), pointer(value.tpe), @value.addr, [make_int_value(i)], loc)
+        let elem_conv = convert_to(loc, state.load(elem, tuple_elem_ptr, loc), tpe.tpe, state)
+        let arr_ptr = state.gep(pointer(tpe.tpe), pointer(static_arr_tpe), arr, [make_int_value(i)], loc)
+        state.store(arr_ptr, elem_conv, loc)
+    }
+
+    let values = allocate_ref(Value, 2)
+    values[0] = {
+        kind = ValueKind::INT,
+        tpe = builtins::size_t_,
+        i = len
+    } !Value
+    values[1] = {
+        kind = ValueKind::NULL,
+        tpe = typechecking::pointer(tpe.tpe)
+    } !Value
+
+    let ret = {
+        kind = ValueKind::STRUCT,
+        values = values,
+        tpe = tpe
+    } !Value
+
+    return state.insert_value(tpe, ret, arr, [1], loc)
+}
+
+def convert_tuple_to_static_array(tpe: &typechecking::Type, value: Value, loc: &Value, state: &State) -> Value {
+    let len = value.tpe.return_t.length
+
+    let static_arr_tpe = typechecking::make_static_array(tpe.tpe, len)
+    let arr = state.alloca(static_arr_tpe)
+
+    var ret = { kind = ValueKind::UNDEF, tpe = static_arr_tpe } !Value
+    for var i in 0..value.tpe.return_t.length {
+        let elem = value.tpe.return_t[i]
+        let tuple_elem_ptr = state.gep(pointer(elem), pointer(value.tpe), @value.addr, [make_int_value(i)], loc)
+        let elem_conv = convert_to(loc, state.load(elem, tuple_elem_ptr, loc), tpe.tpe, state)
+        ret = state.insert_value(static_arr_tpe, ret, elem_conv, [i], loc)
+    }
+
+    return ret
+}
+
 export def convert_to(node: &parser::Node, value: Value, tpe: &typechecking::Type, state: &State) -> Value {
     let loc = make_location(node, state)
     return convert_to(loc, value, tpe, state)
@@ -2013,6 +2064,12 @@ def convert_to(loc: &Value, value: Value, tpe: &typechecking::Type, state: &Stat
     }
     if tpe.kind == typechecking::TypeKind::CLOSURE and is_function_pointer(value.tpe) {
         return convert_fp_to_closure(tpe, load_value(value, loc, state), loc, state)
+    }
+    if tpe.kind == typechecking::TypeKind::ARRAY and value.tpe.kind == typechecking::TypeKind::TUPLE {
+        return convert_tuple_to_array(tpe, value, loc, state)
+    }
+    if tpe.kind == typechecking::TypeKind::STATIC_ARRAY and value.tpe.kind == typechecking::TypeKind::TUPLE {
+        return convert_tuple_to_static_array(tpe, value, loc, state)
     }
     if tpe.kind == typechecking::TypeKind::ARRAY {
         return convert_array_to_array(tpe, value, loc, state)
@@ -2215,7 +2272,7 @@ def locals_to_insert_value(value: &Value, state: &State) {
         }
     }
 }
-
+ 
 def walk_StructLit(node: &parser::Node, state: &State) -> Value {
     let loc = make_location(node, state)
     let args = node.value.struct_lit.args
@@ -6458,6 +6515,13 @@ def di_type(tpe: &typechecking::Type, state: &State) -> &Value {
             @ditpe = @di_basic_type(tpe, name, "DW_ATE_unsigned", state)
         case typechecking::TypeKind::STRUCT, typechecking::TypeKind::CLOSURE:
             @ditpe = @di_composite_type(ditpep, tpe, name, "DW_TAG_structure_type", state)
+        case typechecking::TypeKind::TUPLE:
+            // TODO Do this without creating a new type
+            let fields = allocate_ref(typechecking::StructMember, tpe.return_t.length)
+            for var i in 0..tpe.return_t.length {
+                fields[i] = { tpe = tpe.return_t[i], name = "_" + i } !typechecking::StructMember
+            }
+            @ditpe = @di_composite_type(ditpep, make_struct_type(fields), name, "DW_TAG_structure_type", state)
         case typechecking::TypeKind::UNION:
             @ditpe = @di_composite_type(ditpep, tpe, name, "DW_TAG_union_type", state)
         case typechecking::TypeKind::ENUM:
