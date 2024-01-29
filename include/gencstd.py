@@ -126,7 +126,9 @@ class Function(Type):
 
     def to_string(self, file: File) -> str:
         args = ', '.join(map(lambda x: x.to_string(file), filter(lambda x: x != void, self.args)))
-        return f"def ({args}) -> ({self.ret.to_string(file) if self.ret != void else ''})"
+        if len(self.args) > 1: argtpe = f"[{args}]"
+        else: argtpe = args
+        return f"def {argtpe} -> {self.ret.to_string(file) if self.ret != void else ''}"
     
     def print_references(self, file: File):
         self.ret.print_references(file)
@@ -315,7 +317,7 @@ class VarDecl(Declaration):
         if not self.dllimport:
             variable = f", variable = *{self.name} !*"
 
-        ret = f"__SYMBOLS[{n}] = {{ kind = symbol::SymbolKind::VARIABLE, dllimport = {'true' if self.dllimport else 'false'}, name = \"{self.name}\"{variable}}} !symbol::Symbol"
+        ret = f"__SYMBOLS({n}) = [ kind = symbol::SymbolKind::VARIABLE, dllimport = {'true' if self.dllimport else 'false'}, name = \"{self.name}\"{variable} ] !symbol::Symbol"
         return ret
 
 class FunctionDecl(Declaration):
@@ -345,9 +347,9 @@ class FunctionDecl(Declaration):
     def to_symbol(self, n: int, file: File) -> str:
         function = ""
         if not self.dllimport:
-            function = f", function = *{self.name} !(def () -> ())"
+            function = f", function = *{self.name} !(def [] -> [])"
 
-        ret = f"__SYMBOLS[{n}] = {{ kind = symbol::SymbolKind::FUNCTION, dllimport = {'true' if self.dllimport else 'false'}, name = \"{self.name}\"{function}}} !symbol::Symbol"
+        ret = f"__SYMBOLS({n}) = [ kind = symbol::SymbolKind::FUNCTION, dllimport = {'true' if self.dllimport else 'false'}, name = \"{self.name}\"{function} ] !symbol::Symbol"
         return ret
 
 PRIMITIVES = {
