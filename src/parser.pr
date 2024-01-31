@@ -692,7 +692,7 @@ export def construct(copy: *Node, node: *Node) {
             copy.value.expr = node.value.expr
         case NodeKind::RANGE, NodeKind::RANGE_INC, NodeKind::MEMBER_ACCESS,
             NodeKind::CAST, NodeKind::ADD..=NodeKind::OR,
-            NodeKind::BAND..=NodeKind::SHR_EQ:
+            NodeKind::BAND..=NodeKind::SHR_EQ
             copy.value.bin_op = node.value.bin_op
         case NodeKind::TYPE_CONSTRUCTOR
             copy.value.type_constructor = node.value.type_constructor
@@ -1871,7 +1871,7 @@ def expect_ptr_ref(parse_state: &ParseState, ref: bool, inline_types: bool) -> &
     }
 
     var tokens = parse_state.tokens
-    var tpe = parse_type(parse_state, inline_types)
+    var tpe = parse_type2(parse_state, inline_types)
     if not tpe {
         parse_state.tokens = tokens
     }
@@ -2360,44 +2360,6 @@ def parse_type2(parse_state: &ParseState, inline_types: bool) -> &Node {
     }
 }
 
-def parse_type_list(parse_state: &ParseState, sw: bool, inline_types: bool) -> &Vector(&Node) {
-    var token = peek(parse_state)
-    var vec = vector::make(type &Node)
-    if token.tpe == lexer::TokenType::O_PAREN {
-        pop(parse_state)
-        skip_newline(parse_state)
-        token = peek(parse_state)
-        if token.tpe == lexer::TokenType::C_PAREN {
-            pop(parse_state)
-            return vec
-        }
-        loop {
-            let node = parse_type(parse_state, inline_types)
-            vec.push(node)
-            token = peek(parse_state)
-            if token.tpe == lexer::TokenType::COMMA {
-                pop(parse_state)
-                skip_newline(parse_state)
-                continue
-            }
-            break
-        }
-        expect(parse_state, lexer::TokenType::C_PAREN, "Expected ')'")
-    } else {
-        var node: &Node = null
-        if sw {
-            node = parse_type(parse_state, inline_types)
-        } else {
-            node = parse_variant_type(parse_state, inline_types)
-        }
-
-        if node {
-            vec.push(node)
-        }
-    }
-    return vec
-}
-
 // TODO Allow things like (A, B) -> (C, D) -> (E, F)
 export def parse_type(parse_state: &ParseState, inline_types: bool = true) -> &Node {
     var is_def = false
@@ -2406,28 +2368,29 @@ export def parse_type(parse_state: &ParseState, inline_types: bool = true) -> &N
         pop(parse_state)
         is_def = true
     }
-    let args = parse_type_list(parse_state, false, inline_types)
+    let left = parse_variant_type(parse_state, inline_types)
     token = peek(parse_state)
     if token.tpe == lexer::TokenType::ARROW {
         pop(parse_state)
-        let ret = parse_type_list(parse_state, true, inline_types)
+        let right = parse_type(parse_state, inline_types)
+
+        let args = left.value.t_variant.variants if left and left.kind == NodeKind::TUPLE_T else vector::make(type &Node)
+        let ret = right.value.t_variant.variants if right and right.kind == NodeKind::TUPLE_T else vector::make(type &Node)
+
+        if left and left.kind != NodeKind::TUPLE_T { args.push(left) }
+        if right and right.kind != NodeKind::TUPLE_T { ret.push(right) }
+
         var node = make_node(NodeKind::FUNCTION_T if is_def else NodeKind::CLOSURE_T, token.line, token.column, parse_state)
         node.value.t_func = [
             args = args,
             ret = ret
         ] !NodeFunctionT
         node._hash = combine_hashes(node.kind !uint64, hash(args), hash(ret))
+        
         return node
-    } else if is_def {
-        errors::errort(token, parse_state, "Expected ->")
-        return null
-    } else if vector::length(args) > 1 {
-        errors::errort(token, parse_state, "Expected single type, got multiple")
-        return null
-    } else if vector::length(args) == 1 {
-        return args(0)
-    }     
-    return null
+    }
+    
+    return left
 }
 
 // inline_types is a flag to wrap type expressions in Type
@@ -3064,16 +3027,34 @@ def parse_assign_and_op(parse_state: &ParseState) -> &Node {
     return node
 }
 
+def parse_function_t(parse_state: &ParseState) -> &Node {
+    var token = peek(parse_state)
+    
+    if token.tpe == lexer::TokenType::K_DEF or token.tpe == lexer::TokenType::ARROW {
+        return parse_type(parse_state, false)
+    }
+
+    var tokens = parse_state.tokens
+    let left = parse_assign_and_op(parse_state)
+
+    token = peek(parse_state)
+    if token.tpe == lexer::TokenType::ARROW {
+        parse_state.tokens = tokens
+        return parse_type(parse_state, false)
+    }
+
+    return left
+}
+
 def parse_type_of(parse_state: &ParseState) -> &Node {
     var token = peek(parse_state)
 
     if token.tpe == lexer::TokenType::K_TYPE_OF {
         return expect_type_of(parse_state)
     } else {
-        return parse_assign_and_op(parse_state)
+        return parse_function_t(parse_state)
     }
 }
-
 
 def parse_assign(parse_state: &ParseState) -> &Node {
     var token = peek(parse_state)
@@ -3957,22 +3938,30 @@ def expect_switch_stmt(parse_state: &ParseState) -> &Node {
         } else if token.tpe == lexer::TokenType::K_CASE {
             let line = token.line
             let column = token.column
-            skip_newline(parse_state)
 
             var body2 = vector::make(type &Node)
             var expr2 = vector::make(type &Node)
 
-            loop {
-                token = peek(parse_state)
-                if token.tpe == lexer::TokenType::COLON {
-                    pop(parse_state)
-                    break
-                } else if token.tpe == lexer::TokenType::COMMA {
+            token = peek(parse_state)
+            if token.tpe != lexer::TokenType::NEW_LINE {
+                if token.tpe == lexer::TokenType::SEMICOLON {
                     pop(parse_state)
                 } else {
-                    expr2.push(expect_expression_no_assign(parse_state))
+                    loop {
+                        expr2.push(expect_expression_no_assign(parse_state))
+                        
+                        token = peek(parse_state)
+                        if token.tpe == lexer::TokenType::COMMA {
+                            pop(parse_state)
+                            skip_newline(parse_state)
+                        } else if token.tpe == lexer::TokenType::SEMICOLON {
+                            pop(parse_state)
+                            break
+                        } else {
+                            break    
+                        }
+                    }
                 }
-                skip_newline(parse_state)
             }
             
             skip_newline(parse_state)
