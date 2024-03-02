@@ -451,6 +451,19 @@ export type Block = struct {
     next: &Block
 }
 
+type Snapshot = &Vector(&SMap(int))
+
+def take_snapshot(function: &Function) {
+
+    let compiled = map::make(int) 
+    let current = function.current_snapshot
+    for var scpe in current {
+        compiled.put_all(scpe)
+    }
+
+    function.snapshots.push(compiled)
+}
+
 export type Function = struct {
     is_global: bool
     module: weak_ref(toolchain::Module)
@@ -493,7 +506,7 @@ export type Function = struct {
     optional: &typechecking::Type
     all_locals: &SMap(&typechecking::Type)
     // This is the current scope that needs to be freed by the jump index
-    current_snapshot: &SMap(int)
+    current_snapshot: Snapshot
     snapshots: &Vector(&SMap(int))
 
     has_yield: bool
@@ -777,7 +790,7 @@ def push_local_var(name: Str, tpe: &typechecking::Type, function: &Function) {
     if function.has_yield {
         let index = function.all_locals.size !int + 1
         function.all_locals(name) = tpe
-        function.current_snapshot(name) = index
+        function.current_snapshot.peek()(name) = index
     }
 }
 
@@ -1019,6 +1032,10 @@ export def charp(str: Str, state: &State) -> Value {
 }
 
 def push_scope(node: &parser::Node, state: &State) {
+    if state.current_function.has_yield {
+        state.current_function.current_snapshot.push(map::make(int))
+    }
+    
     if not toolchain::debug_sym { return }
     let discope = vector::peek(state.discope) if state.discope.length > 0 else null !&Value
 
@@ -1049,6 +1066,13 @@ def push_scope(node: &parser::Node, state: &State) {
 def pop_scope(state: &State) {
     if toolchain::debug_sym {
         vector::pop((@state).discope)
+    }
+
+    if state.current_function.has_yield {
+        if state.current_function.current_snapshot.length == 1 {
+            abort()
+        }
+        state.current_function.current_snapshot.pop()
     }
 }
 
@@ -3332,7 +3356,7 @@ def insert_destructor(value: Value, loc: &Value, state: &State) {
 
         // If we insert a destructor the variable doesn't need to be freed anymoree
         if value.name and state.current_function.has_yield {
-            state.current_function.current_snapshot.remove(value.name)
+            state.current_function.current_snapshot.peek().remove(value.name)
         }
     }
 }
@@ -5175,10 +5199,7 @@ def walk_Yield(node: &parser::Node, state: &State) {
         [ value = [ kind = ValueKind::INT, tpe = builtins::int_, i = current_function.yield_index ] !Value, label_ = label_] !SwitchValue
     ) 
 
-    let new_snapshot = map::make(int)
-    new_snapshot.put_all(current_function.current_snapshot)
-    current_function.current_snapshot = new_snapshot
-    current_function.snapshots.push(new_snapshot)
+    current_function.take_snapshot()
     current_function.yield_index += 1
 }
 
@@ -5409,6 +5430,9 @@ def walk_For_generator(node: &parser::Node, state: &State) {
     let gen_ptr = @gen.addr
 
     push_scope(node, state)
+    let outer_scope = state.scope
+    state.scope = node.inner_scope
+
     push_insn(continue_insn, state)
     let start_label = make_label(state)
     push_label(start_label, state)
@@ -5439,9 +5463,7 @@ def walk_For_generator(node: &parser::Node, state: &State) {
     let next_value = state.call(get_function.type_name, iddecl.tpe, [next], expr_loc)
     state.store(locv, next_value)
 
-    if is_ref(iddecl.tpe) {
-        increase_ref_count(locv, loc, state)
-    } else if has_copy_constructor(iddecl.tpe) {
+    if has_copy_constructor(iddecl.tpe) {
         let copy = insert_copy_constructor(locv, next_value, loc, state, no_yield_capture = false)
         create_temporary(copy, state.load(iddecl.tpe, copy, loc), loc, state)
     }
@@ -5456,6 +5478,7 @@ def walk_For_generator(node: &parser::Node, state: &State) {
     //insert_destructor(locv, loc, state)
     insert_destructors(node.inner_scope, last_loc, state)
     pop_scope(state)
+    state.scope = outer_scope
 
     push_insn(continue_insn, state)
     let end_label = make_label(state)
@@ -5979,7 +6002,7 @@ def walk_Defer(node: &parser::Node, state: &State) {
     state.function_stack.pop()
     
     if toolchain::debug_sym { 
-        pop_scope(state)
+        state.discope.pop()
         state.discope.push(scope) 
     }
 
@@ -7163,9 +7186,9 @@ export def create_function(
         function.all_locals = map::make(type &typechecking::Type)
         if function.has_yield {
             // Set up snapshots
-            function.current_snapshot = map::make(int)
+            function.current_snapshot = vector::make(type &SMap(int))
+            function.current_snapshot.push(map::make(int))
             function.snapshots = vector::make(type &SMap(int))
-            function.snapshots.push(function.current_snapshot)
         }
         function.used_type_meta = set::make(type &typechecking::Type)
 
@@ -7390,10 +7413,7 @@ export def create_function(
 
         if function.has_yield {
             // Create new snapshot for arguments
-            let new_snapshot = map::make(int)
-            new_snapshot.put_all(function.current_snapshot)
-            function.current_snapshot = new_snapshot
-            function.snapshots.push(new_snapshot)
+            function.take_snapshot()
 
             // Get is_at_end pointer
             let is_at_end_gep = make_insn(InsnKind::GETELEMENTPTR)
@@ -7558,7 +7578,10 @@ export def create_function(
             push_local_var(function.state.type_name, function.state, function)
         }
 
-        pop_scope(state)
+        if toolchain::debug_sym {
+            vector::pop(state.discope)
+        }
+
         state.function_stack.pop()
         state.current_block = previous_block
         state.local_counter = previous_counter
