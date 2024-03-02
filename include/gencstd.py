@@ -10,6 +10,9 @@ from pathlib import Path
 import re
 import clang.cindex as clang
 
+
+clang.Config.set_library_path(r"C:\Users\Vic\scoop\apps\llvm\current\bin")
+
 class File:
     def __init__(self, fp) -> None:
         self.GLOBALS = {}
@@ -384,7 +387,7 @@ def get_symbols(lib: str):
     if sys.platform == "win32":
         vswhere = os.environ["ProgramFiles(x86)"] + r"\Microsoft Visual Studio\Installer\vswhere.exe"
         dumpbin = subprocess.check_output([vswhere, "-latest", "-find", r"VC\Tools\**\x64\dumpbin.exe"]).splitlines()[0]
-        winsdk_bat = subprocess.check_output([vswhere, "-latest", "-find", "**\winsdk.bat"]).splitlines()[0]
+        winsdk_bat = subprocess.check_output([vswhere, "-latest", "-find", r"**\winsdk.bat"]).splitlines()[0]
         os.environ["VSCMD_ARG_HOST_ARCH"] = "x64"
         os.environ["VSCMD_ARG_TGT_ARCH"] = "x64"
         env = dict([tuple(var.decode().split("=")) for var in subprocess.check_output([winsdk_bat, ">", "nul", "&&", "set"], shell = True).splitlines()])
