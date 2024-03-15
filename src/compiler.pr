@@ -4743,6 +4743,8 @@ export def walk_expression(node: &parser::Node, state: &State) -> Value {
         case parser::NodeKind::IF_EXPR
             expr = walk_IfExpr(node, state)
         case parser::NodeKind::RANGE, parser::NodeKind::RANGE_INC
+        case parser::NodeKind::LAMBDA
+            expr = walk_Lambda(node, state)
         case;
             error(node.kind, "\n")
             assert(false)
@@ -5778,6 +5780,31 @@ export def walk_VarDecl(node: &parser::Node, state: &State, set_constant: bool =
     }
 }
 
+def walk_Lambda(node: &parser::Node, state: &State) -> Value {
+    import_cstd_function("malloc", state)
+    let function = node.value.lambda.function
+    if not function { return NO_VALUE }
+
+    let loc = make_location(node, state)
+    let context_tpe = function.state
+
+    let ret = state.alloca(node.value.lambda.closure_type, loc)
+
+    typechecking::create_type_entry(typechecking::reference(context_tpe))
+    let context_ptr = create_closure_context(function, ret, loc, state, insert_temporary = true)
+
+    predeclare_function(function)
+    create_function(node, function.tpe, node.value.lambda.body, node.inner_scope, null, state, is_closure = true, params = node.value.lambda.parameters)
+    state.module.imported.add(node.tpe.type_name)
+
+    let context = create_closure_context_captures(function, loc, state)
+    state.store(context_ptr, context, loc)
+    
+    push_local_var(context_tpe.type_name, reference(context_tpe), state.current_function)
+    
+    return state.load(node.value.lambda.closure_type, ret, loc)
+}
+
 def walk_Def(node: &parser::Node, state: &State) {
     import_cstd_function("malloc", state)
     let function = node.value.def_.function
@@ -5809,6 +5836,21 @@ def walk_Def(node: &parser::Node, state: &State) {
 
     push_declare(node, ret, value.name, state)
 
+    let context_ptr = create_closure_context(function, ret, loc, state)
+
+    predeclare_function(function)
+    create_function(node, node.tpe, node.value.def_.body, node.inner_scope, null, state, is_closure = true, params = node.value.def_.params)
+    state.module.imported.add(node.tpe.type_name)
+
+    let context = create_closure_context_captures(function, loc, state)
+    state.store(context_ptr, context, loc)
+
+    push_local_var(context_tpe.type_name, reference(context_tpe), state.current_function)
+}
+
+def create_closure_context(function: &Function, ret: Value, loc: &Value, state: &State, insert_temporary: bool = false) -> Value {
+    let context_tpe = function.state
+
     let context_ptr_i8 = state.call("malloc", pointer(builtins::int8_), [[ kind = ValueKind::INT, tpe = builtins::size_t_, i = context_tpe.size ] !Value], loc)
     let ref_count_i8 = state.call("malloc", pointer(builtins::int8_), [[ kind = ValueKind::INT, tpe = builtins::size_t_, i = builtins::int64_.size ] !Value], loc)
     let ref_count = state.bitcast(pointer(builtins::int64_), ref_count_i8, loc)
@@ -5821,16 +5863,23 @@ def walk_Def(node: &parser::Node, state: &State) {
     closure = state.insert_value(typechecking::reference(null), closure, context_ptr_i8, [1], loc)
     closure = state.insert_value(typechecking::reference(null), closure, context_tpe_value, [2], loc)
 
-    let context_fun_ptr = state.gep(pointer(pointer(node.tpe)), value.tpe, ret, [make_int_value(0), make_int_value(0)], loc)
-    state.store(context_fun_ptr, [ kind = ValueKind::GLOBAL, tpe = pointer(node.tpe), name = node.tpe.type_name ] !Value, loc)
-    let context_ref_ptr = state.gep(pointer(typechecking::reference(null)), value.tpe, ret, [make_int_value(0), make_int_value(1)], loc)
+    let context_fun_ptr = state.gep(pointer(pointer(function.tpe)), ret.tpe.tpe, ret, [make_int_value(0), make_int_value(0)], loc)
+    state.store(context_fun_ptr, [ kind = ValueKind::GLOBAL, tpe = pointer(function.tpe), name = function.tpe.type_name ] !Value, loc)
+    let context_ref_ptr = state.gep(pointer(typechecking::reference(null)), ret.tpe.tpe, ret, [make_int_value(0), make_int_value(1)], loc)
     state.store(context_ref_ptr, closure, loc)
 
-    predeclare_function(function)
-    create_function(node, node.tpe, node.value.def_.body, node.inner_scope, null, state, is_closure = true)
-    state.module.imported.add(node.tpe.type_name)
+    if insert_temporary {
+        let ctx = state.alloca(typechecking::reference(null), loc)
+        state.store(ctx, closure, loc)
+        create_temporary(ctx, closure, loc, state)
+    }
 
     let context_ptr = state.bitcast(pointer(context_tpe), context_ptr_i8, loc)
+    return context_ptr
+}
+
+def create_closure_context_captures(function: &Function, loc: &Value, state: &State) -> Value {
+    let context_tpe = function.state
     var context = [ kind = ValueKind::UNDEF, tpe = context_tpe ] !Value
 
     for var i in 0..function.captures.length {
@@ -5854,9 +5903,7 @@ def walk_Def(node: &parser::Node, state: &State) {
         }
         context = state.insert_value(context_tpe, context, value, [i], loc)
     }
-    state.store(context_ptr, context, loc)
-
-    push_local_var(context_tpe.type_name, reference(context_tpe), state.current_function)
+    return context
 }
 
 def walk_Defer(node: &parser::Node, state: &State) {
@@ -7180,7 +7227,8 @@ export def create_function(
     block: &Block,
     state: &State,
     no_cleanup: bool = false,
-    is_closure: bool = false
+    is_closure: bool = false,
+    params: &Vector(&Node) = null
 ) {
     if not tpe { return }
     let function = state.module.result.functions.get_or_default(tpe.type_name, null)
@@ -7203,9 +7251,9 @@ export def create_function(
     state.inline_start_block = block
 
     function.locals = map::make(Str, type &typechecking::Type)
-    if node.value.def_.params {
-        for var i in 0..vector::length(node.value.def_.params) {
-            let param = node.value.def_.params(i).value.param.name
+    if params {
+        for var i in 0..vector::length(params) {
+            let param = params(i).value.param.name
             if not param or not param.svalue { continue }
             state.add_local(function, param.svalue, param.svalue.tpe)
         }
@@ -7264,10 +7312,10 @@ export def create_function(
             add_type_meta(tpe.parameter_t(i).tpe, state)
         }
 
-        if node and node.value.def_.params { 
+        if params { 
             errors::current_signature = node.signature_hash 
-            for var i in 0..vector::length(node.value.def_.params) {
-                let param = node.value.def_.params(i).value.param.name
+            for var i in 0..vector::length(params) {
+                let param = params(i).value.param.name
                 if not param { continue }
                 scope::create_dependency(state.current_value(), param.svalue)
             }
@@ -9090,6 +9138,8 @@ def do_create_type(tpe: &typechecking::Type, svalue: &scope::Value, module: &too
             value.values(8) = [ kind = ValueKind::STRUCT, tpe = array(pointer(builtins::Type_)), values = array_values ] !Value
 
             push_variants(tpe, global, module, state, cache)
+        case typechecking::TypeKind::TO_INFER
+            // This should only happen in an error case
         case
             error(tpe.kind, "\n")
             assert(false)

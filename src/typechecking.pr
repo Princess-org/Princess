@@ -67,6 +67,7 @@ export type TypeKind = enum {
     // This is a type that gets assigned whenever you pass an interface implementation to
     // a generic function
     INTERFACE_IMPL
+    TO_INFER // Placeholder type for inference
 }
 
 export type TypeMember = struct {
@@ -167,7 +168,7 @@ export type Type = struct {
     // This gets set if it might also be a type argument, in that case we also consider the overload with a type
     // As an example, consider [int], this might be an array of types or an array type
     may_be_type: &Type
-    // True if this is an anonymous struct. name should be "<anonymous>"
+    // True if this is an anonymous struct or a lambda
     is_anon: bool
 }
 
@@ -513,7 +514,6 @@ export def tpe(np: NamedParameter) -> &Type {
 export type State = struct {
     module: weak_ref(toolchain::Module)
     counter: int
-    lambda_counter: int
     scope: weak_ref(scope::Scope)
     // Vector of Type
     function_stack: &Vector(&compiler::Function)
@@ -523,7 +523,10 @@ export type State = struct {
     current_variable: &scope::Value
     // TODO This should be a parameter but its currently too hard to fix
     block_implicit_conv: bool
+    current_lambda: &Type
 }
+
+var lambda_counter = 0 // TODO Why is this global state?
 
 def current_value(state: &State) -> &scope::Value {
     if state.current_variable {
@@ -1651,6 +1654,35 @@ export def convert_type_score(a: &Type, b: &Type, module: &toolchain::Module, is
             return 0 if equals(a.tpe, b.tpe) else -1
         }
     }
+    if a.kind == TypeKind::CLOSURE and b.kind == TypeKind::CLOSURE and b.is_anon {
+        if vector::length(a.parameter_t) != vector::length(b.parameter_t) {
+            return -1
+        }
+        for var i in 0..vector::length(a.parameter_t) {
+            let param_a = a.parameter_t(i)
+            let param_b = b.parameter_t(i)
+            if not equals(param_a.tpe, param_b.tpe) and not (param_b.tpe and param_b.tpe.kind == TypeKind::TO_INFER) {
+                return -1
+            }
+        }
+        // If we have a return type we're going to check them
+        var has_right_return_types = false
+        if b.return_t.length > 0 {
+            if vector::length((@a).return_t) != vector::length((@b).return_t) {
+                return -1
+            }
+            for var i in 0..vector::length((@a).return_t) {
+                if not equals(a.return_t(i), b.return_t(i)) {
+                    return -1
+                }
+            }
+            has_right_return_types = true
+        } else if a.return_t.length == 0 {
+            has_right_return_types = true
+        }
+
+        return 2 if has_right_return_types else 3
+    }
     if a.kind == TypeKind::CLOSURE and b.kind == TypeKind::POINTER and b._tpe and b._tpe.kind == TypeKind::FUNCTION {
         b = b._tpe
         if vector::length(a.parameter_t) != vector::length(b.parameter_t) {
@@ -2193,6 +2225,21 @@ export def make_union_type(fields: &[StructMember], current_type: &Type = null) 
     return tpe
 }
 
+export def make_tuple_type(types: &Vector(&Type)) -> &Type {
+    let fields = vector::make(StructMember)
+    let tpe = make_type_raw(TypeKind::TUPLE)
+
+    for var t in types {
+        fields.push([ tpe = t ] !StructMember)
+    }
+
+    let struct_type = make_struct_type(fields.to_array()) // TODO Maybe a have a seperate function to calculate align and size
+    tpe.return_t = types
+    tpe.align = struct_type.align
+    tpe.size = struct_type.size
+    return tpe
+}
+
 export def make_struct_type(fields: &[StructMember], current_type: &Type = null) -> &Type {
     let struct_tpe = make_type_raw(TypeKind::STRUCT) if not current_type else current_type
     let field_types = vector::make(TypeMember)
@@ -2680,7 +2727,7 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
         for var i in 0..vector::length(node.value.t_func.ret) {
             var return_type: &Type = null
             if current_type { 
-                return_type = return_type.return_t(i)
+                return_type = current_type.return_t(i)
             }
 
             let arg = node.value.t_func.ret(i)
@@ -3277,6 +3324,64 @@ def infer_struct_type(node: &parser::Node, tpe: &Type) {
     }
 }
 
+def infer_lambda_parameter_types(node: &parser::Node, tpe: &Type, state: &State) -> bool {
+    let ftpe = node.value.lambda.closure_type
+
+    if tpe.parameter_t.length != ftpe.parameter_t.length {
+        errors::errorn(node, "Can't assign lambda, parameter length mismatch, got ", 
+            to_string(ftpe.parameter_t.length), " parameters, expected ", to_string(tpe.parameter_t.length))
+        return false
+    }
+
+    // Replace to_infer types
+    for var i in 0..ftpe.parameter_t.length {
+        let ftpe_n = ftpe.parameter_t(i).tpe
+        let expected = tpe.parameter_t(i).tpe
+
+        if ftpe_n and ftpe_n.kind == TypeKind::TO_INFER {
+            @ftpe_n = @expected
+        }
+    }
+
+    ftpe.return_t.add_all(tpe.return_t)
+
+    return true
+}
+
+def check_lambda_return_type(node: &parser::Node, tpe: &Type, state: &State) {
+    let ftpe = node.value.lambda.closure_type
+
+    if tpe.return_t.length > 0 {
+        if ftpe.return_t.length < 1 {
+            errors::errorn(node, "Can't assign lambda, expected a return type of ",
+                debug::type_to_str(tpe.return_t(0)), " and lambda doesn't return a value")
+        } else if not is_assignable(tpe.return_t(0), ftpe.return_t(0), state.module) {
+            errors::errorn(node, "Can't assign lambda, wrong return type. Expected ", 
+                debug::type_to_str(tpe.return_t(0)), " got ", debug::type_to_str(ftpe.return_t(0)))
+        }
+    } else {
+        if ftpe.return_t.length > 0 and tpe.return_t.length > 0 {
+            errors::errorn(node, "Can't assign lambda, expected no return type but lambda returns ", 
+                debug::type_to_str(tpe.return_t(0)))
+        }
+    }
+}
+
+def walk_lambda(value: &parser::Node, ltpe: &Type, state: &State) -> bool {
+    if value and value.kind == parser::NodeKind::LAMBDA and ltpe {
+        // Infer type for lambda
+        walk_Lambda(value, state)
+        if value.value.lambda.function.is_typechecked { return true }
+
+        if infer_lambda_parameter_types(value, ltpe, state) {
+            walk_Lambda_body(value, state)
+            check_lambda_return_type(value, ltpe, state)
+        }
+        return true
+    }
+    return false
+}
+
 def collapse_types(
     node: &parser::Node, ltypes: &Vector(&Type), 
     right: &Vector(&parser::Node), state: &State, 
@@ -3293,18 +3398,25 @@ def collapse_types(
             ltpe = ltypes(k)
             infer_struct_type(value, ltpe)
         }
-        
+
         if not value.is_assign_right {
-            if left and i < left.length and node.parent.kind == parser::NodeKind::PROGRAM {
+            let cond = left and i < left.length and node.parent.kind == parser::NodeKind::PROGRAM
+            var current_value: &scope::Value
+            if cond {
                 let l = left(i)
                 let current_value = state.current_value
                 state.current_variable = l.value.id_decl.value.svalue
-                walk(node, value, state)
-                state.current_variable = current_value
-            } else {
+            }
+
+            if not walk_lambda(value, ltpe, state) {
                 walk(node, value, state)
             }
+
+            if cond {
+                state.current_variable = current_value
+            }
         }
+
         let rtpe = (@value).tpe
         if rtpe and (@rtpe).kind == TypeKind::TUPLE and (not left or left.length > 1) {
             for var j in 0..vector::length((@rtpe).return_t) {
@@ -4075,6 +4187,173 @@ def check_is_valid_function(ident: &parser::Node, par: &Vector(NamedParameter), 
     }
 }
 
+def make_closure_type(name: &parser::Node, parameter_t: &Vector(NamedParameter), return_t: &Vector(&Type)) -> &Type {
+    let types = allocate_ref(StructMember, 2)
+    types(0) = [ tpe = pointer(make_function_type_n(name, parameter_t, return_t)), name = "function" ] !StructMember
+    types(1) = [ tpe = reference(null), name = "data"] !StructMember
+    let closure_type = make_struct_type(types)
+    closure_type.kind = TypeKind::CLOSURE
+    closure_type.parameter_t = vector::make(NamedParameter)
+    closure_type.return_t = vector::make(type &typechecking::Type)
+    return closure_type
+}
+
+export def walk_Lambda(node: &parser::Node, state: &State) {
+    let params = node.value.lambda.parameters
+    let outer_scope = node.scope
+    let inner_scope = node.inner_scope
+
+    var tpe: &Type
+    var closure_type: &Type
+
+    let parameter_t = vector::make(NamedParameter)
+    var return_t = vector::make(type &Type)
+
+    let ident = parser::make_identifier(state.function_stack.peek().unmangled + "#lambda." + lambda_counter)
+    closure_type = make_closure_type(ident, parameter_t, return_t)
+    closure_type.is_anon = true
+    lambda_counter += 1
+
+    let c_parameter_t = closure_type.parameter_t
+    return_t = closure_type.return_t
+
+    // Need to store a strong reference
+    node.value.lambda.closure_type = closure_type
+    
+    // State argument
+    parameter_t.push([ name = "__state", _tpe = reference(null) ] !NamedParameter)
+
+    var needs_inference = false
+    for var i in 0..params.length {
+        let param = params(i)
+
+        let name = param.value.param.name
+        var tpe: &Type
+        if param.value.param.tpe {
+            tpe = typechecking::type_lookup(param.value.param.tpe, state, null, true)
+        } else {
+            // Place type placeholder for inference
+            tpe = make_type_raw(TypeKind::TO_INFER)
+            needs_inference = true
+        }
+
+        let np = [
+            name = last_ident_to_str(name),
+            node = name,
+            _tpe = tpe
+        ] !NamedParameter
+        parameter_t.push(np)
+        c_parameter_t.push(np)
+    }
+
+    // Create function type
+    tpe = make_function_type()
+    tpe.parameter_t = parameter_t
+    tpe.return_t = return_t
+    tpe.node = node
+    tpe.name = parser::identifier_to_str(ident, false)
+    tpe.type_name = tpe.name
+    tpe.line = node.loc.line
+    tpe.module = state.module
+
+    let function = [
+        tpe = tpe,
+        module = state.module,
+        locals = map::make(type &Type),
+        unmangled = tpe.name,
+        is_closure = true,
+        scope = state.scope,
+        inner_scope = inner_scope,
+        captures = vector::make(type weak_ref(scope::Value))
+    ] !&compiler::Function
+    node.value.lambda.function = function
+
+    node.tpe = closure_type
+
+    if not needs_inference {
+        walk_Lambda_body(node, state)
+        function.is_typechecked = true
+    }
+}
+
+// We can only go into the body once the types are figured out
+def walk_Lambda_body(node: &parser::Node, state: &State) {
+    let body = node.value.lambda.body
+    let inner_scope = node.inner_scope
+    let outer_scope = node.scope
+    let function = node.value.lambda.function
+
+    let tpe = function.tpe
+    if function.is_typechecked { return }
+
+    // State parameter
+    let value = scope::create_variable(inner_scope, parser::make_identifier("__state"), parser::ShareMarker::NONE, parser::VarDecl::VAR, reference(null), null)
+
+    // Create parameters
+    for var i in 0..tpe.parameter_t.length - 1 {
+        let np = tpe.parameter_t(i + 1)
+        if not np.node { continue }
+        var tpe2 = np.tpe
+        if tpe2 {
+            if tpe2.kind == TypeKind::INTERFACE_IMPL {
+                tpe2 = tpe2.tpe
+            } else if tpe2.kind == TypeKind::TO_INFER {
+                errors::errorn(np.node, "Couldn't infer type for lambda parameter")
+                node.value.lambda.function = null // So that this doesn't make it to compile
+                return
+            }
+        }
+
+        let value = scope::create_variable(inner_scope, np.node, parser::ShareMarker::NONE, parser::VarDecl::VAR, tpe2, null)
+        np.node.svalue = value
+    }
+
+    state.scope = inner_scope
+    push_function(state, function)
+    let prev_lambda = state.current_lambda
+    state.current_lambda = tpe
+
+    var global_scope = state.scope.parent
+    while not scope::is_global(global_scope) {
+        global_scope = global_scope.parent 
+    }
+
+    let body_copy = vector::copy(body)
+    for var i in 0..vector::length(body_copy) {
+        // Eval constant expressions
+        consteval::walk(node, body_copy(i), state)
+    }
+    for var i in 0..vector::length(body) {
+        let inner = body(i)
+        // Create scopes for inner functions
+        if inner.kind == parser::NodeKind::DEF {
+            inner.scope = state.scope
+            inner.inner_scope = scope::enter_function_scope(global_scope)
+        }
+        walk(node, inner, state)
+    }
+
+    pop_function(state)
+    state.scope = outer_scope
+
+    let members = allocate_ref(StructMember, function.captures.length)
+    for var i in 0..function.captures.length {
+        members(i) = [ name = to_string(i), tpe = function.captures(i).tpe ] !StructMember
+    }
+
+    function.state = make_struct_type(members)
+    function.state.name = function.unmangled + ".context"
+    function.state.type_name = append_module(function.state.name, state.module.module)
+
+    // We need to do this here again
+    if vector::length(tpe.parameter_t) > 0 {
+        let first_param = tpe.parameter_t(0)
+        create_type_entry(first_param.tpe, false, tpe, state.module, overwrite = true)
+    }
+
+    state.current_lambda = prev_lambda
+}
+
 export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false) {
     node.value.def_.is_compiled = true
 
@@ -4099,6 +4378,10 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
         function.is_typechecked = true
     }
 
+    // So that returns don't confuse lambda functions with written out function definitions
+    let prev_lambda = state.current_lambda
+    state.current_lambda = null
+
     let is_closure = state.function_stack.length > 1 // Main function is 0
 
     var tpe: &Type
@@ -4108,19 +4391,13 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
     let current_signature = errors::current_signature
 
     if is_closure {
-        let c_parameter_t = vector::make(NamedParameter)
-        let c_return_t = vector::make(type &Type)
-
         let parameter_t = vector::make(NamedParameter)
         var return_t = vector::make(type &Type)
 
-        let types = allocate_ref(StructMember, 2)
-        types(0) = [ tpe = pointer(make_function_type_n(name, parameter_t, return_t)), name = "function" ] !StructMember
-        types(1) = [ tpe = reference(null), name = "data"] !StructMember
-        closure_type = make_struct_type(types)
-        closure_type.kind = TypeKind::CLOSURE
-        closure_type.parameter_t = c_parameter_t
-        closure_type.return_t = c_return_t
+        closure_type = make_closure_type(name, parameter_t, return_t)
+        let c_parameter_t = closure_type.parameter_t
+        let c_return_t = closure_type.return_t
+
         // Need to store a strong reference
         node.value.def_.closure_type = closure_type
 
@@ -4181,8 +4458,8 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
         }
 
         tpe = make_function_type_n(make_identifier(arr), parameter_t, return_t, state.module)
-        tpe.type_name += "." + state.lambda_counter
-        state.lambda_counter += 1
+        tpe.type_name += "." + lambda_counter
+        lambda_counter += 1
 
         delete(arr)
         tpe.node = node
@@ -4299,8 +4576,6 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
     if body {
         state.scope = inner_scope
         push_function(state, function)
-        let lambda_counter = state.lambda_counter
-        state.lambda_counter = 0
 
         if function.has_yield {
             let generator_ctor = [
@@ -4340,7 +4615,6 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
         }
 
         pop_function(state)
-        state.lambda_counter = lambda_counter
         state.scope = outer_scope
     }
 
@@ -4363,6 +4637,7 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
 
     errors::current_function = current_function
     errors::current_signature = current_signature
+    state.current_lambda = prev_lambda
 
     node.tpe = tpe
 }
@@ -4471,8 +4746,31 @@ def check_return_arguments(is_yield: bool, node: &parser::Node, ltypes: &Vector(
 }
 
 def walk_Return(node: &parser::Node, state: &State) {
-    let current_fun = current_function(state)
     let body = node.value.body
+
+    if state.current_lambda {
+        let return_t = state.current_lambda.return_t
+
+        let rtypes = collapse_types(node, return_t, body, state)
+        if state.current_lambda.return_t.length != 0 {
+            // Check if the types match up
+            if return_t.length != rtypes.length {
+                errors::errorn(node, "Return types for lambda disagree with previous return statement")
+                return
+            }
+            for var i in 0..return_t.length {
+                if not equals(return_t(i), rtypes(i)) {
+                    errors::errorn(node, "Return types for lambda disagree with previous return statement")
+                    return
+                }
+            }
+        } else {
+            state.current_lambda.return_t.add_all(rtypes)
+        }
+        return
+    }
+
+    let current_fun = current_function(state)
     if current_fun.is_global {
         // TODO This is actually allowed, I just need to infer the types
         // and assign to some sort of internal variable
@@ -4711,7 +5009,13 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
     for var i in 0..vector::length(node.value.func_call.args) {
         let n = node.value.func_call.args(i)
         if not n { continue }
-        walk(node, n, state)
+
+        if n.kind == parser::NodeKind::LAMBDA {
+            walk_Lambda(n, state)
+        } else {
+            walk(node, n, state)
+        }
+        
         let np = [
             _tpe = (@n).tpe,
             varargs = false,
@@ -4729,7 +5033,14 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
     for var i in 0..vector::length(node.value.func_call.kwargs) {
         let n = node.value.func_call.kwargs(i)
         if not n { continue }
-        walk(node, (@n).value.named_arg.value, state)
+        let v = (@n).value.named_arg.value
+
+        if v.kind == parser::NodeKind::LAMBDA {
+            walk_Lambda(v, state)
+        } else {
+            walk(node, v, state)
+        }
+
         let name = last_ident_to_str((@n).value.named_arg.name)
 
         if map::contains(parameter_map, name) {
@@ -4780,6 +5091,24 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
                     msg += append_arguments(arguments)
                     errors::errorn(left, msg)
                     return false
+                }
+            }
+
+            if function {
+                for var i in 0..arguments.length {
+                    let param = arguments(i)
+                    // TODO Check for varargs?
+                    let ltpe = function.tpe.parameter_t(i).tpe if i < length(function.tpe.parameter_t) else function.tpe.parameter_t.peek().tpe
+
+                    if param.node and param.node.kind == parser::NodeKind::LAMBDA {
+                        let value = param.node
+                        if not value.value.lambda.function.is_typechecked {
+                            if infer_lambda_parameter_types(value, ltpe, state) {
+                                walk_Lambda_body(value, state)
+                                check_lambda_return_type(value, ltpe, state)
+                            }
+                        }
+                    }
                 }
             }
 
@@ -5762,6 +6091,9 @@ export def walk(parent: &parser::Node, node: &parser::Node, state: &State) {
             // Do nothing
         case parser::NodeKind::YIELD_FROM
             walk_YieldFrom(node, state)
+        case parser::NodeKind::LAMBDA
+            walk_Lambda(node, state)
+            walk_Lambda_body(node, state)
         case
             error(node.kind, "\n")
             assert

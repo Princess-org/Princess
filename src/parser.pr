@@ -121,6 +121,7 @@ export type NodeKind = enum {
     TYPE_CONSTRUCTOR
     VARIANT_T
     TUPLE_T // Uses variant_t
+    LAMBDA
 }
 
 export type ShareMarker = enum {
@@ -165,6 +166,13 @@ export type NodeDef = struct {
     // TODO This is a bit of a hack, see its usage
     is_generic_instance: bool
     doc: Str
+}
+
+export type NodeLambda = struct {
+    parameters: &Vector(&Node)
+    body: &Vector(&Node)
+    closure_type: &typechecking::Type
+    function: &compiler::Function
 }
 
 export type NodeParam = struct {
@@ -395,6 +403,7 @@ export type NodeValue = struct #union {
     program: NodeProgram
     type_constructor: NodeTypeConstructor
     from_: NodeFrom
+    lambda: NodeLambda
 
     body: &Vector(&Node)
     expr: &Node
@@ -586,6 +595,8 @@ export def destruct(node: *Node) {
         case NodeKind::INTEGER, NodeKind::CHAR, NodeKind::FLOAT,
             NodeKind::BOOLEAN, NodeKind::NULL, NodeKind::UNDEF, NodeKind::BREAK, NodeKind::CONTINUE,
             NodeKind::WORD_T, NodeKind::STAR
+        case NodeKind::LAMBDA
+            __destruct__(*node.value.lambda)
         case
             error(node.kind, "\n")
             assert
@@ -702,6 +713,8 @@ export def construct(copy: *Node, node: *Node) {
             NodeKind::BOOLEAN, NodeKind::NULL, NodeKind::UNDEF, NodeKind::BREAK, NodeKind::CONTINUE,
             NodeKind::WORD_T, NodeKind::STAR
             copy.value = node.value
+        case NodeKind::LAMBDA
+            copy.value.lambda = node.value.lambda
         case
             error(node.kind, "\n")
             assert
@@ -849,6 +862,9 @@ export def offset(node: &Node, changes: &[server::TextDocumentChangeEvent]) {
         case NodeKind::INTEGER, NodeKind::CHAR, NodeKind::FLOAT,
             NodeKind::BOOLEAN, NodeKind::NULL, NodeKind::UNDEF, NodeKind::BREAK, NodeKind::CONTINUE,
             NodeKind::WORD_T, NodeKind::STAR
+        case NodeKind::LAMBDA
+            offset(node.value.lambda.parameters, changes)
+            offset(node.value.lambda.body, changes)
         case
             error(node.kind, "\n")
             assert
@@ -980,6 +996,9 @@ export def clear(node: &Node) {
         case NodeKind::INTEGER, NodeKind::CHAR, NodeKind::FLOAT,
             NodeKind::BOOLEAN, NodeKind::NULL, NodeKind::UNDEF, NodeKind::BREAK, NodeKind::CONTINUE,
             NodeKind::WORD_T, NodeKind::STAR
+        case NodeKind::LAMBDA
+            clear(node.value.lambda.parameters)
+            clear(node.value.lambda.body)
         case
             error(node.kind, "\n")
             assert
@@ -1194,6 +1213,11 @@ export def find(node: &Node, line: int, column: int) -> &Node {
                 NodeKind::BOOLEAN, NodeKind::NULL, NodeKind::UNDEF, NodeKind::BREAK, NodeKind::CONTINUE,
                 NodeKind::WORD_T, NodeKind::STAR
                 return node
+            case NodeKind::LAMBDA
+                var n2 = find(node.value.lambda.parameters, line, column)
+                if n2 { return n2 }
+                n2 = find(node.value.lambda.body, line, column)
+                if n2 { return n2 }
             case
                 error(node.kind, "\n")
                 assert
@@ -1390,6 +1414,9 @@ export def deep_copy_node(node: &Node, clear_svalue: bool = true) -> &Node {
         case NodeKind::INTEGER, NodeKind::CHAR, NodeKind::FLOAT,
             NodeKind::BOOLEAN, NodeKind::NULL, NodeKind::UNDEF, NodeKind::BREAK, NodeKind::CONTINUE,
             NodeKind::WORD_T, NodeKind::STAR
+        case NodeKind::LAMBDA
+            copy.value.lambda.parameters = deep_copy_vector_of_nodes(node.value.lambda.parameters, clear_svalue)
+            copy.value.lambda.body = deep_copy_vector_of_nodes(node.value.lambda.body, clear_svalue)
         case
             error(node.kind, "\n")
             assert
@@ -1617,6 +1644,8 @@ def parse_identifier(parse_state: &ParseState) -> &Node {
         }
         break
     }
+
+    if path.length == 0 { return null }
 
     var args: &Vector(&Node) = null
     token = peek(parse_state)
@@ -2512,7 +2541,10 @@ def parse_term(parse_state: &ParseState) -> &Node {
     var node = [] !&Node
     var last_string: String
     
-    if token.tpe == lexer::TokenType::O_PAREN {
+    if token.tpe == lexer::TokenType::O_BRACE {
+        back(parse_state)
+        return expect_lambda(parse_state)
+    } else if token.tpe == lexer::TokenType::O_PAREN {
         node = parse_expression(parse_state)
         let end_token = expect(parse_state, lexer::TokenType::C_PAREN, "Expecting ')'")
         if node {
@@ -3111,7 +3143,7 @@ def parse_assign(parse_state: &ParseState) -> &Node {
 
 def parse_expression(parse_state: &ParseState) -> &Node {
     let node = parse_assign(parse_state)
-    let token = peek(parse_state)
+    var token = peek(parse_state)
     if token.tpe == lexer::TokenType::K_IF {
         return expect_if_expr(parse_state, node)
     }
@@ -3129,7 +3161,7 @@ def expect_expression(parse_state: &ParseState) -> &Node {
 
 def parse_expression_no_assign(parse_state: &ParseState) -> &Node {
     let node = parse_type_of(parse_state)
-    let token = peek(parse_state)
+    var token = peek(parse_state)
     if token.tpe == lexer::TokenType::K_IF {
         return expect_if_expr(parse_state, node)
     }
@@ -4103,6 +4135,81 @@ def expect_return_stmt(parse_state: &ParseState) -> &Node {
 }
 def expect_yield_stmt(parse_state: &ParseState) -> &Node {
     return expect_yield_or_return(true, parse_state)
+}
+
+def expect_lambda(parse_state: &ParseState) -> &Node {
+    let start = peek(parse_state)
+    expect(parse_state, lexer::TokenType::O_BRACE, "Expected {")
+    var token = peek(parse_state)
+
+    var tokens = parse_state.tokens
+    var parsed_parameters = true
+    var params = vector::make(type &Node)
+
+    // Try to parse parameters
+    loop {
+        let name_tok = peek(parse_state)
+        let name = parse_identifier(parse_state)
+        if not name { parsed_parameters = false; break }
+        var tpe: &Node
+
+        let colon = peek(parse_state)
+        if colon.tpe == lexer::TokenType::COLON {
+            pop(parse_state)
+
+            tpe = parse_variant_type(parse_state, false)
+            if not tpe {
+                errors::errort(peek(parse_state), parse_state, "Expected type")
+                break
+            }
+        }
+
+        let param = make_node(NodeKind::PARAMETER, name_tok.line, name_tok.column, parse_state)
+        param.value.param = [
+            name = name,
+            tpe = tpe
+        ] !NodeParam
+
+        param._hash = combine_hashes(param.kind !uint64, hash(name), hash(tpe))
+        params.push(param)
+
+        token = peek(parse_state)
+        if token.tpe == lexer::TokenType::COMMA or 
+            token.tpe == lexer::TokenType::EOF { 
+            
+            pop(parse_state)
+            continue
+        }
+        break
+    }
+
+    if parsed_parameters {
+        token = peek(parse_state)
+        if token.tpe != lexer::TokenType::ARROW {
+            parsed_parameters = false
+            params = vector::make(type &Node)
+        } else {
+            pop(parse_state)
+        }
+    }
+
+    if not parsed_parameters {
+        parse_state.tokens = tokens
+    }
+
+    let body = vector::make(type &Node)
+    parse_block(parse_state, body)
+
+    expect(parse_state, lexer::TokenType::C_BRACE, "Expected }")
+
+    let lam = make_node(NodeKind::LAMBDA, start.line, start.column, parse_state)
+    lam.value.lambda = [
+        parameters = params,
+        body = body
+    ] !NodeLambda
+    lam._hash = combine_hashes(lam.kind !uint64, hash(params), hash(body))
+
+    return lam
 }
 
 def expect_from(parse_state: &ParseState) -> &Node {
