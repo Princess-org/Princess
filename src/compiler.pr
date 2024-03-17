@@ -3375,6 +3375,8 @@ def insert_destructor(value: Value, loc: &Value, state: &State) {
         br.value.br.if_true = loop_end
         
     } else if typechecking::has_destructor(value.tpe.tpe) {
+        import_structures(value.tpe.tpe, state.module)
+
         var destructor = typechecking::get_builtin_destructor(value.tpe.tpe)
         if not destructor { return }
         predeclare_function(destructor.tpe, state.module)
@@ -8355,19 +8357,8 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
 
     var to_end = make_insn(InsnKind::BR_UNC)
     var null_br2: &Insn = null
-    var swtch: &Insn = null
     if typechecking::is_ref(tpe.tpe) and (not tpe.tpe.tpe or typechecking::is_interface(tpe.tpe.tpe)) {
-        // TODO This is almost exactly what generate_vtable_function does
-        // We need to call the right destructor based on the ref type
         let ref = state.load(tpe.tpe, value)
-        
-        let equals = scope::get(toolchain::runtime_.scope, parser::make_identifier("equals"), not consteval::is_static)
-        if consteval::is_static {
-            consteval::compile_function(equals, state.scope)
-        }
-
-        predeclare_function(equals.tpe, state.module)
-        state.module.imported.add(equals.tpe.type_name)
 
         // Extract type
         let ref_count = state.extract_value(pointer(builtins::int64_), ref, [0])
@@ -8381,58 +8372,15 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
         push_label(if_false, state)
         null_br2.value.br.if_false = if_false
         
+        let fp = unbox((builtins::Type_).field_types(15).tpe)
+
         let ref_tpe = state.extract_value(pointer(builtins::Type_), ref, [2])
         let ref_tpe_deref = state.load(builtins::Type_, ref_tpe)
-        let tpe_id = state.extract_value(builtins::int64_, ref_tpe_deref, [14])
+        let dtor = state.extract_value(fp, ref_tpe_deref, [15])
 
-        let keys = map::keys(typechecking::types_map)
-        let filtered = map::make(type &scope::Value)
-        for var i in 0..keys.size {
-            let key = keys(i)
-            let type_entry = typechecking::types_map(key)
+        // Call destructor
+        state.call(dtor, null, [value], parser::InlineSpecifier::NONE)
 
-            if is_ref(type_entry.tpe) and (not tpe.tpe.tpe or typechecking::implements(type_entry.tpe, tpe.tpe.tpe, state.module)) and
-                not typechecking::equals(tpe.tpe.tpe, type_entry.tpe.tpe) {
-
-                let destructor = typechecking::get_builtin_destructor(type_entry.tpe)
-                if not destructor { continue }
-                let name = debug::type_to_str(type_entry.tpe, full_name = true)
-                if not typechecking::types_map.contains(name) { continue }
-                filtered(name) = destructor
-            }
-        }
-        let keys2 = map::keys(filtered)
-
-        if keys2.size > 0 {
-            let switch_values = vector::make(SwitchValue)
-            swtch = make_insn(InsnKind::SWITCH)
-            (@swtch).value.switch_ = [
-                value = tpe_id,
-                switch_values = switch_values
-            ] !InsnSwitch
-            push_insn(swtch, state)
-
-            for var i in 0..keys2.size {
-                let key = keys2(i)
-                let type_entry = typechecking::types_map(key)
-                let destructor = filtered(key)
-
-                let if_true = make_label(state)
-                push_label(if_true, state)
-
-                let svalue = [
-                    label_ = if_true,
-                    value = [ kind = ValueKind::INT, i = type_entry.tpe.hash !int64, tpe = builtins::int64_ ] !Value
-                ] !SwitchValue
-                switch_values.push(svalue)
-
-                let casted_ref = state.bitcast(pointer(type_entry.tpe), value)
-                state.call(destructor.tpe.type_name, null, [casted_ref])
-                if i < keys2.size - 1 {
-                    push_insn(to_end, state)
-                }
-            }
-        }
     } else if structure_type and structure_type.module {
         // There can only be one destructor for this type
         var destructor = typechecking::get_user_defined_destructor(structure_type)
@@ -8455,9 +8403,6 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
 
     if null_br2 {
         null_br2.value.br.if_true = end_label
-    }
-    if swtch {
-        swtch.value.switch_.otherwise = end_label
     }
 
     if structure_type and 
@@ -8992,7 +8937,7 @@ def do_create_type(tpe: &typechecking::Type, svalue: &scope::Value, module: &too
     type_names(0) = [ kind = ValueKind::INT, tpe = builtins::int64_, i = 0 ] !Value
     type_names(1) = [ kind = ValueKind::UNDEF, tpe = pointer(builtins::Function_) ] !Value
 
-    value.values = allocate_ref(Value, 15)
+    value.values = allocate_ref(Value, 17)
     value.values(1) = [ kind = ValueKind::STRUCT, tpe = builtins::string_, values = name_values ] !Value
     value.values(2) = [ kind = ValueKind::INT, tpe = builtins::bool_, i = tpe.unsig !int64 ] !Value
     value.values(3) = [ kind = ValueKind::UNDEF, tpe = builtins::size_t_ ] !Value
@@ -9007,6 +8952,24 @@ def do_create_type(tpe: &typechecking::Type, svalue: &scope::Value, module: &too
     value.values(12) = [ kind = ValueKind::UNDEF, tpe = array(builtins::Function_) ] !Value
     value.values(13) = [ kind = ValueKind::STRUCT, tpe = array(builtins::Function_), values = type_names ] !Value
     value.values(14) = [ kind = ValueKind::INT, tpe = builtins::int64_, i = md5::high(md5::md5(name_str)) ] !Value
+    value.values(15) = [ kind = ValueKind::UNDEF, tpe = unbox((builtins::Type_).field_types(15).tpe) ] !Value
+    value.values(16) = [ kind = ValueKind::UNDEF, tpe = unbox((builtins::Type_).field_types(16).tpe) ] !Value
+
+    if is_ref(tpe) and typechecking::has_destructor(tpe) {
+        let fp = unbox((builtins::Type_).field_types(15).tpe)
+        // Add destructor reference
+        let dtor = typechecking::get_builtin_destructor(tpe, lookup = false)
+        let addr = state.gep(pointer(fp), builtins::Type_, global, [make_int_value(0), make_int_value(15)])
+        state.store(addr, [ kind = ValueKind::GLOBAL, tpe = pointer(dtor.tpe), name = dtor.tpe.type_name ] !Value)
+    }
+
+    if is_ref(tpe) and typechecking::has_copy_constructor(tpe) {
+        let fp = unbox((builtins::Type_).field_types(16).tpe)
+        // Add constructor reference
+        let ctor = typechecking::get_constructor(tpe, lookup = false)
+        let addr = state.gep(pointer(fp), builtins::Type_, global, [make_int_value(0), make_int_value(16)])
+        state.store(addr, [ kind = ValueKind::GLOBAL, tpe = pointer(ctor.tpe), name = ctor.tpe.type_name ] !Value)
+    }
 
     let index = allocate_ref(Value, 3)
     index(0) = make_int_value(0)
@@ -9374,10 +9337,15 @@ def generate_vtable_function(function: &Function, tpe: &typechecking::Type, stat
     ] !InsnSwitch
     push_insn(swtch, state)
 
+    let hashes = set::make(size_t)
     let keys = map::keys(typechecking::types_map)
     for var i in 0..keys.size {
         let type_entry = typechecking::types_map(keys(i))
         if is_ref(type_entry.tpe) and typechecking::implements(type_entry.tpe, intf, state.module) {
+            let hash = md5::high(md5::md5(debug::type_to_str(type_entry.tpe.tpe, full_name = true)))
+            if hashes.contains(hash) { continue }
+            hashes.add(hash)
+
             let generic = typechecking::get_generic(type_entry.tpe)
             if generic and generic.tc_incomplete { continue }
             if not type_entry.tpe.tpe { continue }
@@ -9428,8 +9396,7 @@ def generate_vtable_function(function: &Function, tpe: &typechecking::Type, stat
 
             let if_true = make_label(state)
             push_label(if_true, state)
-
-            let hash = md5::high(md5::md5(debug::type_to_str(type_entry.tpe.tpe, full_name = true)))
+            
             let svalue = [
                 label_ = if_true,
                 value = [ kind = ValueKind::INT, i = hash, tpe = builtins::int64_ ] !Value
