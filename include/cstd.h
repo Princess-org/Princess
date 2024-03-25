@@ -42,6 +42,11 @@ MUSL doesn't provide these
 %EXCLUDE __isnan __iseqsig __issignaling isinf isnan gamma __isinff __finitef __isnanf __iseqsigf __issignalingf isinff isnanf gammaf 
 %EXCLUDE __isinfl __finitel __isnanl __iseqsigl __issignalingl isinfl finitel dreml significandl isnanl j0l j1l jnl y0l y1l ynl gammal 
 %EXCLUDE scalbl __assert_perror_fail __assert ssignal gsignal sigblock sigsetmask _toupper _tolower
+
+MACOS specific
+%EXCLUDE OSReadSwapInt16 OSReadSwapInt32 OSReadSwapInt64 OSWriteSwapInt16 OSWriteSwapInt32 OSWriteSwapInt64
+%EXCLUDE _OSSwapInt16 _OSSwapInt32 _OSSwapInt64 __darwin_check_fd_set __darwin_fd_clr __darwin_fd_isset
+%EXCLUDE __darwin_fd_set __sigbits __sputc
 */
 
 #include <stdlib.h>

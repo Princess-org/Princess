@@ -8,6 +8,11 @@ MUSL Doesn't provide these
 %EXCLUDE gsignal sigblock sigsetmask __getpgid ttyslot sethostid strtoq strtouq random_r srandom_r initstate_r
 %EXCLUDE setstate_r drand48_r erand48_r lrand48_r nrand48_r mrand48_r jrand48_r srand48_r seed48_r lcong48_r 
 %EXCLUDE on_exit qecvt qfcvt qgcvt ecvt_r fcvt_r qecvt_r qfcvt_r rpmatch getdirentries ssignal
+
+MACOS specific
+%EXCLUDE OSReadSwapInt16 OSReadSwapInt32 OSReadSwapInt64 OSWriteSwapInt16 OSWriteSwapInt32 OSWriteSwapInt64
+%EXCLUDE _OSSwapInt16 _OSSwapInt32 _OSSwapInt64 __darwin_check_fd_set __darwin_fd_clr __darwin_fd_isset
+%EXCLUDE __darwin_fd_set __sigbits __sputc
 */
 
 #ifndef _WIN32

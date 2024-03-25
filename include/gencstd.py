@@ -10,9 +10,6 @@ from pathlib import Path
 import re
 import clang.cindex as clang
 
-
-clang.Config.set_library_path(r"C:\Users\Vic\scoop\apps\llvm\current\bin")
-
 class File:
     def __init__(self, fp) -> None:
         self.GLOBALS = {}
@@ -463,6 +460,9 @@ def parse_enum(name: str, inner: clang.Type, file: File) -> Type:
     fields = []
     child: clang.Cursor
     for child in declaration.get_children():
+        try:
+            if child.kind == clang.CursorKind.UNEXPOSED_ATTR: continue
+        except ValueError: continue
         fields.append((child.spelling, int(child.enum_value)))
         file.GLOBALS[child.spelling] = ConstDecl(child.spelling, PRIMITIVES[clang.TypeKind.INT], int(child.enum_value))
 
@@ -471,8 +471,13 @@ def parse_enum(name: str, inner: clang.Type, file: File) -> Type:
     file.TAGGED[name] = res
     return res
         
+class InvalidType(Exception):
+    pass
+
 def parse_type(type: clang.Type, file: File, lookup: bool = False, is_in_struct: bool = False) -> Type:
-    if type.kind in PRIMITIVES:
+    if type.spelling == "__uint128_t":
+        return PRIMITIVES[clang.TypeKind.UINT128]  
+    elif type.kind in PRIMITIVES:
         return PRIMITIVES[type.kind]
     elif type.kind == clang.TypeKind.POINTER:
         inner = parse_type(type.get_pointee(), file, lookup, is_in_struct)
@@ -522,7 +527,7 @@ def parse_type(type: clang.Type, file: File, lookup: bool = False, is_in_struct:
         spelling = spelling.strip()
         return file.TYPEDEFS[spelling]
     
-    return IncompleteType(type.spelling)
+    raise InvalidType(str(type.kind) + ": " + type.spelling)
 
 def process_module(name: str, *libs):
     included = []
@@ -548,86 +553,89 @@ def process_module(name: str, *libs):
         file = File(fp)
 
         def extract(node: clang.Cursor):
-            if node.kind == clang.CursorKind.FUNCTION_DECL:
-                if node.is_static_method(): return
+            try:
+                if node.kind == clang.CursorKind.FUNCTION_DECL:
+                    if node.is_static_method(): return
 
-                dllimport = False
-                for child in node.get_children():
-                    if child.kind == clang.CursorKind.DLLIMPORT_ATTR:
-                        dllimport = True
-
-                name = node.spelling
-                args = []
-
-                for child in node.get_arguments():
-                    if child.kind == clang.CursorKind.PARM_DECL:
-                        tokens = list(child.get_tokens())
-                        spelling = escape_name(child.spelling)
-                        args.append((spelling, parse_type(child.type, file)))
-
-                ret = parse_type(node.result_type, file)
-                
-                is_variadic = False
-                if node.type.kind == clang.TypeKind.FUNCTIONPROTO:
-                    is_variadic = node.type.is_function_variadic()
-
-                file.GLOBALS[name] = FunctionDecl(name, ret, args, is_variadic, dllimport)
-            elif node.kind == clang.CursorKind.VAR_DECL:
-                if node.storage_class == clang.StorageClass.EXTERN:
                     dllimport = False
                     for child in node.get_children():
                         if child.kind == clang.CursorKind.DLLIMPORT_ATTR:
                             dllimport = True
 
-                    type = parse_type(node.type, file)
-                    file.GLOBALS[node.spelling] = VarDecl(node.spelling, type, dllimport)
-            elif node.kind == clang.CursorKind.TYPEDEF_DECL:
-                name = node.spelling
-                underlying = node.underlying_typedef_type
-                if underlying.kind == clang.TypeKind.ELABORATED:
-                    first_child = next(node.get_children())
-                    if first_child.location == underlying.get_declaration().location or underlying.get_named_type().kind == clang.TypeKind.TYPEDEF:
-                        type = parse_type(underlying, file, True)
-                    else:
-                        type = IncompleteType(underlying.spelling)
-                else:
-                    type = parse_type(underlying, file)
-                
-                file.TYPEDEFS[name] = type
-            elif node.kind == clang.CursorKind.STRUCT_DECL:
-                type = node.type
-                name = node.type.spelling
-                if name.startswith("struct") and node.location == type.get_declaration().location:
-                    file.TAGGED[name] = parse_type(type, file, True)
-            elif node.kind == clang.CursorKind.UNION_DECL:
-                type = node.type
-                name = node.type.spelling
-                if name.startswith("union") and node.location == type.get_declaration().location:
-                    file.TAGGED[name] = parse_type(type, file, True)
-            elif node.kind == clang.CursorKind.ENUM_DECL:
-                type = node.type
-                name = node.type.spelling
-                if name.startswith("enum") and node.location == type.get_declaration().location:
-                    file.TAGGED[name] = parse_type(type, file, True)
-            elif node.kind == clang.CursorKind.MACRO_DEFINITION:
-                tokens = list(node.get_tokens())
-                if len(tokens) == 2 and tokens[1].kind == clang.TokenKind.LITERAL:
-                    if node.spelling != "true" and node.spelling != "false":
-                        token = tokens[1]
-                        if token.spelling.startswith('"') and token.spelling.endswith('"'):
-                            s = token.spelling
-                            s = re.sub(r"(?<!\\)\\(\d{1,3})", lambda o: f"\\x{ + int(o.group(1), base = 8):02x}", s)
-                            file.GLOBALS[node.spelling] = ConstDecl(node.spelling, string, s)
-                        elif token.spelling.isdigit():
-                            file.GLOBALS[node.spelling] = ConstDecl(node.spelling, PRIMITIVES[clang.TypeKind.INT], token.spelling)
+                    name = node.spelling
+                    args = []
+
+                    for child in node.get_arguments():
+                        if child.kind == clang.CursorKind.PARM_DECL:
+                            tokens = list(child.get_tokens())
+                            spelling = escape_name(child.spelling)
+                            args.append((spelling, parse_type(child.type, file)))
+
+                    ret = parse_type(node.result_type, file)
+                    
+                    is_variadic = False
+                    if node.type.kind == clang.TypeKind.FUNCTIONPROTO:
+                        is_variadic = node.type.is_function_variadic()
+
+                    file.GLOBALS[name] = FunctionDecl(name, ret, args, is_variadic, dllimport)
+                elif node.kind == clang.CursorKind.VAR_DECL:
+                    if node.storage_class == clang.StorageClass.EXTERN:
+                        dllimport = False
+                        for child in node.get_children():
+                            if child.kind == clang.CursorKind.DLLIMPORT_ATTR:
+                                dllimport = True
+
+                        type = parse_type(node.type, file)
+                        file.GLOBALS[node.spelling] = VarDecl(node.spelling, type, dllimport)
+                elif node.kind == clang.CursorKind.TYPEDEF_DECL:
+                    name = node.spelling
+                    underlying = node.underlying_typedef_type
+                    if underlying.kind == clang.TypeKind.ELABORATED:
+                        first_child = next(node.get_children())
+                        if first_child.location == underlying.get_declaration().location or underlying.get_named_type().kind == clang.TypeKind.TYPEDEF:
+                            type = parse_type(underlying, file, True)
                         else:
-                            try: 
-                                float(token.spelling)
-                                file.GLOBALS[node.spelling] = ConstDecl(node.spelling, PRIMITIVES[clang.TypeKind.DOUBLE], token.spelling)
-                            except ValueError: pass        
+                            type = IncompleteType(underlying.spelling)
+                    else:
+                        type = parse_type(underlying, file)
+                    
+                    file.TYPEDEFS[name] = type
+                elif node.kind == clang.CursorKind.STRUCT_DECL:
+                    type = node.type
+                    name = node.type.spelling
+                    if name.startswith("struct") and node.location == type.get_declaration().location:
+                        file.TAGGED[name] = parse_type(type, file, True)
+                elif node.kind == clang.CursorKind.UNION_DECL:
+                    type = node.type
+                    name = node.type.spelling
+                    if name.startswith("union") and node.location == type.get_declaration().location:
+                        file.TAGGED[name] = parse_type(type, file, True)
+                elif node.kind == clang.CursorKind.ENUM_DECL:
+                    type = node.type
+                    name = node.type.spelling
+                    if name.startswith("enum") and node.location == type.get_declaration().location:
+                        file.TAGGED[name] = parse_type(type, file, True)
+                elif node.kind == clang.CursorKind.MACRO_DEFINITION:
+                    tokens = list(node.get_tokens())
+                    if len(tokens) == 2 and tokens[1].kind == clang.TokenKind.LITERAL:
+                        if node.spelling != "true" and node.spelling != "false":
+                            token = tokens[1]
+                            if token.spelling.startswith('"') and token.spelling.endswith('"'):
+                                s = token.spelling
+                                s = re.sub(r"(?<!\\)\\(\d{1,3})", lambda o: f"\\x{ + int(o.group(1), base = 8):02x}", s)
+                                file.GLOBALS[node.spelling] = ConstDecl(node.spelling, string, s)
+                            elif token.spelling.isdigit():
+                                file.GLOBALS[node.spelling] = ConstDecl(node.spelling, PRIMITIVES[clang.TypeKind.INT], token.spelling)
+                            else:
+                                try: 
+                                    float(token.spelling)
+                                    file.GLOBALS[node.spelling] = ConstDecl(node.spelling, PRIMITIVES[clang.TypeKind.DOUBLE], token.spelling)
+                                except ValueError: pass
+            except InvalidType as e:
+                print("Warning: Invalid type!")       
 
         index = clang.Index.create()
-        tu = index.parse(folder / f"{name}.h", args = ["-DMUSL"], options = 
+        tu = index.parse(folder / f"{name}.h", args = ARGS, options = 
                          clang.TranslationUnit.PARSE_DETAILED_PROCESSING_RECORD
                          | clang.TranslationUnit.PARSE_SKIP_FUNCTION_BODIES 
                          | clang.TranslationUnit.PARSE_PRECOMPILED_PREAMBLE 
@@ -657,14 +665,24 @@ def process_module(name: str, *libs):
 
         print(f"export var __SYMBOLS: [{num_decls}; symbol::Symbol]", file = fp2)
 
+if sys.platform == "darwin":
+    ARGS = ["-I/opt/homebrew/include", "-I/opt/homebrew/opt/libffi/include", "-I/opt/homebrew/opt/binutils/include"]
+else:
+    ARGS = []
+
 def main():
+    if sys.platform == "darwin":
+        clang.Config.set_library_file("/opt/homebrew/Cellar/llvm/17.0.6_1/lib/libclang.dylib")
+
     if sys.platform != "win32":
         process_module("linux")
+    if sys.platform == "darwin":
+        process_module("macos")
         
     process_module("bfd")
     process_module("cstd")
     process_module("ffi")
-    process_module("clang")
+    #process_module("clang")
 
     if sys.platform == "win32":
         process_module("windows", "User32.lib", "Kernel32.lib", "Dbghelp.lib")

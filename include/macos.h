@@ -1,0 +1,16 @@
+// TODO Add more stuff here
+/*
+%EXCLUDE KERNEL_AUDIT_TOKEN KERNEL_SECURITY_TOKEN
+%EXCLUDE NXConvertHostDoubleToSwapped NXConvertHostFloatToSwapped NXConvertSwappedDoubleToHost NXConvertSwappedFloatToHost NXHostByteOrder
+%EXCLUDE NXSwapBigDoubleToHost NXSwapBigFloatToHost NXSwapBigIntToHost NXSwapBigLongLongToHost NXSwapBigLongToHost NXSwapBigShortToHost 
+%EXCLUDE NXSwapDouble NXSwapFloat NXSwapHostDoubleToBig NXSwapHostDoubleToLittle NXSwapHostFloatToBig NXSwapHostFloatToLittle NXSwapHostIntToBig 
+%EXCLUDE NXSwapHostIntToLittle NXSwapHostLongLongToBig NXSwapHostLongLongToLittle NXSwapHostLongToBig NXSwapHostLongToLittle NXSwapHostShortToBig 
+%EXCLUDE NXSwapHostShortToLittle NXSwapInt NXSwapLittleDoubleToHost NXSwapLittleFloatToHost NXSwapLittleIntToHost NXSwapLittleLongLongToHost 
+%EXCLUDE NXSwapLittleLongToHost NXSwapLittleShortToHost NXSwapLong NXSwapLongLong NXSwapShort OSHostByteOrder OSReadSwapInt16 OSReadSwapInt32 
+%EXCLUDE OSReadSwapInt64 OSWriteSwapInt16 OSWriteSwapInt32 OSWriteSwapInt64 _OSReadInt16 _OSReadInt32 _OSReadInt64 _OSSwapInt16 _OSSwapInt32 
+%EXCLUDE _OSSwapInt64 _OSWriteInt16 _OSWriteInt32 _OSWriteInt64
+*/
+
+#ifdef __APPLE__
+    #include <mach-o/dyld.h>
+#endif
