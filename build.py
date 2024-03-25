@@ -17,9 +17,12 @@ if os.path.exists("version"):
 
 RELEASES_URL = f"https://api.github.com/repos/Princess-Org/Princess/releases"
 
-WIN_ARGS = ["-llibffi", "--link-flag", "/FORCE:UNRESOLVED", "--link-flag", "/STACK:67108864", "--clang=-gcodeview"]
 if sys.platform == "win32":
-    WIN_ARGS += ["--link-directory", os.environ["LIBRARY_PATH"]]
+    ARGS = ["-llibffi", "--link-flag", "/FORCE:UNRESOLVED", "--link-flag", "/STACK:67108864", "--clang=-gcodeview", "--link-directory", os.environ["LIBRARY_PATH"]]
+elif sys.platform == "darwin":
+    ARGS = ["-lbfd", "-lelf", "-L/opt/homebrew/lib", "-L/opt/homebrew/opt/libffi/lib", "-L/opt/homebrew/opt/binutils/lib"]
+else:
+    ARGS = ["-lbfd"]
 
 def exe_file(file: str) -> str:
     if sys.platform == "win32":
@@ -34,8 +37,7 @@ def release():
 
     print("Second compilation step")
     args = [exe_file("bin/princess2"), "--no-incremental", "-d", "-Isrc", "--buildfolder=build", "--outfile", exe_file("bin/princess3"), "src/main.pr"]
-    if sys.platform == "win32":
-        args += WIN_ARGS
+    args += ARGS
     subprocess.check_call(args)
     
     print("Creating archive")
@@ -61,7 +63,12 @@ def release():
 
         shutil.copy(Path("include/windows/ffi.h"), FOLDER / "include/windows")
         shutil.copy(Path("include/windows/ffitarget.h"), FOLDER / "include/windows")
-    else:
+    else: 
+        if sys.platform == "darwin":
+            (FOLDER / "include/macos").mkdir(exist_ok=True)
+            for path in glob.glob("include/macos/*.pr"):
+                shutil.copy(path, FOLDER / "include/macos")
+
         (FOLDER / "include/linux").mkdir(exist_ok=True)
         for path in glob.glob("include/linux/*.pr"):
             shutil.copy(path, FOLDER / "include/linux")
@@ -74,6 +81,8 @@ def release():
 
     if sys.platform == "win32":
         shutil.make_archive(f"princess-win32-{VERSION}", "zip", FOLDER)
+    elif sys.platform == "darwin":
+        shutil.make_archive(f"princess-macos-{VERSION}", "zip", FOLDER)
     else:
         shutil.make_archive(f"princess-{VERSION}", "gztar", FOLDER)
 
@@ -100,7 +109,11 @@ def download():
         latest_version = releases[release_index]
         for a in latest_version["assets"]:
             if sys.platform == "win32":
-                if a["name"].endswith(".zip"):
+                if "win32" in a["name"]:
+                    asset = a
+                    break
+            elif sys.platform == "darwin":
+                if "macos" in a["name"]:
                     asset = a
                     break
             else:
@@ -129,10 +142,7 @@ def download():
 
 def build(extra):
     args = [exe_file("bin/princess"), "-d", "--no-incremental", "-Isrc", "--buildfolder=build", "--outfile", exe_file("bin/princess2"), "src/main.pr"]
-    if sys.platform == "win32":
-        args += WIN_ARGS
-    else:
-        args.append("-lbfd")
+    args += ARGS
         
     subprocess.check_call(args + extra)
 
