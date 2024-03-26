@@ -7,8 +7,7 @@ import sys
 
 def compile(extra):
     args = [build.exe_file("bin/princess2"), "--no-incremental", "-d", "-Isrc", "--buildfolder=build", "--outfile", build.exe_file("bin/princess3"), "src/main.pr"]
-    if sys.platform == "win32":
-        args += build.WIN_ARGS
+    args += build.ARGS
     subprocess.check_call(args + extra)
 
 def main():
