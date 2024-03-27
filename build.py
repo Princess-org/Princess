@@ -90,8 +90,7 @@ def release():
 
 def testrunner(extra):
     args = [exe_file("bin/princess"), "--no-incremental", "--outfile", exe_file("bin/testrunner"), "src/testrunner.pr"]
-    if sys.platform == "win32":
-        args += WIN_ARGS
+    args += ARGS
     subprocess.check_call(args + extra)
 
 def clean():
