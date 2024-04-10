@@ -64,9 +64,6 @@ export type TypeKind = enum {
     // TODO I think we don't really need this because we can just use weak directly
     BOX
     VOID
-    // This is a type that gets assigned whenever you pass an interface implementation to
-    // a generic function
-    INTERFACE_IMPL
     TO_INFER // Placeholder type for inference
 }
 
@@ -174,9 +171,6 @@ export type Type = struct {
 
 export def hash(tpe: &Type) -> uint64 {
     if tpe._hash { return tpe._hash }
-    if tpe.kind == TypeKind::INTERFACE_IMPL {
-        return hash(tpe.tpe)
-    }
     let name = debug::type_to_str(tpe, full_name = true)
     tpe._hash = md5::high(md5::md5(name))
     return tpe._hash
@@ -353,10 +347,13 @@ export def has_user_defined_copy_constructor(tpe: &Type) -> bool {
         ] !NamedParameter
         args.push(arg)
         args.push(arg)
-        var constructor = scope::get_function(tpe.module.scope, parser::make_identifier("construct"), args, false, false, not consteval::is_static)
+
+        var module = tpe.module
+        if tpe.tc_tpe { module = tpe.tc_tpe.module }
+        var constructor = scope::get_function(module.scope, parser::make_identifier("construct"), args, false, not consteval::is_static)
         if constructor {
             if consteval::is_static {
-                constructor = consteval::compile_function(constructor, tpe.module.scope, args)
+                constructor = consteval::compile_function(constructor, module.scope, args)
             }
             tm.constructor = constructor
             res = true 
@@ -524,6 +521,7 @@ export type State = struct {
     // TODO This should be a parameter but its currently too hard to fix
     block_implicit_conv: bool
     current_lambda: &Type
+    context: &scope::Scope
 }
 
 var lambda_counter = 0 // TODO Why is this global state?
@@ -642,8 +640,7 @@ export def is_box(tpe: &Type) -> bool {
         tpe.kind == TypeKind::REFERENCE or
         tpe.kind == TypeKind::WEAK_REF or
         tpe.kind == TypeKind::STATIC_ARRAY or
-        tpe.kind == TypeKind::ARRAY or
-        tpe.kind == TypeKind::INTERFACE_IMPL
+        tpe.kind == TypeKind::ARRAY
 }
 
 export def unbox(tpe: &Type) -> &Type {
@@ -1172,9 +1169,6 @@ export def equals(a: &Type, b: &Type) -> bool {
         kind == TypeKind::WEAK_REF {
         
         return equals((@a).tpe, (@b).tpe)
-    }
-    if kind == TypeKind::INTERFACE_IMPL {
-        return equals(a.intf, b.intf) and equals(a.tpe, b.tpe) and a.variants == b.variants
     }
     if kind == TypeKind::STATIC_ARRAY {
         return (@a).length == (@b).length and equals((@a).tpe, (@b).tpe)
@@ -1735,13 +1729,6 @@ export def convert_type_score(a: &Type, b: &Type, module: &toolchain::Module, is
         }
     }
 
-    if a.kind == TypeKind::INTERFACE_IMPL {
-        if convert_type_score(a.intf, b, module) < 0 { return -1 }
-        b = make_interface_impl(a.intf, b, module.scope)
-        if equals(a, b) { return 0 }
-        return -1
-    }
-
     let intfp = get_interface(a)
     if intfp {
         if a.kind == TypeKind::REFERENCE and b.kind == TypeKind::REFERENCE {
@@ -1975,11 +1962,6 @@ export def replace_type_defs(
 
         if not rtpe { return }
         if convert_type_score(ltpe, rtpe, module, impl = impl) < 0 { return }
-
-        if is_interface(ltpe) and replace {
-            @ltpe = @make_interface_impl(copy(ltpe), rtpe, module.scope)
-            continue
-        }
 
         let intf = get_interface(ltpe)
         if intf and replace {
@@ -4311,14 +4293,10 @@ def walk_Lambda_body(node: &parser::Node, state: &State) {
         let np = tpe.parameter_t(i + 1)
         if not np.node { continue }
         var tpe2 = np.tpe
-        if tpe2 {
-            if tpe2.kind == TypeKind::INTERFACE_IMPL {
-                tpe2 = tpe2.tpe
-            } else if tpe2.kind == TypeKind::TO_INFER {
-                errors::errorn(np.node, "Couldn't infer type for lambda parameter")
-                node.value.lambda.function = null // So that this doesn't make it to compile
-                return
-            }
+        if tpe2 and tpe2.kind == TypeKind::TO_INFER {
+            errors::errorn(np.node, "Couldn't infer type for lambda parameter")
+            node.value.lambda.function = null // So that this doesn't make it to compile
+            return
         }
 
         let value = scope::create_variable(inner_scope, np.node, parser::ShareMarker::NONE, parser::VarDecl::VAR, tpe2, null)
@@ -4384,7 +4362,7 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
     let dllexport = node.value.def_.dllexport
     let impl = node.value.def_.impl
     let test = node.value.def_.test
-    let outer_scope = node.scope
+    var outer_scope = state.context if state.context else node.scope
     let inner_scope = node.inner_scope
     let imported = (share !int & parser::ShareMarker::IMPORT !int) !bool
 
@@ -4493,6 +4471,11 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
         }
 
         tpe = make_function_type_n(name, node.tpe.parameter_t, return_t, state.module, extern, test = test)
+        if outer_scope.module != state.module {
+            // Polymorphic functions get renamed
+            tpe.type_name = outer_scope.module.module + "#" + tpe.type_name
+        }
+
         tpe.node = node
         check_is_valid_function(name, node.tpe.parameter_t, state)
     } 
@@ -4500,7 +4483,7 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
     if not function {
         function = [
             tpe = tpe,
-            module = state.module,
+            module = outer_scope.module,
             locals = map::make(type &Type),
             unmangled = parser::identifier_to_str(name),
             is_closure = node.parent.kind != parser::NodeKind::PROGRAM,
@@ -4533,9 +4516,6 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
                     np._tpe = null
                 }
             }
-            if tpe2 and tpe2.kind == TypeKind::INTERFACE_IMPL {
-                tpe2 = tpe2.tpe
-            }
             if np.varargs {
                 if tpe2 {
                     let value = scope::create_variable(inner_scope, np.node, parser::ShareMarker::NONE, parser::VarDecl::VAR, array(tpe2), null)
@@ -4558,7 +4538,11 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
         errors::current_function = tpe.type_name
         errors::current_signature = node.signature_hash
         if not function.value {
-            function.value = scope::create_function(outer_scope, name, share, tpe, phase, node, consteval::copy_state(state), impl = impl)
+            if polymorph and parser::identifier_to_str(name) != "construct" {
+                function.value = scope::create_polymorph(outer_scope, node.scope, name, tpe, phase, node, consteval::copy_state(state), impl = impl)
+            } else {
+                function.value = scope::create_function(outer_scope, name, share, tpe, phase, node, consteval::copy_state(state), impl = impl)
+            }
             if is_closure { state.module.closures.push(function.value) }
             function.value.polymorph = polymorph
             function.value.imported = imported
@@ -5086,13 +5070,19 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
         if check_for_apply_and_update(node, left, arguments, state) { return true }
         if (@left).kind == parser::NodeKind::IDENTIFIER {
             let only_function = node.value.func_call.is_member_access
-            var exists, function = scope::get_function_check(state.scope, left, arguments, false, dry_run, not consteval::is_static, only_function = only_function)
+            var exists, function = scope::get_function_check(state.scope, left, arguments, dry_run, not consteval::is_static, only_function = only_function, context = state.context)
             left.svalue = function
+
+            // Access check
+            if function and (function.share !int & parser::ShareMarker::EXPORT !int == 0) and function.module != node.scope.module and function.module != state.context.module {
+                errors::errorn(left, "Can't access function ", function.tpe.type_name)
+                function = null
+            }
 
             if not function {
                 scope::create_dependency(state.current_value(), scope::make_ident(parser::identifier_to_str(left)))
                 if dry_run { return false }
-            } else {
+            } else { 
                 scope::add_reference(function, left)
             }
 
@@ -6032,7 +6022,10 @@ export def walk(parent: &parser::Node, node: &parser::Node, state: &State) {
         case parser::NodeKind::CASE
             walk_Case(node, state)
         case parser::NodeKind::DEF
+            let prev_context = state.context
+            state.context = node.scope
             walk_Def(node, state)
+            state.context = prev_context
         case parser::NodeKind::IMPORT
             walk_Import(node, state)
         case parser::NodeKind::CAST
@@ -6164,35 +6157,6 @@ def find_dependencies(type_variables: &Vector(&scope::Value), tpe: &Type) {
     }
 }
 
-export def make_interface_impl(intf: &Type, wrap: &Type, context: &scope::Scope) -> &Type {
-    let module = context.module
-    if not module {
-        return wrap
-    }
-    
-    var impl = module.get_impl(intf, wrap)
-    if impl { return impl }
-    impl = make_type_raw(TypeKind::INTERFACE_IMPL)
-
-    let variants = set::make(type &typechecking::Type)
-    for var member in intf.members {
-        let param = copy_parameter_t(member.parameter_t)
-        param.insert(0, [ _tpe = wrap ] !NamedParameter)
-        let fun = scope::get_function(context, parser::make_identifier(member.name), param, dry_run = true)
-        if not fun { return wrap }
-        variants.add(fun.tpe)
-    }
-    impl.variants = variants
-    impl._tpe = wrap
-    impl.intf = intf
-    impl.module = module
-
-    if not consteval::is_static {
-        module.add_impl(intf, wrap, impl)
-    }
-    return impl
-}
-
 export def walk_Def_with_type_argument(node: &parser::Node, parameter_t: &Vector(NamedParameter), context: &scope::Scope, state: &State) -> &parser::Node {
     let old_node = node
     node = parser::deep_copy_node(node)
@@ -6204,7 +6168,7 @@ export def walk_Def_with_type_argument(node: &parser::Node, parameter_t: &Vector
     let module = context.module
     context = module.scope
 
-    var in_context = false
+    /*var in_context = false
     var super_scope = node.scope
     while super_scope.parent and super_scope.parent != builtins::builtins {
         if super_scope !* == context !* {
@@ -6217,10 +6181,9 @@ export def walk_Def_with_type_argument(node: &parser::Node, parameter_t: &Vector
     // Temporarily change parent scope to get into the context of the invocation
     if not in_context {
         super_scope.parent = context
-    }
+    }*/
     
     node.inner_scope = scope::enter_function_scope(node.scope)
-    node.inner_scope.module = module
 
     let share = node.value.def_.share
     var tpe = node.tpe
@@ -6297,8 +6260,12 @@ export def walk_Def_with_type_argument(node: &parser::Node, parameter_t: &Vector
         let first_param = tpe.parameter_t(0)
         create_type_entry(first_param.tpe, (share !int & parser::ShareMarker::EXPORT !int) != 0, tpe, state.module, true)
     }
-    
+
+    let prev_context = state.context
+    state.context = context
     walk_Def(node, state, polymorph = true)
+    state.context = prev_context
+
     state.scope = old_scope
     let function = node.value.def_.function
     function.value.is_internal = true // So that generic functions don't show up in autocomplete
@@ -6308,7 +6275,7 @@ export def walk_Def_with_type_argument(node: &parser::Node, parameter_t: &Vector
     }
 
     // This makes sure that the function is walked by the compiler
-    state.module.node.body.push(node)
+    context.module.node.body.push(node)
 
     // Extra state for the repl
     if toolchain::is_in_repl {
@@ -6317,9 +6284,9 @@ export def walk_Def_with_type_argument(node: &parser::Node, parameter_t: &Vector
         consteval::const_module.delayed_compile.push(node)
     }
     
-    if not in_context {
-        super_scope.parent = builtins::builtins
-    }
+    //if not in_context {
+    //    super_scope.parent = builtins::builtins
+    //}
     
     return node
 }

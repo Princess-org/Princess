@@ -122,6 +122,7 @@ export type Value = struct {
     references: &Vector(parser::SourceLoc)
     // Don't serialize these
     is_generated: bool
+    module: weak_ref(toolchain::Module)
 }
 
 export def assembly_name(value: &Value, state: &compiler::State) -> Str {
@@ -218,6 +219,16 @@ export type Scope = struct {
     underscore: &Value
     underscore_count: int
     re_exports: &Vector(ReExport)
+    // Polymorphic instances
+    polymorphics: &SMap(&Scope)
+}
+
+def find_containing_module(scope: &Scope) -> &toolchain::Module {
+    if not scope { return null }
+    while scope.parent != builtins::builtins and scope.parent {
+        scope = scope.parent
+    }
+    return scope.module
 }
 
 export def clear_temporaries(scope: &Scope) {
@@ -717,7 +728,7 @@ def find_function(scope: &Scope, node: &parser::Node, v: &Value, parameter_t: &V
         }
 
         let s = typechecking::overload_score(v.tpe, parameter_t, context.module, false)
-        //print(v.tpe.type_name, " ", s, "\n")
+        //print(scope.module.module, " ", v.tpe.type_name, " ", s, "\n")
         if s >= 0 {
             if s < @score {
                 @score = s
@@ -737,8 +748,7 @@ def find_function(scope: &Scope, node: &parser::Node, v: &Value, parameter_t: &V
                 }
                 generated = true
             }
-        }
-        
+        }   
     }
     //print("\n")
     if d {
@@ -820,7 +830,10 @@ export def find_implicit_function(scope: &Scope, parameter_t: &Vector(typechecki
         if typechecking::is_polymorph(value.tpe) {
             typechecking::walk_Def_with_type_argument(value.node, parameter_t, scope, value.state)
         } else {
+            let prev_context = value.state.context
+            value.state.context = value.node.scope
             typechecking::walk_Def(value.node, value.state)
+            value.state.context = prev_context
         }
     }
     return value
@@ -1033,7 +1046,8 @@ export def create_underscore(scope: &Scope, name_node: &parser::Node, tpe: &type
         name = "_",
         _assembly_name = "_",
         offset = scope.underscore_count,
-        previous_underscore = scope.underscore
+        previous_underscore = scope.underscore,
+        module = scope.module
     ] !&Value
     scope.underscore_count += 1
 
@@ -1045,12 +1059,15 @@ export def create_underscore(scope: &Scope, name_node: &parser::Node, tpe: &type
 export def typecheck_function(value: &Value, id: &parser::Node, scope: &Scope, dry_run: bool, parameter_t: &Vector(typechecking::NamedParameter), context: &Scope) -> &Value {
     let tpe = typechecking::lookup_parameters(value.node, value.state)
     if typechecking::is_polymorph(value.tpe) {
-        typechecking::walk_Def_with_type_argument(value.node, parameter_t, context, value.state)
-        // TODO Do we really need to do that?
-        return get_function(context, id, parameter_t, false, dry_run, false)
+        let node = typechecking::walk_Def_with_type_argument(value.node, parameter_t, context, value.state)
+        let value = node.value.def_.function.value
+        return value
     } else {
         value.node.tpe = tpe
+        let prev_context = value.state.context
+        value.state.context = value.node.scope
         typechecking::walk_Def(value.node, value.state)
+        value.state.context = prev_context
         return value
     }
 }
@@ -1062,18 +1079,21 @@ export def typecheck(value: &Value) {
         if not typechecking::is_polymorph(tpe) {
             value.node.tpe = tpe
             value.tpe = tpe
+            let prev_context = value.state.context
+            value.state.context = value.node.scope
             typechecking::walk_Def(value.node, value.state)
+            value.state.context = prev_context
         }
     } else {
         typechecking::walk(value.node.parent, value.node, value.state)
     }
 }
 
+// This function does not perform access checks anymore, this needs to be done by the caller.
 export def get_function_check(
     scope: &Scope, 
     id: &parser::Node, 
     parameter_t: &Vector(typechecking::NamedParameter), 
-    check_export: bool = false, 
     dry_run: bool = false, 
     force_compile: bool = true, 
     only_function: bool = false,
@@ -1090,7 +1110,7 @@ export def get_function_check(
         for var i in 0..scope.re_exports.length {
             let re_export = scope.re_exports(i)
             if pattern_matches(id, re_export.pattern) {
-                var _, value2 = get_function_check(re_export.module.scope, id, parameter_t, true, dry_run, force_compile, only_function, false, context)
+                var _, value2 = get_function_check(re_export.module.scope, id, parameter_t, dry_run, force_compile, only_function, false, context)
                 if value2 and not pattern_matches(id, re_export.pattern, value2.tpe.parameter_t) { continue }
                 if value2 and value2.share !int & parser::ShareMarker::EXPORT !int {
                     if value and value !* != value2 !* {
@@ -1120,8 +1140,26 @@ export def get_function_check(
         let (code), first_function = find_function(scope, id, first_value, parameter_t, *score, dry_run, context)
         let first_score = score
         var value = first_function
+
+        if not first_function or first_function.tpe.is_polymorph {
+            var root_scope = context.module.scope
+            if root_scope.polymorphics {
+                for var module_name in @root_scope.polymorphics.keys() {
+                    let poly_scope = root_scope.polymorphics(module_name)
+                    if poly_scope {
+                        let val = poly_scope.fields.get_or_default(name, null)
+                        var new_score = std::MAX_INT32
+                        let new_code, new_value = find_function(poly_scope, id, val, parameter_t, *new_score, dry_run, context)
+                        if new_value {
+                            return new_code, new_value
+                        }
+                    }
+                }
+            }
+        }
+
         var d = false
-        if (@scope).imports and not check_export {
+        if (@scope).imports {
             for var i in 0..vector::length((@scope).imports) {
                 let imprt = (@scope).imports(i)
                 let scope2 = imprt.module.scope
@@ -1161,9 +1199,9 @@ export def get_function_check(
         }
 
         if not value and (@scope).parent and (not first_value or only_function) {
-            code, value = get_function_check((@scope).parent, id, parameter_t, check_export, dry_run, force_compile, only_function, re_exports, context)
+            code, value = get_function_check((@scope).parent, id, parameter_t, dry_run, force_compile, only_function, re_exports, context)
         }
-        if not value and vector::length(parameter_t) > 0 and not check_export {
+        /*if not value and vector::length(parameter_t) > 0 and not check_export {
             let first_param = parameter_t(0)
             let module = typechecking::get_module(first_param.tpe)
             if first_param.tpe and module and module != scope.module {
@@ -1175,13 +1213,28 @@ export def get_function_check(
                     value = new_value
                 }
             }
+        }*/
+        var share: parser::ShareMarker
+        if value {
+            share = value.share
         }
+       
+        if not value and context.module != scope.module and scope.module != builtins::builtins {
+            // Get value from context
+            let root_scope = context.module.scope
+            let val = root_scope.fields.get_or_default(name, null)
+            var new_score = std::MAX_INT32
+            let new_code, new_value = find_function(root_scope, id, val, parameter_t, *new_score, dry_run, context)
+            if new_value {
+                code = new_code
+                value = new_value
+            }
+        }
+        
         if value and value.phase == Phase::DEFINED and force_compile {
             value = typecheck_function(value, id, scope, dry_run, parameter_t, context)
         }
-        if value and check_export and (value.share !int & parser::ShareMarker::EXPORT !int) == 0 {
-            value = null
-        }
+
         return code, value
     } else {
         let head = vector::head_vec((@id).value.identifier.path)
@@ -1198,32 +1251,42 @@ export def get_function_check(
                 if not dry_run { errors::errorn(id, "Use of :: on non namespace") }
                 return false, null
             }
+            let root_scope = scope.module.scope
+            let module = s.get_scope().module
+
+            if root_scope.polymorphics {
+                let poly_scope = root_scope.polymorphics.get_or_default(module.filename, null)
+                if poly_scope {
+                    let code, value = get_function_check(poly_scope, id_tail, parameter_t, force_compile, only_function, context = context)
+                    if value {
+                        return code, value
+                    }
+                }
+            }
+
             // TODO this should be able to go on one line
-            let code, value = get_function_check(s.get_scope(), id_tail, parameter_t, s.imported, dry_run, force_compile, only_function)
+            let code, value = get_function_check(s.get_scope(), id_tail, parameter_t, dry_run, force_compile, only_function, context = context)
             return code, value
         }
+
         return false, null
     }
 }
+
 export def get_function(
     scope: &Scope, 
     id: &parser::Node, 
     parameter_t: &Vector(typechecking::NamedParameter), 
-    check_export: bool, 
     dry_run: bool, 
     force_compile: bool = true, 
     only_function: bool = false) -> &Value {
 
-    let _, value = get_function_check(scope, id, parameter_t, check_export, dry_run, force_compile, only_function)
+    let _, value = get_function_check(scope, id, parameter_t, dry_run, force_compile, only_function)
     return value
 }
 
-export def get_function(scope: &Scope, id: &parser::Node, parameter_t: &Vector(typechecking::NamedParameter), dry_run: bool) -> &Value {
-    return get_function(scope, id, parameter_t, false, dry_run)
-}
-
 export def get_function(scope: &Scope, id: &parser::Node, parameter_t: &Vector(typechecking::NamedParameter)) -> &Value {
-    return get_function(scope, id, parameter_t, false, false)
+    return get_function(scope, id, parameter_t, false)
 }
 
 export def get(
@@ -1335,9 +1398,6 @@ export def get(
             value = get((@scope).parent, id, force_compile, check_export, dry_run, same_module, context = context)
         }
 
-        if value and check_export and (value.share !int & parser::ShareMarker::EXPORT !int) == 0 {
-            value = null
-        }
         if not value and id.value.identifier.types {
             value = generate_function(scope, id, id.value.identifier.types, dry_run)
         }
@@ -1388,7 +1448,10 @@ export def get_type(scope: &Scope, id: &parser::Node) -> &typechecking::Type {
 // This function creates the namespaces for identifiers like 
 // namespace::path::foo
 // beware, this function can return null
-def create_path(scope: &Scope, node: &parser::Node) -> &Scope {
+// TODO This was used to create forward declared scopes but now
+// it just creates a path for polymorphic functions to go into -> See if 
+// there are any issues with that
+export def create_path(scope: &Scope, node: &parser::Node) -> &Scope {
     assert((@node).kind == parser::NodeKind::IDENTIFIER)
 
     let length = vector::length((@node).value.identifier.path)
@@ -1463,7 +1526,8 @@ export def create_function_without_checking(scope: &Scope, name_node: &parser::N
         phase = Phase::COMPILED,
         global = global,
         ident = make_ident(name, scope.module, 0, tpe.type_name),
-        polymorph = typechecking::is_polymorph(tpe)
+        polymorph = typechecking::is_polymorph(tpe),
+        module = scope.module
     ] !&Value
 
     if global {
@@ -1540,17 +1604,10 @@ export def create_function(scope: &Scope, name_node: &parser::Node, v: &Value, i
     return v
 }
 
-
-// TODO Give better error messages, where was the function/variable declared previously?
-export def create_function(
+def create_function_value(
     scope: &Scope, name_node: &parser::Node, share: parser::ShareMarker, 
-    tpe: &typechecking::Type, phase: Phase, node: &parser::Node,
-    state: &typechecking::State, impl: bool = false) -> &Value {
-
-    assert((@tpe).kind == typechecking::TypeKind::FUNCTION)
-
-    scope = create_path(scope, name_node)
-    if not scope { return null }
+    phase: Phase, node: &parser::Node, state: &typechecking::State, tpe: &typechecking::Type, impl: bool) -> &Value {
+    
     let name = last_path_element(name_node)
     let global = is_global(scope)
 
@@ -1568,7 +1625,8 @@ export def create_function(
         state = state,
         ident = make_ident(name, scope.module, node.signature_hash if node else 0, tpe.type_name),
         polymorph = typechecking::is_polymorph(tpe),
-        references = vector::make(parser::SourceLoc)
+        references = vector::make(parser::SourceLoc),
+        module = scope.module
     ] !&Value
 
     if global {
@@ -1578,6 +1636,23 @@ export def create_function(
         v.dependants = set::make(Ident)
     }
 
+    return v
+}
+
+
+// TODO Give better error messages, where was the function/variable declared previously?
+export def create_function(
+    scope: &Scope, name_node: &parser::Node, share: parser::ShareMarker, 
+    tpe: &typechecking::Type, phase: Phase, node: &parser::Node,
+    state: &typechecking::State, impl: bool = false) -> &Value {
+
+    assert((@tpe).kind == typechecking::TypeKind::FUNCTION)
+
+    scope = create_path(scope, name_node)
+    if not scope { return null }
+    
+    let v = create_function_value(scope, name_node, share, phase, node, state, tpe, impl)
+
     return create_function(scope, name_node, v, impl)
 }
 
@@ -1585,6 +1660,27 @@ export def create_function(
     scope: &Scope, name_node: &parser::Node, share: parser::ShareMarker, 
     tpe: &typechecking::Type, impl: bool = false) -> &Value {
     return create_function(scope, name_node, share, tpe, Phase::COMPILED, null, null, impl)
+}
+
+export def create_polymorph(
+    scope: &Scope, context: &Scope, name_node: &parser::Node, tpe: &typechecking::Type,
+    phase: Phase, node: &parser::Node, state: &typechecking::State, impl: bool = false) -> &Value {
+    
+    let module = context.module
+    scope = scope.module.scope // Global scope
+    let module_name = module.filename
+
+    let v = create_function_value(scope, name_node, parser::ShareMarker::NONE, Phase::COMPILED, node, state, tpe, impl)
+    if not scope.polymorphics {
+        scope.polymorphics = map::make(type &Scope)
+    }
+    var poly_scope = scope.polymorphics.get_or_default(module_name, null)
+    if not poly_scope {
+        poly_scope = enter_scope(null, scope.module)
+    }
+
+    scope.polymorphics(module_name) = poly_scope
+    return create_function(poly_scope, name_node, v, impl)
 }
 
 export def create_variable(
@@ -1612,7 +1708,8 @@ export def create_variable(
         node = node,
         state = state,
         ident = make_ident(name, scope.module, node._hash if node else 0),
-        references = vector::make(parser::SourceLoc)
+        references = vector::make(parser::SourceLoc),
+        module = scope.module
     ] !&Value
 
     if global {
@@ -1692,7 +1789,8 @@ export def create_type(
         node = node,
         state = state,
         ident = make_ident(name, scope.module),
-        references = vector::make(parser::SourceLoc)
+        references = vector::make(parser::SourceLoc),
+        module = scope.module
     ] !&Value
     if global {
         v.unresolved = set::make(Ident)
@@ -1750,7 +1848,8 @@ export def enter_namespace(scope: &Scope, scope2: &Scope, node: &parser::Node) -
         _assembly_name = name,
         tpe = tpe,
         _scope = scope2,
-        global = is_global(scope)
+        global = is_global(scope),
+        module = scope.module
     ] !&Value
 
     let value = scope.fields.get_or_default(name, null)
