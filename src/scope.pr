@@ -1063,10 +1063,10 @@ export def typecheck_function(value: &Value, id: &parser::Node, scope: &Scope, d
         let value = node.value.def_.function.value
         return value
     } else {
-        value.node.tpe = tpe
         let prev_context = value.state.context
         value.state.context = value.node.scope
         typechecking::walk_Def(value.node, value.state)
+        value.tpe = value.node.tpe
         value.state.context = prev_context
         return value
     }
@@ -1077,11 +1077,10 @@ export def typecheck(value: &Value) {
     if value.node.kind == parser::NodeKind::DEF {
         let tpe = typechecking::lookup_parameters(value.node, value.state)
         if not typechecking::is_polymorph(tpe) {
-            value.node.tpe = tpe
-            value.tpe = tpe
             let prev_context = value.state.context
             value.state.context = value.node.scope
             typechecking::walk_Def(value.node, value.state)
+            value.tpe = value.node.tpe
             value.state.context = prev_context
         }
     } else {
@@ -1098,9 +1097,13 @@ export def get_function_check(
     force_compile: bool = true, 
     only_function: bool = false,
     re_exports: bool = true,
-    context: &Scope = null
+    context: &Scope = null,
+    path: &Vector(String) = null // This is the path we took to get here
 ) -> bool, &Value {
 
+    if not path {
+        path = vector::make(String)
+    }
     if not context {
         context = scope
     }
@@ -1110,7 +1113,7 @@ export def get_function_check(
         for var i in 0..scope.re_exports.length {
             let re_export = scope.re_exports(i)
             if pattern_matches(id, re_export.pattern) {
-                var _, value2 = get_function_check(re_export.module.scope, id, parameter_t, dry_run, force_compile, only_function, false, context)
+                var _, value2 = get_function_check(re_export.module.scope, id, parameter_t, dry_run, force_compile, only_function, false, context, path)
                 if value2 and not pattern_matches(id, re_export.pattern, value2.tpe.parameter_t) { continue }
                 if value2 and value2.share !int & parser::ShareMarker::EXPORT !int {
                     if value and value !* != value2 !* {
@@ -1141,17 +1144,37 @@ export def get_function_check(
         let first_score = score
         var value = first_function
 
+        // Check for polymorphic instances
         if not first_function or first_function.tpe.is_polymorph {
             var root_scope = context.module.scope
             if root_scope.polymorphics {
-                for var module_name in @root_scope.polymorphics.keys() {
-                    let poly_scope = root_scope.polymorphics(module_name)
-                    if poly_scope {
-                        let val = poly_scope.fields.get_or_default(name, null)
-                        var new_score = std::MAX_INT32
-                        let new_code, new_value = find_function(poly_scope, id, val, parameter_t, *new_score, dry_run, context)
-                        if new_value {
-                            return new_code, new_value
+                // We need to check the path we took to get here and then see if
+                // there is a module under that path
+                if path.length > 0 {
+                    let module_scope = get(root_scope, parser::make_identifier(@path.to_array()))
+                    if module_scope and root_scope.polymorphics.contains(module_scope.module.filename) {
+                        // If there is a module we can look into the polymorphic instances of that module
+                        let poly_scope = root_scope.polymorphics(module_scope.module.filename)
+                        if poly_scope {
+                            let val = poly_scope.fields.get_or_default(name, null)
+                            var new_score = std::MAX_INT32
+                            let new_code, new_value = find_function(poly_scope, id, val, parameter_t, *new_score, dry_run, context)
+                            if new_value {
+                                return new_code, new_value
+                            }
+                        }
+                    }
+                } else {
+                    // Otherwise we have a non qualified call, which means we need to look at ALL modules
+                    for var module_name in @root_scope.polymorphics.keys() {
+                        let poly_scope = root_scope.polymorphics(module_name)
+                        if poly_scope {
+                            let val = poly_scope.fields.get_or_default(name, null)
+                            var new_score = std::MAX_INT32
+                            let new_code, new_value = find_function(poly_scope, id, val, parameter_t, *new_score, dry_run, context)
+                            if new_value {
+                                return new_code, new_value
+                            }
                         }
                     }
                 }
@@ -1199,21 +1222,8 @@ export def get_function_check(
         }
 
         if not value and (@scope).parent and (not first_value or only_function) {
-            code, value = get_function_check((@scope).parent, id, parameter_t, dry_run, force_compile, only_function, re_exports, context)
+            code, value = get_function_check((@scope).parent, id, parameter_t, dry_run, force_compile, only_function, re_exports, context, path)
         }
-        /*if not value and vector::length(parameter_t) > 0 and not check_export {
-            let first_param = parameter_t(0)
-            let module = typechecking::get_module(first_param.tpe)
-            if first_param.tpe and module and module != scope.module {
-                let scope = module.scope
-                var new_score = std::MAX_INT32 !int
-                let code2, new_value = find_function(scope, id, scope.fields.get_or_default(name, null), parameter_t, *new_score, dry_run, context)
-                if code2 { code = true }
-                if new_value and new_value.share !int & parser::ShareMarker::EXPORT !int {
-                    value = new_value
-                }
-            }
-        }*/
         var share: parser::ShareMarker
         if value {
             share = value.share
@@ -1245,6 +1255,8 @@ export def get_function_check(
         let id_tail = parser::copy_node(id)
         (@id_tail).value.identifier.path = tail
 
+        path.push((@id).value.identifier.path(0))
+
         let s = get(scope, id_head)
         if s {
             if not s.get_scope() {
@@ -1257,7 +1269,7 @@ export def get_function_check(
             if root_scope.polymorphics {
                 let poly_scope = root_scope.polymorphics.get_or_default(module.filename, null)
                 if poly_scope {
-                    let code, value = get_function_check(poly_scope, id_tail, parameter_t, force_compile, only_function, context = context)
+                    let code, value = get_function_check(poly_scope, id_tail, parameter_t, force_compile, only_function, context = context, path = path)
                     if value {
                         return code, value
                     }
@@ -1265,7 +1277,7 @@ export def get_function_check(
             }
 
             // TODO this should be able to go on one line
-            let code, value = get_function_check(s.get_scope(), id_tail, parameter_t, dry_run, force_compile, only_function, context = context)
+            let code, value = get_function_check(s.get_scope(), id_tail, parameter_t, dry_run, force_compile, only_function, context = context, path = path)
             return code, value
         }
 
