@@ -94,6 +94,21 @@ export type StructuralTypeMember = struct {
     return_t: &Vector(&Type)
 }
 
+export type TypeRef = struct {
+    module: weak_ref(toolchain::Module)
+    name: Str
+}
+
+export def == (a: TypeRef, b: TypeRef) -> bool {
+    return a.module == b.module and a.name == b.name
+}
+export def != (a: TypeRef, b: TypeRef) -> bool {
+    return not (a == b)
+}
+export def hash(v: TypeRef) -> uint64 {
+    return combine_hashes(hash(v.module), hash(v.name))
+}
+
 // TODO Really, types should not be copied. There should only be one instance for every given type.
 // This would make comparing them so much easier but changing that at this point might be too much work.
 // It would also make the whole TypeMeta thing useless in the process.
@@ -142,7 +157,7 @@ export type Type = struct {
     // Type constructors save a template of a type
     tc_node: weak_ref(parser::Node)
     // Cache of specialized type constructor
-    cache: &SMap(&Type)
+    cache: &Map(TypeRef, &Type)
     // Type constructor instances have a type and arguments
     tc_tpe: weak_ref(Type)
     // Vector of Type, also used by GENERIC
@@ -343,11 +358,8 @@ export def has_user_defined_copy_constructor(tpe: &Type) -> bool {
     if tpe.kind == TypeKind::STATIC_ARRAY { res = has_user_defined_copy_constructor(tpe.tpe) }
     else if tpe.module {
         let args = vector::make(NamedParameter)
-        let arg = [
-            _tpe = pointer(tpe)
-        ] !NamedParameter
-        args.push(arg)
-        args.push(arg)
+        args.push([ _tpe = pointer(tpe)] !NamedParameter)
+        args.push([ _tpe = pointer(tpe)] !NamedParameter)
 
         var module = tpe.module
         if tpe.tc_tpe { module = tpe.tc_tpe.module }
@@ -523,6 +535,11 @@ export type State = struct {
     block_implicit_conv: bool
     current_lambda: &Type
     context: &scope::Scope
+}
+
+export def get_context(state: &State) -> &toolchain::Module {
+    if state.context { return state.context.module }
+    return state.module
 }
 
 var lambda_counter = 0 // TODO Why is this global state?
@@ -1003,7 +1020,7 @@ export type TypeEntryMember = struct {
 }
  
 export def create_type_entry(tpe: &Type) -> &TypeEntry {
-    if is_polymorph(tpe) { return null }
+    //if is_polymorph(tpe) { return null }
     let name = debug::type_to_str(tpe, full_name = true)
     var type_entry = types_map.get_or_default(name, null)
     if not type_entry {
@@ -1060,6 +1077,15 @@ export def copy_return_t(return_t: &Vector(&Type)) -> &Vector(&Type) {
     return new
 }
 
+def copy_types(a: &Vector(&Type)) -> &Vector(&Type) {
+    let res = vector::make(type &Type)
+    for var i in 0..vector::length(a) {
+        let arg = a(i)
+        res.push(copy(arg))
+    }
+    return res
+}
+
 // TODO Not a deep copy
 export def copy(a: &Type) -> &Type {
     if not a { return null }
@@ -1067,11 +1093,7 @@ export def copy(a: &Type) -> &Type {
     t._hash = 0
 
     if a.tc_args {
-        t.tc_args = vector::make(type &Type)
-        for var i in 0..vector::length(a.tc_args) {
-            let arg = a.tc_args(i)
-            t.tc_args.push(copy(arg))
-        }
+        t.tc_args = copy_types(a.tc_args)
     }
 
     if a.kind == TypeKind::FUNCTION {
@@ -1898,8 +1920,8 @@ def replace_parameter(tpe: &Type, types: &SMap(&Type)) -> &Type {
             tpe.tc_args(i) = replace_parameter(arg, types)
         }
     } else if is_box(tpe) {
-        if tpe._tpe {
-            tpe._tpe = replace_parameter(tpe._tpe, types)
+        if tpe.tpe {
+            tpe._tpe = replace_parameter(tpe.tpe, types)
         }
     } else if tpe.kind == TypeKind::FUNCTION or tpe.kind == TypeKind::CLOSURE {
         for var i in 0..vector::length(tpe.parameter_t) {
@@ -1938,9 +1960,9 @@ export def replace_type_defs(
     }
 
     for var i in 0..vector::length(param_a) {
-        let left = param_a(i)
+        let left = param_a.get(i)
         
-        let ltpe = left.tpe
+        let ltpe = copy(left.tpe)
         if not ltpe { continue }
 
         var right: *NamedParameter = null
@@ -1968,7 +1990,7 @@ export def replace_type_defs(
 
         let intf = get_interface(ltpe)
         if intf and replace {
-            @ltpe = @rtpe
+            left._tpe = rtpe
             continue
         }
 
@@ -1979,6 +2001,7 @@ export def replace_type_defs(
             }
         } else {
             find_type_defs(module, ltpe, rtpe, types_map, replace)
+            left._tpe = ltpe
         }
 
         for var j in (i + 1)..vector::length(param_a) {
@@ -2366,16 +2389,19 @@ def lookup_type_constructor(tc: &parser::Node, node: &parser::Node, state: &Stat
     tpe.tc_node = node
     tpe.tc_node.module = state.module
     tpe.module = state.module
-    tpe.cache = map::make(type &Type)
+    tpe.cache = map::make(TypeRef, type &Type)
     return tpe
 }
 
 // This generates concrete functons when refering to type constructors
 export def generate_concrete_functions(type_constructor: &Type, tpe: &Type, state: &State) {
     if consteval::is_static { return }
+    if is_polymorph(tpe) { return }
+
     let functions = get_member_functions(tpe)
     for var j in 0..vector::length(functions) {
         let function = functions(j)
+
         let ftpe = copy(function.function)
         if ftpe.kind != TypeKind::FUNCTION { continue }
 
@@ -2384,26 +2410,11 @@ export def generate_concrete_functions(type_constructor: &Type, tpe: &Type, stat
         
         replace_type_defs(ftpe.parameter_t, ftpe.return_t, pars, null, state.module)
         ftpe.type_name = mangle_function_name(append_module(ftpe.name, ftpe.module.module), ftpe.parameter_t, context = ftpe.context)
-        
-        if not is_polymorph(tpe) and not is_polymorph(ftpe) {
+
+        if not is_polymorph(ftpe) {
             let new_entry = create_type_entry(tpe, function.exported, ftpe, function.module)
             if new_entry {
-                let state2 = consteval::copy_state(state)
-                state2.scope = ftpe.node.module.scope
-                state2.module = ftpe.node.module
-                state2.function_stack = vector::make(type &compiler::Function)
-                if state.function_stack.length > 0 {
-                    state2.function_stack.push(state.function_stack(0))
-                }
-                
-                if not scope::has_function(state.scope, ftpe) {
-                    if consteval::is_static {
-                        let value = scope::get_function(state2.scope, parser::make_identifier(ftpe.name), pars, false, true, force_compile = false)
-                        consteval::compile_function(value, state2.scope, pars)
-                    } else {
-                        walk_Def_with_type_argument(ftpe.node, pars, state.scope, state2)
-                    }
-                }
+                let score, value = scope::get_function_check(state.scope, parser::make_identifier(ftpe.name), pars, false, true, force_compile = true, context = state.context)
             }
         }
     }
@@ -2418,10 +2429,11 @@ export def type_lookup(node: &parser::Node, state: &State, current_type: &Type =
     if tpe and type_constructor and type_constructor.kind != TypeKind::STUB {
         let type_name = debug::type_to_str(tpe, full_name = true)
 
-        if not map::contains(type_constructor.cache, type_name) {
-            type_constructor.cache(type_name) = null
+        let ref = [module = state.get_context(), name = type_name] !typechecking::TypeRef
+        if not map::contains(type_constructor.cache, ref) {
+            type_constructor.cache(ref) = null
             generate_concrete_functions(type_constructor, tpe, state)
-            type_constructor.cache(type_name) = (tpe if tpe.tc_tpe !* == type_constructor !* else null !&Type)
+            type_constructor.cache(ref) = (tpe if tpe.tc_tpe !* == type_constructor !* else null !&Type)
         }
     }
     if tpe and (tpe.kind == TypeKind::STRUCT or tpe.kind == TypeKind::UNION) {
@@ -5319,7 +5331,7 @@ def walk_IfExpr(node: &parser::Node, state: &State) {
     } else if if_false.tpe and if_false.tpe.kind == TypeKind::NULL and (is_ref_or_weak(if_true.tpe) or is_pointer(if_true.tpe)) {
         node.tpe = if_true.tpe
     } else if not equals(if_true.tpe, if_false.tpe) {
-        errors::errorn(node, "If expression needs to have a single type")
+        errors::errorn(node, "If expression needs to have a single type. Types were ", debug::type_to_str(if_true.tpe), " and ", debug::type_to_str(if_false.tpe))
     } else {
         node.tpe = if_true.tpe
     }
