@@ -64,9 +64,6 @@ export type TypeKind = enum {
     // TODO I think we don't really need this because we can just use weak directly
     BOX
     VOID
-    // This is a type that gets assigned whenever you pass an interface implementation to
-    // a generic function
-    INTERFACE_IMPL
     TO_INFER // Placeholder type for inference
 }
 
@@ -97,6 +94,21 @@ export type StructuralTypeMember = struct {
     return_t: &Vector(&Type)
 }
 
+export type TypeRef = struct {
+    module: weak_ref(toolchain::Module)
+    name: Str
+}
+
+export def == (a: TypeRef, b: TypeRef) -> bool {
+    return a.module == b.module and a.name == b.name
+}
+export def != (a: TypeRef, b: TypeRef) -> bool {
+    return not (a == b)
+}
+export def hash(v: TypeRef) -> uint64 {
+    return combine_hashes(hash(v.module), hash(v.name))
+}
+
 // TODO Really, types should not be copied. There should only be one instance for every given type.
 // This would make comparing them so much easier but changing that at this point might be too much work.
 // It would also make the whole TypeMeta thing useless in the process.
@@ -107,6 +119,7 @@ export type Type = struct {
     module: weak_ref(toolchain::Module)
     // Module that this type was defined in
     _defmodule: weak_ref(toolchain::Module)
+    context: weak_ref(toolchain::Module)
     state: &State
     // Name of the type as used by the source code
     // Might be the name of a typedef
@@ -144,7 +157,7 @@ export type Type = struct {
     // Type constructors save a template of a type
     tc_node: weak_ref(parser::Node)
     // Cache of specialized type constructor
-    cache: &SMap(&Type)
+    cache: &Map(TypeRef, &Type)
     // Type constructor instances have a type and arguments
     tc_tpe: weak_ref(Type)
     // Vector of Type, also used by GENERIC
@@ -174,9 +187,6 @@ export type Type = struct {
 
 export def hash(tpe: &Type) -> uint64 {
     if tpe._hash { return tpe._hash }
-    if tpe.kind == TypeKind::INTERFACE_IMPL {
-        return hash(tpe.tpe)
-    }
     let name = debug::type_to_str(tpe, full_name = true)
     tpe._hash = md5::high(md5::md5(name))
     return tpe._hash
@@ -348,15 +358,15 @@ export def has_user_defined_copy_constructor(tpe: &Type) -> bool {
     if tpe.kind == TypeKind::STATIC_ARRAY { res = has_user_defined_copy_constructor(tpe.tpe) }
     else if tpe.module {
         let args = vector::make(NamedParameter)
-        let arg = [
-            _tpe = pointer(tpe)
-        ] !NamedParameter
-        args.push(arg)
-        args.push(arg)
-        var constructor = scope::get_function(tpe.module.scope, parser::make_identifier("construct"), args, false, false, not consteval::is_static)
+        args.push([ _tpe = pointer(tpe)] !NamedParameter)
+        args.push([ _tpe = pointer(tpe)] !NamedParameter)
+
+        var module = tpe.module
+        if tpe.tc_tpe { module = tpe.tc_tpe.module }
+        var constructor = scope::get_function(module.scope, parser::make_identifier("construct"), args, false, not consteval::is_static)
         if constructor {
             if consteval::is_static {
-                constructor = consteval::compile_function(constructor, tpe.module.scope, args)
+                constructor = consteval::compile_function(constructor, module.scope, args)
             }
             tm.constructor = constructor
             res = true 
@@ -524,6 +534,12 @@ export type State = struct {
     // TODO This should be a parameter but its currently too hard to fix
     block_implicit_conv: bool
     current_lambda: &Type
+    context: &scope::Scope
+}
+
+export def get_context(state: &State) -> &toolchain::Module {
+    if state.context { return state.context.module }
+    return state.module
 }
 
 var lambda_counter = 0 // TODO Why is this global state?
@@ -642,8 +658,7 @@ export def is_box(tpe: &Type) -> bool {
         tpe.kind == TypeKind::REFERENCE or
         tpe.kind == TypeKind::WEAK_REF or
         tpe.kind == TypeKind::STATIC_ARRAY or
-        tpe.kind == TypeKind::ARRAY or
-        tpe.kind == TypeKind::INTERFACE_IMPL
+        tpe.kind == TypeKind::ARRAY
 }
 
 export def unbox(tpe: &Type) -> &Type {
@@ -774,7 +789,8 @@ export def make_function_type_n(
     return_t: &Vector(&Type), 
     module: &toolchain::Module = null,
     extern: bool = false,
-    test: bool = false
+    test: bool = false,
+    context: &toolchain::Module = null
 ) -> &Type {
 
     let tpe = make_function_type()
@@ -785,10 +801,11 @@ export def make_function_type_n(
         tpe.type_name = tpe.name
     } else {
         let name = append_module(tpe.name, module.module) if module else tpe.name
-        tpe.type_name = mangle_function_name(name, parameter_t, test)
+        tpe.type_name = mangle_function_name(name, parameter_t, test, context)
     }
     tpe.line = name.loc.line
     tpe.module = module
+    tpe.context = context
     return tpe
 }
 
@@ -1003,7 +1020,7 @@ export type TypeEntryMember = struct {
 }
  
 export def create_type_entry(tpe: &Type) -> &TypeEntry {
-    if is_polymorph(tpe) { return null }
+    //if is_polymorph(tpe) { return null }
     let name = debug::type_to_str(tpe, full_name = true)
     var type_entry = types_map.get_or_default(name, null)
     if not type_entry {
@@ -1060,6 +1077,15 @@ export def copy_return_t(return_t: &Vector(&Type)) -> &Vector(&Type) {
     return new
 }
 
+def copy_types(a: &Vector(&Type)) -> &Vector(&Type) {
+    let res = vector::make(type &Type)
+    for var i in 0..vector::length(a) {
+        let arg = a(i)
+        res.push(copy(arg))
+    }
+    return res
+}
+
 // TODO Not a deep copy
 export def copy(a: &Type) -> &Type {
     if not a { return null }
@@ -1067,11 +1093,7 @@ export def copy(a: &Type) -> &Type {
     t._hash = 0
 
     if a.tc_args {
-        t.tc_args = vector::make(type &Type)
-        for var i in 0..vector::length(a.tc_args) {
-            let arg = a.tc_args(i)
-            t.tc_args.push(copy(arg))
-        }
+        t.tc_args = copy_types(a.tc_args)
     }
 
     if a.kind == TypeKind::FUNCTION {
@@ -1172,9 +1194,6 @@ export def equals(a: &Type, b: &Type) -> bool {
         kind == TypeKind::WEAK_REF {
         
         return equals((@a).tpe, (@b).tpe)
-    }
-    if kind == TypeKind::INTERFACE_IMPL {
-        return equals(a.intf, b.intf) and equals(a.tpe, b.tpe) and a.variants == b.variants
     }
     if kind == TypeKind::STATIC_ARRAY {
         return (@a).length == (@b).length and equals((@a).tpe, (@b).tpe)
@@ -1735,13 +1754,6 @@ export def convert_type_score(a: &Type, b: &Type, module: &toolchain::Module, is
         }
     }
 
-    if a.kind == TypeKind::INTERFACE_IMPL {
-        if convert_type_score(a.intf, b, module) < 0 { return -1 }
-        b = make_interface_impl(a.intf, b, module.scope)
-        if equals(a, b) { return 0 }
-        return -1
-    }
-
     let intfp = get_interface(a)
     if intfp {
         if a.kind == TypeKind::REFERENCE and b.kind == TypeKind::REFERENCE {
@@ -1908,8 +1920,8 @@ def replace_parameter(tpe: &Type, types: &SMap(&Type)) -> &Type {
             tpe.tc_args(i) = replace_parameter(arg, types)
         }
     } else if is_box(tpe) {
-        if tpe._tpe {
-            tpe._tpe = replace_parameter(tpe._tpe, types)
+        if tpe.tpe {
+            tpe._tpe = replace_parameter(tpe.tpe, types)
         }
     } else if tpe.kind == TypeKind::FUNCTION or tpe.kind == TypeKind::CLOSURE {
         for var i in 0..vector::length(tpe.parameter_t) {
@@ -1948,9 +1960,9 @@ export def replace_type_defs(
     }
 
     for var i in 0..vector::length(param_a) {
-        let left = param_a(i)
+        let left = param_a.get(i)
         
-        let ltpe = left.tpe
+        let ltpe = copy(left.tpe)
         if not ltpe { continue }
 
         var right: *NamedParameter = null
@@ -1976,14 +1988,9 @@ export def replace_type_defs(
         if not rtpe { return }
         if convert_type_score(ltpe, rtpe, module, impl = impl) < 0 { return }
 
-        if is_interface(ltpe) and replace {
-            @ltpe = @make_interface_impl(copy(ltpe), rtpe, module.scope)
-            continue
-        }
-
         let intf = get_interface(ltpe)
         if intf and replace {
-            @ltpe = @rtpe
+            left._tpe = rtpe
             continue
         }
 
@@ -1994,6 +2001,7 @@ export def replace_type_defs(
             }
         } else {
             find_type_defs(module, ltpe, rtpe, types_map, replace)
+            left._tpe = ltpe
         }
 
         for var j in (i + 1)..vector::length(param_a) {
@@ -2122,8 +2130,12 @@ export def overload_score(
     return sum
 }
 
-export def mangle_function_name(name: Str, parameter_t: &Vector(NamedParameter), test: bool = false) -> Str {
-    var res = name + "::("
+export def mangle_function_name(name: Str, parameter_t: &Vector(NamedParameter), test: bool = false, context: &toolchain::Module = null) -> Str {
+    var res = name
+    if context {
+        res = context.module + "#" + name
+    }
+    res += "::("
 
     let len = vector::length(parameter_t)
     for var i in 0..len {
@@ -2377,16 +2389,19 @@ def lookup_type_constructor(tc: &parser::Node, node: &parser::Node, state: &Stat
     tpe.tc_node = node
     tpe.tc_node.module = state.module
     tpe.module = state.module
-    tpe.cache = map::make(type &Type)
+    tpe.cache = map::make(TypeRef, type &Type)
     return tpe
 }
 
 // This generates concrete functons when refering to type constructors
 export def generate_concrete_functions(type_constructor: &Type, tpe: &Type, state: &State) {
     if consteval::is_static { return }
+    if is_polymorph(tpe) { return }
+
     let functions = get_member_functions(tpe)
     for var j in 0..vector::length(functions) {
         let function = functions(j)
+
         let ftpe = copy(function.function)
         if ftpe.kind != TypeKind::FUNCTION { continue }
 
@@ -2394,27 +2409,12 @@ export def generate_concrete_functions(type_constructor: &Type, tpe: &Type, stat
         pars.push([ _tpe = tpe ] !NamedParameter)
         
         replace_type_defs(ftpe.parameter_t, ftpe.return_t, pars, null, state.module)
-        ftpe.type_name = mangle_function_name(append_module(ftpe.name, ftpe.module.module), ftpe.parameter_t)
-        
-        if not is_polymorph(tpe) and not is_polymorph(ftpe) {
+        ftpe.type_name = mangle_function_name(append_module(ftpe.name, ftpe.module.module), ftpe.parameter_t, context = ftpe.context)
+
+        if not is_polymorph(ftpe) {
             let new_entry = create_type_entry(tpe, function.exported, ftpe, function.module)
             if new_entry {
-                let state2 = consteval::copy_state(state)
-                state2.scope = ftpe.node.module.scope
-                state2.module = ftpe.node.module
-                state2.function_stack = vector::make(type &compiler::Function)
-                if state.function_stack.length > 0 {
-                    state2.function_stack.push(state.function_stack(0))
-                }
-                
-                if not scope::has_function(state.scope, ftpe) {
-                    if consteval::is_static {
-                        let value = scope::get_function(state2.scope, parser::make_identifier(ftpe.name), pars, false, true, force_compile = false)
-                        consteval::compile_function(value, state2.scope, pars)
-                    } else {
-                        walk_Def_with_type_argument(ftpe.node, pars, state.scope, state2)
-                    }
-                }
+                let score, value = scope::get_function_check(state.scope, parser::make_identifier(ftpe.name), pars, false, true, force_compile = true, context = state.context)
             }
         }
     }
@@ -2429,10 +2429,11 @@ export def type_lookup(node: &parser::Node, state: &State, current_type: &Type =
     if tpe and type_constructor and type_constructor.kind != TypeKind::STUB {
         let type_name = debug::type_to_str(tpe, full_name = true)
 
-        if not map::contains(type_constructor.cache, type_name) {
-            type_constructor.cache(type_name) = null
+        let ref = [module = state.get_context(), name = type_name] !typechecking::TypeRef
+        if not map::contains(type_constructor.cache, ref) {
+            type_constructor.cache(ref) = null
             generate_concrete_functions(type_constructor, tpe, state)
-            type_constructor.cache(type_name) = (tpe if tpe.tc_tpe !* == type_constructor !* else null !&Type)
+            type_constructor.cache(ref) = (tpe if tpe.tc_tpe !* == type_constructor !* else null !&Type)
         }
     }
     if tpe and (tpe.kind == TypeKind::STRUCT or tpe.kind == TypeKind::UNION) {
@@ -4163,7 +4164,7 @@ export def lookup_parameters(node: &parser::Node, state: &State) -> &Type {
         }
     }
 
-    tpe.type_name = mangle_function_name(append_module(tpe.name, tpe.module.module), tpe.parameter_t, test)
+    tpe.type_name = mangle_function_name(append_module(tpe.name, tpe.module.module), tpe.parameter_t, test, tpe.context)
     node.tpe = tpe
 
     return tpe
@@ -4311,14 +4312,10 @@ def walk_Lambda_body(node: &parser::Node, state: &State) {
         let np = tpe.parameter_t(i + 1)
         if not np.node { continue }
         var tpe2 = np.tpe
-        if tpe2 {
-            if tpe2.kind == TypeKind::INTERFACE_IMPL {
-                tpe2 = tpe2.tpe
-            } else if tpe2.kind == TypeKind::TO_INFER {
-                errors::errorn(np.node, "Couldn't infer type for lambda parameter")
-                node.value.lambda.function = null // So that this doesn't make it to compile
-                return
-            }
+        if tpe2 and tpe2.kind == TypeKind::TO_INFER {
+            errors::errorn(np.node, "Couldn't infer type for lambda parameter")
+            node.value.lambda.function = null // So that this doesn't make it to compile
+            return
         }
 
         let value = scope::create_variable(inner_scope, np.node, parser::ShareMarker::NONE, parser::VarDecl::VAR, tpe2, null)
@@ -4384,7 +4381,7 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
     let dllexport = node.value.def_.dllexport
     let impl = node.value.def_.impl
     let test = node.value.def_.test
-    let outer_scope = node.scope
+    var outer_scope = state.context if state.context else node.scope
     let inner_scope = node.inner_scope
     let imported = (share !int & parser::ShareMarker::IMPORT !int) !bool
 
@@ -4492,7 +4489,8 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
             }
         }
 
-        tpe = make_function_type_n(name, node.tpe.parameter_t, return_t, state.module, extern, test = test)
+        tpe = make_function_type_n(name, node.tpe.parameter_t, return_t, state.module, extern, test = test, context = outer_scope.module if polymorph else null)
+
         tpe.node = node
         check_is_valid_function(name, node.tpe.parameter_t, state)
     } 
@@ -4500,7 +4498,7 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
     if not function {
         function = [
             tpe = tpe,
-            module = state.module,
+            module = outer_scope.module,
             locals = map::make(type &Type),
             unmangled = parser::identifier_to_str(name),
             is_closure = node.parent.kind != parser::NodeKind::PROGRAM,
@@ -4533,9 +4531,6 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
                     np._tpe = null
                 }
             }
-            if tpe2 and tpe2.kind == TypeKind::INTERFACE_IMPL {
-                tpe2 = tpe2.tpe
-            }
             if np.varargs {
                 if tpe2 {
                     let value = scope::create_variable(inner_scope, np.node, parser::ShareMarker::NONE, parser::VarDecl::VAR, array(tpe2), null)
@@ -4558,7 +4553,11 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
         errors::current_function = tpe.type_name
         errors::current_signature = node.signature_hash
         if not function.value {
-            function.value = scope::create_function(outer_scope, name, share, tpe, phase, node, consteval::copy_state(state), impl = impl)
+            if polymorph and parser::identifier_to_str(name) != "construct" {
+                function.value = scope::create_polymorph(outer_scope, node.scope, name, tpe, phase, node, consteval::copy_state(state), impl = impl)
+            } else {
+                function.value = scope::create_function(outer_scope, name, share, tpe, phase, node, consteval::copy_state(state), impl = impl)
+            }
             if is_closure { state.module.closures.push(function.value) }
             function.value.polymorph = polymorph
             function.value.imported = imported
@@ -5086,13 +5085,19 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
         if check_for_apply_and_update(node, left, arguments, state) { return true }
         if (@left).kind == parser::NodeKind::IDENTIFIER {
             let only_function = node.value.func_call.is_member_access
-            var exists, function = scope::get_function_check(state.scope, left, arguments, false, dry_run, not consteval::is_static, only_function = only_function)
+            var exists, function = scope::get_function_check(state.scope, left, arguments, dry_run, not consteval::is_static, only_function = only_function, context = state.context)
             left.svalue = function
+
+            // Access check
+            if function and (function.share !int & parser::ShareMarker::EXPORT !int == 0) and function.module != node.scope.module and function.module != state.context.module {
+                errors::errorn(left, "Can't access function ", function.tpe.type_name)
+                function = null
+            }
 
             if not function {
                 scope::create_dependency(state.current_value(), scope::make_ident(parser::identifier_to_str(left)))
                 if dry_run { return false }
-            } else {
+            } else { 
                 scope::add_reference(function, left)
             }
 
@@ -5326,7 +5331,7 @@ def walk_IfExpr(node: &parser::Node, state: &State) {
     } else if if_false.tpe and if_false.tpe.kind == TypeKind::NULL and (is_ref_or_weak(if_true.tpe) or is_pointer(if_true.tpe)) {
         node.tpe = if_true.tpe
     } else if not equals(if_true.tpe, if_false.tpe) {
-        errors::errorn(node, "If expression needs to have a single type")
+        errors::errorn(node, "If expression needs to have a single type. Types were ", debug::type_to_str(if_true.tpe), " and ", debug::type_to_str(if_false.tpe))
     } else {
         node.tpe = if_true.tpe
     }
@@ -6032,7 +6037,10 @@ export def walk(parent: &parser::Node, node: &parser::Node, state: &State) {
         case parser::NodeKind::CASE
             walk_Case(node, state)
         case parser::NodeKind::DEF
+            let prev_context = state.context
+            state.context = node.scope
             walk_Def(node, state)
+            state.context = prev_context
         case parser::NodeKind::IMPORT
             walk_Import(node, state)
         case parser::NodeKind::CAST
@@ -6164,35 +6172,6 @@ def find_dependencies(type_variables: &Vector(&scope::Value), tpe: &Type) {
     }
 }
 
-export def make_interface_impl(intf: &Type, wrap: &Type, context: &scope::Scope) -> &Type {
-    let module = context.module
-    if not module {
-        return wrap
-    }
-    
-    var impl = module.get_impl(intf, wrap)
-    if impl { return impl }
-    impl = make_type_raw(TypeKind::INTERFACE_IMPL)
-
-    let variants = set::make(type &typechecking::Type)
-    for var member in intf.members {
-        let param = copy_parameter_t(member.parameter_t)
-        param.insert(0, [ _tpe = wrap ] !NamedParameter)
-        let fun = scope::get_function(context, parser::make_identifier(member.name), param, dry_run = true)
-        if not fun { return wrap }
-        variants.add(fun.tpe)
-    }
-    impl.variants = variants
-    impl._tpe = wrap
-    impl.intf = intf
-    impl.module = module
-
-    if not consteval::is_static {
-        module.add_impl(intf, wrap, impl)
-    }
-    return impl
-}
-
 export def walk_Def_with_type_argument(node: &parser::Node, parameter_t: &Vector(NamedParameter), context: &scope::Scope, state: &State) -> &parser::Node {
     let old_node = node
     node = parser::deep_copy_node(node)
@@ -6204,7 +6183,7 @@ export def walk_Def_with_type_argument(node: &parser::Node, parameter_t: &Vector
     let module = context.module
     context = module.scope
 
-    var in_context = false
+    /*var in_context = false
     var super_scope = node.scope
     while super_scope.parent and super_scope.parent != builtins::builtins {
         if super_scope !* == context !* {
@@ -6217,10 +6196,9 @@ export def walk_Def_with_type_argument(node: &parser::Node, parameter_t: &Vector
     // Temporarily change parent scope to get into the context of the invocation
     if not in_context {
         super_scope.parent = context
-    }
+    }*/
     
     node.inner_scope = scope::enter_function_scope(node.scope)
-    node.inner_scope.module = module
 
     let share = node.value.def_.share
     var tpe = node.tpe
@@ -6255,7 +6233,7 @@ export def walk_Def_with_type_argument(node: &parser::Node, parameter_t: &Vector
 
     let types_map = map::make(type &Type)
     replace_type_defs(tpe.parameter_t, tpe.return_t, parameter_t, types_map, context.module)
-    tpe.type_name = mangle_function_name(append_module(tpe.name, tpe.module.module), tpe.parameter_t, test)
+    tpe.type_name = mangle_function_name(append_module(tpe.name, tpe.module.module), tpe.parameter_t, test, context.module)
 
     // TODO This is quite hacky but we need to copy the nodes
     for var i in 0..vector::length(node.value.def_.params) {
@@ -6279,6 +6257,7 @@ export def walk_Def_with_type_argument(node: &parser::Node, parameter_t: &Vector
     let old_scope = state.scope
     state.scope = node.inner_scope
     node.value.def_.has_lookup = false
+    node.tpe.context = context.module
     node.tpe = lookup_parameters(node, state)
 
     // Replace contextual type parameters
@@ -6297,8 +6276,12 @@ export def walk_Def_with_type_argument(node: &parser::Node, parameter_t: &Vector
         let first_param = tpe.parameter_t(0)
         create_type_entry(first_param.tpe, (share !int & parser::ShareMarker::EXPORT !int) != 0, tpe, state.module, true)
     }
-    
+
+    let prev_context = state.context
+    state.context = context
     walk_Def(node, state, polymorph = true)
+    state.context = prev_context
+
     state.scope = old_scope
     let function = node.value.def_.function
     function.value.is_internal = true // So that generic functions don't show up in autocomplete
@@ -6307,8 +6290,9 @@ export def walk_Def_with_type_argument(node: &parser::Node, parameter_t: &Vector
         scope::create_dependency(function.value, tvar)
     }
 
+    node.scope = context.module.scope
     // This makes sure that the function is walked by the compiler
-    state.module.node.body.push(node)
+    context.module.node.body.push(node)
 
     // Extra state for the repl
     if toolchain::is_in_repl {
@@ -6317,9 +6301,9 @@ export def walk_Def_with_type_argument(node: &parser::Node, parameter_t: &Vector
         consteval::const_module.delayed_compile.push(node)
     }
     
-    if not in_context {
-        super_scope.parent = builtins::builtins
-    }
+    //if not in_context {
+    //    super_scope.parent = builtins::builtins
+    //}
     
     return node
 }
