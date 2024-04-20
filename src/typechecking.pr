@@ -84,6 +84,7 @@ export type StructMember = struct {
     is_bitfield: bool
     bit_size: size_t
     bit_offset: size_t
+    is_embed: bool
 }
 
 export type StructuralTypeMember = struct {
@@ -899,7 +900,7 @@ export def clear_type_cache {
     }
 }
 
-export def iterate_member_functions(tpe: &Type, visited: &Set(&Type) = null) -> TypeEntryMember {
+export def iterate_member_functions(tpe: &Type, visited: &Set(&Type) = null, check_embed: bool = true) -> TypeEntryMember {
     if not tpe { return }
     let name = debug::type_to_str(tpe, full_name = true)
     
@@ -907,6 +908,13 @@ export def iterate_member_functions(tpe: &Type, visited: &Set(&Type) = null) -> 
     if entry {
         for var i in 0..entry.functions.length {
             yield entry.functions(i)
+        }
+        if check_embed and entry.tpe and is_struct(entry.tpe) {
+            for var field in @entry.tpe.fields {
+                if field.is_embed {
+                    yield from iterate_member_functions(field.tpe, visited)
+                }
+            }
         }
     }
 
@@ -1256,7 +1264,7 @@ def is_getter(mb: StructuralTypeMember) -> bool {
     return mb.parameter_t.length == 0
 }
 
-def has_function(entry: &TypeEntry, intf: &Type, mb: StructuralTypeMember, module: &toolchain::Module, visited: &Set(&Type) = null) -> bool {
+def has_function(entry: &TypeEntry, intf: &Type, mb: StructuralTypeMember, module: &toolchain::Module, visited: &Set(&Type) = null, check_embed: bool = true) -> bool {
     var tpe = entry.tpe
 
     if tpe.kind == typechecking::TypeKind::STRUCT {
@@ -1280,7 +1288,7 @@ def has_function(entry: &TypeEntry, intf: &Type, mb: StructuralTypeMember, modul
         }
     }
 
-    for var member in iterate_member_functions(entry.tpe, visited) {
+    for var member in iterate_member_functions(entry.tpe, visited, check_embed) {
         let function = member.function
         if function.name != mb.name { continue }
         if module != member.module and not member.exported { continue }
@@ -1326,7 +1334,7 @@ def has_function(entry: &TypeEntry, intf: &Type, mb: StructuralTypeMember, modul
 
 // Returns true if a implements b
 // b needs to be a structural type
-export def implements(a: &Type, b: &Type, module: &toolchain::Module, visited: &Set(&Type) = null) -> bool {
+export def implements(a: &Type, b: &Type, module: &toolchain::Module, visited: &Set(&Type) = null, check_embed: bool = true) -> bool {
     if not a or not b { return false }
     assert b.kind == TypeKind::STRUCTURAL
     if a.kind == typechecking::TypeKind::REFERENCE and equals(b, a.tpe) {
@@ -1336,7 +1344,7 @@ export def implements(a: &Type, b: &Type, module: &toolchain::Module, visited: &
     var type_entry = create_type_entry(a)
     if not type_entry { return false }
     let nameb = debug::type_to_str(b, full_name = true)
-    if type_entry.cached.contains(nameb) {
+    if type_entry.cached.contains(nameb) and check_embed {
         return type_entry.cached(nameb) == CacheEntry::CONTAINS
     }
 
@@ -1378,7 +1386,7 @@ export def implements(a: &Type, b: &Type, module: &toolchain::Module, visited: &
                 found = true
             }
             if not found {
-                found = has_function(type_entry, b, mb, module, visited.copy())
+                found = has_function(type_entry, b, mb, module, visited.copy(), check_embed)
             }
             if not found { 
                 type_entry.cached(nameb) = CacheEntry::NOT_CONTAINS
@@ -1391,7 +1399,7 @@ export def implements(a: &Type, b: &Type, module: &toolchain::Module, visited: &
         for var i in 0..vector::length(b.members) {
             let mb = b.members(i)
 
-            if not has_function(type_entry, b, mb, module, visited.copy()) { 
+            if not has_function(type_entry, b, mb, module, visited.copy(), check_embed) { 
                 type_entry.cached(nameb) = CacheEntry::NOT_CONTAINS
                 return false 
             }
@@ -1559,6 +1567,20 @@ export def convert_type_score(a: &Type, b: &Type, module: &toolchain::Module, is
             return 2
         } else if a.variants.contains(b) {
             return 3
+        }
+    }
+
+    // Embedded structs
+    if b.kind == TypeKind::STRUCT or is_ref(b) and b.tpe and b.tpe.kind == TypeKind::STRUCT {
+        var nb = b.tpe if is_ref(b) else b
+        for var field in @nb.fields {
+            if field.is_embed {
+                if equals(field.tpe, a) {
+                    return 7
+                } else if is_ref(a) and equals(field.tpe, a.tpe) {
+                    return 8
+                }
+            }
         }
     }
 
@@ -2634,19 +2656,25 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
             var field_tpe: &Type = null
             var name: Str
             var is_bitfield = false
+            var is_embed = field.value.id_decl_struct.is_embed
             var bit_size = 0 !size_t
 
             var field_type: &Type = null
-            if current_type and current_type.kind != TypeKind::STUB { field_type = current_type.fields(i).tpe }
+            if not is_embed and current_type and current_type.kind != TypeKind::STUB { field_type = current_type.fields(i).tpe }
 
             if (@field).kind == parser::NodeKind::ID_DECL_STRUCT {
-                let ident = (@field).value.id_decl_struct.ident
-                name = last_ident_to_str(ident)
-                if field.value.id_decl_struct.tpe { field.value.id_decl_struct.tpe.parent = field }
-                field_tpe = lookup_field_type((@field).value.id_decl_struct.tpe, state, field_type, cache)
-                if field.value.id_decl_struct.is_bitfield {
-                    is_bitfield = true
-                    bit_size = field.value.id_decl_struct.bit_size
+                if field.value.id_decl_struct.is_embed {
+                    let ftpe = field.value.id_decl_struct.tpe
+                    field_tpe = type_lookup(ftpe, state, ftpe.tpe, false, cache)
+                } else {
+                    let ident = (@field).value.id_decl_struct.ident
+                    name = last_ident_to_str(ident)
+                    if field.value.id_decl_struct.tpe { field.value.id_decl_struct.tpe.parent = field }
+                    field_tpe = lookup_field_type((@field).value.id_decl_struct.tpe, state, field_type, cache)
+                    if field.value.id_decl_struct.is_bitfield {
+                        is_bitfield = true
+                        bit_size = field.value.id_decl_struct.bit_size
+                    }
                 }
             } else if (@field).kind == parser::NodeKind::STRUCT_T or
                 (@field).kind == parser::NodeKind::UNION_T {
@@ -2658,7 +2686,8 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
                 line = line, 
                 name = name, 
                 tpe = field_tpe,
-                is_bitfield = is_bitfield, 
+                is_bitfield = is_bitfield,
+                is_embed = is_embed,
                 bit_size = bit_size
             ] !StructMember
         }
@@ -5588,7 +5617,11 @@ def resolve_member(fields: &[StructMember], name: String) -> &Type {
                 return member.tpe
             }
         } else {
-            let member = resolve_member((@member.tpe).fields, name)
+            var tpe = member.tpe
+            if member.is_embed and is_ref(member.tpe) {
+                tpe = member.tpe.tpe
+            }
+            let member = resolve_member(tpe.fields, name)
             if member { return member }
         }
     }
@@ -5685,6 +5718,26 @@ def walk_MemberAccess_aggregate(node: &parser::Node, ucs: bool, state: &State) -
         return false
     }
     return true
+}
+
+// TODO Make this a generator, doesn't work for some reason
+def flatten_fields(tpe: &Type, state: &State, v: &Vector(StructMember) = null) -> &Vector(StructMember) {
+    if not v { v = vector::make(StructMember) }
+    if not tpe { return v }
+    if not is_struct(tpe) { 
+        errors::errorn(tpe.node, "Invalid embed, needs to be a struct or a reference to a struct")
+        return v
+    }
+
+    for var field in @tpe.fields {
+        if field.is_embed {
+            let tpe = field.tpe.tpe if is_box(field.tpe) else field.tpe
+            flatten_fields(tpe, state, v)
+        } else {
+            v.push(field)
+        }
+    }
+    return v
 }
 
 def walk_StructLit(node: &parser::Node, state: &State) {
@@ -5841,8 +5894,7 @@ def walk_StructLit(node: &parser::Node, state: &State) {
         let name = last_ident_to_str((@kwarg).value.named_arg.name)
 
         var found = false
-        for var j in 0..(@tpe).fields.size {
-            let field = (@tpe).fields(j)
+        for var field in flatten_fields(tpe, state) {
             if field.name == name {
                 found = true
 
