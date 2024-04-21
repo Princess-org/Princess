@@ -1522,7 +1522,7 @@ def convert_ref_to_ptr(tpe: &typechecking::Type, value: Value, loc: &Value, stat
     return bitcast_ret
 }
 
-def convert_value_to_ref(tpe: &typechecking::Type, value: Value, loc: &Value, state: &State) -> Value {
+def convert_value_to_ref(tpe: &typechecking::Type, value: Value, loc: &Value, state: &State, initial_ref_count: size_t = 0) -> Value {
     if tpe.tpe and value.tpe.kind != tpe.tpe.kind {
         value = convert_to(loc, value, tpe.tpe, state)
     }
@@ -1564,7 +1564,7 @@ def convert_value_to_ref(tpe: &typechecking::Type, value: Value, loc: &Value, st
         let store1 = make_insn_dbg(InsnKind::STORE, loc)
         store1.value.store = [
             loc = refcount,
-            value = [ kind = ValueKind::INT, tpe = builtins::int64_, i = 0 ] !Value
+            value = [ kind = ValueKind::INT, tpe = builtins::int64_, i = initial_ref_count ] !Value
         ] !InsnStore
         push_insn(store1, state)
     }
@@ -2077,6 +2077,19 @@ def convert_to(kind: InsnKind, loc: &Value, value: Value, tpe: &typechecking::Ty
     return ret
 }
 
+def get_embed_field(left: &typechecking::Type, right: &typechecking::Type, state: &State) -> &typechecking::StructMember {
+    if is_interface(left) and is_struct(right) {
+        if typechecking::implements(right, left, state.module, check_embed = false) { return null }
+        for var field in @right.fields {
+            if field.is_embed and typechecking::implements(field.tpe, left, state.module, check_embed = false) {
+                return field
+            }
+        }
+    }   
+
+    return null
+}
+
 // value gets loaded by this function
 def convert_to(loc: &Value, value: Value, tpe: &typechecking::Type, state: &State) -> Value {
     if not value.tpe or not tpe { return NO_VALUE }
@@ -2112,6 +2125,42 @@ def convert_to(loc: &Value, value: Value, tpe: &typechecking::Type, state: &Stat
             state.store(addr, value, loc)
             create_temporary(addr, value, loc, state)
             return value
+        }
+    }
+    let left = tpe.tpe if is_ref(tpe) else tpe
+    let right = value.tpe.tpe if is_ref(value.tpe) else value.tpe
+    let embed_field = get_embed_field(left, right, state)
+
+    // Try to convert to embedded struct / reference
+    if is_struct(right) and (is_struct(left) or embed_field) {
+        var is_embed = false
+        var field: StructMember
+        if embed_field {
+            is_embed = true
+            field = @embed_field
+        } else {
+            for var f in @right.fields {
+                if f.is_embed and (equals(f.tpe, tpe) or equals(f.tpe, tpe.tpe)) {
+                    is_embed = true
+                    field = f
+                    break
+                }
+            }
+        }
+        if is_embed {
+            var unwrap = load_value(value, loc, state)
+            // Unwrap reference on the value side
+            if is_ref(value.tpe) {
+                let ref = state.extract_value(pointer(right), unwrap, [1], loc)
+                unwrap = state.load(right, ref, loc)
+            }
+            // Extract element
+            var elem = state.extract_value(field.tpe, unwrap, [field.index !int], loc)
+            // Wrap in reference if needed
+            if is_ref(tpe) and not is_ref(field.tpe) {
+                elem = convert_value_to_ref(tpe, elem, loc, state, 1)
+            }
+            return elem
         }
     }
     if tpe.kind == value.tpe.kind and value.tpe.is_anon and typechecking::is_struct(value.tpe) {
@@ -2322,7 +2371,18 @@ def walk_StructLitUnion(node: &parser::Node, state: &State) -> Value {
     return load_ret
 }
 
+// TODO add loc to this
 def locals_to_insert_value(value: &Value, state: &State) {
+    import_cstd_function("malloc", state)
+
+    var aref = is_ref(value.tpe)
+    let reftpe = value.tpe
+    var new_value = value
+    if aref {
+        new_value = @value
+        new_value.tpe = value.tpe.tpe
+    }
+
     let values = value.values
     for var i in 0..values.size {
         let val = values(i)
@@ -2332,22 +2392,87 @@ def locals_to_insert_value(value: &Value, state: &State) {
                 tpe = val.tpe
             ] !Value
 
-            let ret = make_local_value(value.tpe, null, state)
+            let ret = make_local_value(new_value.tpe, null, state)
             
             let index = allocate_ref(int, 1)
             index(0) = i
             let insert = make_insn(InsnKind::INSERTVALUE)
             (@insert).value.insert_value = [
                 ret = ret,
-                value = @value,
+                value = @new_value,
                 element = val,
                 index = index
             ] !InsnInsertValue
             
             push_insn(insert, state)
-            @value = ret
+            @new_value = ret
         }
     }
+    if aref {
+        @value = convert_value_to_ref(reftpe, @new_value, null, state, 1)
+    }
+}
+
+def struct_lit_create_value(tpe: &typechecking::Type, kwargs: &Vector(&parser::Node), loc: &Value, state: &State) -> &[Value] {
+    if not tpe { return null }
+    if is_ref(tpe) { tpe = tpe.tpe }
+
+    var types = vector::make(type &typechecking::Type)
+    if tpe.kind == typechecking::TypeKind::TUPLE {
+        types = tpe.return_t
+    } else {
+        for var field in @tpe.fields {
+            types.push(field.tpe)
+        }
+    }
+    
+    let values = allocate_ref(Value, types.length)
+    for var i in 0..values.size {
+        values(i) = [
+            kind = ValueKind::ZEROINITIALIZER,
+            tpe = types(i)
+        ] !Value
+    }
+
+    if is_struct(tpe) {
+        for var k in 0..tpe.fields.size {
+            let field = tpe.fields(k)
+            if field.is_embed {
+                let new_values = struct_lit_create_value(field.tpe, kwargs, loc, state)
+                let new_value = [
+                    kind = ValueKind::STRUCT,
+                    values = new_values,
+                    tpe = field.tpe
+                ] !&Value
+
+                locals_to_insert_value(new_value, state)
+
+                values(k) = @new_value
+            }
+        }
+    }
+    
+    for var i in 0..vector::length(kwargs) {
+        let kwarg = kwargs(i)
+        let name = typechecking::last_ident_to_str((@kwarg).value.named_arg.name)
+        let value = walk_expression((@kwarg).value.named_arg.value, state)
+        
+        for var j in 0..tpe.fields.size {
+            let field = tpe.fields(j)
+            if field.name == name {
+                values(j) = convert_to(kwarg, value, field.tpe, state)
+                if typechecking::is_ref(field.tpe) {
+                    increase_ref_count_of_value(values(j), loc, state)
+                } else if typechecking::has_copy_constructor(field.tpe) {
+                    let ret = state.alloca(values(j).tpe, loc, no_yield_capture = true)
+                    insert_copy_constructor(ret, values(j), loc, state)
+                    values(j) = state.load(values(j).tpe, ret, loc)
+                }
+                break
+            }
+        }
+    }
+    return values
 }
  
 def walk_StructLit(node: &parser::Node, state: &State) -> Value {
@@ -2367,23 +2492,8 @@ def walk_StructLit(node: &parser::Node, state: &State) -> Value {
     } else if tpe.kind == typechecking::TypeKind::UNION {
         value = walk_StructLitUnion(node, state)
     } else {
-        var types = vector::make(type &typechecking::Type)
-        if tpe.kind == typechecking::TypeKind::TUPLE {
-            types = tpe.return_t
-        } else {
-            for var field in @tpe.fields {
-                types.push(field.tpe)
-            }
-        }
-
-        let values = allocate_ref(Value, types.length)
-        for var i in 0..values.size {
-            values(i) = [
-                kind = ValueKind::ZEROINITIALIZER,
-                tpe = types(i)
-            ] !Value
-        }
-        for var i in 0..vector::length(args) {
+        // args no longer valid
+        /*for var i in 0..vector::length(args) {
             let arg = args(i)
             let arg_tpe = types(i)
             let value = walk_expression(arg, state)
@@ -2395,27 +2505,10 @@ def walk_StructLit(node: &parser::Node, state: &State) -> Value {
                 insert_copy_constructor(ret, values(i), loc, state)
                 values(i) = state.load(values(i).tpe, ret, loc)
             }
-        }
-        for var i in 0..vector::length(kwargs) {
-            let kwarg = kwargs(i)
-            let name = typechecking::last_ident_to_str((@kwarg).value.named_arg.name)
-            let value = walk_expression((@kwarg).value.named_arg.value, state)
-            
-            for var j in 0..tpe.fields.size {
-                let field = tpe.fields(j)
-                if field.name == name {
-                    values(j) = convert_to(kwarg, value, field.tpe, state)
-                    if typechecking::is_ref(field.tpe) {
-                        increase_ref_count_of_value(values(j), loc, state)
-                    } else if typechecking::has_copy_constructor(field.tpe) {
-                        let ret = state.alloca(values(j).tpe, loc, no_yield_capture = true)
-                        insert_copy_constructor(ret, values(j), loc, state)
-                        values(j) = state.load(values(j).tpe, ret, loc)
-                    }
-                    break
-                }
-            }
-        }
+        }*/
+
+        let values = struct_lit_create_value(tpe, kwargs, loc, state)
+        
         value = [
             kind = ValueKind::STRUCT,
             values = values,
@@ -3987,6 +4080,8 @@ def walk_MemberAccess_gep(node: &parser::Node, tpe: &typechecking::Type,
 type Member = struct {
     index: int
     tpe: &typechecking::Type
+    is_embed: bool
+    value: &Value
 }
 
 // This list needs to be reversed to find the actual indices
@@ -4005,22 +4100,38 @@ def resolve_member(vec: &Vector(Member), tpe: &typechecking::Type, name: Str) ->
                 return true
             }
         } else {
-            let found = resolve_member(vec, field.tpe, name)
+            var tpe = field.tpe
+            if field.is_embed and is_ref(tpe) { tpe = tpe.tpe }
+            let found = resolve_member(vec, tpe, name)
             if found {
                 let member = [
                     index = field.index !int,
-                    tpe = field.tpe
+                    tpe = field.tpe,
+                    is_embed = field.is_embed
                 ] !Member
                 vec.push(member)
                 return true
             }
         }
     }
+    for var field in @tpe.const_fields {
+        if field.name == name {
+            let member = [
+                value = field.value
+            ] !Member
+            vec.push(member)
+            return true
+        }
+    }
+
     return false
 }
 
 def walk_MemberAccess_struct(node: &parser::Node, tpe: &typechecking::Type, member: &Member, value: Value, state: &State) -> Value {
     let loc = make_location(node, state)
+    if member.value {
+        return @member.value
+    }
 
     var member_type = member.tpe
     if member.tpe.kind == typechecking::TypeKind::BOX {
@@ -4028,7 +4139,6 @@ def walk_MemberAccess_struct(node: &parser::Node, tpe: &typechecking::Type, memb
     }
     
     if tpe.kind == typechecking::TypeKind::UNION {
-
         let index = allocate_ref(Value, 2)
         index(0) = make_int_value(0)
         index(1) = make_int_value(0)
@@ -4057,8 +4167,17 @@ def walk_MemberAccess_struct(node: &parser::Node, tpe: &typechecking::Type, memb
         let index = allocate_ref(Value, 2)
         index(0) = make_int_value(0)
         index(1) = make_int_value((@member).index)
-        return walk_MemberAccess_gep(node, tpe, member_type, value, index, state)
+        let res = walk_MemberAccess_gep(node, tpe, member_type, value, index, state)
+
+        if member.is_embed and is_ref(member.tpe) {
+            let ref = state.load(member.tpe, @res.addr, loc)
+            let ptr = state.extract_value(pointer(member.tpe.tpe), ref, [1], loc)
+            return make_address_value(pointer(member.tpe.tpe), ptr, state)
+        }
+
+        return res
     }
+        
 }
 
 def walk_MemberAccess(node: &parser::Node, state: &State) -> Value {
@@ -9427,20 +9546,38 @@ def generate_vtable_function(function: &Function, tpe: &typechecking::Type, stat
                 state.ret(NO_VALUE)
             } else {
                 // Getter
-                var deref = state.extract_value(pointer(type_entry.tpe.tpe), reference, [1])
-                var value = state.load(type_entry.tpe.tpe, deref)
                 let name = function.unmangled
-                var findex: size_t = 0
-                var ftpe: &typechecking::Type
-                for var field in @type_entry.tpe.tpe.fields {
-                    if field.name == name {
-                        findex = field.index
-                        ftpe = field.tpe
+                
+                var const_field: typechecking::StructMember
+                var is_const = false
+                let const_fields = type_entry.tpe.tpe.const_fields
+                if const_fields {
+                    for var field in @const_fields {
+                        if field.name == name {
+                            is_const = true
+                            const_field = field
+                            break
+                        }
                     }
                 }
 
-                value = state.extract_value(ftpe, value, [findex !int])
-                state.ret(value)
+                if is_const {
+                    state.ret(@const_field.value)
+                } else {
+                    var deref = state.extract_value(pointer(type_entry.tpe.tpe), reference, [1])
+                    var value = state.load(type_entry.tpe.tpe, deref)
+                    var findex: size_t = 0
+                    var ftpe: &typechecking::Type
+                    for var field in @type_entry.tpe.tpe.fields {
+                        if field.name == name {
+                            findex = field.index
+                            ftpe = field.tpe
+                        }
+                    }
+
+                    value = state.extract_value(ftpe, value, [findex !int])
+                    state.ret(value)
+                }
             }
         }
     }
