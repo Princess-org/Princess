@@ -84,7 +84,10 @@ export type StructMember = struct {
     is_bitfield: bool
     bit_size: size_t
     bit_offset: size_t
+
     is_embed: bool
+    is_const: bool
+    value: &compiler::Value
 }
 
 export type StructuralTypeMember = struct {
@@ -142,6 +145,8 @@ export type Type = struct {
     packed: bool
     // Fields for struct, array of StructMember
     fields: &[StructMember]
+    // Constants
+    const_fields: &[StructMember]
     // Vector of TypeMember
     field_types: &Vector(TypeMember)
     // Function and Tuple
@@ -1285,6 +1290,11 @@ def has_function(entry: &TypeEntry, intf: &Type, mb: StructuralTypeMember, modul
             for var field in @tpe.fields {
                 if field.name == mb.name and equals(mb.return_t(0), field.tpe) { return true }
             }
+            if tpe.const_fields {
+                for var field in @tpe.const_fields {
+                    if field.name == mb.name and equals(mb.return_t(0), field.tpe) { return true }
+                }
+            }
         }
     }
 
@@ -2242,7 +2252,7 @@ export def make_stub_type(ident: &parser::Node, state: &State, prefix: bool = tr
     return tpe 
 }
 
-export def make_union_type(fields: &[StructMember], current_type: &Type = null) -> &Type {
+export def make_union_type(fields: &[StructMember], const_fields: &[StructMember], current_type: &Type = null) -> &Type {
     let tpe = make_type_raw(TypeKind::UNION) if not current_type else current_type
     let field_types = vector::make(TypeMember)
     
@@ -2271,6 +2281,7 @@ export def make_union_type(fields: &[StructMember], current_type: &Type = null) 
     tpe.size = size
     tpe.align = align
     tpe.fields = fields
+    tpe.const_fields = const_fields if const_fields else allocate_ref(StructMember, 0)
     tpe.field_types = field_types
 
     return tpe
@@ -2291,7 +2302,7 @@ export def make_tuple_type(types: &Vector(&Type)) -> &Type {
     return tpe
 }
 
-export def make_struct_type(fields: &[StructMember], current_type: &Type = null) -> &Type {
+export def make_struct_type(fields: &[StructMember], const_fields: &[StructMember] = null, current_type: &Type = null) -> &Type {
     let struct_tpe = make_type_raw(TypeKind::STRUCT) if not current_type else current_type
     let field_types = vector::make(TypeMember)
 
@@ -2388,6 +2399,7 @@ export def make_struct_type(fields: &[StructMember], current_type: &Type = null)
     struct_tpe.size = offset
     struct_tpe.align = align
     struct_tpe.fields = fields
+    struct_tpe.const_fields = const_fields if const_fields else allocate_ref(StructMember, 0)
     struct_tpe.field_types = field_types
 
     return struct_tpe
@@ -2646,7 +2658,9 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
     } else if node.kind == parser::NodeKind::STRUCT_T or node.kind == parser::NodeKind::UNION_T {
         
         let length = vector::length(node.value.body)
-        let fields = allocate_ref(StructMember, length)
+        let fields = vector::make(StructMember)
+        let const_fields = vector::make(StructMember)
+
         for var i in 0..length {
             let field = node.value.body(i)
             if not field { continue }
@@ -2658,6 +2672,8 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
             var is_bitfield = false
             var is_embed = field.value.id_decl_struct.is_embed
             var bit_size = 0 !size_t
+            var is_const = field.value.id_decl_struct.is_const
+            var value: &compiler::Value
 
             var field_type: &Type = null
             if not is_embed and current_type and current_type.kind != TypeKind::STUB { field_type = current_type.fields(i).tpe }
@@ -2675,26 +2691,35 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
                         is_bitfield = true
                         bit_size = field.value.id_decl_struct.bit_size
                     }
+                    if is_const {
+                        // Load value for const
+                        value = consteval::expr(field.value.id_decl_struct.value, state)
+                    }
                 }
             } else if (@field).kind == parser::NodeKind::STRUCT_T or
                 (@field).kind == parser::NodeKind::UNION_T {
                 field_tpe = type_lookup(field, state, field_type, false, cache)
             }
             
-            fields(i) = [ 
+            let member = [ 
                 node = field,
                 line = line, 
                 name = name, 
                 tpe = field_tpe,
                 is_bitfield = is_bitfield,
                 is_embed = is_embed,
-                bit_size = bit_size
+                bit_size = bit_size,
+                is_const = is_const,
+                value = value
             ] !StructMember
+
+            if is_const { const_fields.push(member) }
+            else { fields.push(member) }
         }
         
-        var tpe = (make_struct_type(fields, current_type)
+        var tpe = (make_struct_type(fields.to_array(), const_fields.to_array(), current_type)
             if node.kind == parser::NodeKind::STRUCT_T
-            else make_union_type(fields, current_type))
+            else make_union_type(fields.to_array(), const_fields.to_array(), current_type))
 
         tpe.line = node.loc.line
         tpe.type_name = make_unique_name("<anonymous>", state)
@@ -3081,7 +3106,7 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
         tpe.size = (ceil(offset / biggest_type.align !double) * biggest_type.align) !int
         tpe.align = util::lcm(align !int, biggest_type.align !int)
     
-        tpe._tpe = make_union_type(fields, tpe._tpe)
+        tpe._tpe = make_union_type(fields, null, tpe._tpe)
         tpe.variants = set::make(variants)
         tpe.line = node.loc.line
 
@@ -5608,9 +5633,8 @@ export def lookup_struct_member(member: StructMember, resolved: &SSet = null) {
     }
 }
 
-def resolve_member(fields: &[StructMember], name: String) -> &Type {
-    for var i in 0..fields.size {
-        let member = fields(i)
+def resolve_member(tpe: &Type, name: String) -> &Type {
+    for var member in @tpe.fields {
         if member.name {
             if member.name == name {
                 lookup_struct_member(member)
@@ -5621,8 +5645,13 @@ def resolve_member(fields: &[StructMember], name: String) -> &Type {
             if member.is_embed and is_ref(member.tpe) {
                 tpe = member.tpe.tpe
             }
-            let member = resolve_member(tpe.fields, name)
+            let member = resolve_member(tpe, name)
             if member { return member }
+        }
+    }
+    for var member in @tpe.const_fields {
+        if member.name == name {
+            return member.tpe
         }
     }
     return null
@@ -5684,7 +5713,7 @@ def walk_MemberAccess_aggregate(node: &parser::Node, ucs: bool, state: &State) -
     if (@tpe).kind == TypeKind::STRUCT or (@tpe).kind == TypeKind::UNION {
         let name = last_ident_to_str(right)
 
-        var rtpe = resolve_member((@tpe).fields, name)
+        var rtpe = resolve_member(tpe, name)
         if not rtpe {
             if ucs {
                 if walk_MemberAccess_ucs(node, state) { return true }
