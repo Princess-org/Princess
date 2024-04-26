@@ -1420,81 +1420,56 @@ def convert_ref_to_ref(tpe: &typechecking::Type, value: Value, loc: &Value, stat
 
     add_type_meta(tpe, state)
 
-    let index1 = allocate_ref(int, 1)
-    index1(0) = 0
-    
-    let extract1_ret = make_local_value(typechecking::pointer(builtins::int64_), null, state)
-    let extract1 = make_insn_dbg(InsnKind::EXTRACTVALUE, loc)
-    extract1.value.extract_value = [
-        ret = extract1_ret,
-        value = value,
-        index = index1
-    ] !InsnExtractValue
-    push_insn(extract1, state)
+    let extract1_ret = state.extract_value(pointer(ref_meta), value, [0], loc)
+    let extract2_ret = state.extract_value(pointer(value.tpe.tpe), value, [1], loc)
+    let extract3_ret = state.extract_value(pointer(builtins::Type_), value, [2], loc)
+    let bitcast_ret = state.bitcast(pointer(tpe.tpe if tpe.tpe else builtins::int8_), extract2_ret, loc)
 
-    let index2 = allocate_ref(int, 1)
-    index2(0) = 1
-    
-    let extract2_ret = make_local_value(typechecking::pointer(value.tpe.tpe), null, state)
-    let extract2 = make_insn_dbg(InsnKind::EXTRACTVALUE, loc)
-    extract2.value.extract_value = [
-        ret = extract2_ret,
-        value = value,
-        index = index2
-    ] !InsnExtractValue
-    push_insn(extract2, state)
+    // Convert weak ref to strong reference
+    // Need to check the ref count and return a null reference if its 0
+    if is_weak_ref(tpe) and is_ref(value.tpe) {
+        let meta = state.load(ref_meta, extract1_ret, loc)
+        let refcount = state.extract_value(builtins::int64_, meta, [0], loc)
+        let iszero = state.icmp(CompareInt::ule, refcount, 
+            [ kind = ValueKind::INT, tpe = builtins::int64_, i = 0 ] !Value, loc)
+        let res = state.alloca(value.tpe, loc)
 
-    let index3 = allocate_ref(int, 1)
-    index3(0) = 2
-    
-    let extract3_ret = make_local_value(typechecking::pointer(builtins::Type_), null, state)
-    let extract3 = make_insn_dbg(InsnKind::EXTRACTVALUE, loc)
-    extract3.value.extract_value = [
-        ret = extract3_ret,
-        value = value,
-        index = index3
-    ] !InsnExtractValue
-    push_insn(extract3, state) 
+        let br = make_insn_dbg(InsnKind::BR, loc)
+        br.value.br = [ cond = iszero ] !InsnBr
+        push_insn(br, state)
+        let if_true = make_label(state)
+        push_label(if_true, state)
+        br.value.br.if_true = if_true
 
-    let bitcast_ret = make_local_value(typechecking::pointer(tpe.tpe if tpe.tpe else builtins::int8_), null, state)
-    let bitcast = make_insn_dbg(InsnKind::BITCAST, loc)
-    bitcast.value.convert = [
-        ret = bitcast_ret,
-        value = extract2_ret
-    ] !InsnConvert
-    push_insn(bitcast, state)
+        // Null reference
+        var start = [ kind = ValueKind::ZEROINITIALIZER, tpe = tpe ] !Value
+        start = state.insert_value(tpe, start, extract3_ret, [2], loc)
+        state.store(res, start, loc)
+        let br_to_end = make_insn_dbg(InsnKind::BR_UNC, loc)
+        push_insn(br_to_end, state)
 
-    var start = [ kind = ValueKind::UNDEF, tpe = tpe ] !Value
+        let if_false = make_label(state)
+        br.value.br.if_false = if_false
+        push_label(if_false, state)
 
-    let insert1_ret = make_local_value(tpe, null, state)
-    let insert1 = make_insn_dbg(InsnKind::INSERTVALUE, loc)
-    insert1.value.insert_value = [
-        ret = insert1_ret,
-        value = start,
-        element = extract1_ret,
-        index = index1
-    ] !InsnInsertValue
-    push_insn(insert1, state)
+        start = [ kind = ValueKind::UNDEF, tpe = tpe ] !Value
+        start = state.insert_value(tpe, start, extract1_ret, [0], loc)
+        start = state.insert_value(tpe, start, bitcast_ret, [1], loc)
+        start = state.insert_value(tpe, start, extract3_ret, [2], loc)
+        state.store(res, start, loc)
+        push_insn(br_to_end, state)
 
-    let insert2_ret = make_local_value(tpe, null, state)
-    let insert2 = make_insn_dbg(InsnKind::INSERTVALUE, loc)
-    insert2.value.insert_value = [
-        ret = insert2_ret,
-        value = insert1_ret,
-        element = bitcast_ret,
-        index = index2
-    ] !InsnInsertValue
-    push_insn(insert2, state)
+        let end = make_label(state)
+        br_to_end.value.br_unc.label_ = end
+        push_label(end, state)
 
-    let insert3_ret = make_local_value(tpe, null, state)
-    let insert3 = make_insn_dbg(InsnKind::INSERTVALUE, loc)
-    insert3.value.insert_value = [
-        ret = insert3_ret,
-        value = insert2_ret,
-        element = extract3_ret,
-        index = index3
-    ] !InsnInsertValue
-    push_insn(insert3, state)
+        return state.load(value.tpe, res, loc)
+    }
+
+    let start = [ kind = ValueKind::UNDEF, tpe = tpe ] !Value
+    let insert1_ret = state.insert_value(tpe, start, extract1_ret, [0], loc)
+    let insert2_ret = state.insert_value(tpe, insert1_ret, bitcast_ret, [1], loc)
+    let insert3_ret = state.insert_value(tpe, insert2_ret, extract3_ret, [2], loc)
 
     return insert3_ret
 }
@@ -1522,6 +1497,12 @@ def convert_ref_to_ptr(tpe: &typechecking::Type, value: Value, loc: &Value, stat
     return bitcast_ret
 }
 
+// Reference metadata struct
+let ref_meta = typechecking::make_struct_type([
+    [ tpe = builtins::int64_, name = "refcount" ] !typechecking::StructMember,
+    [ tpe = builtins::int64_, name = "weakcount" ] !typechecking::StructMember
+])
+
 def convert_value_to_ref(tpe: &typechecking::Type, value: Value, loc: &Value, state: &State, initial_ref_count: size_t = 0) -> Value {
     if tpe.tpe and value.tpe.kind != tpe.tpe.kind {
         value = convert_to(loc, value, tpe.tpe, state)
@@ -1542,31 +1523,15 @@ def convert_value_to_ref(tpe: &typechecking::Type, value: Value, loc: &Value, st
     var refcount = [ kind = ValueKind::NULL, tpe = pointer(builtins::int64_) ] !Value
 
     if not is_null {
+        // create ref counts
         let args1 = allocate_ref(Value, 1)
-        args1(0) = [ kind = ValueKind::INT, tpe = builtins::int64_, i = builtins::int64_.size ] !Value
-        let call1_ret = make_local_value(typechecking::pointer(builtins::int8_), null, state)
-        let call1 = make_insn_dbg(InsnKind::CALL, loc)
-        call1.value.call = [
-            name = [ kind = ValueKind::GLOBAL, name = "malloc" ] !Value,
-            ret = call1_ret,
-            args = args1
-        ] !InsnCall
-        push_insn(call1, state)
-
-        refcount = make_local_value(typechecking::pointer(builtins::int64_), null, state)
-        let bitcast1 = make_insn_dbg(InsnKind::BITCAST, loc)
-        bitcast1.value.convert = [
-            ret = refcount,
-            value = call1_ret
-        ] !InsnConvert
-        push_insn(bitcast1, state)
-
-        let store1 = make_insn_dbg(InsnKind::STORE, loc)
-        store1.value.store = [
-            loc = refcount,
-            value = [ kind = ValueKind::INT, tpe = builtins::int64_, i = initial_ref_count ] !Value
-        ] !InsnStore
-        push_insn(store1, state)
+        args1(0) = [ kind = ValueKind::INT, tpe = builtins::int64_, i = ref_meta.size] !Value
+        var call1_ret = state.call("malloc", pointer(builtins::int8_), args1, loc)
+        call1_ret = state.bitcast(pointer(ref_meta), call1_ret, loc)
+        refcount = state.gep(pointer(builtins::int64_), ref_meta, call1_ret, [make_int_value(0), make_int_value(0)], loc)
+        let weakcount = state.gep(pointer(builtins::int64_), ref_meta, call1_ret, [make_int_value(0), make_int_value(1)], loc)
+        state.store(refcount, [ kind = ValueKind::INT, tpe = builtins::int64_, i = initial_ref_count ] !Value)
+        state.store(weakcount, [ kind = ValueKind::INT, tpe = builtins::int64_, i = 1 ] !Value)
     }
 
     let start = [ kind = ValueKind::UNDEF, tpe = tpe ] !Value
@@ -3519,45 +3484,13 @@ def increase_pointer_by_one(value: Value, loc: &Value, state: &State) {
 }
 
 def increase_ref_count_of_value(value: Value, loc: &Value, state: &State) {
-    let index = allocate_ref(int, 1)
-    index(0) = 0
-
-    let extract_ret = make_local_value(typechecking::pointer(builtins::int64_), null, state)
-    let extract = make_insn_dbg(InsnKind::EXTRACTVALUE, loc)
-    extract.value.extract_value = [
-        ret = extract_ret,
-        value = value,
-        index = index
-    ] !InsnExtractValue
-    push_insn(extract, state)
-
-    increase_pointer_by_one(extract_ret, loc, state)
+    let refcount = get_ref_count_ptr(value, loc, state)
+    increase_pointer_by_one(refcount, loc, state)
 }
  
 def increase_ref_count(value: Value, loc: &Value, state: &State) {
-    let index1 = allocate_ref(Value, 2)
-    index1(0) = make_int_value(0)
-    index1(1) = make_int_value(0)
-    
-    let gep1_ret = make_local_value(typechecking::pointer(typechecking::pointer(builtins::int64_)), null, state)
-    let gep1 = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
-    gep1.value.gep = [
-        ret = gep1_ret,
-        tpe = value.tpe.tpe,
-        value = value,
-        index = index1
-    ] !InsnGetElementPtr
-    push_insn(gep1, state)
-
-    let load1_ret = make_local_value(typechecking::pointer(builtins::int64_), null, state)
-    let load1 = make_insn_dbg(InsnKind::LOAD, loc)
-    load1.value.load = [
-        value = load1_ret,
-        loc = gep1_ret
-    ] !InsnLoad
-    push_insn(load1, state)
-
-    increase_pointer_by_one(load1_ret, loc, state)
+    value = state.load(value.tpe.tpe, value, loc)
+    increase_ref_count_of_value(value, loc, state)
 }
 
 // Leaving this in because it might be useful
@@ -8327,6 +8260,11 @@ export def create_destructor(tpe: &typechecking::Type) {
     state.current_block = previous_block
 }
 
+def get_ref_count_ptr(value: Value, loc: &Value, state: &State) -> Value {
+    let meta = state.extract_value(pointer(ref_meta), value, [0], loc)
+    return state.gep(pointer(builtins::int64_), ref_meta, meta, [make_int_value(0), make_int_value(0)], loc)
+} 
+
 def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
     if typechecking::is_polymorph(tpe) { return }
     assert tpe.kind == typechecking::TypeKind::POINTER
@@ -8375,13 +8313,15 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
     }
 
     var structure_type = tpe.tpe
-    var ref: Value, ref_count_ptr: Value
+    var ref: Value
+    var ref_count: Value
     var null_br: &Insn, br: &Insn
 
     if typechecking::is_ref(tpe.tpe) and tpe.tpe.tpe and not is_interface(tpe.tpe.tpe) {
         // Decrease ref count
         ref = state.load(tpe.tpe, value)
-        ref_count_ptr = state.extract_value(pointer(builtins::int64_), ref, [0])
+        ref_count = state.extract_value(pointer(ref_meta), ref, [0])
+        let ref_count_ptr = state.gep(pointer(builtins::int64_), ref_meta, ref_count, [make_int_value(0), make_int_value(0)])
         let ref_count_value = state.ptr_to_int(ref_count_ptr)
         let null_cond = state.icmp(CompareInt::eq, ref_count_value, [ kind = ValueKind::INT, tpe = builtins::int64_, i = 0 ] !Value)
         null_br = make_insn(InsnKind::BR)
@@ -8558,7 +8498,7 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
             state.call(fun.type_name, null, [convert_ref_to_ref(builtins::Ref_, ref, null, state)])
         }
 
-        let ref_count_i8_ptr = state.bitcast(pointer(builtins::int8_), ref_count_ptr)
+        let ref_count_i8_ptr = state.bitcast(pointer(builtins::int8_), ref_count)
         state.call("free", null, [ref_count_i8_ptr])
 
         value = state.extract_value(pointer(tpe.tpe.tpe), ref, [1])
