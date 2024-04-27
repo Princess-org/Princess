@@ -1475,26 +1475,46 @@ def convert_ref_to_ref(tpe: &typechecking::Type, value: Value, loc: &Value, stat
 }
 
 def convert_ref_to_ptr(tpe: &typechecking::Type, value: Value, loc: &Value, state: &State) -> Value {
-    let index = allocate_ref(int, 1)
-    index(0) = 1
-    let extract_ret = make_local_value(typechecking::pointer(value.tpe.tpe), null, state)
-    let extract = make_insn_dbg(InsnKind::EXTRACTVALUE, loc)
-    extract.value.extract_value = [
-        ret = extract_ret,
-        value = value,
-        index = index
-    ] !InsnExtractValue
-    push_insn(extract, state)
+    if is_weak_ref(value.tpe) {
+        let meta = state.extract_value(pointer(ref_meta), value, [0], loc)
+        let meta_val = state.load(ref_meta, meta, loc)
+        let cnt = state.extract_value(builtins::int64_, meta_val, [0], loc)
+        let iszero = state.icmp(CompareInt::sle, cnt, [ kind = ValueKind::INT, tpe = builtins::int64_, i = 0 ] !Value)
+        let res = state.alloca(pointer(tpe.tpe), loc)
 
-    let bitcast_ret = make_local_value(typechecking::pointer(tpe.tpe), null, state)
-    let bitcast = make_insn_dbg(InsnKind::BITCAST, loc)
-    bitcast.value.convert = [
-        ret = bitcast_ret,
-        value = extract_ret
-    ] !InsnConvert
-    push_insn(bitcast, state)
+        let br = make_insn_dbg(InsnKind::BR, loc)
+        br.value.br = [ cond = iszero ] !InsnBr
+        push_insn(br, state)
+        let if_true = make_label(state)
+        push_label(if_true, state)
+        br.value.br.if_true = if_true
 
-    return bitcast_ret
+        // Null pointer
+        state.store(res, [ kind = ValueKind::ZEROINITIALIZER, tpe = pointer(tpe.tpe) ] !Value)
+
+        let br_to_end = make_insn_dbg(InsnKind::BR_UNC, loc)
+        push_insn(br_to_end, state)
+
+        let if_false = make_label(state)
+        br.value.br.if_false = if_false
+        push_label(if_false, state)
+
+        // Pointer value
+        let ptr = state.extract_value(pointer(value.tpe.tpe if value.tpe.tpe else builtins::int8_), value, [1], loc)
+        let ptr_casted = state.bitcast(pointer(tpe.tpe), ptr, loc)
+        state.store(res, ptr_casted, loc)
+
+        push_insn(br_to_end, state)
+        let end = make_label(state)
+        br_to_end.value.br_unc.label_ = end
+        push_label(end, state)
+        
+        return state.load(pointer(tpe.tpe), res, loc)
+    }
+
+    let ptr = state.extract_value(pointer(value.tpe.tpe if value.tpe.tpe else builtins::int8_), value, [1], loc)
+    let ptr_casted = state.bitcast(pointer(tpe.tpe), ptr, loc)
+    return ptr_casted
 }
 
 // Reference metadata struct
@@ -1631,7 +1651,7 @@ def convert_value_to_ref(tpe: &typechecking::Type, value: Value, loc: &Value, st
                     array_val = state.gep(ptpe, value.tpe, data, [make_int_value(0), counter_value], loc)
                 }
 
-                if is_ref(value.tpe.tpe) {
+                if is_ref_or_weak(value.tpe.tpe) {
                     increase_ref_count(array_val, loc, state)
                 } else if has_copy_constructor(value.tpe.tpe) {
                     let val = state.load(value.tpe.tpe, array_val, loc)
@@ -2287,7 +2307,7 @@ def walk_StructLitUnion(node: &parser::Node, state: &State) -> Value {
     }
 
     var value = convert_to(arg, walk_expression(arg, state), arg_tpe, state)
-    if typechecking::is_ref(arg_tpe) {
+    if typechecking::is_ref_or_weak(arg_tpe) {
         increase_ref_count_of_value(value, loc, state)
     } else if typechecking::has_copy_constructor(arg_tpe) {
         let ret = state.alloca(arg_tpe, loc, no_yield_capture = true)
@@ -2426,7 +2446,7 @@ def struct_lit_create_value(tpe: &typechecking::Type, kwargs: &Vector(&parser::N
             let field = tpe.fields(j)
             if field.name == name {
                 values(j) = convert_to(kwarg, value, field.tpe, state)
-                if typechecking::is_ref(field.tpe) {
+                if typechecking::is_ref_or_weak(field.tpe) {
                     increase_ref_count_of_value(values(j), loc, state)
                 } else if typechecking::has_copy_constructor(field.tpe) {
                     let ret = state.alloca(values(j).tpe, loc, no_yield_capture = true)
@@ -2550,7 +2570,7 @@ def walk_ArrayLit(node: &parser::Node, state: &State) -> Value {
     for var i in 0..len {
         let v = node.value.struct_lit.args(i)
         var element = walk_and_load_expression(v, state)
-        if is_ref(element.tpe) {
+        if is_ref_or_weak(element.tpe) {
             increase_ref_count_of_value(element, loc, state)
         } else if typechecking::has_copy_constructor(element.tpe) {
             let ret = state.alloca(element.tpe, loc, no_yield_capture = true)
@@ -3026,6 +3046,7 @@ def walk_Call(node: &parser::Node, state: &State) -> Value {
                     insert_copy_constructor(ret, expr, loc, state)
                     expr = state.load(expr.tpe, ret, loc)
                 }
+                // TODO Does this need to do something for weak references?
                 if typechecking::is_ref(last_np.tpe) and not typechecking::is_ref(n.tpe) {
                     create_type(reference(n.tpe), state.module)
                     // We need to increase the ref count and add the destructor call
@@ -3114,7 +3135,7 @@ def walk_Call(node: &parser::Node, state: &State) -> Value {
     var array_val: Value
     if pass_varargs_as_array {
         for var i in 0..varargs.size {
-            if varargs(i).tpe.kind == typechecking::TypeKind::REFERENCE {
+            if is_ref_or_weak(varargs(i).tpe) {
                 increase_ref_count_of_value(varargs(i), loc, state)
             }
         }
@@ -3341,7 +3362,7 @@ def insert_copy_constructor(addr: Value, value: Value, loc: &Value, state: &Stat
         br.value.br.if_false = loop_inner
 
         let array_ptr = state.gep(pointer(value.tpe.tpe), value.tpe, addr, [make_int_value(0), counter_value])
-        if typechecking::is_ref(value.tpe.tpe) {
+        if typechecking::is_ref_or_weak(value.tpe.tpe) {
             increase_ref_count(array_ptr, loc, state)
         } else {
             let value_ptr = state.gep(pointer(value.tpe.tpe), value.tpe, array_loc, [make_int_value(0), counter_value])
@@ -3400,8 +3421,64 @@ def insert_destructors(scpe: &scope::Scope, loc: &Value, state: &State) {
     }
 }
 
+def check_clear_ref_meta(meta_ptr: Value, loc: &Value, state: &State) {
+    import_cstd_function("free", state)
+
+    let meta = state.load(ref_meta, meta_ptr, loc)
+    let cnt = state.extract_value(builtins::int64_, meta, [1], loc)
+    let cond = state.icmp(CompareInt::sle, cnt, [ kind = ValueKind::INT, tpe = builtins::int64_, i = 0 ] !Value)
+
+    let br = make_insn_dbg(InsnKind::BR, loc)
+    br.value.br = [ cond = cond ] !InsnBr
+    push_insn(br, state)
+    let if_true = make_label(state)
+    push_label(if_true, state)
+    br.value.br.if_true = if_true
+
+    // Free reference metadata
+    let ref_count_i8_ptr = state.bitcast(pointer(builtins::int8_), meta_ptr)
+    state.call("free", null, [ref_count_i8_ptr])
+
+    let if_false = make_label(state)
+    let br_unc = make_insn_dbg(InsnKind::BR_UNC, loc)
+    br_unc.value.br_unc.label_ = if_false
+    push_insn(br_unc, state)
+
+    push_label(if_false, state)
+    br.value.br.if_false = if_false
+}
+
 def insert_destructor(value: Value, loc: &Value, state: &State) {
-    if value.tpe.tpe and value.tpe.tpe.kind == typechecking::TypeKind::STATIC_ARRAY and typechecking::has_destructor(value.tpe.tpe) {
+    if is_weak_ref(value.tpe.tpe) {
+        // value refers to an address so we gotta load it first
+        value = state.load(value.tpe.tpe, value, loc)
+        let meta = state.extract_value(pointer(ref_meta), value, [0], loc)
+        let ptr_addr = state.ptr_to_int(meta, loc)
+        let cond = state.icmp(CompareInt::eq, ptr_addr, [ kind = ValueKind::INT, tpe = builtins::int64_, i = 0 ] !Value)
+        
+        let br = make_insn_dbg(InsnKind::BR, loc)
+        br.value.br = [ cond = cond ] !InsnBr
+        push_insn(br, state)
+
+        let if_false = make_label(state)
+        push_label(if_false, state)
+        br.value.br.if_false = if_false
+
+        let refcount = get_weak_count_ptr(value, loc, state)
+        let ptr_value = state.load(builtins::int64_, refcount, loc)
+        let ptr_add = state.sub(builtins::int64_, ptr_value, [ kind = ValueKind::INT, tpe = builtins::int64_, i = 1 ] !Value, loc)
+        state.store(refcount, ptr_add, loc)
+
+        check_clear_ref_meta(meta, loc, state)
+
+        let if_true = make_label(state)
+        let br_unc = make_insn_dbg(InsnKind::BR_UNC, loc)
+        br_unc.value.br_unc.label_ = if_true
+        push_insn(br_unc, state)
+
+        push_label(if_true, state)
+        br.value.br.if_true = if_true
+    } else if value.tpe.tpe and value.tpe.tpe.kind == typechecking::TypeKind::STATIC_ARRAY and typechecking::has_destructor(value.tpe.tpe) {
         let counter_ptr = state.alloca(builtins::size_t_, loc)
         state.store(counter_ptr, [ kind = ValueKind::INT, tpe = builtins::size_t_, i = 0 ] !Value, loc)
         
@@ -3458,8 +3535,11 @@ def insert_destructor(value: Value, loc: &Value, state: &State) {
     }
 }
 
-def increase_pointer_by_one(value: Value, loc: &Value, state: &State) {
-    let ptr_addr = state.ptr_to_int(value, loc)
+def increase_ref_count_of_value(value: Value, loc: &Value, state: &State) {
+    if not is_ref_or_weak(value.tpe) { return }
+    let meta = state.extract_value(pointer(ref_meta), value, [0], loc)
+
+    let ptr_addr = state.ptr_to_int(meta, loc)
     let cond = state.icmp(CompareInt::eq, ptr_addr, [ kind = ValueKind::INT, tpe = builtins::int64_, i = 0 ] !Value)
     
     let br = make_insn_dbg(InsnKind::BR, loc)
@@ -3470,9 +3550,16 @@ def increase_pointer_by_one(value: Value, loc: &Value, state: &State) {
     push_label(if_false, state)
     br.value.br.if_false = if_false
 
-    let ptr_value = state.load(builtins::int64_, value, loc)
+    var refcount: Value
+    if is_ref(value.tpe) {
+        refcount = get_ref_count_ptr(value, loc, state)
+    } else if is_weak_ref(value.tpe) {
+        refcount = get_weak_count_ptr(value, loc, state)
+    }
+
+    let ptr_value = state.load(builtins::int64_, refcount, loc)
     let ptr_add = state.add(builtins::int64_, ptr_value, [ kind = ValueKind::INT, tpe = builtins::int64_, i = 1 ] !Value, loc)
-    state.store(value, ptr_add, loc)
+    state.store(refcount, ptr_add, loc)
 
     let if_true = make_label(state)
     let br_unc = make_insn_dbg(InsnKind::BR_UNC, loc)
@@ -3482,13 +3569,9 @@ def increase_pointer_by_one(value: Value, loc: &Value, state: &State) {
     push_label(if_true, state)
     br.value.br.if_true = if_true
 }
-
-def increase_ref_count_of_value(value: Value, loc: &Value, state: &State) {
-    let refcount = get_ref_count_ptr(value, loc, state)
-    increase_pointer_by_one(refcount, loc, state)
-}
  
 def increase_ref_count(value: Value, loc: &Value, state: &State) {
+    if not is_ref_or_weak(value.tpe.tpe) { return }
     value = state.load(value.tpe.tpe, value, loc)
     increase_ref_count_of_value(value, loc, state)
 }
@@ -3519,144 +3602,6 @@ def copy_reference(value: Value, loc: &Value, state: &State) -> Value {
     ret = state.insert_value(value.tpe, ret, type_ptr, [2], loc)
 
     return ret
-}
-
-def assign_ref(value: Value, addr: Value, loc: &Value, is_initializer: bool, state: &State) {
-    if not value.addr { return }
-
-    // First increase the ref count of the assigned value
-    increase_ref_count(@value.addr, loc, state)
-
-    // Now decrease the ref count of the stored value
-    if not is_initializer {
-        insert_destructor(addr, loc, state)
-    }
-
-    // Set the values for the new reference
-    let index1 = allocate_ref(Value, 2)
-    index1(0) = make_int_value(0)
-    index1(1) = make_int_value(0)
-
-    let gep1_ret = make_local_value(typechecking::pointer(typechecking::pointer(builtins::int64_)), null, state)
-    let gep1 = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
-    gep1.value.gep = [
-        ret = gep1_ret,
-        tpe = value.tpe,
-        value = value,
-        index = index1
-    ] !InsnGetElementPtr
-    push_insn(gep1, state)
-
-    let load1_ret = make_local_value(typechecking::pointer(builtins::int64_), null, state)
-    let load1 = make_insn_dbg(InsnKind::LOAD, loc)
-    load1.value.load = [
-        value = load1_ret,
-        loc = gep1_ret
-    ] !InsnLoad
-    push_insn(load1, state)
-    
-    let gep2_ret = make_local_value(typechecking::pointer(typechecking::pointer(builtins::int64_)), null, state)
-    let gep2 = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
-    gep2.value.gep = [
-        ret = gep2_ret,
-        tpe = addr.tpe.tpe,
-        value = addr,
-        index = index1
-    ] !InsnGetElementPtr
-    push_insn(gep2, state)
-
-    let index3 = allocate_ref(Value, 2)
-    index3(0) = make_int_value(0)
-    index3(1) = make_int_value(1)
-
-    let gep3_ret = make_local_value(typechecking::pointer(typechecking::pointer(addr.tpe.tpe.tpe)), null, state)
-    let gep3 = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
-    gep3.value.gep = [
-        ret = gep3_ret,
-        tpe = addr.tpe.tpe,
-        value = addr,
-        index = index3
-    ] !InsnGetElementPtr
-    push_insn(gep3, state)
-
-    let index4 = allocate_ref(Value, 2)
-    index4(0) = make_int_value(0)
-    index4(1) = make_int_value(2)
-
-    let gep4_ret = make_local_value(typechecking::pointer(typechecking::pointer(builtins::Type_)), null, state)
-    let gep4 = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
-    gep4.value.gep = [
-        ret = gep4_ret,
-        tpe = addr.tpe.tpe,
-        value = addr,
-        index = index4
-    ] !InsnGetElementPtr
-    push_insn(gep4, state)
-
-    let gep5_ret = make_local_value(typechecking::pointer(typechecking::pointer(value.tpe.tpe)), null, state)
-    let gep5 = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
-    gep5.value.gep = [
-        ret = gep5_ret,
-        tpe = value.tpe,
-        value = @value.addr,
-        index = index3
-    ] !InsnGetElementPtr
-    push_insn(gep5, state)
-
-    let gep6_ret = make_local_value(typechecking::pointer(typechecking::pointer(builtins::Type_)), null, state)
-    let gep6 = make_insn_dbg(InsnKind::GETELEMENTPTR, loc)
-    gep6.value.gep = [
-        ret = gep6_ret,
-        tpe = value.tpe,
-        value = @value.addr,
-        index = index4
-    ] !InsnGetElementPtr
-    push_insn(gep6, state)
-
-    let load3_ret = make_local_value(typechecking::pointer(value.tpe.tpe), null, state)
-    let load3 = make_insn_dbg(InsnKind::LOAD, loc)
-    load3.value.load = [
-        value = load3_ret,
-        loc = gep5_ret
-    ] !InsnLoad
-    push_insn(load3, state)
-
-    let bitcast_ret = make_local_value(typechecking::pointer(addr.tpe.tpe.tpe), null, state)
-    let bitcast = make_insn_dbg(InsnKind::BITCAST, loc)
-    bitcast.value.convert = [
-        ret = bitcast_ret,
-        value = load3_ret
-    ] !InsnConvert
-    push_insn(bitcast, state)
-
-    let load4_ret = make_local_value(typechecking::pointer(builtins::Type_), null, state)
-    let load4 = make_insn_dbg(InsnKind::LOAD, loc)
-    load4.value.load = [
-        value = load4_ret,
-        loc = gep6_ret
-    ] !InsnLoad
-    push_insn(load4, state)
-
-    let store2 = make_insn_dbg(InsnKind::STORE, loc)
-    store2.value.store = [
-        loc = gep2_ret,
-        value = load1_ret
-    ] !InsnStore
-    push_insn(store2, state)
-
-    let store3 = make_insn_dbg(InsnKind::STORE, loc)
-    store3.value.store = [
-        loc = gep3_ret,
-        value = bitcast_ret
-    ] !InsnStore
-    push_insn(store3, state)
-
-    let store4 = make_insn_dbg(InsnKind::STORE, loc)
-    store4.value.store = [
-        loc = gep4_ret,
-        value = load4_ret
-    ] !InsnStore
-    push_insn(store4, state)
 }
 
 def call_set_attribute(n: &parser::Node, l: &parser::Node, value_type: &typechecking::Type, value: Value, loc: &Value, state: &State) -> bool {
@@ -3773,28 +3718,24 @@ def assign_post(n: &parser::Node, l: &parser::Node, value_type: &typechecking::T
             @ret = state.load(ret.tpe, tmp, loc)
         }
 
-        if typechecking::is_ref(l.tpe) and ret.addr and typechecking::is_ref(ret.addr.tpe) {
-            assign_ref(@ret.addr, @addr, loc, l.is_initializer, state)
-        } else {
-            if not l.is_initializer {
-                insert_destructor(@addr, loc, state)
-            } else if l.svalue and l.svalue.previous_underscore {
-                let pu = l.svalue.previous_underscore
-                let addr = [ kind = ValueKind::LOCAL, name = pu.assembly_name(state), tpe = pointer(pu.tpe) ] !Value
-                insert_destructor(addr, loc, state)
-            }
-            
-            let store = make_insn_dbg(InsnKind::STORE, loc)
-            (@store).value.store = [
-                value = @ret,
-                loc = @addr
-            ] !InsnStore
+        if not l.is_initializer {
+            insert_destructor(@addr, loc, state)
+        } else if l.svalue and l.svalue.previous_underscore {
+            let pu = l.svalue.previous_underscore
+            let addr = [ kind = ValueKind::LOCAL, name = pu.assembly_name(state), tpe = pointer(pu.tpe) ] !Value
+            insert_destructor(addr, loc, state)
+        }
+        
+        let store = make_insn_dbg(InsnKind::STORE, loc)
+        (@store).value.store = [
+            value = @ret,
+            loc = @addr
+        ] !InsnStore
 
-            push_insn(store, state)
+        push_insn(store, state)
 
-            if typechecking::is_ref(l.tpe) {
-                increase_ref_count(@addr, loc, state)
-            }
+        if typechecking::is_ref_or_weak(l.tpe) {
+            increase_ref_count(@addr, loc, state)
         }
     }
     return true
@@ -4635,7 +4576,7 @@ def walk_IfExpr(node: &parser::Node, state: &State) -> Value {
     push_label(entry_label, state)
     
     var true_value = convert_to(if_true, walk_expression(if_true, state), node.tpe, state)
-    if typechecking::is_ref(if_true.tpe) {
+    if typechecking::is_ref_or_weak(if_true.tpe) {
         increase_ref_count_of_value(true_value, loc, state)
     } else if typechecking::has_copy_constructor(if_true.tpe) {
         let ret = state.alloca(if_true.tpe, loc, no_yield_capture = true)
@@ -4660,7 +4601,7 @@ def walk_IfExpr(node: &parser::Node, state: &State) -> Value {
     push_label(false_label, state)
 
     var false_value = convert_to(if_false, walk_expression(if_false, state), node.tpe, state)
-    if typechecking::is_ref(if_false.tpe) {
+    if typechecking::is_ref_or_weak(if_false.tpe) {
         increase_ref_count_of_value(false_value, loc, state)
     } else if typechecking::has_copy_constructor(if_false.tpe) {
         let ret = state.alloca(if_false.tpe, loc, no_yield_capture = true)
@@ -4812,7 +4753,7 @@ export def walk_expression(node: &parser::Node, state: &State) -> Value {
         let loc = make_location(node, state)
         let addr = state.alloca(expr.tpe, loc)
         state.store(addr, expr, loc)
-        if is_ref(expr.tpe) {
+        if is_ref_or_weak(expr.tpe) {
             increase_ref_count(addr, loc, state)
         }
         insert_destructor(addr, loc, state)
@@ -5137,7 +5078,7 @@ def walk_Switch(node: &parser::Node, state: &State) {
 }
 
 def return_post(expr: Value, loc: &Value, state: &State) -> Value {
-    if is_ref(expr.tpe) {
+    if is_ref_or_weak(expr.tpe) {
         increase_ref_count_of_value(expr, loc, state)
     }
     if typechecking::has_copy_constructor(expr.tpe) {
@@ -5473,7 +5414,7 @@ def walk_For_array(node: &parser::Node, state: &State) {
     var value = state.load(expr.tpe.tpe, value_ptr, loc)
     state.store(locv, value)
     
-    if is_ref(expr.tpe.tpe) {
+    if is_ref_or_weak(expr.tpe.tpe) {
         increase_ref_count(locv, loc, state)
     } else if has_copy_constructor(expr.tpe.tpe) {
         insert_copy_constructor(locv, value, loc, state)
@@ -5947,7 +5888,7 @@ def create_closure_context_captures(function: &Function, loc: &Value, state: &St
             value = [ kind = ValueKind::LOCAL, tpe = capture.tpe, name = svalue.assembly_name(state) ] !Value
         } else {
             let addr = [ kind = ValueKind::LOCAL, tpe = pointer(capture.tpe), name = svalue.assembly_name(state) ] !Value
-            if is_ref(addr.tpe.tpe) {
+            if is_ref_or_weak(addr.tpe.tpe) {
                 increase_ref_count(addr, loc, state)
                 value = state.load(capture.tpe, addr, loc)
             } else if has_copy_constructor(addr.tpe.tpe) {
@@ -7141,7 +7082,7 @@ def create_generator(
         let local_ptr = state.gep(pointer(par.tpe), context, context_ptr, [make_int_value(0), make_int_value(i + 1)])
         state.store(local_ptr, [ kind = ValueKind::LOCAL, name = par.name + ".value", tpe = par.tpe ] !Value)
         
-        if typechecking::is_ref(par.tpe) {
+        if typechecking::is_ref_or_weak(par.tpe) {
             increase_ref_count(local_ptr, null, state)
         }
     }
@@ -7519,7 +7460,7 @@ export def create_function(
 
                 push_insn(store, state)
 
-                if typechecking::is_ref(value) {
+                if typechecking::is_ref_or_weak(value) {
                     increase_ref_count(ret, null, state)
                 }
             }
@@ -8198,7 +8139,7 @@ def create_constructor(copy: Value, this: Value, state: &State) {
                         let ctor = typechecking::get_constructor(member.tpe)
                         state.call(ctor.tpe.type_name, null, [copy_ptr, this_ptr])
                     }
-                } else if typechecking::is_ref(member.tpe) {
+                } else if typechecking::is_ref_or_weak(member.tpe) {
                     let copy_ptr = state.gep(pointer(member.tpe), copy.tpe.tpe, copy, [make_int_value(0), make_int_value(i)])
                     increase_ref_count(copy_ptr, null, state)
                 }
@@ -8263,6 +8204,10 @@ export def create_destructor(tpe: &typechecking::Type) {
 def get_ref_count_ptr(value: Value, loc: &Value, state: &State) -> Value {
     let meta = state.extract_value(pointer(ref_meta), value, [0], loc)
     return state.gep(pointer(builtins::int64_), ref_meta, meta, [make_int_value(0), make_int_value(0)], loc)
+} 
+def get_weak_count_ptr(value: Value, loc: &Value, state: &State) -> Value {
+    let meta = state.extract_value(pointer(ref_meta), value, [0], loc)
+    return state.gep(pointer(builtins::int64_), ref_meta, meta, [make_int_value(0), make_int_value(1)], loc)
 } 
 
 def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
@@ -8498,8 +8443,12 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
             state.call(fun.type_name, null, [convert_ref_to_ref(builtins::Ref_, ref, null, state)])
         }
 
-        let ref_count_i8_ptr = state.bitcast(pointer(builtins::int8_), ref_count)
-        //state.call("free", null, [ref_count_i8_ptr])
+        let cnt = get_weak_count_ptr(ref, null, state)
+        var cnt_value = state.load(builtins::int64_, cnt)
+        cnt_value = state.sub(builtins::int64_, cnt_value, [ kind = ValueKind::INT, tpe = builtins::int64_, i = 1 ] !Value)
+        state.store(cnt, cnt_value)
+
+        check_clear_ref_meta(ref_count, null, state)
 
         value = state.extract_value(pointer(tpe.tpe.tpe), ref, [1])
 
