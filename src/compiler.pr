@@ -600,6 +600,7 @@ export type State = struct {
     return_address: Value // This is used as the return address in inline functions
     return_br: &Insn // This is used to jump back to the end of the function
     inline_start_block: &Block // This represents the first block of the current function
+    context_ptr: int // Counts up the current free_context
 }
 
 export def destruct(state: *State) {
@@ -1420,7 +1421,7 @@ def convert_ref_to_ref(tpe: &typechecking::Type, value: Value, loc: &Value, stat
 
     add_type_meta(tpe, state)
 
-    let extract1_ret = state.extract_value(pointer(ref_meta), value, [0], loc)
+    let extract1_ret = state.extract_value(pointer(ref_meta()), value, [0], loc)
     let extract2_ret = state.extract_value(pointer(value.tpe.tpe), value, [1], loc)
     let extract3_ret = state.extract_value(pointer(builtins::Type_), value, [2], loc)
     let bitcast_ret = state.bitcast(pointer(tpe.tpe if tpe.tpe else builtins::int8_), extract2_ret, loc)
@@ -1439,7 +1440,7 @@ def convert_ref_to_ref(tpe: &typechecking::Type, value: Value, loc: &Value, stat
         push_label(nonnull, state)
         br1.value.br.if_false = nonnull
 
-        let meta = state.load(ref_meta, extract1_ret, loc)
+        let meta = state.load(ref_meta(), extract1_ret, loc)
         let refcount = state.extract_value(builtins::int64_, meta, [0], loc)
         let iszero = state.icmp(CompareInt::sle, refcount, 
             [ kind = ValueKind::INT, tpe = builtins::int64_, i = 0 ] !Value, loc)
@@ -1488,7 +1489,7 @@ def convert_ref_to_ref(tpe: &typechecking::Type, value: Value, loc: &Value, stat
 
 def convert_ref_to_ptr(tpe: &typechecking::Type, value: Value, loc: &Value, state: &State) -> Value {
     if is_weak_ref(value.tpe) {
-        let meta = state.extract_value(pointer(ref_meta), value, [0], loc)
+        let meta = state.extract_value(pointer(ref_meta()), value, [0], loc)
 
         let ref_value = state.ptr_to_int(meta, loc)
         let isnull = state.icmp(CompareInt::eq, ref_value, 
@@ -1501,7 +1502,7 @@ def convert_ref_to_ptr(tpe: &typechecking::Type, value: Value, loc: &Value, stat
         push_label(nonnull, state)
         br1.value.br.if_false = nonnull
 
-        let meta_val = state.load(ref_meta, meta, loc)
+        let meta_val = state.load(ref_meta(), meta, loc)
         let cnt = state.extract_value(builtins::int64_, meta_val, [0], loc)
         let iszero = state.icmp(CompareInt::sle, cnt, [ kind = ValueKind::INT, tpe = builtins::int64_, i = 0 ] !Value)
         let res = state.alloca(pointer(tpe.tpe), loc)
@@ -1543,10 +1544,16 @@ def convert_ref_to_ptr(tpe: &typechecking::Type, value: Value, loc: &Value, stat
 }
 
 // Reference metadata struct
-let ref_meta = typechecking::make_struct_type([
-    [ tpe = builtins::int64_, name = "refcount" ] !typechecking::StructMember,
-    [ tpe = builtins::int64_, name = "weakcount" ] !typechecking::StructMember
-])
+var _ref_meta: &typechecking::Type
+export def ref_meta -> &typechecking::Type {
+    if not _ref_meta {
+        _ref_meta = typechecking::make_struct_type([
+            [ tpe = builtins::int64_, name = "refcount" ] !typechecking::StructMember,
+            [ tpe = builtins::int64_, name = "weakcount" ] !typechecking::StructMember
+        ])
+    }
+    return _ref_meta
+}
 
 def convert_value_to_ref(tpe: &typechecking::Type, value: Value, loc: &Value, state: &State, initial_ref_count: size_t = 0) -> Value {
     if tpe.tpe and value.tpe.kind != tpe.tpe.kind {
@@ -1570,11 +1577,11 @@ def convert_value_to_ref(tpe: &typechecking::Type, value: Value, loc: &Value, st
     if not is_null {
         // create ref counts
         let args1 = allocate_ref(Value, 1)
-        args1(0) = [ kind = ValueKind::INT, tpe = builtins::int64_, i = ref_meta.size] !Value
+        args1(0) = [ kind = ValueKind::INT, tpe = builtins::int64_, i = ref_meta().size] !Value
         var call1_ret = state.call("malloc", pointer(builtins::int8_), args1, loc)
-        call1_ret = state.bitcast(pointer(ref_meta), call1_ret, loc)
-        refcount = state.gep(pointer(builtins::int64_), ref_meta, call1_ret, [make_int_value(0), make_int_value(0)], loc)
-        let weakcount = state.gep(pointer(builtins::int64_), ref_meta, call1_ret, [make_int_value(0), make_int_value(1)], loc)
+        call1_ret = state.bitcast(pointer(ref_meta()), call1_ret, loc)
+        refcount = state.gep(pointer(builtins::int64_), ref_meta(), call1_ret, [make_int_value(0), make_int_value(0)], loc)
+        let weakcount = state.gep(pointer(builtins::int64_), ref_meta(), call1_ret, [make_int_value(0), make_int_value(1)], loc)
         state.store(refcount, [ kind = ValueKind::INT, tpe = builtins::int64_, i = initial_ref_count ] !Value)
         state.store(weakcount, [ kind = ValueKind::INT, tpe = builtins::int64_, i = 1 ] !Value)
     }
@@ -3449,7 +3456,7 @@ def insert_destructors(scpe: &scope::Scope, loc: &Value, state: &State) {
 def check_clear_ref_meta(meta_ptr: Value, loc: &Value, state: &State) {
     import_cstd_function("free", state)
 
-    let meta = state.load(ref_meta, meta_ptr, loc)
+    let meta = state.load(ref_meta(), meta_ptr, loc)
     let cnt = state.extract_value(builtins::int64_, meta, [1], loc)
     let cond = state.icmp(CompareInt::sle, cnt, [ kind = ValueKind::INT, tpe = builtins::int64_, i = 0 ] !Value)
 
@@ -3477,7 +3484,7 @@ def insert_destructor(value: Value, loc: &Value, state: &State) {
     if is_weak_ref(value.tpe.tpe) {
         // value refers to an address so we gotta load it first
         value = state.load(value.tpe.tpe, value, loc)
-        let meta = state.extract_value(pointer(ref_meta), value, [0], loc)
+        let meta = state.extract_value(pointer(ref_meta()), value, [0], loc)
         let ptr_addr = state.ptr_to_int(meta, loc)
         let cond = state.icmp(CompareInt::eq, ptr_addr, [ kind = ValueKind::INT, tpe = builtins::int64_, i = 0 ] !Value)
         
@@ -3562,7 +3569,7 @@ def insert_destructor(value: Value, loc: &Value, state: &State) {
 
 def increase_ref_count_of_value(value: Value, loc: &Value, state: &State) {
     if not is_ref_or_weak(value.tpe) { return }
-    let meta = state.extract_value(pointer(ref_meta), value, [0], loc)
+    let meta = state.extract_value(pointer(ref_meta()), value, [0], loc)
 
     let ptr_addr = state.ptr_to_int(meta, loc)
     let cond = state.icmp(CompareInt::eq, ptr_addr, [ kind = ValueKind::INT, tpe = builtins::int64_, i = 0 ] !Value)
@@ -3610,9 +3617,13 @@ def copy_reference(value: Value, loc: &Value, state: &State) -> Value {
     let size = [ kind = ValueKind::INT, tpe = builtins::int64_, i = value.tpe.tpe.size ] !Value
     let size_int64 = [ kind = ValueKind::INT, tpe = builtins::int64_, i = builtins::int64_.size ] !Value
 
-    let ref_count_ptr_i8 = state.call("malloc", pointer(builtins::int8_), [size_int64], loc)
-    let ref_count_ptr = state.bitcast(pointer(builtins::int64_), ref_count_ptr_i8)
-    state.store(ref_count_ptr, [ kind = ValueKind::INT, tpe = builtins::int64_, i = 0 ] !Value)
+    let ref_count_i8 = state.call("malloc", pointer(builtins::int8_), [[ kind = ValueKind::INT, tpe = builtins::size_t_, i = ref_meta().size ] !Value])
+    let ref_count = state.bitcast(pointer(ref_meta()), ref_count_i8)
+    state.store(ref_count, [ kind = ValueKind::STRUCT, tpe = ref_meta(), values = [
+        [kind = ValueKind::INT, tpe = builtins::int64_, i = 0 ] !Value,
+        [kind = ValueKind::INT, tpe = builtins::int64_, i = 1 ] !Value
+    ]] !Value)
+
     let value_ptr = state.extract_value(pointer(value.tpe.tpe), value, [1], loc)
     let type_ptr = state.extract_value(pointer(builtins::Type_), value, [2], loc)
     
@@ -3622,7 +3633,7 @@ def copy_reference(value: Value, loc: &Value, state: &State) -> Value {
     let copy_ptr = state.bitcast(pointer(value.tpe.tpe), copy_ptr_i8, loc)
 
     var ret = [ kind = ValueKind::UNDEF, tpe = value.tpe ] !Value
-    ret = state.insert_value(value.tpe, ret, ref_count_ptr, [0], loc)
+    ret = state.insert_value(value.tpe, ret, ref_count_i8, [0], loc)
     ret = state.insert_value(value.tpe, ret, copy_ptr, [1], loc)
     ret = state.insert_value(value.tpe, ret, type_ptr, [2], loc)
 
@@ -5874,9 +5885,12 @@ def create_closure_context(function: &Function, ret: Value, loc: &Value, state: 
     let context_tpe = function.state
 
     let context_ptr_i8 = state.call("malloc", pointer(builtins::int8_), [[ kind = ValueKind::INT, tpe = builtins::size_t_, i = context_tpe.size ] !Value], loc)
-    let ref_count_i8 = state.call("malloc", pointer(builtins::int8_), [[ kind = ValueKind::INT, tpe = builtins::size_t_, i = builtins::int64_.size ] !Value], loc)
-    let ref_count = state.bitcast(pointer(builtins::int64_), ref_count_i8, loc)
-    state.store(ref_count, [ kind = ValueKind::INT, tpe = ValueKind::int64_, i = 1 ] !Value, loc)
+    let ref_count_i8 = state.call("malloc", pointer(builtins::int8_), [[ kind = ValueKind::INT, tpe = builtins::size_t_, i = ref_meta().size ] !Value], loc)
+    let ref_count = state.bitcast(pointer(ref_meta()), ref_count_i8, loc)
+    state.store(ref_count, [ kind = ValueKind::STRUCT, tpe = ref_meta(), values = [
+        [kind = ValueKind::INT, tpe = builtins::int64_, i = 1 ] !Value,
+        [kind = ValueKind::INT, tpe = builtins::int64_, i = 1 ] !Value
+    ]] !Value, loc)
 
     let context_tpe_value = do_create_type(reference(context_tpe), state.module)
 
@@ -7126,11 +7140,12 @@ def create_generator(
     let context_ptr_i8_ptr = state.gep(pointer(generator.fields(1).tpe), generator, gen_ptr, [make_int_value(0), make_int_value(1)])
     state.store(context_ptr_i8_ptr, context_ptr_i8)
     
-    let ref_count_ptr_i8 = state.call("malloc", typechecking::pointer(builtins::int8_), [
-        [ kind = ValueKind::INT, tpe = builtins::size_t_, i = builtins::size_t_.size ] !Value
-    ])
-    let ref_count = state.bitcast(pointer(builtins::size_t_), ref_count_ptr_i8)
-    state.store(ref_count, [ kind = ValueKind::INT, tpe = builtins::size_t_, i = 1 ] !Value)
+    let ref_count_i8 = state.call("malloc", pointer(builtins::int8_), [[ kind = ValueKind::INT, tpe = builtins::size_t_, i = ref_meta().size ] !Value])
+    let ref_count = state.bitcast(pointer(ref_meta()), ref_count_i8)
+    state.store(ref_count, [ kind = ValueKind::STRUCT, tpe = ref_meta(), values = [
+        [kind = ValueKind::INT, tpe = builtins::int64_, i = 1 ] !Value,
+        [kind = ValueKind::INT, tpe = builtins::int64_, i = 1 ] !Value
+    ]] !Value)
 
     var gen_ref = [ kind = ValueKind::ZEROINITIALIZER, tpe = reference(generator) ] !Value
     gen_ref = state.insert_value(reference(generator), gen_ref, ref_count, [0])
@@ -7643,9 +7658,10 @@ export def create_function(
             
             let parameter_t2 = vector::make(typechecking::NamedParameter)
             parameter_t2.push([ name = "__context", _tpe = typechecking::pointer(null) ] !typechecking::NamedParameter)
-            let free_context_tpe = typechecking::make_function_type_n(parser::make_identifier(tpe.name + ".free_context"),
-                free_context_parameters, vector::make(type &typechecking::Type), state.module, context = state.module
+            let free_context_tpe = typechecking::make_function_type_n(parser::make_identifier(tpe.name + ".free_context." + state.context_ptr),
+                free_context_parameters, vector::make(type &typechecking::Type), state.module, context = function.module
             )
+            state.context_ptr += 1
 
             let free_context = predeclare_function(free_context_tpe, state.module)
             free_context.is_compiled = true
@@ -8227,12 +8243,12 @@ export def create_destructor(tpe: &typechecking::Type) {
 }
 
 def get_ref_count_ptr(value: Value, loc: &Value, state: &State) -> Value {
-    let meta = state.extract_value(pointer(ref_meta), value, [0], loc)
-    return state.gep(pointer(builtins::int64_), ref_meta, meta, [make_int_value(0), make_int_value(0)], loc)
+    let meta = state.extract_value(pointer(ref_meta()), value, [0], loc)
+    return state.gep(pointer(builtins::int64_), ref_meta(), meta, [make_int_value(0), make_int_value(0)], loc)
 } 
 def get_weak_count_ptr(value: Value, loc: &Value, state: &State) -> Value {
-    let meta = state.extract_value(pointer(ref_meta), value, [0], loc)
-    return state.gep(pointer(builtins::int64_), ref_meta, meta, [make_int_value(0), make_int_value(1)], loc)
+    let meta = state.extract_value(pointer(ref_meta()), value, [0], loc)
+    return state.gep(pointer(builtins::int64_), ref_meta(), meta, [make_int_value(0), make_int_value(1)], loc)
 } 
 
 def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
@@ -8286,12 +8302,25 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
     var ref: Value
     var ref_count: Value
     var null_br: &Insn, br: &Insn
+    var br1: &Insn
 
     if typechecking::is_ref(tpe.tpe) and tpe.tpe.tpe and not is_interface(tpe.tpe.tpe) {
         // Decrease ref count
         ref = state.load(tpe.tpe, value)
-        ref_count = state.extract_value(pointer(ref_meta), ref, [0])
-        let ref_count_ptr = state.gep(pointer(builtins::int64_), ref_meta, ref_count, [make_int_value(0), make_int_value(0)])
+        ref_count = state.extract_value(pointer(ref_meta()), ref, [0])
+        let ref_count_value1 = state.ptr_to_int(ref_count)
+
+        let isnull = state.icmp(CompareInt::eq, ref_count_value1, 
+            [ kind = ValueKind::INT, tpe = builtins::int64_, i = 0 ] !Value)
+
+        br1 = make_insn(InsnKind::BR)
+        br1.value.br = [ cond = isnull ] !InsnBr
+        push_insn(br1, state)
+        let nonnull = make_label(state)
+        push_label(nonnull, state)
+        br1.value.br.if_false = nonnull
+
+        let ref_count_ptr = state.gep(pointer(builtins::int64_), ref_meta(), ref_count, [make_int_value(0), make_int_value(0)])
         let ref_count_value = state.ptr_to_int(ref_count_ptr)
         let null_cond = state.icmp(CompareInt::eq, ref_count_value, [ kind = ValueKind::INT, tpe = builtins::int64_, i = 0 ] !Value)
         null_br = make_insn(InsnKind::BR)
@@ -8383,7 +8412,7 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
         let ref = state.load(tpe.tpe, value)
 
         // Extract type
-        let ref_count = state.extract_value(pointer(builtins::int64_), ref, [0])
+        let ref_count = get_ref_count_ptr(ref, null, state)
         let ref_count_value = state.ptr_to_int(ref_count)
         let cond = state.icmp(CompareInt::eq, ref_count_value, [ kind = ValueKind::INT, tpe = builtins::int64_, i = 0 ] !Value)
         null_br2 = make_insn(InsnKind::BR)
@@ -8474,6 +8503,18 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
             state.call(fun.type_name, null, [convert_ref_to_ref(builtins::Ref_, ref, null, state)])
         }
 
+        let ref_count_value1 = state.ptr_to_int(ref_count)
+
+        let isnull = state.icmp(CompareInt::eq, ref_count_value1, 
+            [ kind = ValueKind::INT, tpe = builtins::int64_, i = 0 ] !Value)
+
+        let br2 = make_insn(InsnKind::BR)
+        br2.value.br = [ cond = isnull ] !InsnBr
+        push_insn(br2, state)
+        let nonnull = make_label(state)
+        push_label(nonnull, state)
+        br2.value.br.if_false = nonnull
+
         let cnt = get_weak_count_ptr(ref, null, state)
         var cnt_value = state.load(builtins::int64_, cnt)
         cnt_value = state.sub(builtins::int64_, cnt_value, [ kind = ValueKind::INT, tpe = builtins::int64_, i = 1 ] !Value)
@@ -8500,6 +8541,9 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
         to_end.value.br_unc.label_ = end_label
         br.value.br.if_false = end_label
         null_br.value.br.if_true = end_label
+        br1.value.br.if_true = end_label
+        br2.value.br.if_true = end_label
+
         push_label(end_label, state)
     }
 }
