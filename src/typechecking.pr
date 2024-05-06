@@ -31,6 +31,7 @@ export type TypeKind = enum {
     CLOSURE
     TUPLE
     POINTER
+    BYREF // ref parameter
     REFERENCE
     WEAK_REF
     ARRAY
@@ -626,6 +627,7 @@ export def is_boolean(tpe: &Type, module: &Module) -> bool {
         (@tpe).kind == TypeKind::WORD or
         (@tpe).kind == TypeKind::FLOAT or
         (@tpe).kind == TypeKind::POINTER or
+        (@tpe).kind == TypeKind::BYREF or
         (@tpe).kind == TypeKind::REFERENCE or
         (@tpe).kind == TypeKind::WEAK_REF or
         tpe.kind == TypeKind::CHAR or
@@ -637,8 +639,8 @@ export def is_boolean(tpe: &Type, module: &Module) -> bool {
 
 export def is_pointer(tpe: &Type) -> bool {
     if not tpe { return false }
-    return (@tpe).kind == TypeKind::POINTER
-    // TODO What about references?
+    return (@tpe).kind == TypeKind::POINTER or 
+        tpe.kind == TypeKind::BYREF
 }
 
 export def is_ref(tpe: &Type) -> bool {
@@ -661,6 +663,7 @@ export def is_ref_or_weak(tpe: &Type) -> bool {
 export def is_box(tpe: &Type) -> bool {
     if not tpe { return false }
     return tpe.kind == TypeKind::POINTER or
+        tpe.kind == TypeKind::BYREF or
         tpe.kind == TypeKind::REFERENCE or
         tpe.kind == TypeKind::WEAK_REF or
         tpe.kind == TypeKind::STATIC_ARRAY or
@@ -827,6 +830,14 @@ export def pointer(tpe: &Type, kw: parser::VarDecl) -> &Type {
 // TODO Use default arguments for this, right now its bugged (it doesn't define the type)
 export def pointer(tpe: &Type) -> &Type {
     return pointer(tpe, parser::VarDecl::VAR)
+}
+
+export def byref(tpe: &Type) -> &Type {
+    var t = make_type_raw(TypeKind::BYREF)
+    t._tpe = tpe
+    t.size = (size_of *)
+    t.align = (align_of *)
+    return t
 }
 
 export def reference(tpe: &Type, kw: parser::VarDecl) -> &Type {
@@ -1203,6 +1214,7 @@ export def equals(a: &Type, b: &Type) -> bool {
     }
     if kind == TypeKind::ARRAY or
         kind == TypeKind::POINTER or
+        kind == TypeKind::BYREF or
         kind == TypeKind::REFERENCE or
         kind == TypeKind::WEAK_REF {
         
@@ -1276,7 +1288,7 @@ def has_function(entry: &TypeEntry, intf: &Type, mb: StructuralTypeMember, modul
         implements(reference(tpe), intf, module)
     }
     if tpe.kind == typechecking::TypeKind::REFERENCE or tpe.kind == typechecking::TypeKind::WEAK_REF or
-        tpe.kind == typechecking::TypeKind::POINTER {
+        is_pointer(tpe) {
         tpe = tpe.tpe
     }
 
@@ -1545,6 +1557,12 @@ export def convert_type_score(a: &Type, b: &Type, module: &toolchain::Module, is
     if equals(a, b) {
         return 0
     }
+
+    // If both are either refs or pointers
+    if is_pointer(a) and is_pointer(b) and equals(a.tpe, b.tpe) {
+        return 2
+    }
+
     // Convert anonymous struct to value
     if a.kind == b.kind and b.kind == TypeKind::STRUCT and b.is_anon {
         if a.fields.size != b.fields.size { return -1 }
@@ -1601,7 +1619,7 @@ export def convert_type_score(a: &Type, b: &Type, module: &toolchain::Module, is
     if a.kind == TypeKind::TYPE and (equals(b, pointer(builtins::Type_)) or b.may_be_type) { 
         return 4
     }
-    if (a.kind == TypeKind::POINTER or a.kind == TypeKind::REFERENCE or a.kind == TypeKind::WEAK_REF) and (@b).kind == TypeKind::NULL {
+    if (is_pointer(a) or a.kind == TypeKind::REFERENCE or a.kind == TypeKind::WEAK_REF) and (@b).kind == TypeKind::NULL {
         return 0
     }
     if a.kind == TypeKind::REFERENCE and equals(a.tpe, b) {
@@ -1631,13 +1649,14 @@ export def convert_type_score(a: &Type, b: &Type, module: &toolchain::Module, is
         ((@b).kind == TypeKind::WORD or b.kind == TypeKind::CHAR) {
         return 10
     }
-    if ((@a).kind == TypeKind::POINTER and (@b).kind == TypeKind::POINTER or
+    if (is_pointer(a) and is_pointer(b) or
         (@a).kind == TypeKind::REFERENCE and (@b).kind == TypeKind::REFERENCE) and
         (@a).tpe == null {
         
         return 4
     }
     if a.kind == TypeKind::POINTER and b.kind == TypeKind::POINTER or
+        a.kind == TypeKind::BYREF and b.kind == TypeKind::BYREF or
         a.kind == TypeKind::REFERENCE and b.kind == TypeKind::REFERENCE or
         a.kind == TypeKind::WEAK_REF and b.kind == TypeKind::WEAK_REF or
         a.kind == TypeKind::ARRAY and b.kind == TypeKind::ARRAY or
@@ -1751,7 +1770,7 @@ export def convert_type_score(a: &Type, b: &Type, module: &toolchain::Module, is
 
         return 2 if has_right_return_types else 3
     }
-    if a.kind == TypeKind::CLOSURE and b.kind == TypeKind::POINTER and b._tpe and b._tpe.kind == TypeKind::FUNCTION {
+    if a.kind == TypeKind::CLOSURE and is_pointer(b) and b._tpe and b._tpe.kind == TypeKind::FUNCTION {
         b = b._tpe
         if vector::length(a.parameter_t) != vector::length(b.parameter_t) {
             return -1
@@ -1805,7 +1824,7 @@ export def convert_type_score(a: &Type, b: &Type, module: &toolchain::Module, is
             }
             return -1
         }
-        if a.kind == TypeKind::POINTER or a.kind == TypeKind::REFERENCE or a.kind == TypeKind::WEAK_REF or a.kind == TypeKind::STATIC_ARRAY {
+        if is_pointer(a) or a.kind == TypeKind::REFERENCE or a.kind == TypeKind::WEAK_REF or a.kind == TypeKind::STATIC_ARRAY {
             if a.kind == b.kind {
                 return convert_type_score(a.tpe, b.tpe, module, true)
             }
@@ -2463,11 +2482,11 @@ export def type_lookup(node: &parser::Node, state: &State, current_type: &Type =
     if tpe and type_constructor and type_constructor.kind != TypeKind::STUB {
         let type_name = debug::type_to_str(tpe, full_name = true)
 
-        let ref = [module = state.get_context(), name = type_name] !typechecking::TypeRef
-        if not map::contains(type_constructor.cache, ref) {
-            type_constructor.cache(ref) = null
+        let _ref = [module = state.get_context(), name = type_name] !typechecking::TypeRef
+        if not map::contains(type_constructor.cache, _ref) {
+            type_constructor.cache(_ref) = null
             generate_concrete_functions(type_constructor, tpe, state)
-            type_constructor.cache(ref) = (tpe if tpe.tc_tpe !* == type_constructor !* else null !&Type)
+            type_constructor.cache(_ref) = (tpe if tpe.tc_tpe !* == type_constructor !* else null !&Type)
         }
     }
     if tpe and (tpe.kind == TypeKind::STRUCT or tpe.kind == TypeKind::UNION) {
@@ -4199,7 +4218,13 @@ export def lookup_parameters(node: &parser::Node, state: &State) -> &Type {
         let named = tpe.parameter_t.get(i)
 
         if not named.tpe or named.tpe.kind != TypeKind::TYPE {
-            let new_type = type_lookup(param.value.param.tpe, state, named.tpe, false)
+            var new_type: &Type
+            if param.value.param.is_ref {
+                new_type = typechecking::byref(type_lookup(param.value.param.tpe, state, named.tpe.tpe, false))
+            } else {
+                new_type = type_lookup(param.value.param.tpe, state, named.tpe, false)
+            }
+
             if new_type {
                 //generate_ctor_and_dtor(new_type)
                 @named.tpe = @new_type
@@ -5617,7 +5642,7 @@ export def lookup_struct_member(member: StructMember, resolved: &SSet = null) {
     if resolved.contains(name) { return }
     resolved.add(name)
 
-    if (tpe.kind == TypeKind::POINTER or
+    if (is_pointer(tpe) or
         tpe.kind == TypeKind::REFERENCE or
         tpe.kind == TypeKind::WEAK_REF or
         tpe.kind == TypeKind::ARRAY) {

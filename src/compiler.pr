@@ -1119,6 +1119,7 @@ export def import_structures(tpe: &typechecking::Type, module: &toolchain::Modul
         case typechecking::TypeKind::ARRAY, 
             typechecking::TypeKind::STATIC_ARRAY, 
             typechecking::TypeKind::POINTER, 
+            typechecking::TypeKind::BYREF,
             typechecking::TypeKind::REFERENCE,
             typechecking::TypeKind::WEAK_REF
             import_structures(tpe.tpe, module)
@@ -2168,8 +2169,8 @@ def convert_to(loc: &Value, value: Value, tpe: &typechecking::Type, state: &Stat
             var unwrap = load_value(value, loc, state)
             // Unwrap reference on the value side
             if is_ref(value.tpe) {
-                let ref = state.extract_value(pointer(right), unwrap, [1], loc)
-                unwrap = state.load(right, ref, loc)
+                let _ref = state.extract_value(pointer(right), unwrap, [1], loc)
+                unwrap = state.load(right, _ref, loc)
             }
             // Extract element
             var elem = state.extract_value(field.tpe, unwrap, [field.index !int], loc)
@@ -4080,8 +4081,8 @@ def walk_MemberAccess_struct(node: &parser::Node, tpe: &typechecking::Type, memb
         let res = walk_MemberAccess_gep(node, tpe, member_type, value, index, state)
 
         if member.is_embed and is_ref(member.tpe) {
-            let ref = state.load(member.tpe, @res.addr, loc)
-            let ptr = state.extract_value(pointer(member.tpe.tpe), ref, [1], loc)
+            let _ref = state.load(member.tpe, @res.addr, loc)
+            let ptr = state.extract_value(pointer(member.tpe.tpe), _ref, [1], loc)
             return make_address_value(pointer(member.tpe.tpe), ptr, state)
         }
 
@@ -4784,7 +4785,7 @@ export def walk_expression(node: &parser::Node, state: &State) -> Value {
     }
     
     if node.parent and node.parent.body and node.kind != parser::NodeKind::FUNC_CALL and node.kind != parser::NodeKind::ASSIGN and
-        expr.kind != ValueKind::NULL and expr.kind != ValueKind::ADDRESS and expr.tpe and expr.tpe.kind != typechecking::TypeKind::POINTER {
+        expr.kind != ValueKind::NULL and expr.kind != ValueKind::ADDRESS and expr.tpe and not is_pointer(expr.tpe) {
 
         let loc = make_location(node, state)
         let addr = state.alloca(expr.tpe, loc)
@@ -6628,9 +6629,9 @@ def di_ref_type(value: &Value, tpe: &typechecking::Type, is_weak: bool, state: &
     fields(0) = [ name = "ref_count", tpe = typechecking::pointer(builtins::int64_) ] !StructMember
     fields(1) = [ name = "value", tpe = typechecking::pointer(tpe.tpe) ] !StructMember
     fields(2) = [ name = "tpe", tpe = typechecking::pointer(builtins::Type_) ] !StructMember
-    let ref = typechecking::make_struct_type(fields)
+    let _ref = typechecking::make_struct_type(fields)
  
-    return di_composite_type(value, ref, "<weak_ref>" if is_weak else "<ref>", "DW_TAG_structure_type", state)
+    return di_composite_type(value, _ref, "<weak_ref>" if is_weak else "<ref>", "DW_TAG_structure_type", state)
 }
 
 def di_type(tpe: &typechecking::Type, state: &State) -> &Value {
@@ -6689,7 +6690,7 @@ def di_type(tpe: &typechecking::Type, state: &State) -> &Value {
             }
         case typechecking::TypeKind::FUNCTION
             @ditpe = @di_function_type(tpe, state)
-        case typechecking::TypeKind::POINTER
+        case typechecking::TypeKind::POINTER, typechecking::TypeKind::BYREF
             @ditpe = @di_pointer_type(tpe, state)
         case typechecking::TypeKind::REFERENCE, typechecking::TypeKind::WEAK_REF
             @ditpe = @di_ref_type(ditpep, tpe, tpe.kind == typechecking::TypeKind::WEAK_REF, state)
@@ -8253,7 +8254,7 @@ def get_weak_count_ptr(value: Value, loc: &Value, state: &State) -> Value {
 
 def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
     if typechecking::is_polymorph(tpe) { return }
-    assert tpe.kind == typechecking::TypeKind::POINTER
+    assert is_pointer(tpe)
 
     if tpe.tpe and tpe.tpe.kind == typechecking::TypeKind::TUNION {
         let stpe = tpe.tpe
@@ -8299,28 +8300,16 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
     }
 
     var structure_type = tpe.tpe
-    var ref: Value
+    var _ref: Value
     var ref_count: Value
     var null_br: &Insn, br: &Insn
     var br1: &Insn
 
     if typechecking::is_ref(tpe.tpe) and tpe.tpe.tpe and not is_interface(tpe.tpe.tpe) {
         // Decrease ref count
-        ref = state.load(tpe.tpe, value)
-        ref_count = state.extract_value(pointer(ref_meta()), ref, [0])
-        let ref_count_value1 = state.ptr_to_int(ref_count)
-
-        let isnull = state.icmp(CompareInt::eq, ref_count_value1, 
-            [ kind = ValueKind::INT, tpe = builtins::int64_, i = 0 ] !Value)
-
-        br1 = make_insn(InsnKind::BR)
-        br1.value.br = [ cond = isnull ] !InsnBr
-        push_insn(br1, state)
-        let nonnull = make_label(state)
-        push_label(nonnull, state)
-        br1.value.br.if_false = nonnull
-
-        let ref_count_ptr = state.gep(pointer(builtins::int64_), ref_meta(), ref_count, [make_int_value(0), make_int_value(0)])
+        _ref = state.load(tpe.tpe, value)
+        ref_count = state.extract_value(pointer(ref_meta), ref, [0])
+        let ref_count_ptr = state.gep(pointer(builtins::int64_), ref_meta, ref_count, [make_int_value(0), make_int_value(0)])
         let ref_count_value = state.ptr_to_int(ref_count_ptr)
         let null_cond = state.icmp(CompareInt::eq, ref_count_value, [ kind = ValueKind::INT, tpe = builtins::int64_, i = 0 ] !Value)
         null_br = make_insn(InsnKind::BR)
@@ -8351,13 +8340,13 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
             var size = NO_VALUE
             var data = NO_VALUE
             if structure_type.kind == typechecking::TypeKind::ARRAY {
-                let array_ptr = state.extract_value(pointer(structure_type), ref, [1])
+                let array_ptr = state.extract_value(pointer(structure_type), _ref, [1])
                 let array = state.load(structure_type, array_ptr)
                 size = state.extract_value(builtins::size_t_, array, [0])
                 data = state.extract_value(pointer(structure_type.tpe), array, [1])
             } else if structure_type.kind == typechecking::TypeKind::STATIC_ARRAY {
                 size = [ kind = ValueKind::INT, tpe = builtins::size_t_, i = structure_type.length ] !Value
-                data = state.extract_value(pointer(structure_type), ref, [1])
+                data = state.extract_value(pointer(structure_type), _ref, [1])
             }
 
             let counter_ptr = state.alloca(builtins::size_t_)
@@ -8409,10 +8398,10 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
     var to_end = make_insn(InsnKind::BR_UNC)
     var null_br2: &Insn = null
     if typechecking::is_ref(tpe.tpe) and (not tpe.tpe.tpe or typechecking::is_interface(tpe.tpe.tpe)) {
-        let ref = state.load(tpe.tpe, value)
+        let _ref = state.load(tpe.tpe, value)
 
         // Extract type
-        let ref_count = get_ref_count_ptr(ref, null, state)
+        let ref_count = state.extract_value(pointer(builtins::int64_), ref, [0])
         let ref_count_value = state.ptr_to_int(ref_count)
         let cond = state.icmp(CompareInt::eq, ref_count_value, [ kind = ValueKind::INT, tpe = builtins::int64_, i = 0 ] !Value)
         null_br2 = make_insn(InsnKind::BR)
@@ -8425,7 +8414,7 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
         
         let fp = unbox((builtins::Type_).field_types(15).tpe)
 
-        let ref_tpe = state.extract_value(pointer(builtins::Type_), ref, [2])
+        let ref_tpe = state.extract_value(pointer(builtins::Type_), _ref, [2])
         let ref_tpe_deref = state.load(builtins::Type_, ref_tpe)
         let dtor = state.extract_value(fp, ref_tpe_deref, [15])
 
@@ -8440,8 +8429,8 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
             state.module.imported.add(destructor.tpe.type_name)
 
             if typechecking::is_ref(tpe.tpe) {
-                let ref = state.load(tpe.tpe, value)
-                value = state.extract_value(pointer(structure_type), ref, [1])
+                let _ref = state.load(tpe.tpe, value)
+                value = state.extract_value(pointer(structure_type), _ref, [1])
             }
             state.call(destructor.tpe.type_name, null, [value])
         }
@@ -8462,8 +8451,8 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
             
         var obj: Value
         if typechecking::is_ref(value.tpe.tpe) {
-            let ref = state.load(tpe.tpe, value)
-            obj = state.extract_value(pointer(structure_type), ref, [1])
+            let _ref = state.load(tpe.tpe, value)
+            obj = state.extract_value(pointer(structure_type), _ref, [1])
         } else {
             obj = value
         }
@@ -8500,7 +8489,7 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
             predeclare_function(fun, state.module)
             state.module.imported.add(fun.type_name)
             import_structure(builtins::Ref_, state.module)
-            state.call(fun.type_name, null, [convert_ref_to_ref(builtins::Ref_, ref, null, state)])
+            state.call(fun.type_name, null, [convert_ref_to_ref(builtins::Ref_, _ref, null, state)])
         }
 
         let ref_count_value1 = state.ptr_to_int(ref_count)
@@ -8515,14 +8504,14 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
         push_label(nonnull, state)
         br2.value.br.if_false = nonnull
 
-        let cnt = get_weak_count_ptr(ref, null, state)
+        let cnt = get_weak_count_ptr(_ref, null, state)
         var cnt_value = state.load(builtins::int64_, cnt)
         cnt_value = state.sub(builtins::int64_, cnt_value, [ kind = ValueKind::INT, tpe = builtins::int64_, i = 1 ] !Value)
         state.store(cnt, cnt_value)
 
         check_clear_ref_meta(ref_count, null, state)
 
-        value = state.extract_value(pointer(tpe.tpe.tpe), ref, [1])
+        value = state.extract_value(pointer(tpe.tpe.tpe), _ref, [1])
 
         if tpe.tpe.tpe.kind == typechecking::TypeKind::ARRAY {
             let array = state.load(tpe.tpe.tpe, value)
@@ -8705,7 +8694,7 @@ def push_enum_values(tpe: &typechecking::Type, global: Value, module: &toolchain
         let svalue = tpe.scope.fields(key)
         
         let name_values = allocate_ref(Value, 2)
-        name_values(0) = [ kind = ValueKind::INT, tpe = builtins::int64_, i = key.length() + 1 ] !Value
+        name_values(0) = [ kind = ValueKind::INT, tpe  = builtins::int64_, i = key.length() + 1 ] !Value
         name_values(1) = [ kind = ValueKind::UNDEF, tpe = pointer(builtins::int8_) ] !Value
 
         let eval_values = allocate_ref(Value, 2)
