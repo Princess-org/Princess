@@ -129,8 +129,14 @@ import std
             linux::execvp(exe.to_array().value, pargs.value)
             exit(1)
         }
-
-        let fd = linux::syscall(SYS_pidfd_open, pid, 2048 /* PIDFD_NONBLOCK */)
+        
+        #if defined MACOS {
+            // MacOS has no facility to open a process as a file discriptor, 
+            // so we have to use something other than poll 
+            let fd = 0
+        } else {
+            let fd = linux::syscall(SYS_pidfd_open, pid, 2048 /* PIDFD_NONBLOCK */)
+        }
 
         return [
             pid = pid, fd = fd,
@@ -151,29 +157,77 @@ import std
         return (status & 0xFF00) >> 8
     }
 
+    #if defined MACOS {
+        var gtimeout = false
+        def on_timeout(sig: int) {
+            gtimeout = true
+        }
+    }
+
     export def wait(process: *Process, timeout: ulong = -1) {
-        var pfd = [fd = process.fd !int, events = POLLIN, revents = 0] !linux::s_pollfd;
-        if linux::poll(*pfd, 1, timeout !int) == 0 {
-            return 
-        }
+        #if defined MACOS {
+            // We need to do something stupid with signals here to mimick a timeout
+            gtimeout = false
+            let old_handler = cstd::signal(cstd::SIGALRM, *on_timeout)
+            if timeout < -1 {
+                linux::ualarm((timeout * 1000) !int, 0)
+            }
+            
+            while not gtimeout {
+                var stat_val: int
 
-        var stat_val: int
-        if linux::waitpid(process.pid, *stat_val, 0) == -1 {
-            abort("Waitpid error\n")
-        }
-        if WIFSIGNALED(stat_val) {
-            process.exit_code = 128 + WTERMSIG(stat_val)
-        } else if WIFEXITED(stat_val) {
-            process.exit_code = WEXITSTATUS(stat_val)
+                let status = linux::waitpid(process.pid, *stat_val, 1 /* WNOHANG */)
+                if status == -1 {
+                    abort("Waitpid error\n")
+                } else if status == 0 {
+                    linux::pause()
+                    continue
+                }
+
+                if WIFSIGNALED(stat_val) {
+                    process.exit_code = 128 + WTERMSIG(stat_val)
+                } else if WIFEXITED(stat_val) {
+                    process.exit_code = WEXITSTATUS(stat_val)
+                } else {
+                    abort("Invalid signal\n")
+                }
+
+                process.running = false
+
+                linux::alarm(0)
+                cstd::signal(cstd::SIGALRM, old_handler)
+                return
+            }
+
+            cstd::signal(cstd::SIGALRM, old_handler)
         } else {
-            abort("Invalid signal\n")
-        }
+            var pfd = [fd = process.fd !int, events = POLLIN, revents = 0] !linux::s_pollfd;
+            if linux::poll(*pfd, 1, timeout !int) == 0 {
+                return 
+            }
 
-        process.running = false
+            var stat_val: int
+            if linux::waitpid(process.pid, *stat_val, 1 /* WNOHANG */) == -1 {
+                abort("Waitpid error\n")
+            }
+            if WIFSIGNALED(stat_val) {
+                process.exit_code = 128 + WTERMSIG(stat_val)
+            } else if WIFEXITED(stat_val) {
+                process.exit_code = WEXITSTATUS(stat_val)
+            } else {
+                abort("Invalid signal\n")
+            }
+
+            process.running = false
+        }
     }
 
     export def terminate(process: *Process) {
-        linux::kill(process.pid, SIGTERM)
+        #if defined MACOS {
+            cstd::kill(process.pid, SIGTERM)
+        } else {
+            linux::kill(process.pid, SIGTERM)
+        }
     }
 
     export def dispose(process: *Process) {
