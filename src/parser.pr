@@ -1241,6 +1241,8 @@ export type ParseState = struct {
     module: Str
     has_error: bool
     has_yield: bool
+    expect_block: bool
+    expect_parens: bool
     lines: &[Str]
     tokens: *lexer::TokenList
     last_token: *lexer::TokenList
@@ -2563,7 +2565,15 @@ def parse_term(parse_state: &ParseState) -> &Node {
         back(parse_state)
         return expect_lambda(parse_state)
     } else if token.tpe == lexer::TokenType::O_PAREN {
+
+        let expect_block = parse_state.expect_block
+        let expect_parens = parse_state.expect_parens
+        parse_state.expect_block = false
+        parse_state.expect_parens = false
         node = parse_expression(parse_state)
+        parse_state.expect_block = expect_block
+        parse_state.expect_parens = expect_parens
+
         let end_token = expect(parse_state, lexer::TokenType::C_PAREN, "Expecting ')'")
         if node {
             // Set start and end token to include the parens
@@ -2644,13 +2654,15 @@ def parse_term(parse_state: &ParseState) -> &Node {
     return node
 }
 
-def expect_func_args(parse_state: &ParseState, node: &Node) -> &Node {
+def expect_func_args(parse_state: &ParseState, node: &Node, parens: bool = true) -> &Node {
     var token = peek(parse_state)
     let line = node.loc.line if node else token.line
     let column = node.loc.column if node else token.column
 
+    var skip_kwargs = false
+
     var args = vector::make(type &Node)
-    while token.tpe != lexer::TokenType::C_PAREN and
+    while (token.tpe != lexer::TokenType::C_PAREN or not parens) and
         token.tpe != lexer::TokenType::EOF {
         if token.tpe == lexer::TokenType::IDENTIFIER {
             token = pop(parse_state)
@@ -2661,11 +2673,15 @@ def expect_func_args(parse_state: &ParseState, node: &Node) -> &Node {
             back(parse_state)
         }
 
+        let expect_parens = parse_state.expect_parens
+        parse_state.expect_parens = not parens
         args.push(expect_expression_no_assign(parse_state))
+        parse_state.expect_parens = expect_parens
 
         token = peek(parse_state)
-        if token.tpe != lexer::TokenType::C_PAREN {
+        if token.tpe != lexer::TokenType::C_PAREN or not parens {
             if token.tpe != lexer::TokenType::COMMA {
+                if not parens { skip_kwargs = true; break }
                 errors::errort(token, parse_state, "Expected ','")
                 return null
             } else {
@@ -2680,42 +2696,50 @@ def expect_func_args(parse_state: &ParseState, node: &Node) -> &Node {
     }
 
     var kwargs = vector::make(type &Node)
-    while token.tpe != lexer::TokenType::C_PAREN and
-        token.tpe != lexer::TokenType::EOF {
 
-        token = peek(parse_state)
-        let line = token.line
-        let column = token.column
+    if not skip_kwargs {
+        while (token.tpe != lexer::TokenType::C_PAREN or not parens) and
+            token.tpe != lexer::TokenType::EOF {
 
-        let ident = expect_identifier(parse_state)
+            token = peek(parse_state)
+            let line = token.line
+            let column = token.column
 
-        expect(parse_state, lexer::TokenType::OP_ASSIGN, "expected '='")
-        let expr = expect_expression_no_assign(parse_state)
+            let ident = expect_identifier(parse_state)
 
-        let named_arg = make_node(NodeKind::NAMED_ARG, line, column, parse_state)
-        (@named_arg).value.named_arg = [
-            name = ident,
-            value = expr
-        ] !NodeNamedArg
-        kwargs.push(named_arg)
-        named_arg._hash = combine_hashes(named_arg.kind !uint64, hash(ident), hash(expr))
+            expect(parse_state, lexer::TokenType::OP_ASSIGN, "expected '='")
 
-        token = peek(parse_state)
-        if token.tpe != lexer::TokenType::C_PAREN {
-            if token.tpe != lexer::TokenType::COMMA {
-                errors::errort(token, parse_state, "Expected ','")
-                return null
-            } else {
-                pop(parse_state)
-                token = peek(parse_state)
-                if token.tpe == lexer::TokenType::C_PAREN {
-                    kwargs.push(null)
-                    break
+            let expect_parens = parse_state.expect_parens
+            parse_state.expect_parens = not parens
+            let expr = expect_expression_no_assign(parse_state)
+            parse_state.expect_parens = expect_parens
+
+            let named_arg = make_node(NodeKind::NAMED_ARG, line, column, parse_state)
+            (@named_arg).value.named_arg = [
+                name = ident,
+                value = expr
+            ] !NodeNamedArg
+            kwargs.push(named_arg)
+            named_arg._hash = combine_hashes(named_arg.kind !uint64, hash(ident), hash(expr))
+
+            token = peek(parse_state)
+            if token.tpe != lexer::TokenType::C_PAREN or not parens {
+                if token.tpe != lexer::TokenType::COMMA {
+                    if not parens { break }
+                    errors::errort(token, parse_state, "Expected ','")
+                    return null
+                } else {
+                    pop(parse_state)
+                    token = peek(parse_state)
+                    if token.tpe == lexer::TokenType::C_PAREN {
+                        kwargs.push(null)
+                        break
+                    }
                 }
             }
         }
     }
-    if token.tpe == lexer::TokenType::C_PAREN {
+    if token.tpe == lexer::TokenType::C_PAREN and parens {
         pop(parse_state)
     }
 
@@ -2730,6 +2754,18 @@ def expect_func_args(parse_state: &ParseState, node: &Node) -> &Node {
     return call
 }
 
+def expect_member_access(parse_state: &ParseState, node: &Node) -> &Node {
+    var token = peek(parse_state)
+    var right: &Node
+    if token.tpe == lexer::TokenType::K_TYPE {
+        right = make_operator_ident("type", token, parse_state)
+        pop(parse_state)
+    } else {
+        right = expect_identifier(parse_state)
+    }
+    return make_bin_op(parse_state, token, NodeKind::MEMBER_ACCESS, node, right)
+}
+
 def parse_post_expression(parse_state: &ParseState) -> &Node {
     var token = peek(parse_state)
     let start_token = token
@@ -2737,23 +2773,85 @@ def parse_post_expression(parse_state: &ParseState) -> &Node {
     loop {
         if next_token(parse_state, lexer::TokenType::O_PAREN) {
             node = expect_func_args(parse_state, node)
-        /*} else if next_token(parse_state, lexer::TokenType::O_SQUARE) {
-            skip_newline(parse_state)
-            let expr = parse_expression(parse_state)
-            skip_newline(parse_state)
-            expect(parse_state, lexer::TokenType::C_SQUARE, "Expected ']'")
-            node = make_bin_op(parse_state, token, NodeKind::ARRAY_SUBSCRIPT, node, expr)*/
         } else if next_token(parse_state, lexer::TokenType::DOT) {
-            token = peek(parse_state)
-            var right: &Node
-            if token.tpe == lexer::TokenType::K_TYPE {
-                right = make_operator_ident("type", token, parse_state)
-                pop(parse_state)
-            } else {
-                right = expect_identifier(parse_state)
-            }
-            node = make_bin_op(parse_state, token, NodeKind::MEMBER_ACCESS, node, right)
+            node = expect_member_access(parse_state, node)
         } else {
+            if not node or node.kind != NodeKind::IDENTIFIER or parse_state.expect_parens { 
+                return node
+            }
+
+            token = peek(parse_state)
+
+            if token.tpe == lexer::TokenType::NEW_LINE or 
+                token.tpe == lexer::TokenType::EOF or
+                token.tpe == lexer::TokenType::COMMA or
+                token.tpe == lexer::TokenType::SEMICOLON {
+                return node
+            }
+
+            if token.tpe == lexer::TokenType::O_BRACE and parse_state.expect_block {
+                return node
+            }
+
+
+            if token.tpe == lexer::TokenType::OP_MUL or 
+                token.tpe == lexer::TokenType::OP_ADD or
+                token.tpe == lexer::TokenType::OP_SUB {
+
+                // Check for unary operator
+                let prec_by_whitespace = (token.line == node.loc.line and 
+                    token.end_column > node.loc.end_column + 1) or 
+                    token.tpe == lexer::TokenType::NEW_LINE
+
+                let succ = peek(parse_state, 1)
+                let succ_by_whitespace = (succ.line == token.line and
+                    succ.column > token.end_column) or
+                    succ.tpe == lexer::TokenType::NEW_LINE
+                
+                let prev_tokens = parse_state.tokens
+                if not prec_by_whitespace or succ_by_whitespace {
+                    return node
+                }
+
+                parse_state.tokens = prev_tokens
+            } else if not (
+                token.tpe == lexer::TokenType::INTEGER or
+                token.tpe == lexer::TokenType::FLOAT or
+                token.tpe == lexer::TokenType::CHAR or
+                token.tpe == lexer::TokenType::STRING or
+                token.tpe == lexer::TokenType::IDENTIFIER or
+                token.tpe == lexer::TokenType::O_BRACE or
+                token.tpe == lexer::TokenType::O_SQUARE) {
+                return node
+            }
+
+            node = expect_func_args(parse_state, node, parens = false)
+            token = peek(parse_state)
+
+            loop {
+                if token.tpe == lexer::TokenType::IDENTIFIER {
+                    let right = expect_identifier(parse_state)
+                    node = make_bin_op(parse_state, token, NodeKind::MEMBER_ACCESS, node, right)
+                }
+                
+                if next_token(parse_state, lexer::TokenType::O_PAREN) {
+                    node = expect_func_args(parse_state, node)
+                } else if next_token(parse_state, lexer::TokenType::DOT) {
+                    node = expect_member_access(parse_state, node)
+                } else {
+                    token = peek(parse_state)
+                    if token.tpe != lexer::TokenType::NEW_LINE and
+                        token.tpe != lexer::TokenType::SEMICOLON and
+                        token.tpe != lexer::TokenType::EOF and
+                        token.tpe != lexer::TokenType::C_PAREN {
+
+                        node = expect_func_args(parse_state, node, parens = false)
+                    } else {
+                        break
+                    }
+                }
+                token = peek(parse_state)
+            }
             return node
         }
         if node {
@@ -3781,7 +3879,12 @@ def expect_while_stmt(parse_state: &ParseState) -> &Node {
 
     expect(parse_state, lexer::TokenType::K_WHILE, "Expected while")
     skip_newline(parse_state)
+
+    let expect_block = parse_state.expect_block
+    parse_state.expect_block = true
     let expr = expect_expression(parse_state)
+    parse_state.expect_block = expect_block
+
     skip_newline(parse_state)
     expect(parse_state, lexer::TokenType::O_BRACE, "Expected '{'")
     var body = vector::make(type &Node)
@@ -3833,7 +3936,12 @@ def expect_for_stmt(parse_state: &ParseState) -> &Node {
     skip_newline(parse_state)
     expect(parse_state, lexer::TokenType::K_IN, "Expected in")
     skip_newline(parse_state)
+
+    let expect_block = parse_state.expect_block
+    parse_state.expect_block = true
     var expr = expect_expression(parse_state)
+    parse_state.expect_block = expect_block
+    
     expect(parse_state, lexer::TokenType::O_BRACE, "Expected '{'")
     var body = vector::make(type &Node)
     parse_block(parse_state, body)
@@ -3890,7 +3998,12 @@ def expect_if_stmt(parse_state: &ParseState, static_if: bool) -> &Node {
     }
     
     skip_newline(parse_state)
+
+    let expect_block = parse_state.expect_block
+    parse_state.expect_block = true
     let cond = expect_expression(parse_state)
+    parse_state.expect_block = expect_block
+
     skip_newline(parse_state)
     expect(parse_state, lexer::TokenType::O_BRACE, "Expected '{'")
     var body = vector::make(type &Node)
@@ -3914,7 +4027,11 @@ def expect_if_stmt(parse_state: &ParseState, static_if: bool) -> &Node {
             token = peek(parse_state)
             if token.tpe == lexer::TokenType::K_IF {
                 pop(parse_state)
+                
+                let expect_block = parse_state.expect_block
+                parse_state.expect_block = true
                 var cond = expect_expression(parse_state)
+                parse_state.expect_block = expect_block
                 
                 skip_newline(parse_state)
                 expect(parse_state, lexer::TokenType::O_BRACE, "Expected '{'")
@@ -3985,7 +4102,12 @@ def expect_switch_stmt(parse_state: &ParseState) -> &Node {
 
     expect(parse_state, lexer::TokenType::K_SWITCH, "Expected switch")
     skip_newline(parse_state)
+
+    let expect_block = parse_state.expect_block
+    parse_state.expect_block = true
     let expr = expect_expression(parse_state)
+    parse_state.expect_block = expect_block
+    
     skip_newline(parse_state)
     expect(parse_state, lexer::TokenType::O_BRACE, "Expected '{'")
     var body = vector::make(type &Node)
