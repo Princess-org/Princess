@@ -127,6 +127,85 @@ export def find_symbol(library: *Library, name: String) -> Optional(Symbol) {
         }
         windows::FreeLibrary(library.handle !*windows::s_HINSTANCE__)
     }
+} else if defined MACOS {
+    import linux
+    import io
+    import process
+
+    const RTLD_NOW = 2
+
+    export def load(path: String, init: bool = true) -> Library {
+
+        let handle = linux::dlopen(path.to_array().value, RTLD_NOW)
+        if not handle { abort("Couldn't open shared library " + path + "\n") }
+
+        // We're going to call nm here because it seems to be the most straight forward way of enumerating symbols
+        // If you know a better way of doing this please tell me.
+
+        let r, w = io::pipe(io::NO_BLOCKING)
+        let args = allocate_ref(String, 2)
+        args(0) = "-gU"
+        args(1) = path
+
+        let proc = *process::spawn("/usr/bin/nm", args, stdout = w)
+        var data: Str
+        while proc.running {
+            proc.wait(100)
+            data = data + r.read_remaining()
+        }
+        proc.dispose()
+        let nm_symbols = data.split('\n')
+
+        let symbols = vector::make(Symbol)
+
+        for var sym in @nm_symbols {
+            let name = sym.substring(20)
+            let nm_kind = sym(17)
+
+            if nm_kind == 'D' or nm_kind == 'S' or nm_kind == 'T' {
+                var err = dlerror()
+                symbols.push([
+                    kind = SymbolKind::FUNCTION if nm_kind == 'T' else SymbolKind::OBJECT,
+                    name = name,
+                    value = dlsym(handle, name.to_array().value)
+                ] !Symbol)
+                err = dlerror()
+                if err {
+                    print("Couldn't load symbol ", name, ": ", err, "\n")
+                }
+            }
+        }
+
+        let library = [
+            path = path,
+            handle = handle,
+            symbols = symbols.to_array()
+        ] !Library
+
+        if init {
+            let main_sym = find_symbol(*library, "main::__main__::([[char]])")
+            if main_sym.exists {
+                let main = main_sym.get().value !(def ([[char]]) -> [])
+                // FIXME Pass in actual command line arguments
+                let args = zero_allocate(type [char], 0)
+                main(args)
+                delete(args)
+            }
+        }
+
+        return library
+    }
+
+    export def close(library: *Library, finalize: bool = true) {
+        if finalize {
+            let finalizer_sym = find_symbol(library, "main::__finalizer__::()")
+            if finalizer_sym.exists {
+                let finalizer = finalizer_sym.get().value !(def -> [])
+                finalizer()
+            }
+        }
+        linux::dlclose(library.handle)
+    }
 
 } else {
     import linux
@@ -164,7 +243,7 @@ export def find_symbol(library: *Library, name: String) -> Optional(Symbol) {
     export def load(path: String, init: bool = true) -> Library {
         let fh = open(path, "rb")
         if not fh {
-            abort("Couldn't open library " + path + " (" + make_string(cstd::strerror(@linux::__errno_location())) + ")\n")
+            abort("Couldn't open library " + path + " (" + std::c_error_str() + ")\n")
         }
         defer close(fh)
 

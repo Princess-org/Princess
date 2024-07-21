@@ -530,7 +530,6 @@ export def tpe(np: NamedParameter) -> &Type {
 
 export type State = struct {
     module: weak &toolchain::Module
-    counter: int
     scope: weak &scope::Scope
     // Vector of Type
     function_stack: &Vector(&compiler::Function)
@@ -549,7 +548,9 @@ export def get_context(state: &State) -> &toolchain::Module {
     return state.module
 }
 
-var lambda_counter = 0 // TODO Why is this global state?
+// This needs to be global state
+var lambda_counter = 0
+var counter = 0
 
 def current_value(state: &State) -> &scope::Value {
     if state.current_variable {
@@ -896,9 +897,9 @@ export def make_static_array(array_tpe: &Type, size: size_t) -> &Type {
 }
 
 def make_unique_name(name: Str, state: &State) -> Str {
-    let counter = state.counter
-    state.counter += 1
-    return state.module.module + "::" + name + '.' + counter
+    let cnt = counter
+    counter += 1
+    return state.module.module + "::" + name + '.' + cnt
 }
 
 // Map of type names to identify which ones
@@ -1292,14 +1293,15 @@ def has_function(entry: &TypeEntry, intf: &Type, mb: StructuralTypeMember, modul
         tpe = tpe.tpe
     }
 
-    if tpe and tpe.kind == typechecking::TypeKind::STRUCT { 
+    if tpe and tpe.kind == typechecking::TypeKind::STRUCT {
+        let fields = flatten_fields(tpe)
         if is_setter(mb) {
             let name = mb.name.slice(6, mb.name.length() - 2)
-            for var field in @tpe.fields {
+            for var field in fields {
                 if field.name == name and equals(mb.parameter_t(0).tpe, field.tpe) { return true }
             }
         } else if is_getter(mb) {
-            for var field in @tpe.fields {
+            for var field in fields {
                 if field.name == mb.name and equals(mb.return_t(0), field.tpe) { return true }
             }
             if tpe.const_fields {
@@ -1421,9 +1423,9 @@ export def implements(a: &Type, b: &Type, module: &toolchain::Module, visited: &
         for var i in 0..vector::length(b.members) {
             let mb = b.members(i)
 
-            if not has_function(type_entry, b, mb, module, visited.copy(), check_embed) { 
+            if not has_function(type_entry, b, mb, module, visited.copy(), check_embed) {
                 type_entry.cached(nameb) = CacheEntry::NOT_CONTAINS
-                return false 
+                return false
             }
         }
         type_entry.cached(nameb) = CacheEntry::CONTAINS
@@ -1599,7 +1601,7 @@ export def convert_type_score(a: &Type, b: &Type, module: &toolchain::Module, is
     }
 
     // Embedded structs
-    if b.kind == TypeKind::STRUCT or is_ref(b) and b.tpe and b.tpe.kind == TypeKind::STRUCT {
+    if b.kind == TypeKind::STRUCT or (is_ref(b) and b.tpe and b.tpe.kind == TypeKind::STRUCT) {
         var nb = b.tpe if is_ref(b) else b
         for var field in @nb.fields {
             if field.is_embed {
@@ -2551,25 +2553,10 @@ def lookup_field_type(node: &parser::Node, state: &State, current_type: &Type, c
         node = node.value.t_parr.tpe
     }
 
-    if scope::is_global(state.scope) and (node.kind == parser::NodeKind::PTR_T or
+    if node.kind == parser::NodeKind::PTR_T or
         node.kind == parser::NodeKind::REF_T or
         node.kind == parser::NodeKind::ARRAY_T or
-        node.kind == parser::NodeKind::WEAK_REF_T or
-        node.kind == parser::NodeKind::FUNCTION_T or
-        node.kind == parser::NodeKind::CLOSURE_T) {
-            
-        if node.kind == parser::NodeKind::FUNCTION_T {
-            let box = box(type_lookup(node, state, current_type, false, cache))
-            box.size = size_of def [] -> []
-            box.align = align_of def [] -> []
-            return box
-        }
-        if node.kind == parser::NodeKind::CLOSURE_T {
-            let box = box(type_lookup(node, state, current_type, false, cache))
-            box.size = size_of [] -> []
-            box.align = align_of [] -> []
-            return box
-        }
+        node.kind == parser::NodeKind::WEAK_REF_T {
         
         var stub: &Type = null
         let parr = node.value.t_parr.tpe
@@ -2603,12 +2590,8 @@ def lookup_field_type(node: &parser::Node, state: &State, current_type: &Type, c
             stub.module = state.module
             stub.node = node
             prev_node.tpe = stub
-        } else {
-            stub.module = state.module
-            stub.node = node
-            node.tpe = stub
         }
-
+        
         return stub
     } else {
         return type_lookup(node, state, current_type, false, cache)
@@ -2757,7 +2740,11 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
             else make_union_type(fields.to_array(), const_fields.to_array(), current_type))
 
         tpe.line = node.loc.line
-        tpe.type_name = make_unique_name("<anonymous>", state)
+        if current_type and current_type.type_name {
+            tpe.type_name = current_type.type_name
+        } else {
+            tpe.type_name = make_unique_name("<anonymous>", state)
+        }
         tpe.name = "<anonymous>"
         tpe.line = node.loc.line
 
@@ -2822,7 +2809,7 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
 
             let arg = node.value.t_func.args(i)
             let np = [
-                _tpe = type_lookup(arg, state, arg_type, lookup_default, cache),
+                _tpe = box(type_lookup(arg, state, arg_type, lookup_default, cache)),
                 node = arg
             ] !NamedParameter
             tpe.parameter_t.push(np)
@@ -2838,6 +2825,7 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
             }
 
             let arg = node.value.t_func.ret(i)
+            // TODO This needs to be boxed as well, potential memory leak
             let ret_tpe = type_lookup(arg, state, return_type, lookup_default, cache)
 
             tpe.return_t.push(ret_tpe)
@@ -2881,7 +2869,13 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
     } else if node.kind == parser::NodeKind::STRUCTURAL_T {
         let tpe = make_type_raw(TypeKind::STRUCTURAL) if not current_type else current_type
         tpe.kind = TypeKind::STRUCTURAL
-        tpe.type_name = make_unique_name("<anonymous>", state)
+
+        if current_type and current_type.type_name {
+            tpe.type_name = current_type.type_name
+        } else {
+            tpe.type_name = make_unique_name("<anonymous>", state)
+        }
+
         tpe.name = "<anonymous>"
 
         let members = vector::make(StructuralTypeMember)
@@ -3009,7 +3003,7 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
                 np = type_constructor.parameter_t.get(i)
             }
 
-            let argtpe = type_lookup(arg, state, null, lookup_default, cache, prefix = to_string(state.counter) + ".")
+            let argtpe = type_lookup(arg, state, null, lookup_default, cache, prefix = to_string(counter) + ".")
             argtpe.is_type_argument = true
             if argtpe {
                 if argtpe.kind == TypeKind::TYPE_DEF { is_generic = true }
@@ -3021,7 +3015,7 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
             tc_args.push(argtpe)
 
             type_name += debug::type_to_str(argtpe, full_name = true)
-            if i < len -1 {
+            if i < len - 1 {
                 type_name += ", "
             }
         }
@@ -4223,6 +4217,7 @@ export def lookup_parameters(node: &parser::Node, state: &State) -> &Type {
     let test = node.value.def_.test
     let tpe = node.tpe
 
+    if not tpe { return null }
     if not params or not returns { return tpe }
     if node.value.def_.has_lookup { return tpe }
     node.value.def_.has_lookup = true
@@ -4958,9 +4953,9 @@ def walk_YieldFrom(node: &parser::Node, state: &State) {
 
     let inner_scope = scope::enter_scope(state.scope)
     
-    let name = "__yfm." + state.counter
+    let name = "__yfm." + counter
     let ident = parser::make_identifier(name)
-    state.counter += 1
+    counter += 1
     let v = scope::create_variable(
         inner_scope, 
         ident,
@@ -5795,7 +5790,7 @@ def walk_MemberAccess_aggregate(node: &parser::Node, ucs: bool, state: &State) -
 }
 
 // TODO Make this a generator, doesn't work for some reason
-def flatten_fields(tpe: &Type, state: &State, v: &Vector(StructMember) = null) -> &Vector(StructMember) {
+def flatten_fields(tpe: &Type, v: &Vector(StructMember) = null) -> &Vector(StructMember) {
     if not v { v = vector::make(StructMember) }
     if not tpe { return v }
     if not is_struct(tpe) { 
@@ -5806,7 +5801,7 @@ def flatten_fields(tpe: &Type, state: &State, v: &Vector(StructMember) = null) -
     for var field in @tpe.fields {
         if field.is_embed {
             let tpe = field.tpe.tpe if is_box(field.tpe) else field.tpe
-            flatten_fields(tpe, state, v)
+            flatten_fields(tpe, v)
         } else {
             v.push(field)
         }
@@ -5968,7 +5963,7 @@ def walk_StructLit(node: &parser::Node, state: &State) {
         let name = last_ident_to_str((@kwarg).value.named_arg.name)
 
         var found = false
-        for var field in flatten_fields(tpe, state) {
+        for var field in flatten_fields(tpe) {
             if field.name == name {
                 found = true
 
@@ -6324,6 +6319,7 @@ export def walk_Def_with_type_argument(node: &parser::Node, parameter_t: &Vector
         super_scope.parent = context
     }*/
     
+    if not node.scope { return old_node }
     node.inner_scope = scope::enter_function_scope(node.scope)
 
     let share = node.value.def_.share
