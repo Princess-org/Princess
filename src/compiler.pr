@@ -15,6 +15,7 @@ import md5
 import optional
 import arena
 import constants
+import io
 
 export type Label = struct {
     name: Str
@@ -1014,12 +1015,8 @@ export def charp_static(global: &Value, state: &State) -> Value {
     return local
 }
 
-export def create_global_string(str: Str, state: &State) -> Value {
-    let tpe = typechecking::make_type_raw(typechecking::TypeKind::STATIC_ARRAY)
-    tpe._tpe = builtins::char_
-    tpe.length = str.length() + 1
-    tpe.size = tpe.length * (size_of char)
-    tpe.align = align_of char
+export def make_global_string(str: Str, state: &State) -> Value {
+    let tpe = typechecking::make_static_array(builtins::char_, str.length() + 1)
 
     let value = [
         kind = ValueKind::STRING,
@@ -1031,7 +1028,7 @@ export def create_global_string(str: Str, state: &State) -> Value {
 }
 
 export def charp(str: Str, state: &State) -> Value {
-    return charp_static(create_global_string(str, state), state)
+    return charp_static(make_global_string(str, state), state)
 }
 
 def push_scope(node: &parser::Node, state: &State) {
@@ -9310,6 +9307,178 @@ def change_value_to_type(tpe: &typechecking::Type, state: &State) -> &scope::Val
     return value
 }
 
+def make_global_data(name: Str, value: &ByteStream, state: &State) {
+    let tpe = typechecking::make_static_array(builtins::char_, value.data().size)
+
+    let s = value.data() !&[byte] !&[char]
+    let global = [
+        name = name,
+        tpe = tpe,
+        value = [ tpe = tpe, kind = ValueKind::STRING, s = s ] !Value,
+        line = -1
+    ] !&Global
+
+    state.module.result.globals(name) = global
+    state.module.imported.add(name)
+}
+
+def make_global_data(name: Str, value: size_t, state: &State) {
+    let global = [
+        name = name,
+        tpe = builtins::size_t_,
+        value = [ tpe = builtins::size_t_, kind = ValueKind::INT, i = value ] !Value,
+        line = -1
+    ] !&Global
+
+    state.module.result.globals(name) = global
+    state.module.imported.add(name)
+}
+
+export def generate_reflection_data() {
+    let data = io::make_stream()
+    let strings = [ strings = io::make_stream(), map = map::make(size_t) ] !&UniquedStrings
+
+    for var key in @types_to_resolve.keys() {
+        let to_resolve = types_to_resolve(key)
+        generate_reflection_data_1(to_resolve.tpe, data, strings)
+    }
+
+    for var key in @types_to_resolve.keys() {
+        let to_resolve = types_to_resolve(key)
+        generate_reflection_data_2(to_resolve.tpe, data, strings)
+    }
+
+    make_global_data("__reflection_data", data, toolchain::types_state)
+    make_global_data("__reflection_data_size", data.data().size, toolchain::types_state)
+    make_global_data("__reflection_strings", strings.strings, toolchain::types_state)
+    make_global_data("__reflection_num_types", types_to_resolve.size, toolchain::types_state)
+}
+
+type UniquedStrings = struct {
+    strings: &ByteStream
+    map: &SMap(size_t)
+}
+
+def write_zt(uniqued: &UniquedStrings, s: Str) -> int {
+    if uniqued.map.contains(s) {
+        return uniqued.map(s) !int
+    }
+    let val = uniqued.strings.write_zt(s)
+    uniqued.map(s) = val
+    return val !int
+}
+
+def generate_reflection_data_2(tpe: &typechecking::Type, data: &ByteStream, strings: &UniquedStrings) {
+    if tpe.kind == typechecking::TypeKind::STUB { return }
+
+    // Collect type members
+    let type_members = vector::make(typechecking::TypeEntryMember)
+    for var member in typechecking::iterate_member_functions(tpe) {
+        type_members.push(member)
+    }
+
+    // Write type members
+    data.write(type_members.length !int)
+    for var member in type_members {
+        data.write(strings.write_zt(member.function.type_name))
+        data.write(member.exported)
+        data.write(strings.write_zt(member.module.module))
+        
+        data.write(member.function.parameter_t.length !int)
+        for var arg in member.function.parameter_t {
+            data.write(arg.tpe.hash) // TODO Do we want function argument names maybe?
+        }
+        data.write(member.function.return_t.length !int)
+        for var t in member.function.return_t {
+            data.write(t.hash)
+        }
+    }
+
+    switch tpe.kind {
+    case typechecking::TypeKind::STRUCT, typechecking::TypeKind::UNION
+        for var member in @tpe.fields {
+            data.write(member.tpe.hash)
+        }
+    case typechecking::TypeKind::STRUCTURAL
+        for var member in tpe.members {
+            for var np in member.parameter_t {
+                data.write(np.tpe.hash)
+            }
+            for var t in member.return_t {
+                data.write(t.hash)
+            }
+        }
+    case typechecking::TypeKind::POINTER, typechecking::TypeKind::REFERENCE,
+        typechecking::TypeKind::WEAK_REF, typechecking::TypeKind::ARRAY,
+        typechecking::TypeKind::STATIC_ARRAY
+        data.write(tpe.tpe.hash)
+    case typechecking::TypeKind::TUPLE
+        for var t in tpe.return_t {
+            data.write(t.hash)
+        }
+    case typechecking::TypeKind::VARIANT
+        for var t in @tpe.variants.keys() {
+            data.write(t.hash)
+        }
+    case typechecking::TypeKind::CLOSURE, typechecking::TypeKind::FUNCTION
+        for var np in tpe.parameter_t {
+            data.write(np.tpe.hash)
+        }
+        for var t in tpe.return_t {
+            data.write(t.hash)
+        }
+    }
+}
+
+def generate_reflection_data_1(tpe: &typechecking::Type, data: &ByteStream, strings: &UniquedStrings) {
+    if tpe.kind == typechecking::TypeKind::STUB { return }
+
+    data.write(tpe.kind) // This does rely on the values beind the same
+    data.write(strings.write_zt(tpe.name))
+    data.write(strings.write_zt(tpe.module.module))
+    data.write(tpe.hash)
+    
+    switch tpe.kind {
+    case typechecking::TypeKind::WORD
+        data.write(tpe.size !int)
+        data.write(tpe.align !int)
+        data.write(not tpe.unsig)
+    case typechecking::TypeKind::FLOAT
+        data.write(tpe.size !int)
+        data.write(tpe.align !int)
+    case typechecking::TypeKind::STRUCT, typechecking::TypeKind::UNION
+        data.write(tpe.size !int)
+        data.write(tpe.align !int)
+        data.write(tpe.fields.size)
+        for var i in 0..tpe.fields.size {
+            let field = tpe.fields(i)
+            let member = tpe.field_types(field.index)
+            data.write(strings.write_zt(field.name))
+            data.write(member.offset !int)
+        }
+    case typechecking::TypeKind::STATIC_ARRAY
+        data.write(tpe.size)
+        data.write(tpe.align)
+        data.write(tpe.length)
+    case typechecking::TypeKind::FUNCTION, typechecking::TypeKind::CLOSURE
+        data.write(tpe.parameter_t.length !int)
+        data.write(tpe.return_t.length !int)
+    case typechecking::TypeKind::ENUM
+        data.write(tpe.size !int)
+        data.write(tpe.align !int)
+        data.write(not tpe.unsig)
+    case typechecking::TypeKind::STRUCTURAL
+        data.write(tpe.members.length)
+        for var member in tpe.members {
+            data.write(strings.write_zt(member.name))
+            data.write(member.parameter_t.length !int)
+            data.write(member.return_t.length !int)
+        }
+    case typechecking::TypeKind::VARIANT, typechecking::TypeKind::TUPLE
+        data.write(tpe.variants.size)
+    }
+}
+
 
 export def make_result -> &Result {
     return [
@@ -9652,7 +9821,7 @@ export def compile(state: &State, is_main: bool, no_cleanup: bool = false) {
     state.finalizer.dllexport = true
 
     if builtins::builtins.fields.contains("DEBUG_REF_CYCLES") {
-        state.file_name_value = create_global_string(state.module.module, state)
+        state.file_name_value = make_global_string(state.module.module, state)
     }
 
     import_structures(builtins::Type_, state.module)

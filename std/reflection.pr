@@ -4,6 +4,7 @@ export type Type = &interface {
     let id: uint64
     let size: size_t
     let align: size_t
+    let type_members: &[Function]
 }
 
 export def implements(a: Type, b: InterfaceT) -> bool {
@@ -25,6 +26,7 @@ type BaseType = struct {
     name: StringSlice
     module: StringSlice
     id: uint64
+    type_members: &[Function]
 }
 
 export type OpaqueT = &struct {
@@ -87,10 +89,18 @@ export type StaticArrayT = &struct {
     length: size_t
 }
 
-export type FunctionT = &struct {
+type FunctionBase = struct {
     BaseType
     arguments: &[weak Type]
     returns: &[weak Type]
+}
+export type FunctionT = &struct {
+    FunctionBase
+    const size: size_t = size_of def ->
+    const align: size_t = align_of def ->
+}
+export type ClosureT = &struct {
+    FunctionBase
     const size: size_t = size_of ->
     const align: size_t = align_of ->
 }
@@ -129,7 +139,8 @@ export type Function = struct {
     name: StringSlice
     exported: bool
     module: StringSlice
-    tpe: FunctionT
+    arguments: &[weak Type]
+    returns: &[weak Type]
 }
 
 export type InterfaceT = &struct {
@@ -165,6 +176,7 @@ type TypeKind = enum {
     REFERENCE
     WEAK_REF
     FUNCTION
+    CLOSURE
     ENUM
     CHAR
     STRUCTURAL
@@ -178,9 +190,15 @@ import std
 
 var types: &Map(size_t, Type)
 
+load_types(__reflection_data, @__reflection_data_size, @__reflection_num_types, __reflection_strings)
+
 // Type registry functions 
-def load_types(data: [uint8], num: size_t, strings: *char) {
+def load_types(input: *uint8, size: size_t, num: size_t, strings: *char) {
+    var data: [uint8]
+    data.value = input
+    data.size = size
     let fp = io::open_memory_as_file(data, "r")
+
     defer close(fp)
 
     if not types {
@@ -238,7 +256,7 @@ def load_types(data: [uint8], num: size_t, strings: *char) {
             types(index) = [ name = name, module = module, id = id ] !ReferenceT
         case TypeKind::WEAK_REF
             types(index) = [ name = name, module = module, id = id ] !WeakReferenceT
-        case TypeKind::FUNCTION
+        case TypeKind::FUNCTION, TypeKind::CLOSURE
             types(index) = [ name = name, module = module, id = id,
                 arguments = allocate_ref(type weak Type, fp.read(int)),
                 returns = allocate_ref(type weak Type, fp.read(int)) ] !FunctionT
@@ -263,8 +281,9 @@ def load_types(data: [uint8], num: size_t, strings: *char) {
             for var i in 0..members.size {
                 members(i) = [
                     name = make_slice(strings, fp.read(int)),
-                    exported = fp.read(bool),
-                    module = make_slice(strings, fp.read(int))
+                    exported = true,
+                    arguments = allocate_ref(type weak Type, fp.read(int)),
+                    returns = allocate_ref(type weak Type, fp.read(int))
                 ] !Function
             }
             types(index) = [ name = name, module = module, id = id, members = members ] !InterfaceT
@@ -285,51 +304,87 @@ def load_types(data: [uint8], num: size_t, strings: *char) {
     for var id in @types.keys() {
         let tpe = types(id)
 
+        let nmembers = fp.read(int)
+        tpe.type_members = allocate_ref(type Function, nmembers)
+        for var i in 0..nmembers {
+            let member = [
+                name = make_slice(strings, fp.read(int)),
+                exported = fp.read(bool),
+                module = make_slice(strings, fp.read(int))
+            ] !Function
+            
+            let arguments = allocate_ref(type weak Type, fp.read(int))
+            for var i in 0..arguments.size {
+                arguments(i) = type_id(fp.read(size_t))
+            }
+            let returns = allocate_ref(type weak Type, fp.read(int))
+            for var i in 0..returns.size {
+                returns(i) = type_id(fp.read(size_t))
+            }
+
+            member.arguments = arguments
+            member.returns = returns
+            tpe.type_members()(i) = member
+        }
+
         if tpe.type == StructT {
             let rec = tpe !StructT
             for var i in 0..rec.members.size {
                 let f = *rec.members(i)
-                f.tpe = type_id(fp.read(int))
+                f.tpe = type_id(fp.read(size_t))
             }
         } else if tpe.type == UnionT {
             let rec = tpe !UnionT
             for var i in 0..rec.members.size {
                 let f = *rec.members(i)
-                f.tpe = type_id(fp.read(int))
+                f.tpe = type_id(fp.read(size_t))
             }
         } else if tpe.type == InterfaceT {
             let intf = tpe !InterfaceT
             for var i in 0..intf.members.size {
                 let m = *intf.members(i)
-                m.tpe = type_id(fp.read(int)) !FunctionT
+                for var i in 0..m.arguments.size {
+                    m.arguments(i) = type_id(fp.read(size_t))
+                }
+                for var i in 0..m.returns.size {
+                    m.returns(i) = type_id(fp.read(size_t))
+                }
             }
         } else if tpe.type == PointerT {
-            (tpe !PointerT).tpe = type_id(fp.read(int))
+            (tpe !PointerT).tpe = type_id(fp.read(size_t))
         } else if tpe.type == ReferenceT {
-            (tpe !ReferenceT).tpe = type_id(fp.read(int))
+            (tpe !ReferenceT).tpe = type_id(fp.read(size_t))
         } else if tpe.type == WeakReferenceT {
-            (tpe !WeakReferenceT).tpe = type_id(fp.read(int))
+            (tpe !WeakReferenceT).tpe = type_id(fp.read(size_t))
         } else if tpe.type == ArrayT {
-            (tpe !ArrayT).tpe = type_id(fp.read(int))
+            (tpe !ArrayT).tpe = type_id(fp.read(size_t))
         } else if tpe.type == StaticArrayT {
-            (tpe !StaticArrayT).tpe = type_id(fp.read(int))
+            (tpe !StaticArrayT).tpe = type_id(fp.read(size_t))
         } else if (tpe.type == VariantT) {
             let vnt = tpe !VariantT
             for var i in 0..vnt.variants.size {
-                vnt.variants(i) = type_id(fp.read(int))
+                vnt.variants(i) = type_id(fp.read(size_t))
             }
         } else if (tpe.type == TupleT) {
             let tuple = tpe !TupleT
             for var i in 0..tuple.elements.size {
-                tuple.elements(i) = type_id(fp.read(int))
+                tuple.elements(i) = type_id(fp.read(size_t))
             }
         } else if (tpe.type == FunctionT) {
             let fun = tpe !FunctionT
             for var i in 0..fun.arguments.size {
-                fun.arguments(i) = type_id(fp.read(int))
+                fun.arguments(i) = type_id(fp.read(size_t))
             }
             for var i in 0..fun.returns.size {
-                fun.returns(i) = type_id(fp.read(int))
+                fun.returns(i) = type_id(fp.read(size_t))
+            }
+        } else if (tpe.type == ClosureT) {
+            let fun = tpe !ClosureT
+            for var i in 0..fun.arguments.size {
+                fun.arguments(i) = type_id(fp.read(size_t))
+            }
+            for var i in 0..fun.returns.size {
+                fun.returns(i) = type_id(fp.read(size_t))
             }
         }
     }
