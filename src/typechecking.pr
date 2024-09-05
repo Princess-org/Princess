@@ -4995,7 +4995,7 @@ def compile_function(function: *&scope::Value, context: &scope::Scope, arguments
     }
 }
 
-def check_for_apply_and_update(node: &parser::Node, left: &parser::Node, arguments: &Vector(NamedParameter), state: &State) -> bool {
+def check_for_apply_and_update(node: &parser::Node, left: &parser::Node, arguments: &Vector(NamedParameter), index: int64, state: &State) -> bool {
     if arguments.length < 1 { return false }
     let right = arguments(0).node
     
@@ -5005,12 +5005,6 @@ def check_for_apply_and_update(node: &parser::Node, left: &parser::Node, argumen
     if is_function(tpe) { return false }
 
     let parent = node.parent
-
-    var index: int64 = -1
-    if parent.kind == parser::NodeKind::ASSIGN {
-        index = index_of(parent.value.assign.left, node)
-    }
-
     if index == -1 {
         let args = vector::copy(arguments)
         vector::insert(args, 0, [ _tpe = tpe ] !NamedParameter)
@@ -5035,9 +5029,10 @@ def check_for_apply_and_update(node: &parser::Node, left: &parser::Node, argumen
         let ident = parser::make_identifier("update")
         let fun = scope::get_function(state.scope, ident, args, false, true, force_compile = not consteval::is_static)
         if fun {
-            vector::insert(node.value.func_call.args, 0, left)
-            vector::push(node.value.func_call.args, value)
-            @parent = @make_function_call(parent, ident, node.value.func_call.args)
+            let args = vector::copy(node.value.func_call.args)
+            vector::insert(args, 0, left)
+            vector::push(args, value)
+            @parent = @make_function_call(parent, ident, args)
             walk_Call(parent, state)
             return true
         }
@@ -5083,6 +5078,10 @@ def check_for_apply_and_update(node: &parser::Node, left: &parser::Node, argumen
     }
 
     return true
+}
+
+def access_check(function: &scope::Value, node: &parser::Node, state: &State) -> bool {
+    return not (function and (function.share !int & parser::ShareMarker::EXPORT !int == 0) and function.module != node.scope.module and function.module != state.context.module)
 }
 
 export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool {
@@ -5169,16 +5168,61 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
     node.value.func_call.arguments = arguments
 
     if not is_function_pointer(tpe) and (not tpe or tpe.kind != TypeKind::CLOSURE) {
-        if check_for_apply_and_update(node, left, arguments, state) { return true }
+        
+        let parent = node.parent
+
+        var index: int64 = -1
+        if parent.kind == parser::NodeKind::ASSIGN {
+            index = index_of(parent.value.assign.left, node)
+        }
+
+        if check_for_apply_and_update(node, left, arguments, index, state) { return true }
         if (@left).kind == parser::NodeKind::IDENTIFIER {
             let only_function = node.value.func_call.is_member_access
             var exists, function = scope::get_function_check(state.scope, left, arguments, dry_run, not consteval::is_static, only_function = only_function, context = state.context)
             left.svalue = function
 
             // Access check
-            if function and (function.share !int & parser::ShareMarker::EXPORT !int == 0) and function.module != node.scope.module and function.module != state.context.module {
+            if not access_check(function, node, state) {
                 errors::errorn(left, "Can't access function ", function.tpe.type_name)
                 function = null
+            }
+            // Try to call a zero arg function to retrieve a value that can be called
+            if not function {
+                let args = vector::make(NamedParameter)
+                if node.value.func_call.is_member_access {
+                    args.push(arguments(0))
+                }
+                let e, za_fun = scope::get_function_check(state.scope, left, args, true, not consteval::is_static, context = state.context)
+                
+                // make sure we only try this if there's something returned
+                if e and za_fun.tpe.return_t.length == 1 and access_check(za_fun, node, state) {
+                    // Build the zero args function
+                    let za_args = vector::make(type &parser::Node)
+                    if node.value.func_call.is_member_access {
+                        za_args.push(node.value.func_call.args(0))
+                    }
+                    let za_call = make_function_call(left, left, za_args)
+                    za_call.tpe = za_fun.tpe.return_t(0)
+                    za_call.function = za_fun.tpe
+                    
+                    let args = vector::copy(arguments)
+                    if node.value.func_call.is_member_access {
+                        args.remove(0)
+                    }
+
+                    let main_args = vector::copy(node.value.func_call.args)
+                    if node.value.func_call.is_member_access {
+                        main_args.remove(0)
+                    }
+                    let new_call = make_function_call(node, za_call, main_args)
+
+                    // Only do this if we have an apply or update call
+                    if check_for_apply_and_update(new_call, za_call, args, index, state) {
+                        @node = @new_call
+                        return true
+                    }
+                }
             }
 
             if not function {
