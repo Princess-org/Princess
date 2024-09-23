@@ -2093,17 +2093,40 @@ def convert_to(kind: InsnKind, loc: &Value, value: Value, tpe: &typechecking::Ty
     return ret
 }
 
-def get_embed_field(left: &typechecking::Type, right: &typechecking::Type, state: &State) -> &typechecking::StructMember {
-    if is_interface(left) and is_struct(right) {
-        if typechecking::implements(right, left, state.module, check_embed = false) { return null }
+
+def get_embed_field(left: &typechecking::Type, right: &typechecking::Type, state: &State) -> &Vector(&typechecking::StructMember) {    
+    let res = vector::make(type &typechecking::StructMember)
+    // Early return if we already implement the interface!
+    if is_interface(left) and typechecking::implements(right, left, state.module, check_embed = false) { return res }
+
+    if is_ref(right) {
+        // Unwrap reference
+        right = right.tpe
+    }
+    if is_struct(right) {
+        if is_struct(left) and typechecking::equals(left, right) or 
+            is_interface(left) and typechecking::implements(right, left, state.module, check_embed = false) {
+            return res 
+        }
+
         for var field in @right.fields {
-            if field.is_embed and typechecking::implements(field.tpe, left, state.module, check_embed = false) {
-                return field
+            if field.is_embed {
+                if is_struct(left) and typechecking::equals(left, field.tpe) or
+                    is_interface(left) and typechecking::implements(field.tpe, left, state.module, check_embed = false) {
+                    
+                    res.push(field)
+                    return res
+                } else {
+                    let embed = get_embed_field(left, field.tpe, state)
+                    res.push(field)
+                    res.add_all(embed)
+                    return res
+                }
             }
         }
     }   
 
-    return null
+    return res
 }
 
 // value gets loaded by this function
@@ -2145,40 +2168,49 @@ def convert_to(loc: &Value, value: Value, tpe: &typechecking::Type, state: &Stat
     }
     let left = tpe.tpe if is_ref(tpe) else tpe
     let right = value.tpe.tpe if is_ref(value.tpe) else value.tpe
-    let embed_field = get_embed_field(left, right, state)
-
+    let embed_field = get_embed_field(left, value.tpe, state)
+    
     // Try to convert to embedded struct / reference
-    if is_struct(right) and (is_struct(left) or embed_field) {
-        var is_embed = false
-        var field: StructMember
-        if embed_field {
-            is_embed = true
-            field = @embed_field
+    if is_struct(right) and ((is_struct(left) or is_interface(left)) and embed_field.length > 0) {
+        var elem = NO_VALUE
+
+        // Unwrap reference on the value side
+        if is_ref(value.tpe) {
+            elem = state.extract_value(pointer(right), load_value(value, loc, state), [1], loc)
         } else {
-            for var f in @right.fields {
-                if f.is_embed and (equals(f.tpe, tpe) or equals(f.tpe, tpe.tpe)) {
-                    is_embed = true
-                    field = f
-                    break
+            elem = @value.addr
+        }
+
+        for var i in 0..embed_field.length {
+            let field = embed_field(i)
+            if is_ref(field.tpe) {
+                elem = state.load(elem.tpe.tpe, elem, loc)
+                elem = state.extract_value(field.tpe, elem, [field.index !int], loc)
+                if i < embed_field.length - 1 {
+                    // Convert to a pointer for the next iteration
+                    elem = state.extract_value(pointer(field.tpe), elem, [1], loc)
+                } else {
+                    // Return reference as is
+                    return elem
                 }
+            } else {
+                elem = state.gep(pointer(field.tpe), field.tpe, elem, [make_int_value(0), make_int_value(field.index !int)], loc)
             }
         }
-        if is_embed {
-            var unwrap = load_value(value, loc, state)
-            // Unwrap reference on the value side
-            if is_ref(value.tpe) {
-                let _ref = state.extract_value(pointer(right), unwrap, [1], loc)
-                unwrap = state.load(right, _ref, loc)
-            }
-            // Extract element
-            var elem = state.extract_value(field.tpe, unwrap, [field.index !int], loc)
-            // Wrap in reference if needed
-            if is_ref(tpe) and not is_ref(field.tpe) {
-                elem = convert_value_to_ref(tpe, elem, loc, state, 1)
-            }
-            return elem
+
+        var last_field = embed_field(embed_field.length - 1)
+
+        let addr = elem
+        elem = state.load(elem.tpe.tpe, elem, loc)
+        elem.addr = addr
+
+        // Wrap in reference if needed
+        if is_ref(tpe) and not is_ref(last_field.tpe) {
+            elem = convert_value_to_ref(tpe, elem, loc, state, 1)
         }
+        return elem
     }
+
     if tpe.kind == value.tpe.kind and value.tpe.is_anon and typechecking::is_struct(value.tpe) {
         return convert_anon_to_struct(tpe, value, loc, state)
     }
