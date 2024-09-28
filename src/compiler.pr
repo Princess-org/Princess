@@ -2166,10 +2166,34 @@ def convert_to(loc: &Value, value: Value, tpe: &typechecking::Type, state: &Stat
             return value
         }
     }
+
+    let cast = [src = value.tpe, dst = tpe] !toolchain::Cast
+    if state.module.dyn_casts.contains(cast) {
+        let fun = state.module.dyn_casts(cast)
+        
+        var dst = cast.dst
+        if not is_ref(cast.dst) {
+            dst = pointer(dst)
+        }
+
+        let dst_value = state.alloca(dst, loc)
+        state.call(fun.type_name, null, [value, dst_value], loc)
+        
+        if is_ref(cast.dst) {
+            let val = state.load(cast.dst, dst_value)
+            return val
+        } else {
+            let ptr = state.load(pointer(cast.dst), dst_value)
+            let res = state.load(cast.dst, ptr)
+            res.addr = ptr
+            return res
+        }
+    }
+
     let left = tpe.tpe if is_ref(tpe) else tpe
     let right = value.tpe.tpe if is_ref(value.tpe) else value.tpe
     let embed_field = get_embed_field(left, value.tpe, state)
-    
+
     // Try to convert to embedded struct / reference
     if is_struct(right) and ((is_struct(left) or is_interface(left)) and embed_field.length > 0) {
         var elem = NO_VALUE
@@ -8062,6 +8086,105 @@ export def create_dyn_dispatch(dyn_dispatch: &Vector(&typechecking::Type), state
     }
 }
 
+export def create_dyn_casts(state: &State) {
+    let dyn_casts = state.module.dyn_casts
+    for var cast in @dyn_casts.keys() {
+        let function = predeclare_function(dyn_casts(cast), state.module)
+        create_dyn_cast_function(function, cast, state)
+        consteval::const_module.result.functions(function.name) = function
+    }
+}
+
+def create_dyn_cast_function(function: &Function, cast: toolchain::Cast, state: &State) {
+    // Setup function
+    function.block = make_block()
+    function.forward_declare = false
+    let previous_block = state.current_block
+    state.current_block = function.block
+
+    var dst_arg = pointer(cast.dst)
+    if not is_ref(cast.dst) {
+        dst_arg = pointer(dst_arg)
+    }
+
+    let src_value = [ kind = ValueKind::LOCAL, tpe = cast.src, name = "src.value"] !Value
+    let dst_value = [ kind = ValueKind::LOCAL, tpe = dst_arg, name = "dst.value" ] !Value
+
+    // Extract type
+    let ref_tpe = state.extract_value(
+        typechecking::pointer(builtins::Type_), 
+        src_value,
+        [2]
+    )
+    let ref_tpe_deref = state.load(builtins::Type_, ref_tpe)
+    let tpe_value = state.extract_value(
+        typechecking::pointer(builtins::Type_),
+        ref_tpe_deref,
+        [4]
+    )
+    let tpe_deref = state.load(builtins::Type_, tpe_value)
+    let tpe_id = state.extract_value(builtins::int64_, tpe_deref, [14])
+
+    // Switch
+    let switch_values = vector::make(SwitchValue)
+    let swtch = make_insn(InsnKind::SWITCH)
+    swtch.value.switch_ = [
+        value = tpe_id,
+        switch_values = switch_values
+    ] !InsnSwitch
+    push_insn(swtch, state)
+
+    let hashes = set::make(uint64)
+    let keys = map::keys(typechecking::types_map)
+    for var i in 0..keys.size {
+        let type_entry = typechecking::types_map(keys(i))
+
+        if not is_ref(type_entry.tpe) { continue }
+        let contains = typechecking::contains(type_entry.tpe)
+
+        if not contains.contains(cast.dst) and not (cast.dst.is_ref() and contains.contains(cast.dst.tpe)) { continue }
+
+        let hash = md5::high(md5::md5(debug::type_to_str(type_entry.tpe.tpe, full_name = true)))
+        if hashes.contains(hash) { continue }
+        hashes.add(hash)
+
+        let if_true = make_label(state)
+        push_label(if_true, state)
+
+        if cast.dst.is_ref() {
+            var res = convert_to(null !&Value, src_value, type_entry.tpe, state)
+            res = convert_to(null !&Value, res, cast.dst, state)
+            state.store(dst_value, res)
+        } else {
+            var res = convert_to(null !&Value, src_value, type_entry.tpe, state)
+            res = convert_to(null !&Value, res, cast.dst, state)
+            state.store(dst_value, @res.addr)
+        }
+
+        state.ret(NO_VALUE)
+
+        let svalue = [
+            label_ = if_true,
+            value = [ kind = ValueKind::INT, i = hash, tpe = builtins::int64_ ] !Value
+        ] !SwitchValue
+        switch_values.push(svalue)
+    }
+
+    let end_label = make_label(state)
+    push_label(end_label, state)
+    swtch.value.switch_.otherwise = end_label
+
+    // TODO Abort with message!
+    import_cstd_function("abort", state)
+    state.call("abort", null, [] ![Value])
+
+    state.module.imported.add(function.name)
+    push_insn(make_insn(InsnKind::UNREACHABLE), state)
+
+    // Reset state
+    state.current_block = previous_block
+}
+
 export let constructors = map::make(type &typechecking::Type)
 def create_constructors {
     var done = set::make()
@@ -9617,7 +9740,7 @@ def generate_vtable_function(function: &Function, tpe: &typechecking::Type, stat
     ] !InsnSwitch
     push_insn(swtch, state)
 
-    let hashes = set::make(size_t)
+    let hashes = set::make(uint64)
     let keys = map::keys(typechecking::types_map)
     for var i in 0..keys.size {
         let type_entry = typechecking::types_map(keys(i))
@@ -10045,6 +10168,7 @@ export def compile(state: &State, is_main: bool, no_cleanup: bool = false) {
     // TODO This doesn't work for functions that return multiple parameters
     predeclare_functions(state.module)
     create_dyn_dispatch(state.module.dyn_dispatch, state)
+    create_dyn_casts(state)
 
     let ident = parser::make_identifier("__main__")
     ident.loc.module = state.module.module
