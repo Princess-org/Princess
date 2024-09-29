@@ -1927,7 +1927,7 @@ def convert_array_to_array(tpe: &typechecking::Type, value: Value, loc: &Value, 
 
 def convert_value_to_bool(tpe: &typechecking::Type, value: Value, loc: &Value, state: &State) -> Value {
     if typechecking::is_ref_or_weak(value.tpe) {
-        value = state.extract_value(pointer(value.tpe.tpe if value.tpe.tpe else pointer(builtins::int8_)), value, [1], loc)
+        value = convert_ref_to_ptr(pointer(value.tpe), value, loc, state)
         value = convert_to(loc, value, builtins::size_t_, state)
     } else if typechecking::is_pointer(value.tpe) {
         // TODO This isn't the correct type, we need something like
@@ -8413,6 +8413,8 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
 
     var to_end = make_insn(InsnKind::BR_UNC)
     var null_br2: &Insn = null
+    var run_default_deinit: &Insn = null
+
     if typechecking::is_ref(tpe.tpe) and (not tpe.tpe.tpe or typechecking::is_interface(tpe.tpe.tpe)) {
         let _ref = state.load(tpe.tpe, value)
 
@@ -8448,15 +8450,32 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
                 let _ref = state.load(tpe.tpe, value)
                 value = state.extract_value(pointer(structure_type), _ref, [1])
             }
-            state.call(destructor.tpe.type_name, null, [value])
+
+            // Check if we have a destructor that returns a boolean to sidestep default cleanup behavior
+            if destructor.tpe.return_t.length == 1 and 
+                destructor.tpe.return_t(0).kind == typechecking::TypeKind::BOOL {
+                let run_default = state.call(destructor.tpe.type_name, builtins::bool_, [value])
+                run_default_deinit = make_insn(InsnKind::BR)
+                run_default_deinit.value.br.cond = run_default
+            } else {
+                state.call(destructor.tpe.type_name, null, [value])
+            }
         }
     }
-    push_insn(to_end, state)
 
+    if run_default_deinit {
+        push_insn(run_default_deinit, state)
+    } else {
+        push_insn(to_end, state)
+    }
+    
     let end_label = state.make_label()
     to_end.value.br_unc.label_ = end_label
     push_label(end_label, state)
 
+    if run_default_deinit {
+        run_default_deinit.value.br.if_true = end_label
+    }
     if null_br2 {
         null_br2.value.br.if_true = end_label
     }
@@ -8497,6 +8516,16 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
                 }
             }
         }
+    }
+
+    if run_default_deinit {
+        let end_label2 = state.make_label()
+        let to_end2 = make_insn(InsnKind::BR_UNC)
+        push_insn(to_end2, state)
+        to_end2.value.br_unc.label_ = end_label2
+        run_default_deinit.value.br.if_false = end_label2
+
+        push_label(end_label2, state)
     }
 
     if typechecking::is_ref(tpe.tpe) and tpe.tpe.tpe and not is_interface(tpe.tpe.tpe) {
