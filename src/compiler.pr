@@ -1925,7 +1925,7 @@ def convert_array_to_array(tpe: &typechecking::Type, value: Value, loc: &Value, 
 
 def convert_value_to_bool(tpe: &typechecking::Type, value: Value, loc: &Value, state: &State) -> Value {
     if typechecking::is_ref_or_weak(value.tpe) {
-        value = state.extract_value(pointer(value.tpe.tpe if value.tpe.tpe else pointer(builtins::int8_)), value, [1], loc)
+        value = convert_ref_to_ptr(pointer(value.tpe), value, loc, state)
         value = convert_to(loc, value, builtins::size_t_, state)
     } else if typechecking::is_pointer(value.tpe) {
         // TODO This isn't the correct type, we need something like
@@ -8566,6 +8566,8 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
 
     var to_end = make_insn(InsnKind::BR_UNC)
     var null_br2: &Insn = null
+    var run_default_deinit: &Insn = null
+
     if typechecking::is_ref(tpe.tpe) and (not tpe.tpe.tpe or typechecking::is_interface(tpe.tpe.tpe)) {
         let _ref = state.load(tpe.tpe, value)
 
@@ -8601,15 +8603,32 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
                 let _ref = state.load(tpe.tpe, value)
                 value = state.extract_value(pointer(structure_type), _ref, [1])
             }
-            state.call(destructor.tpe.type_name, null, [value])
+
+            // Check if we have a destructor that returns a boolean to sidestep default cleanup behavior
+            if destructor.tpe.return_t.length == 1 and 
+                destructor.tpe.return_t(0).kind == typechecking::TypeKind::BOOL {
+                let run_default = state.call(destructor.tpe.type_name, builtins::bool_, [value])
+                run_default_deinit = make_insn(InsnKind::BR)
+                run_default_deinit.value.br.cond = run_default
+            } else {
+                state.call(destructor.tpe.type_name, null, [value])
+            }
         }
     }
-    push_insn(to_end, state)
 
+    if run_default_deinit {
+        push_insn(run_default_deinit, state)
+    } else {
+        push_insn(to_end, state)
+    }
+    
     let end_label = state.make_label()
     to_end.value.br_unc.label_ = end_label
     push_label(end_label, state)
 
+    if run_default_deinit {
+        run_default_deinit.value.br.if_true = end_label
+    }
     if null_br2 {
         null_br2.value.br.if_true = end_label
     }
@@ -8650,6 +8669,16 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
                 }
             }
         }
+    }
+
+    if run_default_deinit {
+        let end_label2 = state.make_label()
+        let to_end2 = make_insn(InsnKind::BR_UNC)
+        push_insn(to_end2, state)
+        to_end2.value.br_unc.label_ = end_label2
+        run_default_deinit.value.br.if_false = end_label2
+
+        push_label(end_label2, state)
     }
 
     if typechecking::is_ref(tpe.tpe) and tpe.tpe.tpe and not is_interface(tpe.tpe.tpe) {
@@ -9124,10 +9153,9 @@ def push_structural_members(tpe: &typechecking::Type, global: Value, module: &to
 }
 
 def do_create_type(tpe: &typechecking::Type, svalue: &scope::Value, module: &toolchain::Module, cache: &Vector(TypeEntry)) -> &Value {
-    if not is_stub(tpe) {
-        all_types.add(tpe)
-    }
-    
+    // Add to all types TODO Not this function should be responsible for that
+    all_types.add(tpe)
+
     if toolchain::no_stdlib { return NO_VALUE }
     
     if tpe.kind == typechecking::TypeKind::BOX {
@@ -9507,6 +9535,10 @@ export def generate_reflection_data() {
         generate_reflection_data_2(tpe, data, strings)
     }
 
+    // Need to 0 terminate the whole thing so that it can be converted to a Str
+    data.write(0 !uint8) 
+    strings.strings.write(0 !uint8)
+
     make_global_data("__reflection_data", data, toolchain::types_state)
     make_global_data("__reflection_data_size", data.data().size, toolchain::types_state)
     make_global_data("__reflection_strings", strings.strings, toolchain::types_state)
@@ -9531,16 +9563,35 @@ def generate_reflection_data_2(tpe: &typechecking::Type, data: &ByteStream, stri
     // Collect type members
     let type_members = vector::make(typechecking::TypeEntryMember)
     for var member in typechecking::iterate_member_functions(tpe) {
+        if member.function.parameter_t(0).tpe.kind == typechecking::TypeKind::TYPE { continue }
+
+        let function = member.function
+
+        var is_incomplete = false
+        for var i in 0..vector::length(function.parameter_t) {
+            let np = function.parameter_t(i)
+            let generic = typechecking::get_generic(np.tpe)
+            if generic and generic.tc_incomplete or (np.tpe and np.tpe.kind == typechecking::TypeKind::TYPE_DEF) {
+                is_incomplete = true
+                break
+            }
+        }
+        if is_incomplete { continue }
         type_members.push(member)
     }
 
     // Write type members
     data.write(type_members.length !int)
+
+    print(debug::type_to_str(tpe), " members: ", type_members.length, "\n")
+
     for var member in type_members {
         data.write(strings.write_zt(member.function.type_name))
         data.write(member.exported)
         data.write(strings.write_zt(member.module.module))
-        
+
+        print("\t", member.function.type_name, "\n")
+
         data.write(member.function.parameter_t.length !int)
         for var arg in member.function.parameter_t {
             data.write(arg.tpe.hash if arg.tpe else 0) // TODO Do we want function argument names maybe?
@@ -9559,16 +9610,21 @@ def generate_reflection_data_2(tpe: &typechecking::Type, data: &ByteStream, stri
     case typechecking::TypeKind::STRUCTURAL
         for var member in tpe.members {
             for var np in member.parameter_t {
-                data.write(np.tpe.hash)
+                data.write(unbox(np.tpe).hash)
             }
             for var t in member.return_t {
-                data.write(t.hash)
+                data.write(unbox(t).hash)
             }
         }
     case typechecking::TypeKind::POINTER, typechecking::TypeKind::REFERENCE,
         typechecking::TypeKind::WEAK_REF, typechecking::TypeKind::ARRAY,
         typechecking::TypeKind::STATIC_ARRAY
-        data.write(tpe.tpe.hash if tpe.tpe else 0)
+
+        if tpe.tpe and not all_types.contains(tpe.tpe) {
+            data.write(0 !uint64) // Probably an opaque type
+        } else {
+            data.write(tpe.tpe.hash if tpe.tpe else 0)
+        }
     case typechecking::TypeKind::TUPLE
         for var t in tpe.return_t {
             data.write(t.hash)
@@ -9589,7 +9645,7 @@ def generate_reflection_data_2(tpe: &typechecking::Type, data: &ByteStream, stri
 
 def generate_reflection_data_1(tpe: &typechecking::Type, data: &ByteStream, strings: &UniquedStrings) {
     data.write(tpe.kind) // This does rely on the values beind the same
-    data.write(strings.write_zt(tpe.name))
+    data.write(strings.write_zt(debug::type_to_str(tpe, full_name = true)))
     data.write(strings.write_zt(tpe.module.module if tpe.module else to_str("")))
     data.write(tpe.hash)
 
@@ -9627,6 +9683,14 @@ def generate_reflection_data_1(tpe: &typechecking::Type, data: &ByteStream, stri
         data.write(tpe.size !int)
         data.write(tpe.align !int)
         data.write(not tpe.unsig)
+        
+        data.write(tpe.scope.fields.size !int)
+        for var name in @tpe.scope.fields.keys() {
+            let svalue = tpe.scope.fields(name)
+            data.write(strings.write_zt(name))
+            data.write(svalue.value.i)
+        }
+
     case typechecking::TypeKind::STRUCTURAL
         data.write(tpe.members.length !int)
         for var member in tpe.members {

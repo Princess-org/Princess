@@ -33,10 +33,16 @@ type BaseType = struct {
     type_members: &[Function]
 }
 
+export type TypeT = &struct {
+    BaseType
+    const size: size_t = 0
+    const align: size_t = 0
+}
+
 export type OpaqueT = &struct {
     BaseType
     const size: size_t = 1
-    const algin: size_t = 1
+    const align: size_t = 1
 }
 
 export type BoolT = &struct {
@@ -186,6 +192,8 @@ type TypeKind = enum {
     STRUCTURAL
     VARIANT
     TUPLE
+    TYPE
+    OPAQUE // Same as STUB in typechecking
 }
 
 import io
@@ -220,17 +228,17 @@ def load_types(input: *uint8, size: size_t, num: size_t, strings: *char) {
 
         switch kind {
         case TypeKind::BOOL
-            types(index) = [ name = name, module = module, id = id ] !BoolT
+            types(id) = [ name = name, module = module, id = id ] !BoolT
         case TypeKind::WORD
             let size = fp.read(int)
             let align = fp.read(int)
             let signed = fp.read(bool)
-            types(index) = [ name = name, module = module, id = id, 
+            types(id) = [ name = name, module = module, id = id, 
                 size = size, align = align, signed = signed ] !WordT
         case TypeKind::FLOAT
             let size = fp.read(int)
             let align = fp.read(int)
-            types(index) = [ name = name, module = module, id = id, 
+            types(id) = [ name = name, module = module, id = id, 
                 size = size, align = align ] !FloatT
         case TypeKind::STRUCT, TypeKind::UNION
             let size = fp.read(int)
@@ -246,31 +254,33 @@ def load_types(input: *uint8, size: size_t, num: size_t, strings: *char) {
             }
 
             if kind == TypeKind::STRUCT {
-                types(index) = [ name = name, module = module, id = id, 
+                types(id) = [ name = name, module = module, id = id, 
                     size = size, align = align, members = members ] !StructT
             } else {
-                types(index) = [ name = name, module = module, id = id, 
+                types(id) = [ name = name, module = module, id = id, 
                     size = size, align = align, members = members ] !UnionT
             }
         case TypeKind::ARRAY
-            types(index) = [ name = name, module = module, id = id ] !ArrayT
+            types(id) = [ name = name, module = module, id = id ] !ArrayT
         case TypeKind::STATIC_ARRAY
             let size = fp.read(size_t)
             let align = fp.read(size_t)
             let length = fp.read(size_t)
 
-            types(index) = [ name = name, module = module, id = id, 
+            types(id) = [ name = name, module = module, id = id, 
                 size = size, align = align, length = length ] !StaticArrayT
         case TypeKind::POINTER
-            types(index) = [ name = name, module = module, id = id ] !PointerT
+            types(id) = [ name = name, module = module, id = id ] !PointerT
         case TypeKind::REFERENCE
-            types(index) = [ name = name, module = module, id = id ] !ReferenceT
+            types(id) = [ name = name, module = module, id = id ] !ReferenceT
         case TypeKind::WEAK_REF
-            types(index) = [ name = name, module = module, id = id ] !WeakReferenceT
+            types(id) = [ name = name, module = module, id = id ] !WeakReferenceT
         case TypeKind::FUNCTION, TypeKind::CLOSURE
-            types(index) = [ name = name, module = module, id = id,
-                arguments = allocate_ref(type weak Type, fp.read(int)),
-                returns = allocate_ref(type weak Type, fp.read(int)) ] !FunctionT
+            let arg_len = fp.read(int)
+            let return_len = fp.read(int)
+            types(id) = [ name = name, module = module, id = id,
+                arguments = allocate_ref(type weak Type, arg_len),
+                returns = allocate_ref(type weak Type, return_len) ] !FunctionT
         case TypeKind::ENUM
             let size = fp.read(int)
             let align = fp.read(int)
@@ -283,10 +293,10 @@ def load_types(input: *uint8, size: size_t, num: size_t, strings: *char) {
                     value = fp.read(int64) 
                 ] !EnumValue
             }
-            types(index) = [ name = name, module = module, id = id, 
+            types(id) = [ name = name, module = module, id = id, 
                 size = size, align = align, values = values ] !EnumT
         case TypeKind::CHAR
-            types(index) = [ name = name, module = module, id = id ] !CharT
+            types(id) = [ name = name, module = module, id = id ] !CharT
         case TypeKind::STRUCTURAL
             let members = allocate_ref(type Function, fp.read(int))
             for var i in 0..members.size {
@@ -297,19 +307,25 @@ def load_types(input: *uint8, size: size_t, num: size_t, strings: *char) {
                     returns = allocate_ref(type weak Type, fp.read(int))
                 ] !Function
             }
-            types(index) = [ name = name, module = module, id = id, members = members ] !InterfaceT
+            types(id) = [ name = name, module = module, id = id, members = members ] !InterfaceT
         case TypeKind::VARIANT
-            types(index) = [ name = name, module = module, id = id,
+            types(id) = [ name = name, module = module, id = id,
                 variants = allocate_ref(type weak Type, fp.read(int))
             ] !VariantT
         case TypeKind::TUPLE
-            types(index) = [ name = name, module = module, id = id,
+            types(id) = [ name = name, module = module, id = id,
                 elements = allocate_ref(type weak Type, fp.read(int))
             ] !TupleT
+        case TypeKind::TYPE
+            types(id) = [ name = name, module = module, id = id ] !TypeT
+        case TypeKind::OPAQUE
+            types(id) = [ name = name, module = module, id = id ] !OpaqueT
         }
 
         index += 1
     }
+
+    print("==============================================\n")
 
     // Resolve type references
     for var id in @types.keys() {
@@ -317,12 +333,19 @@ def load_types(input: *uint8, size: size_t, num: size_t, strings: *char) {
 
         let base = *(tpe !BaseType)
         let nmembers = fp.read(int)
+        print(tpe.name, " members: ", nmembers, "\n")
         base.type_members = allocate_ref(type Function, nmembers)
         for var i in 0..nmembers {
+            let name = make_slice(strings, fp.read(int))
+            let exported = fp.read(bool)
+            let module = make_slice(strings, fp.read(int))
+
+            print("\t", name, " ", exported, " ", module, "\n")
+
             let member = [
-                name = make_slice(strings, fp.read(int)),
-                exported = fp.read(bool),
-                module = make_slice(strings, fp.read(int))
+                name = name,
+                exported = exported,
+                module = module
             ] !Function
             
             let arguments = allocate_ref(type weak Type, fp.read(int))
@@ -353,6 +376,7 @@ def load_types(input: *uint8, size: size_t, num: size_t, strings: *char) {
             }
         } else if tpe.type == InterfaceT {
             let intf = tpe !InterfaceT
+            print(intf.type.name, " ", intf.name, "\n")
             for var i in 0..intf.members.size {
                 let m = *intf.members(i)
                 for var i in 0..m.arguments.size {
@@ -402,6 +426,7 @@ def load_types(input: *uint8, size: size_t, num: size_t, strings: *char) {
     }
 }
 
-def type_id(index: uint64) -> Type {
-    return types(index)
+def type_id(id: uint64) -> Type {
+    if id == 0 { return null }
+    return types(id)
 }
