@@ -20,46 +20,47 @@ import md5
 import optional
 
 export type TypeKind = enum {
-    TYPE
+    BOOL
     WORD
     FLOAT
-    BOOL
     STRUCT
     UNION
-    ENUM
-    FUNCTION
-    CLOSURE
-    TUPLE
-    POINTER
-    BYREF // ref parameter
-    REFERENCE
-    WEAK_REF
     ARRAY
     STATIC_ARRAY
+    POINTER
+    REFERENCE
+    WEAK_REF
+    FUNCTION
+    CLOSURE
+    ENUM
+    CHAR
+    STRUCTURAL
+    VARIANT
+    TUPLE
+    TYPE
+    // Forward declaration
+    STUB
+
+    // This is used to express types that may by resolved to multiple types
+    // Tagged union types, very similar to VARIANT but the equality relation is different
+    // This is actually called variant in runtime
+    TUNION    
+    BYREF // ref parameter   
     RANGE
     RANGE_INC
     // Used for enums
     NAMESPACE
     // Auto cast, this type will convert to anything
     // AUTO_CAST // TODO Actually implement this
-    // Forward declaration
-    STUB
     // Placeholder for arguments with polymorphic type parameter in function definition
     TYPE_DEF
     // Null
     NULL
     UNDEF
-    CHAR
-    STRUCTURAL
     // This is a type with arguments
     TYPE_CONSTRUCTOR
     // This is used as a function parameter that is generic
     GENERIC
-    // This is used to express types that may by resolved to multiple types
-    VARIANT
-    // Tagged union types, very similar to VARIANT but the equality relation is different
-    // This is actually called variant in runtime
-    TUNION
     // References to structs are using a wk reference, ie. Type::wk instead of Type::_tpe
     // This is because references to structs can cause cycles
     // TODO I think we don't really need this because we can just use wk directly
@@ -97,6 +98,14 @@ export type StructuralTypeMember = struct {
     parameter_t: &Vector(NamedParameter)
     // Vector of Type
     return_t: &Vector(&Type)
+}
+
+def make_type_member(name: Str, parameter_t: &Vector(NamedParameter), return_t: &Vector(&Type)) -> StructuralTypeMember {
+    return [
+        name = name,
+        parameter_t = parameter_t,
+        return_t = return_t 
+    ] !StructuralTypeMember
 }
 
 export type TypeRef = struct {
@@ -1072,7 +1081,7 @@ export def create_type_entry(tpe: &Type, exported: bool, entry: &Type, module: &
     // TODO Use a set for this
     for var i in 0..vector::length(type_entry.functions) {
         let fun = type_entry.functions(i)
-        if fun.function.type_name == entry.type_name {
+        if fun.function.name == entry.name and fun.function._defmodule == entry._defmodule and equals(fun.function, entry) {
             if overwrite { type_entry.functions(i) = member_function }
             return false 
         }
@@ -1274,6 +1283,19 @@ export def equals(a: &Type, b: &Type) -> bool {
     assert
 }
 
+export def contains(a: &Type) -> &Set(&Type) {
+    if is_ref_or_weak(a) { a = a.tpe }
+    let res = set::make(type &Type)
+    if not is_struct(a) { return res }
+    for var field in @a.fields {
+        if field.is_embed {
+            res.add(field.tpe)
+            res.add_all(contains(field.tpe))
+        }
+    }
+    return res
+}
+
 def is_setter(mb: StructuralTypeMember) -> bool {
     return mb.name.starts_with("__set_") and mb.name.ends_with("__")
 }
@@ -1296,7 +1318,7 @@ def has_function(entry: &TypeEntry, intf: &Type, mb: StructuralTypeMember, modul
     if tpe and tpe.kind == typechecking::TypeKind::STRUCT {
         let fields = flatten_fields(tpe)
         if is_setter(mb) {
-            let name = mb.name.slice(6, mb.name.length() - 2)
+            let name = mb.name.slice(6, mb.name.length() - 2496)
             for var field in fields {
                 if field.name == name and equals(mb.parameter_t(0).tpe, field.tpe) { return true }
             }
@@ -2463,11 +2485,11 @@ export def generate_concrete_functions(type_constructor: &Type, tpe: &Type, stat
         let pars = vector::make(NamedParameter)
         pars.push([ _tpe = tpe ] !NamedParameter)
         
-        replace_type_defs(ftpe.parameter_t, ftpe.return_t, pars, null, state.module)
-        ftpe.type_name = mangle_function_name(append_module(ftpe.name, ftpe.module.module), ftpe.parameter_t, context = ftpe.context)
+        replace_type_defs(ftpe.parameter_t, ftpe.return_t, pars, null, state.get_context())
+        ftpe.type_name = mangle_function_name(append_module(ftpe.name, ftpe.module.module), ftpe.parameter_t, context = state.get_context())
 
         if not is_polymorph(ftpe) {
-            let new_entry = create_type_entry(tpe, function.exported, ftpe, function.module)
+            let new_entry = create_type_entry(tpe, function.exported, ftpe, state.get_context())
             if new_entry {
                 let score, value = scope::get_function_check(state.scope, parser::make_identifier(ftpe.name), pars, false, true, force_compile = true, context = state.context)
             }
@@ -2913,11 +2935,7 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
                     vector::push(return_t, ntpe)
                 }
 
-                let structural_type_member = [
-                    name = name,
-                    parameter_t = parameter_t,
-                    return_t = return_t
-                ] !StructuralTypeMember
+                let structural_type_member = make_type_member(name, parameter_t, return_t)
                 members.push(structural_type_member)
             } else {
                 let parameter_t = vector::make(NamedParameter)
@@ -2928,11 +2946,7 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
                 var rtpe = box(type_lookup(return_node, state, current_return_type, false, cache))
                 return_t.push(rtpe)
 
-                let structural_type_member = [
-                    name = name,
-                    parameter_t = parameter_t,
-                    return_t = return_t
-                ] !StructuralTypeMember
+                let structural_type_member = make_type_member(name, parameter_t, return_t)
                 members.push(structural_type_member)
 
                 if kw == parser::MemberType::VAR {
@@ -2944,11 +2958,8 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
                         _tpe = rtpe
                     ] !NamedParameter)
 
-                    let structural_type_member = [
-                        name = "__set_" + name + "__",
-                        parameter_t = parameter_t,
-                        return_t = return_t
-                    ] !StructuralTypeMember
+                    let structural_type_member = make_type_member(
+                        "__set_" + name + "__", parameter_t, return_t)
                     members.push(structural_type_member)
                 }
             }
@@ -3572,7 +3583,7 @@ def walk_Assign(node: &parser::Node, state: &State) {
             args.push([ _tpe = rtpe ] !NamedParameter)
 
             let ident = parser::make_identifier("__set_" + parser::identifier_to_str(name) + "__")
-            let fun = scope::get_function(state.scope, ident, args, false, true, force_compile = not consteval::is_static)
+            let fun = scope::get_function(state.scope, ident, args, false, true, force_compile = not consteval::is_static, context = state.context)
             if fun {
                 compile_function(*fun, state.scope, args)
             }
@@ -3851,7 +3862,7 @@ def make_function_call(node: &parser::Node, ident: &parser::Node, args: &Vector(
 
 def convert_to_call(node: &parser::Node, name: Str, args: &Vector(NamedParameter), state: &State) {
     let ident = parser::make_identifier(name)
-    let fun = scope::get_function(state.scope, ident, args, false, true, force_compile = not consteval::is_static)
+    let fun = scope::get_function(state.scope, ident, args, false, true, force_compile = not consteval::is_static, context = state.context)
     if fun {
         compile_function(*fun, state.scope, args)
         let parent = node.parent
@@ -3866,7 +3877,7 @@ def convert_to_call(node: &parser::Node, name: Str, args: &Vector(NamedParameter
 
 def convert_to_icall(node: &parser::Node, name: Str, args: &Vector(NamedParameter), state: &State) {
     let ident = parser::make_identifier(name)
-    let fun = scope::get_function(state.scope, ident, args, false, true, force_compile = not consteval::is_static)
+    let fun = scope::get_function(state.scope, ident, args, false, true, force_compile = not consteval::is_static, context = state.context)
     if fun { 
         compile_function(*fun, state.scope, args)
 
@@ -4129,6 +4140,12 @@ def walk_Cast(node: &parser::Node, state: &State) {
     var ltpe = left.tpe
     if not ltpe { return }
 
+    // Create necessary type entries
+    create_type_entry(ltpe)
+    if is_struct(ltpe) and is_ref(rtpe) {
+        create_type_entry(reference(ltpe))
+    }
+
     if left.kind == parser::NodeKind::INTEGER and 
         is_integer(ltpe) and is_integer(rtpe) {
         left.tpe = rtpe
@@ -4145,6 +4162,27 @@ def walk_Cast(node: &parser::Node, state: &State) {
             errors::errorn(left, "Invalid cast")
             return
         }
+    } else if ltpe.is_ref_or_weak() and 
+        ltpe.tpe.is_interface() and 
+        not implements(rtpe, ltpe.tpe, state.module) and
+        (rtpe.is_struct() or (rtpe.is_ref() and rtpe.tpe.is_struct())) {
+
+        var dst = pointer(rtpe)
+        if not is_ref(rtpe) {
+            dst = pointer(dst)
+        }
+
+        let params = vector::make(NamedParameter)
+        params.push([ name = "src", _tpe = ltpe ] !NamedParameter)
+        params.push([ name = "dst", _tpe = dst] !NamedParameter)
+        let fun = make_function_type_n(
+            parser::make_identifier("__cast"), 
+            params, 
+            vector::make(type &Type),
+            state.module)
+        
+        // Dynamic cast
+        state.module.dyn_casts([src = ltpe, dst = rtpe,] !Cast) = fun
     } else if is_struct(ltpe) or is_struct(rtpe) {
         if ltpe.kind != rtpe.kind and not is_ref(rtpe) { 
             errors::errorn(left, "Invalid cast") 
@@ -4243,14 +4281,32 @@ export def lookup_parameters(node: &parser::Node, state: &State) -> &Type {
             }
         }
     }
-    for var i in 0..vector::length(returns) {
-        let n = returns(i)
-        let current_return_type = tpe.return_t(i)
-        let new_type = type_lookup(n, state, current_return_type, false)
-        if new_type {
-            //generate_ctor_and_dtor(new_type)
-            @current_return_type = @new_type
-            n.tpe = current_return_type
+
+    var skip_returns = false
+    if node.value.def_.has_yield {
+        // If the return value is already a generator we don't need to look it up anymore
+        if tpe.return_t.length == 1 {
+            let gen = tpe.return_t(0)
+            if is_ref(gen) and equals(gen.tpe.tc_tpe, builtins::Generator_) {
+                // Only look up the inner member
+                // TODO This doesn't work if we have multiple returns for a generator
+                gen.tpe.tc_args(0) = type_lookup(returns(0), state, gen.tpe.tc_args(0), false)
+                skip_returns = true
+            }
+        }
+    }
+
+    if not skip_returns {
+        for var i in 0..vector::length(returns) {
+            let n = returns(i)
+            let current_return_type = tpe.return_t(i)
+
+            let new_type = type_lookup(n, state, current_return_type, false)
+            if new_type {
+                //generate_ctor_and_dtor(new_type)
+                @current_return_type = @new_type
+                n.tpe = current_return_type
+            }
         }
     }
 
@@ -5013,7 +5069,7 @@ def check_for_apply_and_update(node: &parser::Node, left: &parser::Node, argumen
         vector::insert(args, 0, [ _tpe = tpe ] !NamedParameter)
 
         let ident = parser::make_identifier("apply")
-        let fun = scope::get_function(state.scope, ident, args, false, true, force_compile = not consteval::is_static)
+        let fun = scope::get_function(state.scope, ident, args, false, true, force_compile = not consteval::is_static, context = state.context)
         if fun {
             vector::insert(node.value.func_call.args, 0, left)
             @node = @make_function_call(node, ident, node.value.func_call.args) 
@@ -5030,7 +5086,7 @@ def check_for_apply_and_update(node: &parser::Node, left: &parser::Node, argumen
         args.push([ _tpe = value.tpe ] !NamedParameter)
 
         let ident = parser::make_identifier("update")
-        let fun = scope::get_function(state.scope, ident, args, false, true, force_compile = not consteval::is_static)
+        let fun = scope::get_function(state.scope, ident, args, false, true, force_compile = not consteval::is_static, context = state.context)
         if fun {
             let args = vector::copy(node.value.func_call.args)
             vector::insert(args, 0, left)
@@ -5084,7 +5140,7 @@ def check_for_apply_and_update(node: &parser::Node, left: &parser::Node, argumen
 }
 
 def access_check(function: &scope::Value, node: &parser::Node, state: &State) -> bool {
-    return not (function and (function.share !int & parser::ShareMarker::EXPORT !int == 0) and function.module != node.scope.module and function.module != state.context.module)
+    return not (function and (function.share !int & parser::ShareMarker::EXPORT !int == 0) and function.module != node.scope.module and function.module != state.get_context())
 }
 
 export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool {
@@ -5518,7 +5574,7 @@ def wrap_iterable(expr: &parser::Node, state: &State) -> &parser::Node {
     let args = vector::make(NamedParameter)
     args.push([ _tpe = expr.tpe ] !NamedParameter)
     let ident = parser::make_identifier("iterate")
-    let fun = scope::get_function(state.scope, ident, args, true)
+    let fun = scope::get_function(state.scope, ident, args, true, context = state.context)
     if fun {
         let args = vector::make(type &parser::Node)
         args.push(expr)
@@ -5662,7 +5718,7 @@ def walk_MemberAccess_ucs(node: &parser::Node, state: &State) -> bool {
             _tpe = (@left).tpe
         ] !NamedParameter)
 
-        let function = scope::get_function(node.scope, right, parameter_t, false, false, only_function = true)
+        let function = scope::get_function(node.scope, right, parameter_t, false, false, only_function = true, context = state.context)
         if not function { return false }
         if node.parent.kind == parser::NodeKind::ASSIGN and node.parent.value.assign.right.index_of(node) == -1 {
             return true
@@ -6342,6 +6398,10 @@ export def walk_Def_with_type_argument(node: &parser::Node, parameter_t: &Vector
     node = parser::deep_copy_node(node)
     node.value.def_.function = null
     node.value.def_.is_generic_instance = true
+
+    let prev_context = state.context
+    state.context = context
+
     node.tpe = lookup_parameters(node, state)
 
     // Unbox
@@ -6363,7 +6423,10 @@ export def walk_Def_with_type_argument(node: &parser::Node, parameter_t: &Vector
         super_scope.parent = context
     }*/
     
-    if not node.scope { return old_node }
+    if not node.scope {
+        state.context = prev_context
+        return old_node 
+    }
     node.inner_scope = scope::enter_function_scope(node.scope)
 
     let share = node.value.def_.share
@@ -6443,8 +6506,6 @@ export def walk_Def_with_type_argument(node: &parser::Node, parameter_t: &Vector
         create_type_entry(first_param.tpe, (share !int & parser::ShareMarker::EXPORT !int) != 0, tpe, state.module, true)
     }
 
-    let prev_context = state.context
-    state.context = context
     walk_Def(node, state, polymorph = true)
     state.context = prev_context
 

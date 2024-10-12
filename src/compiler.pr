@@ -15,6 +15,7 @@ import md5
 import optional
 import arena
 import constants
+import io
 
 export type Label = struct {
     name: Str
@@ -741,6 +742,7 @@ def meta_to_debug_value(meta: &Value) -> DebugValue {
 }
 
 export def make_location(node: &parser::Node, state: &State) -> &Value {
+    if not node { return null }
     let discope = vector::peek(state.discope) if state.discope.length > 0 else null !&Value
 
     if not toolchain::debug_sym { return null }
@@ -1013,12 +1015,8 @@ export def charp_static(global: &Value, state: &State) -> Value {
     return local
 }
 
-export def create_global_string(str: Str, state: &State) -> Value {
-    let tpe = typechecking::make_type_raw(typechecking::TypeKind::STATIC_ARRAY)
-    tpe._tpe = builtins::char_
-    tpe.length = str.length() + 1
-    tpe.size = tpe.length * (size_of char)
-    tpe.align = align_of char
+export def make_global_string(str: Str, state: &State) -> Value {
+    let tpe = typechecking::make_static_array(builtins::char_, str.length() + 1)
 
     let value = [
         kind = ValueKind::STRING,
@@ -1030,7 +1028,7 @@ export def create_global_string(str: Str, state: &State) -> Value {
 }
 
 export def charp(str: Str, state: &State) -> Value {
-    return charp_static(create_global_string(str, state), state)
+    return charp_static(make_global_string(str, state), state)
 }
 
 def push_scope(node: &parser::Node, state: &State) {
@@ -2095,17 +2093,40 @@ def convert_to(kind: InsnKind, loc: &Value, value: Value, tpe: &typechecking::Ty
     return ret
 }
 
-def get_embed_field(left: &typechecking::Type, right: &typechecking::Type, state: &State) -> &typechecking::StructMember {
-    if is_interface(left) and is_struct(right) {
-        if typechecking::implements(right, left, state.module, check_embed = false) { return null }
+
+def get_embed_field(left: &typechecking::Type, right: &typechecking::Type, state: &State) -> &Vector(&typechecking::StructMember) {    
+    let res = vector::make(type &typechecking::StructMember)
+    // Early return if we already implement the interface!
+    if is_interface(left) and typechecking::implements(right, left, state.module, check_embed = false) { return res }
+
+    if is_ref(right) {
+        // Unwrap reference
+        right = right.tpe
+    }
+    if is_struct(right) {
+        if is_struct(left) and typechecking::equals(left, right) or 
+            is_interface(left) and typechecking::implements(right, left, state.module, check_embed = false) {
+            return res 
+        }
+
         for var field in @right.fields {
-            if field.is_embed and typechecking::implements(field.tpe, left, state.module, check_embed = false) {
-                return field
+            if field.is_embed {
+                if is_struct(left) and typechecking::equals(left, field.tpe) or
+                    is_interface(left) and typechecking::implements(field.tpe, left, state.module, check_embed = false) {
+                    
+                    res.push(field)
+                    return res
+                } else {
+                    let embed = get_embed_field(left, field.tpe, state)
+                    res.push(field)
+                    res.add_all(embed)
+                    return res
+                }
             }
         }
     }   
 
-    return null
+    return res
 }
 
 // value gets loaded by this function
@@ -2145,42 +2166,75 @@ def convert_to(loc: &Value, value: Value, tpe: &typechecking::Type, state: &Stat
             return value
         }
     }
-    let left = tpe.tpe if is_ref(tpe) else tpe
-    let right = value.tpe.tpe if is_ref(value.tpe) else value.tpe
-    let embed_field = get_embed_field(left, right, state)
 
-    // Try to convert to embedded struct / reference
-    if is_struct(right) and (is_struct(left) or embed_field) {
-        var is_embed = false
-        var field: StructMember
-        if embed_field {
-            is_embed = true
-            field = @embed_field
-        } else {
-            for var f in @right.fields {
-                if f.is_embed and (equals(f.tpe, tpe) or equals(f.tpe, tpe.tpe)) {
-                    is_embed = true
-                    field = f
-                    break
-                }
-            }
+    let cast = [src = value.tpe, dst = tpe] !toolchain::Cast
+    if state.module.dyn_casts.contains(cast) {
+        let fun = state.module.dyn_casts(cast)
+        
+        var dst = cast.dst
+        if not is_ref(cast.dst) {
+            dst = pointer(dst)
         }
-        if is_embed {
-            var unwrap = load_value(value, loc, state)
-            // Unwrap reference on the value side
-            if is_ref(value.tpe) {
-                let _ref = state.extract_value(pointer(right), unwrap, [1], loc)
-                unwrap = state.load(right, _ref, loc)
-            }
-            // Extract element
-            var elem = state.extract_value(field.tpe, unwrap, [field.index !int], loc)
-            // Wrap in reference if needed
-            if is_ref(tpe) and not is_ref(field.tpe) {
-                elem = convert_value_to_ref(tpe, elem, loc, state, 1)
-            }
-            return elem
+
+        let dst_value = state.alloca(dst, loc)
+        state.call(fun.type_name, null, [value, dst_value], loc)
+        
+        if is_ref(cast.dst) {
+            let val = state.load(cast.dst, dst_value)
+            return val
+        } else {
+            let ptr = state.load(pointer(cast.dst), dst_value)
+            let res = state.load(cast.dst, ptr)
+            res.addr = ptr
+            return res
         }
     }
+
+    let left = tpe.tpe if is_ref(tpe) else tpe
+    let right = value.tpe.tpe if is_ref(value.tpe) else value.tpe
+    let embed_field = get_embed_field(left, value.tpe, state)
+
+    // Try to convert to embedded struct / reference
+    if is_struct(right) and ((is_struct(left) or is_interface(left)) and embed_field.length > 0) {
+        var elem = NO_VALUE
+
+        // Unwrap reference on the value side
+        if is_ref(value.tpe) {
+            elem = state.extract_value(pointer(right), load_value(value, loc, state), [1], loc)
+        } else {
+            elem = @value.addr
+        }
+
+        for var i in 0..embed_field.length {
+            let field = embed_field(i)
+            if is_ref(field.tpe) {
+                elem = state.load(elem.tpe.tpe, elem, loc)
+                elem = state.extract_value(field.tpe, elem, [field.index !int], loc)
+                if i < embed_field.length - 1 {
+                    // Convert to a pointer for the next iteration
+                    elem = state.extract_value(pointer(field.tpe), elem, [1], loc)
+                } else {
+                    // Return reference as is
+                    return elem
+                }
+            } else {
+                elem = state.gep(pointer(field.tpe), field.tpe, elem, [make_int_value(0), make_int_value(field.index !int)], loc)
+            }
+        }
+
+        var last_field = embed_field(embed_field.length - 1)
+
+        let addr = elem
+        elem = state.load(elem.tpe.tpe, elem, loc)
+        elem.addr = addr
+
+        // Wrap in reference if needed
+        if is_ref(tpe) and not is_ref(last_field.tpe) {
+            elem = convert_value_to_ref(tpe, elem, loc, state, 1)
+        }
+        return elem
+    }
+
     if tpe.kind == value.tpe.kind and value.tpe.is_anon and typechecking::is_struct(value.tpe) {
         return convert_anon_to_struct(tpe, value, loc, state)
     }
@@ -8033,6 +8087,105 @@ export def create_dyn_dispatch(dyn_dispatch: &Vector(&typechecking::Type), state
     }
 }
 
+export def create_dyn_casts(state: &State) {
+    let dyn_casts = state.module.dyn_casts
+    for var cast in @dyn_casts.keys() {
+        let function = predeclare_function(dyn_casts(cast), state.module)
+        create_dyn_cast_function(function, cast, state)
+        consteval::const_module.result.functions(function.name) = function
+    }
+}
+
+def create_dyn_cast_function(function: &Function, cast: toolchain::Cast, state: &State) {
+    // Setup function
+    function.block = make_block()
+    function.forward_declare = false
+    let previous_block = state.current_block
+    state.current_block = function.block
+
+    var dst_arg = pointer(cast.dst)
+    if not is_ref(cast.dst) {
+        dst_arg = pointer(dst_arg)
+    }
+
+    let src_value = [ kind = ValueKind::LOCAL, tpe = cast.src, name = "src.value"] !Value
+    let dst_value = [ kind = ValueKind::LOCAL, tpe = dst_arg, name = "dst.value" ] !Value
+
+    // Extract type
+    let ref_tpe = state.extract_value(
+        typechecking::pointer(builtins::Type_), 
+        src_value,
+        [2]
+    )
+    let ref_tpe_deref = state.load(builtins::Type_, ref_tpe)
+    let tpe_value = state.extract_value(
+        typechecking::pointer(builtins::Type_),
+        ref_tpe_deref,
+        [4]
+    )
+    let tpe_deref = state.load(builtins::Type_, tpe_value)
+    let tpe_id = state.extract_value(builtins::int64_, tpe_deref, [14])
+
+    // Switch
+    let switch_values = vector::make(SwitchValue)
+    let swtch = make_insn(InsnKind::SWITCH)
+    swtch.value.switch_ = [
+        value = tpe_id,
+        switch_values = switch_values
+    ] !InsnSwitch
+    push_insn(swtch, state)
+
+    let hashes = set::make(uint64)
+    let keys = map::keys(typechecking::types_map)
+    for var i in 0..keys.size {
+        let type_entry = typechecking::types_map(keys(i))
+
+        if not is_ref(type_entry.tpe) { continue }
+        let contains = typechecking::contains(type_entry.tpe)
+
+        if not contains.contains(cast.dst) and not (cast.dst.is_ref() and contains.contains(cast.dst.tpe)) { continue }
+
+        let hash = md5::high(md5::md5(debug::type_to_str(type_entry.tpe.tpe, full_name = true)))
+        if hashes.contains(hash) { continue }
+        hashes.add(hash)
+
+        let if_true = make_label(state)
+        push_label(if_true, state)
+
+        if cast.dst.is_ref() {
+            var res = convert_to(null !&Value, src_value, type_entry.tpe, state)
+            res = convert_to(null !&Value, res, cast.dst, state)
+            state.store(dst_value, res)
+        } else {
+            var res = convert_to(null !&Value, src_value, type_entry.tpe, state)
+            res = convert_to(null !&Value, res, cast.dst, state)
+            state.store(dst_value, @res.addr)
+        }
+
+        state.ret(NO_VALUE)
+
+        let svalue = [
+            label_ = if_true,
+            value = [ kind = ValueKind::INT, i = hash, tpe = builtins::int64_ ] !Value
+        ] !SwitchValue
+        switch_values.push(svalue)
+    }
+
+    let end_label = make_label(state)
+    push_label(end_label, state)
+    swtch.value.switch_.otherwise = end_label
+
+    // TODO Abort with message!
+    import_cstd_function("abort", state)
+    state.call("abort", null, [] ![Value])
+
+    state.module.imported.add(function.name)
+    push_insn(make_insn(InsnKind::UNREACHABLE), state)
+
+    // Reset state
+    state.current_block = previous_block
+}
+
 export let constructors = map::make(type &typechecking::Type)
 def create_constructors {
     var done = set::make()
@@ -9001,6 +9154,9 @@ def push_structural_members(tpe: &typechecking::Type, global: Value, module: &to
 }
 
 def do_create_type(tpe: &typechecking::Type, svalue: &scope::Value, module: &toolchain::Module, cache: &Vector(TypeEntry)) -> &Value {
+    // Add to all types TODO Not this function should be responsible for that
+    all_types.add(tpe)
+
     if toolchain::no_stdlib { return NO_VALUE }
     
     if tpe.kind == typechecking::TypeKind::BOX {
@@ -9339,6 +9495,215 @@ def change_value_to_type(tpe: &typechecking::Type, state: &State) -> &scope::Val
     return value
 }
 
+def make_global_data(name: Str, value: &ByteStream, state: &State) {
+    let tpe = typechecking::make_static_array(builtins::char_, value.data().size)
+
+    let s = value.data() !&[byte] !&[char]
+    let global = [
+        name = name,
+        tpe = tpe,
+        value = [ tpe = tpe, kind = ValueKind::STRING, s = s ] !Value,
+        line = -1
+    ] !&Global
+
+    state.module.result.globals(name) = global
+    state.module.imported.add(name)
+}
+
+def make_global_data(name: Str, value: size_t, state: &State) {
+    let global = [
+        name = name,
+        tpe = builtins::size_t_,
+        value = [ tpe = builtins::size_t_, kind = ValueKind::INT, i = value ] !Value,
+        line = -1
+    ] !&Global
+
+    state.module.result.globals(name) = global
+    state.module.imported.add(name)
+}
+
+export let all_types = set::make(type &typechecking::Type)
+
+export def generate_reflection_data() {
+    let data = io::make_stream()
+    let strings = [ strings = io::make_stream(), map = map::make(size_t) ] !&UniquedStrings
+
+    for var tpe in @all_types.keys() {
+        generate_reflection_data_1(tpe, data, strings)
+    }
+
+    for var tpe in @all_types.keys() {
+        generate_reflection_data_2(tpe, data, strings)
+    }
+
+    // Need to 0 terminate the whole thing so that it can be converted to a Str
+    data.write(0 !uint8) 
+    strings.strings.write(0 !uint8)
+
+    make_global_data("__reflection_data", data, toolchain::types_state)
+    make_global_data("__reflection_data_size", data.data().size, toolchain::types_state)
+    make_global_data("__reflection_strings", strings.strings, toolchain::types_state)
+    make_global_data("__reflection_num_types", all_types.size, toolchain::types_state)
+}
+
+type UniquedStrings = struct {
+    strings: &ByteStream
+    map: &SMap(size_t)
+}
+
+def write_zt(uniqued: &UniquedStrings, s: Str) -> int {
+    if uniqued.map.contains(s) {
+        return uniqued.map(s) !int
+    }
+    let val = uniqued.strings.write_zt(s)
+    uniqued.map(s) = val
+    return val !int
+}
+
+def generate_reflection_data_2(tpe: &typechecking::Type, data: &ByteStream, strings: &UniquedStrings) {
+    // Collect type members
+    let type_members = vector::make(typechecking::TypeEntryMember)
+    for var member in typechecking::iterate_member_functions(tpe) {
+        if member.function.parameter_t(0).tpe.kind == typechecking::TypeKind::TYPE { continue }
+
+        let function = member.function
+
+        var is_incomplete = false
+        for var i in 0..vector::length(function.parameter_t) {
+            let np = function.parameter_t(i)
+            let generic = typechecking::get_generic(np.tpe)
+            if generic and generic.tc_incomplete or (np.tpe and np.tpe.kind == typechecking::TypeKind::TYPE_DEF) {
+                is_incomplete = true
+                break
+            }
+        }
+        if is_incomplete { continue }
+        type_members.push(member)
+    }
+
+    // Write type members
+    data.write(type_members.length !int)
+
+    print(debug::type_to_str(tpe), " members: ", type_members.length, "\n")
+
+    for var member in type_members {
+        data.write(strings.write_zt(member.function.type_name))
+        data.write(member.exported)
+        data.write(strings.write_zt(member.module.module))
+
+        print("\t", member.function.type_name, "\n")
+
+        data.write(member.function.parameter_t.length !int)
+        for var arg in member.function.parameter_t {
+            data.write(arg.tpe.hash if arg.tpe else 0) // TODO Do we want function argument names maybe?
+        }
+        data.write(member.function.return_t.length !int)
+        for var t in member.function.return_t {
+            data.write(t.hash)
+        }
+    }
+
+    switch tpe.kind {
+    case typechecking::TypeKind::STRUCT, typechecking::TypeKind::UNION
+        for var member in @tpe.fields {
+            data.write(member.tpe.hash)
+        }
+    case typechecking::TypeKind::STRUCTURAL
+        for var member in tpe.members {
+            for var np in member.parameter_t {
+                data.write(unbox(np.tpe).hash)
+            }
+            for var t in member.return_t {
+                data.write(unbox(t).hash)
+            }
+        }
+    case typechecking::TypeKind::POINTER, typechecking::TypeKind::REFERENCE,
+        typechecking::TypeKind::WEAK_REF, typechecking::TypeKind::ARRAY,
+        typechecking::TypeKind::STATIC_ARRAY
+
+        if tpe.tpe and not all_types.contains(tpe.tpe) {
+            data.write(0 !uint64) // Probably an opaque type
+        } else {
+            data.write(tpe.tpe.hash if tpe.tpe else 0)
+        }
+    case typechecking::TypeKind::TUPLE
+        for var t in tpe.return_t {
+            data.write(t.hash)
+        }
+    case typechecking::TypeKind::VARIANT
+        for var t in @tpe.variants.keys() {
+            data.write(t.hash)
+        }
+    case typechecking::TypeKind::CLOSURE, typechecking::TypeKind::FUNCTION
+        for var np in tpe.parameter_t {
+            data.write(np.tpe.hash)
+        }
+        for var t in tpe.return_t {
+            data.write(t.hash)
+        }
+    }
+}
+
+def generate_reflection_data_1(tpe: &typechecking::Type, data: &ByteStream, strings: &UniquedStrings) {
+    data.write(tpe.kind) // This does rely on the values beind the same
+    data.write(strings.write_zt(debug::type_to_str(tpe, full_name = true)))
+    data.write(strings.write_zt(tpe.module.module if tpe.module else to_str("")))
+    data.write(tpe.hash)
+
+    print(tpe.kind, " ", tpe.name, " ", (tpe.module.module if tpe.module else to_str("")), " ", tpe.hash, "\n")
+    
+    switch tpe.kind {
+    case typechecking::TypeKind::WORD
+        data.write(tpe.size !int)
+        data.write(tpe.align !int)
+        data.write(not tpe.unsig)
+    case typechecking::TypeKind::FLOAT
+        data.write(tpe.size !int)
+        data.write(tpe.align !int)
+    case typechecking::TypeKind::STRUCT, typechecking::TypeKind::UNION
+        data.write(tpe.size !int)
+        data.write(tpe.align !int)
+        data.write(tpe.fields.size !int)
+
+        print("\tsize: ", tpe.size, " align: ", tpe.align, " members: ", tpe.fields.size, "\n")
+        for var i in 0..tpe.fields.size {
+            let field = tpe.fields(i)
+            let member = tpe.field_types(field.index)
+            data.write(strings.write_zt(field.name))
+            data.write(member.offset !int)
+            print("\tname: ", field.name, " offset: ", member.offset, "\n")
+        }
+    case typechecking::TypeKind::STATIC_ARRAY
+        data.write(tpe.size)
+        data.write(tpe.align)
+        data.write(tpe.length)
+    case typechecking::TypeKind::FUNCTION, typechecking::TypeKind::CLOSURE
+        data.write(tpe.parameter_t.length !int)
+        data.write(tpe.return_t.length !int)
+    case typechecking::TypeKind::ENUM
+        data.write(tpe.size !int)
+        data.write(tpe.align !int)
+        data.write(not tpe.unsig)
+        
+        data.write(tpe.scope.fields.size !int)
+        for var name in @tpe.scope.fields.keys() {
+            let svalue = tpe.scope.fields(name)
+            data.write(strings.write_zt(name))
+            data.write(svalue.value.i)
+        }
+
+    case typechecking::TypeKind::STRUCTURAL
+        data.write(tpe.members.length !int)
+        for var member in tpe.members {
+            data.write(strings.write_zt(member.name))
+            data.write(member.parameter_t.length !int)
+            data.write(member.return_t.length !int)
+        }
+    case typechecking::TypeKind::VARIANT, typechecking::TypeKind::TUPLE
+        data.write(tpe.variants.size)
+    }
+}
+
 
 export def make_result -> &Result {
     return [
@@ -9445,7 +9810,7 @@ def generate_vtable_function(function: &Function, tpe: &typechecking::Type, stat
     ] !InsnSwitch
     push_insn(swtch, state)
 
-    let hashes = set::make(size_t)
+    let hashes = set::make(uint64)
     let keys = map::keys(typechecking::types_map)
     for var i in 0..keys.size {
         let type_entry = typechecking::types_map(keys(i))
@@ -9563,19 +9928,26 @@ def generate_vtable_function(function: &Function, tpe: &typechecking::Type, stat
                 if is_const {
                     state.ret(@const_field.value)
                 } else {
-                    var deref = state.extract_value(pointer(type_entry.tpe.tpe), reference, [1])
-                    var value = state.load(type_entry.tpe.tpe, deref)
-                    var findex: size_t = 0
-                    var ftpe: &typechecking::Type
-                    for var field in @type_entry.tpe.tpe.fields {
-                        if field.name == name {
-                            findex = field.index
-                            ftpe = field.tpe
-                        }
+                    var stpe = type_entry.tpe.tpe
+                    // Resolve member
+                    var deref = state.extract_value(pointer(stpe), reference, [1])
+                    var value = state.load(stpe, deref)
+                    value.addr = deref
+                    
+                    let vec = vector::make(Member)
+                    if not resolve_member(vec, stpe, name) {
+                        return
                     }
 
-                    value = state.extract_value(ftpe, value, [findex !int])
-                    state.ret(value)
+                    let len = vector::length(vec)
+                    for var i in 0..len {
+                        let j = len - i - 1
+                        let member = vec(j)
+                        value = walk_MemberAccess_struct(null, stpe, member, value, state)
+                        stpe = member.tpe
+                    }
+
+                    state.ret(load_value(value, null, state))
                 }
             }
         }
@@ -9585,7 +9957,7 @@ def generate_vtable_function(function: &Function, tpe: &typechecking::Type, stat
     push_label(end_label, state)
     swtch.value.switch_.otherwise = end_label
 
-    state.module.imported.add("abort")
+    import_cstd_function("abort", state)
     state.call("abort", null, [] ![Value])
 
     state.module.imported.add(function.name)
@@ -9651,6 +10023,11 @@ export def compile(module: &toolchain::Module) {
 export def compile(state: &State, is_main: bool, no_cleanup: bool = false) {
     toolchain::progress_update(state.module, toolchain::ProgressUpdate::START) 
 
+    // Import required functions
+    import_cstd_function("malloc", state)
+    import_cstd_function("free", state)
+    import_cstd_function("strlen", state)
+
     let node = state.module.node
     assert(node.kind == parser::NodeKind::PROGRAM)
 
@@ -9669,7 +10046,7 @@ export def compile(state: &State, is_main: bool, no_cleanup: bool = false) {
     state.finalizer.dllexport = true
 
     if builtins::builtins.fields.contains("DEBUG_REF_CYCLES") {
-        state.file_name_value = create_global_string(state.module.module, state)
+        state.file_name_value = make_global_string(state.module.module, state)
     }
 
     import_structures(builtins::Type_, state.module)
@@ -9861,6 +10238,7 @@ export def compile(state: &State, is_main: bool, no_cleanup: bool = false) {
     // TODO This doesn't work for functions that return multiple parameters
     predeclare_functions(state.module)
     create_dyn_dispatch(state.module.dyn_dispatch, state)
+    create_dyn_casts(state)
 
     let ident = parser::make_identifier("__main__")
     ident.loc.module = state.module.module
