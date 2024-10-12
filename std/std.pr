@@ -2,6 +2,7 @@ import cstd
 import runtime
 import optional
 import vector
+import reflection
 
 import strings
 from strings export *
@@ -285,28 +286,18 @@ export def error(args: &...) -> int {
     return fprint(stderr(), args)
 }
 
-def make_ref(tpe: *runtime::Type, value: *) -> runtime::Ref {
-    var _ref: runtime::Ref
-    _ref.tpe = tpe
-    _ref.value = value
-    return _ref
-}
-
 //TODO Clang craps itself when I use defer in here
-def print_val(file: File, _ref: runtime::Ref) -> int {
-    let reftpe = runtime::ref_type(_ref)
-    let tpe = reftpe.tpe if reftpe else null !*runtime::Type
-    let value = _ref.value
+def print_val(file: File, value: *, tpe: reflection::Type) -> int {
     if not tpe or not value {
         return cstd::fprintf(file, "%p".value, value)
     } else if tpe == string {
         let str = value !*string
         cstd::fputs(str.value, file)
         return (str.size - 1) !int
-    } else if tpe.kind == runtime::TypeKind::STATIC_ARRAY and tpe.tpe == char {
+    } else if tpe.type == reflection::StaticArrayT and (tpe !reflection::StaticArrayT).tpe == char {
         return cstd::fprintf(file, "%s".value, value !*char)
     } else if tpe == StringSlice {
-        let slc = _ref !&StringSlice
+        let slc = @(value !*StringSlice)
         if slc.data {
             cstd::fwrite(slc.data ++ slc.offset, 1, slc.count, file)
         } else {
@@ -353,15 +344,22 @@ def print_val(file: File, _ref: runtime::Ref) -> int {
         } else {
             return cstd::fprintf(file, "false".value)
         } 
-    } else if tpe.kind == runtime::TypeKind::POINTER {
-        return cstd::fprintf(file, "%p".value, @(value !**))
-    } else if tpe.kind == runtime::TypeKind::REFERENCE {
-        let v = value !*runtime::Ref
-        let ref_tpe = runtime::reference(tpe.tpe)
-        let res = print_val(file, make_ref(ref_tpe, v.value))
-        delete(ref_tpe)
-        return res
-    } else if tpe.kind == runtime::TypeKind::ARRAY {
+    } else if reflection::implements(tpe, ToString) {
+        let str = (value !&ToString).to_string()
+        return print_val(file, str, type_of str)
+    } else if reflection::implements(tpe, IString) {
+        let str = (value !String)
+        for var c in str.chars() {
+            cstd::putc(c, file)
+        }
+        return str.length() !int
+    } else if tpe.type == reflection::PointerT {
+        return cstd::fprintf(file, "%p".value, value)
+    } else if tpe.type == reflection::ReferenceT {
+        let ptr = value !& !*
+        return cstd::fprintf(file, "%p".value, ptr)
+    } else if tpe.type == reflection::ArrayT {
+        let arr_t = tpe !reflection::ArrayT
         let arr = @(value !*[int8])
         let size = arr.size
         let elements = arr.value
@@ -369,69 +367,60 @@ def print_val(file: File, _ref: runtime::Ref) -> int {
 
         sum += cstd::fprintf(file, "[".value)
         for var i in 0..size {
-            let ref_tpe = runtime::reference(tpe.tpe)
-            sum += print_val(file, make_ref(ref_tpe, elements ++ i * tpe.tpe.size))
-            delete(ref_tpe)
+            sum += print_val(file, elements ++ i * arr_t.tpe.size, arr_t.tpe)
             if i < size - 1 {
                 sum += cstd::fprintf(file, ", ".value)
             }
         }
         sum += cstd::fprintf(file, "]".value)
         return sum
-    } else if tpe.kind == runtime::TypeKind::STATIC_ARRAY {
-        let size = tpe.length
+    } else if tpe.type == reflection::StaticArrayT {
+        let arr_t = tpe !reflection::StaticArrayT
+        let size = arr_t.length
         var sum = 0
 
         sum += cstd::fprintf(file, "[".value)
         for var i in 0..size {
-            let ref_tpe = runtime::reference(tpe.tpe)
-            sum += print_val(file, make_ref(ref_tpe, value ++ i * tpe.tpe.size))
-            delete(ref_tpe)
+            sum += print_val(file, value ++ i * arr_t.tpe.size, arr_t.tpe)
             if i < size - 1 {
                 sum += cstd::fprintf(file, ", ".value)
             }
         }
         sum += cstd::fprintf(file, "]".value)
         return sum
-    } else if tpe.kind == runtime::TypeKind::ENUM {
+    } else if tpe.type == reflection::EnumT {
+        let enum_t = tpe !reflection::EnumT
         var v: int64 = 0
-        for var i in 0..tpe.tpe.size {
+        for var i in 0..enum_t.tpe.size {
             v |= (@((value ++ i) !*byte)) !int64 << (i * 8)
         }
 
-        var str = "INVALID!!"
-        for var i in 0..tpe.enum_values.size {
-            let ev = tpe.enum_values(i)
+        var str: Str = "INVALID!!"
+        for var i in 0..enum_t.values.size {
+            let ev = enum_t.values(i)
             if ev.value == v {
                 str = ev.name
             }
         }
-        return cstd::fprintf(file, "%s".value, str.value)
-    } else if runtime::implements(reftpe, ToString) {
-        let str = (_ref !&ToString).to_string()
-        return print_val(file, str !Ref)
-    } else if runtime::implements(reftpe, IString) {
-        let str = (_ref !String)
-        for var c in str.chars() {
-            cstd::putc(c, file)
-        }
-        return str.length() !int
-    } else if tpe.kind == runtime::TypeKind::STRUCT or tpe.kind == runtime::TypeKind::UNION {
-        let fields = tpe.fields
+        return print(str)
+    } else if tpe.type == reflection::StructT or tpe.type == reflection::UnionT {
+        let rec_t = tpe !*reflection::RecordT
+
+        let fields = rec_t.fields
         var sum = 0
         sum += cstd::fprintf(file, "[".value)
         for var i in 0..fields.size {
             let field = fields(i)
             sum += cstd::fprintf(file, "%s = ".value, field.name.value)
             
-            let ref_tpe = runtime::reference(field.tpe)
-            sum += print_val(file, make_ref(ref_tpe, value ++ field.offset))
+            sum += print_val(file, value ++ field.offset, field.tpe)
             delete(ref_tpe)
             if i < fields.size - 1 {
                 sum += cstd::fprintf(file, ", ".value)
             }
         }
-        sum += cstd::fprintf(file, "] !%s".value, tpe.name.value)
+        sum += cstd::fprintf(file, "] !%s".value)
+        sum += print(tpe.name)
         return sum
     }
 }
@@ -439,10 +428,10 @@ def print_val(file: File, _ref: runtime::Ref) -> int {
 export def fprint(file: File, args: &...) -> int {
     var sum = 0
     for var i in 0..args.size {
-        let arg = args(i)
-        let ref_tpe = runtime::ref_type(arg)
+        let arg = *args(i)
+        let ref_tpe = args(i).type
         if ref_tpe {
-            sum += print_val(file, arg !runtime::Ref)
+            sum += print_val(file, arg !*, ref_tpe)
         } else {
             sum += cstd::fprintf(file, "null".value)
         }
@@ -564,12 +553,6 @@ export def read(file: File, buffer: type [T], size: size_t) -> size_t {
 
 export def read(file: File, ptr: type *T) -> size_t {
     return cstd::fread(ptr, T.size, 1, file)
-}
-
-export def read(file: File, type T) -> T {
-    var data: T
-    cstd::fread(*data, T.size, 1, file)
-    return data
 }
 
 export def read_str(file: File) -> Str {
