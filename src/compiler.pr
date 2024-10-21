@@ -3363,7 +3363,7 @@ def walk_Identifier(node: &parser::Node, state: &State) -> Value {
     if not val { return NO_VALUE }
 
     if val.tpe and val.tpe.kind == typechecking::TypeKind::TYPE {
-        return change_value_to_type(node.tpe.tpe.tpe, state)
+        return change_value_to_type(val.value.value_tpe, state)
     }
     if not val { return NO_VALUE }
 
@@ -4156,13 +4156,8 @@ def walk_MemberAccess(node: &parser::Node, state: &State) -> Value {
 
     var value = walk_expression(left, state)
     if not value.addr {
-        if typechecking::equals(value.tpe, typechecking::pointer(builtins::Type_)) {
-            // TODO This should be handled in typechecking
-            value.addr = value
-        } else {
-            errors::errorn(node, "Can't use member access, expression has no address")
-            return NO_VALUE
-        }
+        errors::errorn(node, "Can't use member access, expression has no address")
+        return NO_VALUE
     }
 
     // TODO This might double error
@@ -4176,7 +4171,14 @@ def walk_MemberAccess(node: &parser::Node, state: &State) -> Value {
         } else if tpe.kind == typechecking::TypeKind::TUNION {
             value = load_value(value, loc, state)
             res = state.extract_value(pointer(builtins::Type_), value, [0], loc)
+        } else {
+            return res
         }
+
+        res = state.load(builtins::Type_, res, loc)
+        res = state.extract_value(builtins::int64_, res, [0], loc)
+        let fun = declare_reflection_type_id_fun(state)
+        res = state.call(fun.tpe.type_name, builtins::TypeT_, [res], loc)
 
         return res
     }
@@ -8883,16 +8885,7 @@ export def create_type(tpe: &typechecking::Type, module: &toolchain::Module, cac
     return value
 }
 
-def change_value_to_type(tpe: &typechecking::Type, state: &State) -> Value {
-    let type_tpe = copy(builtins::Type_)
-    type_tpe._tpe = tpe 
-    import_structures(builtins::Type_, state.module)
-
-    add_type_meta(tpe, state)
-    
-    let value_tpe = create_type(tpe, state.module)
-    if not value_tpe { return NO_VALUE }
-
+def declare_reflection_type_id_fun(state: &State) -> &scope::Value {
     let reflection = toolchain::find_module("reflection")
     let fun = reflection.scope.get(parser::make_identifier("type_id"))
     if consteval::is_static {
@@ -8901,6 +8894,14 @@ def change_value_to_type(tpe: &typechecking::Type, state: &State) -> Value {
     predeclare_function(fun.tpe, state.module)
     state.module.imported.add(fun.tpe.type_name)
 
+    return fun
+}
+
+def change_value_to_type(tpe: &typechecking::Type, state: &State) -> Value {
+    add_type_meta(tpe, state)
+    if not create_type(tpe, state.module) { return NO_VALUE }
+
+    let fun = declare_reflection_type_id_fun(state)
     let hash = md5::high(md5::md5(debug::type_to_str(tpe, full_name = true)))
     return state.call(fun.tpe.type_name, builtins::TypeT_, [[ tpe = builtins::uint64_, kind = ValueKind::INT, i = hash ] !Value])
 }
@@ -9029,7 +9030,7 @@ def generate_reflection_data_2(tpe: &typechecking::Type, data: &ByteStream, stri
         }
     case typechecking::TypeKind::POINTER, typechecking::TypeKind::REFERENCE,
         typechecking::TypeKind::WEAK_REF, typechecking::TypeKind::ARRAY,
-        typechecking::TypeKind::STATIC_ARRAY
+        typechecking::TypeKind::STATIC_ARRAY, typechecking::TypeKind::ENUM
 
         if tpe.tpe and not all_types.contains(tpe.tpe) {
             data.write(0 !uint64) // Probably an opaque type
@@ -9336,7 +9337,8 @@ def generate_vtable_function(function: &Function, tpe: &typechecking::Type, stat
                 }
 
                 if is_const {
-                    state.ret(@const_field.value)
+                    let res = convert_to(null !&Value, @const_field.value, ret_tpe, state)
+                    state.ret(res)
                 } else {
                     var stpe = type_entry.tpe.tpe
                     // Resolve member
