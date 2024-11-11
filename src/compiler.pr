@@ -1279,7 +1279,7 @@ def walk_String(node: &parser::Node, state: &State) -> Value {
     return ret
 }
 
-def resolve_types(cache: &Vector(TypeEntry)) {
+def resolve_types(res: &Vector(TypeEntry)) {
     let state = toolchain::types_state
     // We need an independent block that we can run for constant evaluation
     let old_block = toolchain::types_state.current_block
@@ -1287,11 +1287,9 @@ def resolve_types(cache: &Vector(TypeEntry)) {
     new_block.counter = old_block.counter
     state.current_block = new_block
 
-    while cache.length > 0 {
-        let first = cache(0)
-        cache.remove(0)
-        first.value.value = do_create_type(first.tpe, first.value, first.module, cache)
-        first.value.phase = scope::Phase::COMPILED
+    for var entry in res {
+        entry.value.value = do_create_type(entry.tpe, entry.value, entry.module)
+        entry.value.phase = scope::Phase::COMPILED
     }
         
     old_block.counter = new_block.counter
@@ -1335,9 +1333,9 @@ def resolve_types(cache: &Vector(TypeEntry)) {
 }
 
 export def create_type(tpe: &typechecking::Type, module: &toolchain::Module) -> &Value {
-    let cache = vector::make(TypeEntry) // TODO Should probably use a linked list here
-    let ret = create_type(tpe, module, cache)
-    resolve_types(cache)
+    let res = vector::make(TypeEntry)
+    let ret = create_type(tpe, module, res)
+    resolve_types(res)
     return ret
 }
 
@@ -8746,7 +8744,7 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
     }
 }
 
-def do_create_type(tpe: &typechecking::Type, svalue: &scope::Value, module: &toolchain::Module, cache: &Vector(TypeEntry)) -> &Value {
+def do_create_type(tpe: &typechecking::Type, svalue: &scope::Value, module: &toolchain::Module) -> &Value {
     // Add to all types TODO This function should not be responsible for that
     all_types.add(tpe)
 
@@ -8754,57 +8752,6 @@ def do_create_type(tpe: &typechecking::Type, svalue: &scope::Value, module: &too
     
     if tpe.kind == typechecking::TypeKind::BOX {
         tpe = tpe.wk
-    }
-
-    // Recursively add all sub types
-    if is_box(tpe) {
-        create_type(tpe.tpe, module, cache)
-    } else if is_struct(tpe) {
-        for var i in 0..tpe.fields.size {
-            let field = tpe.fields(i)
-            create_type(field.tpe, module, cache)
-        }
-    } else if tpe.kind == typechecking::TypeKind::FUNCTION or
-        tpe.kind == typechecking::TypeKind::CLOSURE or
-        tpe.kind == typechecking::TypeKind::TUPLE {
-        
-        if tpe.kind != typechecking::TypeKind::TUPLE {
-            for var param in tpe.parameter_t {
-                create_type(param.tpe, module, cache)
-            }
-        }
-        for var rtpe in tpe.return_t {
-            create_type(rtpe, module, cache)
-        }
-    } else if tpe.kind == typechecking::TypeKind::VARIANT {
-        for var vtpe in @tpe.variants.keys() {
-            create_type(vtpe, module, cache)
-        }
-    }
-    // Member functions
-    // TODO Factor out, see generate_reflection_data_2
-    for var member in typechecking::iterate_member_functions(tpe) {
-        if member.function.parameter_t(0).tpe.kind == typechecking::TypeKind::TYPE { continue }
-
-        let function = member.function
-
-        var is_incomplete = false
-        for var i in 0..vector::length(function.parameter_t) {
-            let np = function.parameter_t(i)
-            let generic = typechecking::get_generic(np.tpe)
-            if generic and generic.tc_incomplete or (np.tpe and np.tpe.kind == typechecking::TypeKind::TYPE_DEF) {
-                is_incomplete = true
-                break
-            }
-        }
-        if is_incomplete { continue }
-        
-        for var param in function.parameter_t {
-            create_type(param.tpe, module, cache)
-        }
-        for var rtpe in function.return_t {
-            create_type(rtpe, module, cache)
-        }
     }
 
     let generic = typechecking::get_generic(tpe)
@@ -8881,7 +8828,7 @@ type TypeEntry = struct {
     module: weak &toolchain::Module
 }
 
-export def create_type(tpe: &typechecking::Type, module: &toolchain::Module, cache: &Vector(TypeEntry)) -> &Value {
+export def create_type(tpe: &typechecking::Type, module: &toolchain::Module, res: &Vector(TypeEntry)) -> &Value {
     if not tpe { return null }
     if tpe.kind == typechecking::TypeKind::BOX {
         tpe = tpe.wk
@@ -8912,7 +8859,7 @@ export def create_type(tpe: &typechecking::Type, module: &toolchain::Module, cac
             parser::VarDecl::CONST, builtins::Type_, 
             false, false, false, null, scope::Phase::DEFINED, null, null)
 
-        cache.push([
+        res.push([
            tpe = tpe, value = svalue, module = module
         ] !TypeEntry)
         /*svalue = scope::create_variable(
@@ -8920,6 +8867,57 @@ export def create_type(tpe: &typechecking::Type, module: &toolchain::Module, cac
             ident, parser::ShareMarker::NONE, parser::VarDecl::CONST, 
             builtins::Type_, do_create_type(tpe, svalue, module))*/
         svalue.identifier = ident
+
+        // Recursively add all sub types
+        if is_box(tpe) {
+            create_type(tpe.tpe, module, res)
+        } else if is_struct(tpe) {
+            for var i in 0..tpe.fields.size {
+                let field = tpe.fields(i)
+                create_type(field.tpe, module, res)
+            }
+        } else if tpe.kind == typechecking::TypeKind::FUNCTION or
+            tpe.kind == typechecking::TypeKind::CLOSURE or
+            tpe.kind == typechecking::TypeKind::TUPLE {
+            
+            if tpe.kind != typechecking::TypeKind::TUPLE {
+                for var param in tpe.parameter_t {
+                    create_type(param.tpe, module, res)
+                }
+            }
+            for var rtpe in tpe.return_t {
+                create_type(rtpe, module, res)
+            }
+        } else if tpe.kind == typechecking::TypeKind::VARIANT {
+            for var vtpe in @tpe.variants.keys() {
+                create_type(vtpe, module, res)
+            }
+        }
+        // Member functions
+        // TODO Factor out, see generate_reflection_data_2
+        for var member in typechecking::iterate_member_functions(tpe) {
+            if member.function.parameter_t(0).tpe.kind == typechecking::TypeKind::TYPE { continue }
+
+            let function = member.function
+
+            var is_incomplete = false
+            for var i in 0..vector::length(function.parameter_t) {
+                let np = function.parameter_t(i)
+                let generic = typechecking::get_generic(np.tpe)
+                if generic and generic.tc_incomplete or (np.tpe and np.tpe.kind == typechecking::TypeKind::TYPE_DEF) {
+                    is_incomplete = true
+                    break
+                }
+            }
+            if is_incomplete { continue }
+            
+            for var param in function.parameter_t {
+                create_type(param.tpe, module, res)
+            }
+            for var rtpe in function.return_t {
+                create_type(rtpe, module, res)
+            }
+        }
     }
 
     let state = toolchain::types_state
@@ -8950,7 +8948,7 @@ export def create_type(tpe: &typechecking::Type, module: &toolchain::Module, cac
 
 def declare_reflection_type_id_fun(state: &State) -> &scope::Value {
     let reflection = toolchain::find_module("reflection")
-    let fun = reflection.scope.get(parser::make_identifier("type_id"))
+    let fun = reflection.scope.get(parser::make_identifier("type_id"), force_compile = not consteval::is_static)
     if consteval::is_static {
         consteval::compile_function(fun, state.scope)
     }
