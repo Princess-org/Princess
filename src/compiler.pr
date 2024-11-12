@@ -1335,7 +1335,10 @@ def resolve_types(res: &Vector(TypeEntry)) {
 export def create_type(tpe: &typechecking::Type, module: &toolchain::Module) -> &Value {
     let res = vector::make(TypeEntry)
     let ret = create_type(tpe, module, res)
+
     resolve_types(res)
+    generate_reflection_data(res)
+    
     return ret
 }
 
@@ -8745,8 +8748,6 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
 }
 
 def do_create_type(tpe: &typechecking::Type, svalue: &scope::Value, module: &toolchain::Module) -> &Value {
-    // Add to all types TODO This function should not be responsible for that
-    all_types.add(tpe)
 
     if toolchain::no_stdlib { return NO_VALUE }
     
@@ -8946,16 +8947,22 @@ export def create_type(tpe: &typechecking::Type, module: &toolchain::Module, res
     return value
 }
 
-def declare_reflection_type_id_fun(state: &State) -> &scope::Value {
-    let reflection = toolchain::find_module("reflection")
-    let fun = reflection.scope.get(parser::make_identifier("type_id"), force_compile = not consteval::is_static)
-    if consteval::is_static {
-        consteval::compile_function(fun, state.scope)
-    }
-    predeclare_function(fun.tpe, state.module)
-    state.module.imported.add(fun.tpe.type_name)
+var fun_type_id: &scope::Value
 
-    return fun
+def declare_reflection_type_id_fun(state: &State) -> &scope::Value {
+
+    let reflection = toolchain::find_module("reflection")
+    if not fun_type_id {
+        fun_type_id = reflection.scope.get(parser::make_identifier("type_id"), force_compile = not consteval::is_static)
+        if consteval::is_static {
+            consteval::compile_function(fun_type_id, state.scope)
+        }
+    }
+
+    predeclare_function(fun_type_id.tpe, state.module)
+    state.module.imported.add(fun_type_id.tpe.type_name)
+
+    return fun_type_id
 }
 
 def change_value_to_type(tpe: &typechecking::Type, loc: &Value, state: &State) -> Value {
@@ -8998,19 +9005,11 @@ def make_global_data(name: Str, value: size_t, state: &State) {
     state.module.imported.add(name)
 }
 
-export let all_types = set::make(type &typechecking::Type)
+export let all_types = vector::make(TypeEntry)
 
-export def generate_reflection_data() {
-    let data = io::make_stream()
-    let strings = [ strings = io::make_stream(), map = map::make(size_t) ] !&UniquedStrings
-
-    for var tpe in @all_types.keys() {
-        generate_reflection_data_1(tpe, data, strings)
-    }
-
-    for var tpe in @all_types.keys() {
-        generate_reflection_data_2(tpe, data, strings)
-    }
+// This gets called once
+export def generate_reflection_data {
+    let data, strings = generate_reflection_data(all_types)
 
     // Need to 0 terminate the whole thing so that it can be converted to a Str
     data.write(0 !uint8) 
@@ -9019,7 +9018,86 @@ export def generate_reflection_data() {
     make_global_data("__reflection_data", data, toolchain::types_state)
     make_global_data("__reflection_data_size", data.data().size, toolchain::types_state)
     make_global_data("__reflection_strings", strings.strings, toolchain::types_state)
-    make_global_data("__reflection_num_types", all_types.size, toolchain::types_state)
+    make_global_data("__reflection_num_types", all_types.length, toolchain::types_state)
+}
+
+var fun_load_types: &scope::Value
+var fun_load_types_count: size_t = 0
+var queued_types = set::make(type &typechecking::Type)
+
+export def generate_reflection_data(types: &Vector(TypeEntry)) -> &io::ByteStream, &UniquedStrings{
+    let data = io::make_stream()
+    let strings = [ strings = io::make_stream(), map = map::make(size_t) ] !&UniquedStrings
+
+    if types.length == 0 {
+        return data, strings
+    }
+
+    let state = consteval::compiler_state
+
+    if not fun_load_types {
+        let reflection = toolchain::find_module("reflection")
+        fun_load_types = scope::get(reflection.scope, parser::make_identifier("load_types"), force_compile = not consteval::is_static)
+        if consteval::is_static and fun_load_types {
+            consteval::compile_function(fun_load_types, state.scope)
+        }
+    }
+
+    let types_set = set::make(type &typechecking::Type)
+    for var entry in types {
+        types_set.add(entry.tpe)
+    }
+    
+    if not fun_load_types {
+        queued_types.add_all(types_set)
+        return data, strings
+    } 
+
+    types_set.add_all(queued_types)
+    queued_types.clear()
+
+    for var tpe in @types_set.keys() {
+        generate_reflection_data_1(tpe, data, strings)
+    }
+    for var tpe in @types_set.keys() {
+        generate_reflection_data_2(tpe, data, strings)
+    }
+
+    if consteval::is_static {
+        let block = make_block()
+        let call = make_insn(InsnKind::CALL)
+
+        let strings_ident = "__reflection_strings_" + fun_load_types_count
+        fun_load_types_count += 1
+
+        let args = allocate_ref(Value, 4)
+        args(0) = [ kind = ValueKind::GLOBAL, name = "__reflection_data", tpe = pointer(builtins::uint8_)] !Value
+        args(1) = [ kind = ValueKind::INT, tpe = builtins::uint64_, i = data.data().size ] !Value
+        args(2) = [ kind = ValueKind::GLOBAL, name = strings_ident, tpe = pointer(builtins::char_)]
+        args(3) = [ kind = ValueKind::INT, tpe = builtins::uint64_, i = types.length ] !Value
+
+        call.value.call = [
+            name = [ kind = ValueKind::GLOBAL, name = fun_load_types.tpe.type_name ],
+            ret = NO_VALUE,
+            args = args
+        ] !InsnCall
+
+        block.insn.push(call)
+
+        // load globals
+        state.globals("__reflection_data") = data.data().value
+
+        let strings_data = allocate(char, strings.strings.data().size)
+        std::memcopy(strings.strings.data().value, strings_data.value, strings_data.size)
+        state.globals(strings_ident) = strings_data.value // This is a copy so we can keep it here
+
+        eval::eval(state, block)
+
+        // remove this so that it doesn't get cleaned up later, we're just borrowing it inside this function
+        state.globals.remove("__reflection_data")
+    }
+
+    return data, strings
 }
 
 type UniquedStrings = struct {
@@ -9098,7 +9176,7 @@ def generate_reflection_data_2(tpe: &typechecking::Type, data: &ByteStream, stri
         typechecking::TypeKind::WEAK_REF, typechecking::TypeKind::ARRAY,
         typechecking::TypeKind::STATIC_ARRAY, typechecking::TypeKind::ENUM
 
-        if tpe.tpe and not all_types.contains(tpe.tpe) {
+        if is_stub(tpe.tpe) {
             data.write(0 !uint64) // Probably an opaque type
         } else {
             data.write(tpe.tpe.hash if tpe.tpe else 0)
