@@ -1336,8 +1336,9 @@ export def create_type(tpe: &typechecking::Type, module: &toolchain::Module) -> 
     let res = vector::make(TypeEntry)
     let ret = create_type(tpe, module, res)
 
+    resolve_stub_types()
     resolve_types(res)
-    generate_reflection_data(res)
+    generate_reflection_data_queued()
     
     return ret
 }
@@ -2175,6 +2176,10 @@ def convert_to(loc: &Value, value: Value, tpe: &typechecking::Type, state: &Stat
 
     let cast = [src = value.tpe, dst = tpe] !toolchain::Cast
     if state.module.dyn_casts.contains(cast) {
+        if consteval::is_static {
+            create_dyn_casts(state)
+        }
+
         let fun = state.module.dyn_casts(cast)
         
         var dst = cast.dst
@@ -4154,12 +4159,16 @@ def walk_MemberAccess_struct(node: &parser::Node, tpe: &typechecking::Type, memb
 
 def walk_MemberAccess(node: &parser::Node, state: &State) -> Value {
     let loc = make_location(node, state)
-    if not node.tpe { return NO_VALUE }
+    if not node.tpe { 
+        return NO_VALUE 
+    }
 
     let left = node.value.bin_op.left
     let right = node.value.bin_op.right
     var tpe = (@left).tpe
-    if not tpe { return NO_VALUE }
+    if not tpe { 
+        return NO_VALUE 
+    }
 
     var value = walk_expression(left, state)
     if not value.addr {
@@ -8100,7 +8109,9 @@ export def create_dyn_dispatch(dyn_dispatch: &Vector(&typechecking::Type), state
 export def create_dyn_casts(state: &State) {
     let dyn_casts = state.module.dyn_casts
     for var cast in @dyn_casts.keys() {
-        let function = predeclare_function(dyn_casts(cast), state.module)
+        let dyn_cast_tpe = dyn_casts(cast)
+        if state.module.result.functions.contains(dyn_cast_tpe.type_name) { continue }
+        let function = predeclare_function(dyn_cast_tpe, state.module)
         create_dyn_cast_function(function, cast, state)
         consteval::const_module.result.functions(function.name) = function
     }
@@ -8801,26 +8812,35 @@ def do_create_type(tpe: &typechecking::Type, svalue: &scope::Value, module: &too
 
 // TODO Types have modules now, check if these functions need a separate module anymore
 // Map of ToResolve
-let types_to_resolve = map::make(ToResolve)
+var types_to_resolve = map::make(ToResolve)
 type ToResolve = struct {
     module: weak &toolchain::Module
     tpe: &typechecking::Type
 }
 
+
+var lock: bool
 // This is needed because some of the types might be stubs when they are first referenced
 // Resolve these later
-export def resolve_types {
+export def resolve_stub_types {
+    if lock { return }
+    lock = true
     let keys = map::keys(types_to_resolve)
     for var i in 0..keys.size {
-        let to_resolve = types_to_resolve(keys(i))
+        let key = keys(i)
+        let to_resolve = types_to_resolve(key)
         let tpe = to_resolve.tpe
-        if tpe.kind == typechecking::TypeKind::STUB { continue }
+        if is_stub_rec(tpe) { 
+            types_to_resolve.remove(key)
+            continue
+        }
 
         let ident = make_identifier(debug::type_to_str(tpe, true))
         ident.loc.module = "type"
         
         create_type(tpe, to_resolve.module)
     }
+    lock = false
 }
 
 type TypeEntry = struct {
@@ -8840,7 +8860,7 @@ export def create_type(tpe: &typechecking::Type, module: &toolchain::Module, res
     if tpe.kind == typechecking::TypeKind::TYPE_DEF { return null }
 
     let name = debug::type_to_str(tpe, full_name = true)
-    if tpe.kind == typechecking::TypeKind::STUB {
+    if is_stub(tpe) {
         if name {
             let to_resolve = [ module = module, tpe = tpe ] !ToResolve
             types_to_resolve(name) = to_resolve
@@ -8855,14 +8875,17 @@ export def create_type(tpe: &typechecking::Type, module: &toolchain::Module, res
 
     var svalue = scope::get(toolchain::types.scope, ident, false, false)
     if not svalue {
+        print("create_type: ", name, "\n")
         svalue = scope::create_variable(
             toolchain::types.scope, ident, parser::ShareMarker::NONE, 
             parser::VarDecl::CONST, builtins::Type_, 
-            false, false, false, null, scope::Phase::DEFINED, null, null)
+            false, false, false, null, scope::Phase::COMPILED, null, null)
 
-        res.push([
-           tpe = tpe, value = svalue, module = module
-        ] !TypeEntry)
+        let entry = [ tpe = tpe, value = svalue, module = module ] !TypeEntry
+        res.push(entry)
+        all_types.push(entry)
+        queued_types(name) = tpe
+
         /*svalue = scope::create_variable(
             toolchain::types.scope, 
             ident, parser::ShareMarker::NONE, parser::VarDecl::CONST, 
@@ -8892,31 +8915,6 @@ export def create_type(tpe: &typechecking::Type, module: &toolchain::Module, res
         } else if tpe.kind == typechecking::TypeKind::VARIANT {
             for var vtpe in @tpe.variants.keys() {
                 create_type(vtpe, module, res)
-            }
-        }
-        // Member functions
-        // TODO Factor out, see generate_reflection_data_2
-        for var member in typechecking::iterate_member_functions(tpe) {
-            if member.function.parameter_t(0).tpe.kind == typechecking::TypeKind::TYPE { continue }
-
-            let function = member.function
-
-            var is_incomplete = false
-            for var i in 0..vector::length(function.parameter_t) {
-                let np = function.parameter_t(i)
-                let generic = typechecking::get_generic(np.tpe)
-                if generic and generic.tc_incomplete or (np.tpe and np.tpe.kind == typechecking::TypeKind::TYPE_DEF) {
-                    is_incomplete = true
-                    break
-                }
-            }
-            if is_incomplete { continue }
-            
-            for var param in function.parameter_t {
-                create_type(param.tpe, module, res)
-            }
-            for var rtpe in function.return_t {
-                create_type(rtpe, module, res)
             }
         }
     }
@@ -9009,7 +9007,10 @@ export let all_types = vector::make(TypeEntry)
 
 // This gets called once
 export def generate_reflection_data {
-    let data, strings = generate_reflection_data(all_types)
+    for var entry in all_types {
+        queued_types(debug::type_to_str(entry.tpe, full_name = true)) = entry.tpe
+    }
+    let data, strings = generate_reflection_data_queued()
 
     // Need to 0 terminate the whole thing so that it can be converted to a Str
     data.write(0 !uint8) 
@@ -9018,18 +9019,19 @@ export def generate_reflection_data {
     make_global_data("__reflection_data", data, toolchain::types_state)
     make_global_data("__reflection_data_size", data.data().size, toolchain::types_state)
     make_global_data("__reflection_strings", strings.strings, toolchain::types_state)
-    make_global_data("__reflection_num_types", all_types.length, toolchain::types_state)
+    make_global_data("__reflection_num_types", queued_types.size, toolchain::types_state)
 }
 
 var fun_load_types: &scope::Value
+var fun_load_types_rec_lock: bool
 var fun_load_types_count: size_t = 0
-var queued_types = set::make(type &typechecking::Type)
+var queued_types = map::make(type &typechecking::Type)
 
-export def generate_reflection_data(types: &Vector(TypeEntry)) -> &io::ByteStream, &UniquedStrings{
+export def generate_reflection_data_queued -> &io::ByteStream, &UniquedStrings{
     let data = io::make_stream()
     let strings = [ strings = io::make_stream(), map = map::make(size_t) ] !&UniquedStrings
 
-    if types.length == 0 {
+    if queued_types.size == 0 {
         return data, strings
     }
 
@@ -9039,28 +9041,70 @@ export def generate_reflection_data(types: &Vector(TypeEntry)) -> &io::ByteStrea
         let reflection = toolchain::find_module("reflection")
         fun_load_types = scope::get(reflection.scope, parser::make_identifier("load_types"), force_compile = not consteval::is_static)
         if consteval::is_static and fun_load_types {
+            var lock = fun_load_types_rec_lock
+            fun_load_types_rec_lock = true
             consteval::compile_function(fun_load_types, state.scope)
+            create_builtin_functions()
+            fun_load_types_rec_lock = lock
         }
     }
 
-    let types_set = set::make(type &typechecking::Type)
-    for var entry in types {
-        types_set.add(entry.tpe)
+    if not fun_load_types or fun_load_types_rec_lock {
+        return data, strings
+    }
+
+    let all_type_members = map::make(type &typechecking::Type, type &Vector(typechecking::TypeEntryMember))
+
+    let all_types = map::make(type &typechecking::Type)
+    let res = vector::make(TypeEntry)
+    while queued_types.size > 0 {
+        for var name in @queued_types.keys() {
+            let tpe = queued_types(name)
+            let type_members = vector::make(typechecking::TypeEntryMember)
+            all_type_members(tpe) = type_members
+            queued_types.remove(name)
+            all_types(name) = tpe
+
+            for var member in typechecking::iterate_member_functions(tpe) {
+                if member.function.parameter_t(0).tpe.kind == typechecking::TypeKind::TYPE { continue }
+
+                let function = member.function
+
+                print(member.function.type_name, " (")
+
+                var is_incomplete = false
+                for var i in 0..vector::length(function.parameter_t) {
+                    let np = function.parameter_t(i)
+                    // TODO This really only matters for compile time reflection and shouldn't happen otherwise
+                    if is_stub_rec(np.tpe) { is_incomplete = true; break }
+                    let generic = typechecking::get_generic(np.tpe)
+                    if generic and generic.tc_incomplete or (np.tpe and np.tpe.kind == typechecking::TypeKind::TYPE_DEF) {
+                        is_incomplete = true
+                        break
+                    }
+
+                    create_type(np.tpe, state.module, res)
+                }
+                for var tpe in function.return_t {
+                    if is_stub_rec(tpe) { is_incomplete = true; break }
+                    create_type(tpe, state.module, res)
+                    print(debug::type_to_str(tpe, full_name = true), " ")
+                }
+                if is_incomplete { continue }
+                type_members.push(member)
+            }
+        }
     }
     
-    if not fun_load_types {
-        queued_types.add_all(types_set)
-        return data, strings
-    } 
+    resolve_types(res)
 
-    types_set.add_all(queued_types)
-    queued_types.clear()
-
-    for var tpe in @types_set.keys() {
+    for var name in @all_types.keys() {
+        let tpe = all_types(name)
         generate_reflection_data_1(tpe, data, strings)
     }
-    for var tpe in @types_set.keys() {
-        generate_reflection_data_2(tpe, data, strings)
+    for var name in @all_types.keys() {
+        let tpe = all_types(name)
+        generate_reflection_data_2(tpe, data, strings, all_type_members(tpe))
     }
 
     if consteval::is_static {
@@ -9073,8 +9117,8 @@ export def generate_reflection_data(types: &Vector(TypeEntry)) -> &io::ByteStrea
         let args = allocate_ref(Value, 4)
         args(0) = [ kind = ValueKind::GLOBAL, name = "__reflection_data", tpe = pointer(builtins::uint8_)] !Value
         args(1) = [ kind = ValueKind::INT, tpe = builtins::uint64_, i = data.data().size ] !Value
-        args(2) = [ kind = ValueKind::GLOBAL, name = strings_ident, tpe = pointer(builtins::char_)]
-        args(3) = [ kind = ValueKind::INT, tpe = builtins::uint64_, i = types.length ] !Value
+        args(2) = [ kind = ValueKind::INT, tpe = builtins::uint64_, i = all_types.size ] !Value
+        args(3) = [ kind = ValueKind::GLOBAL, name = strings_ident, tpe = pointer(builtins::char_)]
 
         call.value.call = [
             name = [ kind = ValueKind::GLOBAL, name = fun_load_types.tpe.type_name ],
@@ -9085,11 +9129,15 @@ export def generate_reflection_data(types: &Vector(TypeEntry)) -> &io::ByteStrea
         block.insn.push(call)
 
         // load globals
-        state.globals("__reflection_data") = data.data().value
+        state.globals("__reflection_data") = *data.data().value
 
-        let strings_data = allocate(char, strings.strings.data().size)
-        std::memcopy(strings.strings.data().value, strings_data.value, strings_data.size)
-        state.globals(strings_ident) = strings_data.value // This is a copy so we can keep it here
+        let sz = strings.strings.data().size
+        let strings_data = state.mem.allocate(sz)
+        std::memcopy(strings.strings.data().value, strings_data, sz)
+
+        let strings_ptr = state.mem.allocate(size_of *) !**
+        @strings_ptr = strings_data
+        state.globals(strings_ident) = strings_ptr // This is a copy so we can keep it here
 
         eval::eval(state, block)
 
@@ -9114,26 +9162,7 @@ def write_zt(uniqued: &UniquedStrings, s: Str) -> int {
     return val !int
 }
 
-def generate_reflection_data_2(tpe: &typechecking::Type, data: &ByteStream, strings: &UniquedStrings) {
-    // Collect type members
-    let type_members = vector::make(typechecking::TypeEntryMember)
-    for var member in typechecking::iterate_member_functions(tpe) {
-        if member.function.parameter_t(0).tpe.kind == typechecking::TypeKind::TYPE { continue }
-
-        let function = member.function
-
-        var is_incomplete = false
-        for var i in 0..vector::length(function.parameter_t) {
-            let np = function.parameter_t(i)
-            let generic = typechecking::get_generic(np.tpe)
-            if generic and generic.tc_incomplete or (np.tpe and np.tpe.kind == typechecking::TypeKind::TYPE_DEF) {
-                is_incomplete = true
-                break
-            }
-        }
-        if is_incomplete { continue }
-        type_members.push(member)
-    }
+def generate_reflection_data_2(tpe: &typechecking::Type, data: &ByteStream, strings: &UniquedStrings, type_members: &Vector(TypeEntryMember)) {
 
     // Write type members
     data.write(type_members.length !int)
@@ -9200,7 +9229,7 @@ def generate_reflection_data_2(tpe: &typechecking::Type, data: &ByteStream, stri
 }
 
 def generate_reflection_data_1(tpe: &typechecking::Type, data: &ByteStream, strings: &UniquedStrings) {
-    data.write(tpe.kind) // This does rely on the values beind the same
+    data.write(tpe.kind) // This does rely on the values being the same
     data.write(strings.write_zt(debug::type_to_str(tpe, full_name = true)))
     data.write(strings.write_zt(tpe.module.module if tpe.module else to_str("")))
     data.write(tpe.hash)
