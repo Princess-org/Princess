@@ -34,7 +34,7 @@ export type TypeKind = enum {
     CLOSURE
     ENUM
     CHAR
-    STRUCTURAL
+    INTERFACE
     VARIANT
     TUPLE
     TYPE
@@ -48,19 +48,19 @@ export type TypeKind = enum {
     // This is actually called variant in runtime
     TUNION    
     BYREF // ref parameter   
-    RANGE
+    RANGE // TODO Ranges should be a concrete Type defined by the stdlib
     RANGE_INC
     // Used for enums
     NAMESPACE
     // Auto cast, this type will convert to anything
     // AUTO_CAST // TODO Actually implement this
     // Placeholder for arguments with polymorphic type parameter in function definition
-    TYPE_DEF
+    // TYPE_DEF
     // Null
     NULL
     UNDEF
     // This is used as a function parameter that is generic
-    GENERIC
+    // GENERIC
     // References to structs are using a wk reference, ie. Type::wk instead of Type::_tpe
     // This is because references to structs can cause cycles
     // TODO I think we don't really need this because we can just use wk directly
@@ -70,7 +70,7 @@ export type TypeKind = enum {
 }
 
 export type TypeMember = struct {
-    tpe: &Type
+    tpe: TypeId
     offset: size_t
 }
 
@@ -79,7 +79,7 @@ export type StructMember = struct {
     line: int
     node: weak &parser::Node
     name: Str
-    tpe: &Type
+    tpe: TypeId
     // index into the field_types vector
     index: size_t
 
@@ -97,7 +97,7 @@ export type StructuralTypeMember = struct {
     // Vector of NamedParameter
     parameter_t: &Vector(NamedParameter)
     // Vector of Type
-    return_t: &Vector(&Type)
+    return_t: &Vector(TypeId)
 }
 
 def make_type_member(name: Str, parameter_t: &Vector(NamedParameter), return_t: &Vector(&Type)) -> StructuralTypeMember {
@@ -108,33 +108,13 @@ def make_type_member(name: Str, parameter_t: &Vector(NamedParameter), return_t: 
     ] !StructuralTypeMember
 }
 
-export type TypeRef = struct {
-    module: weak &toolchain::Module
-    name: Str
-}
+export type TypeId = uint64
 
-export def == (a: TypeRef, b: TypeRef) -> bool {
-    return a.module == b.module and a.name == b.name
-}
-export def != (a: TypeRef, b: TypeRef) -> bool {
-    return not (a == b)
-}
-export def hash(v: TypeRef) -> uint64 {
-    return combine_hashes(hash(v.module), hash(v.name))
-}
-
-// TODO Really, types should not be copied. There should only be one instance for every given type.
-// This would make comparing them so much easier but changing that at this point might be too much work.
-// It would also make the whole TypeMeta thing useless in the process.
 export type Type = struct {
+    id: TypeId
+
     kind: TypeKind
-    // Source line
-    line: int
-    module: weak &toolchain::Module
-    // Module that this type was defined in
-    _defmodule: weak &toolchain::Module
-    context: weak &toolchain::Module
-    state: &State
+    defmodule: weak &toolchain::Module
     // Name of the type as used by the source code
     // Might be the name of a typedef
     name: Str
@@ -150,8 +130,7 @@ export type Type = struct {
     // Type both used for array/pointer and enum
     // This is also used for type arguments to specify the actual type
     // And tagged unions carry the underlying union type
-    _tpe: &Type
-    wk: weak &Type
+    tpe: TypeId
     packed: bool
     // Fields for struct, array of StructMember
     fields: &[StructMember]
@@ -160,67 +139,97 @@ export type Type = struct {
     // Vector of TypeMember
     field_types: &Vector(TypeMember)
     // Function and Tuple
-    return_t: &Vector(&Type)
+    return_t: &Vector(TypeId)
     // Vector of NamedParameter
     parameter_t: &Vector(NamedParameter)
     // Enum scope
-    scope: weak &scope::Scope
+    //scope: weak &scope::Scope
     // Structural types
-    // Vector of StructuralTypeMember
     members: &Vector(StructuralTypeMember)
-    share: parser::ShareMarker // TODO Types should not have a share, this needs to be on the value instead (and only there)
-    node: weak &parser::Node
     // Type constructors save a template of a type
     tc_node: weak &parser::Node
     // Cache of specialized type constructor
-    cache: &Map(TypeRef, &Type)
+    //cache: &Map(TypeRef, &Type)
     // Type constructor instances have a type and arguments
-    tc_tpe: weak &Type
+    tc_tpe: TypeId
     // Vector of Type, also used by GENERIC
-    tc_args: &Vector(&Type)
+    tc_args: &Vector(TypeId)
     // True if some parameters weren't set yet
     tc_incomplete: bool
     // null means any for variant
     // This is used by variant, tagged union and interface impl
-    variants: &Set(&Type)
-    _hash: uint64
-    svalue: weak &scope::Value
+    variants: &Set(TypeId)
+    //svalue: weak &scope::Value
 
     // This is used by deserialization to check if a type is in the
     // type cache, so that structs can keep a wk reference to the type
-    is_in_type_cache: bool
+    //is_in_type_cache: bool
     // Set on type arguments
-    is_type_argument: bool
+    //is_type_argument: bool
     
     // Interface implementation
-    intf: &Type
+    intf: TypeId
     // This gets set if it might also be a type argument, in that case we also consider the overload with a type
     // As an example, consider [int], this might be an array of types or an array type
-    may_be_type: &Type
+    //may_be_type: &Type
     // True if this is an anonymous struct or a lambda
     is_anon: bool
+
+    // constructor and destructor meta data
+    has_constructor: Ternary
+    has_user_defined_constructor: Ternary
+    constructor: &scope::Value
+
+    has_destructor: Ternary
+    has_builtin_destructor: Ternary
+    destructor: &scope::Value
+    builtin_destructor: &scope::Value
+
+    // Members for structural Types
+    functions: &Vector(TypeEntryMember)
+    cached: &Map(TypeId, CacheEntry)
+}
+
+export type Ternary = enum {
+    UNDEFINED
+    TRUE
+    FALSE
+}
+
+export type Generic = struct {
+    is_type: bool
+    kind: TypeKind
+    length: size_t
+    tpe: TypeId
+    generic: &Generic
+    paramter_t: &Vector(&Generic)
+    return_t: &Vector(&Generic)
 }
 
 export def hash(tpe: &Type) -> uint64 {
-    if tpe._hash { return tpe._hash }
-    let name = debug::type_to_str(tpe, full_name = true)
-    tpe._hash = md5::high(md5::md5(name))
-    return tpe._hash
-}
-export def == (this: &Type, other: &Type) -> bool {
-    return equals(this, other)
-}
-export def != (this: &Type, other: &Type) -> bool {
-    return not equals(this, other)
+    return tpe.id
 }
 
-def sort_by_typename(types: &Vector(&Type)) {
+// TODO Offset this by a project id that is unique for a build
+var current_type_id: uint64 = 1
+def next_type_id -> TypeId {
+    let id = current_type_id
+    current_type_id += 1
+    return id !TypeId
+}
+
+let type_registry = map::make(TypeId, type &Type)
+
+export implicit def resolve(id: TypeId) -> &Type {
+    return type_registry.get_or_default(id, null)
+}
+
+export def register(id: TypeId, tpe: &Type) {
+    type_registry(id) = tpe
+}
+
+def sort_by_typeid(types: &Vector(TypeId)) {
     let n = types.length
-    let names = allocate_ref(Str, n)
-    for var i in 0..types.length {
-        names(i) = debug::type_to_str(types(i), full_name = true)
-    }
-
     // bubble sort because icba // TODO Implement sorting for vectors and arrays
     for var i in 0..n {
         for var j in 0..(n - 1) {
@@ -232,34 +241,11 @@ def sort_by_typename(types: &Vector(&Type)) {
     }
 }
 
-let meta = map::make(type &Type, type &TypeMeta)
-
-export type TypeMeta = struct {
-    has_constructor: int
-    has_user_defined_constructor: int
-    constructor: &scope::Value
-
-    has_destructor: int
-    has_builtin_destructor: int
-    destructor: &scope::Value
-    builtin_destructor: &scope::Value
-}
-
-export def get_meta(tpe: &Type) -> &TypeMeta {
-    if not tpe { return null }
-    let m = meta.get(tpe)
-    if m.exists { return m.get() }
-    let new_meta = [] !&TypeMeta
-    meta(tpe) = new_meta
-    return new_meta
-}
-
 // Returns true if there's any destructor present
 export def has_destructor(tpe: &Type) -> bool {
     if not tpe { return false }
-    let tm = get_meta(tpe)
-    if tm.has_destructor != 0 {
-        return tm.has_destructor == 1
+    if tpe.has_destructor != Ternary::UNDEFINED {
+        return tpe.has_destructor == Ternary::TRUE
     }
     var res = false
     if is_ref(tpe) {
@@ -289,11 +275,11 @@ export def has_destructor(tpe: &Type) -> bool {
         }
     }
 
-    if not consteval::is_static and tpe.kind != TypeKind::STUB {
+    if not consteval::is_static and tpe.kind != TypeKind::STUB { // TODO STUB why?
         if res {
-            tm.has_destructor = 1
+            tpe.has_destructor = Ternary::TRUE
         } else {
-            tm.has_destructor = -1
+            tpe.has_destructor = Ternary::FALSE
         }
     }
     return res
@@ -303,35 +289,34 @@ export def get_builtin_destructor(tpe: &Type, lookup: bool = true) -> &scope::Va
     if not tpe { return null }
     if is_polymorph(tpe) { return null }
 
-    let tm = get_meta(tpe)
-    if tm.has_builtin_destructor == -1 or tm.has_builtin_destructor == 1 and tm.builtin_destructor {
-        return tm.builtin_destructor
+    if tpe.has_builtin_destructor != Ternary::UNDEFINED and tpe.builtin_destructor {
+        return tpe.builtin_destructor
     }
 
-    var destructor = tm.builtin_destructor
+    var destructor = tpe.builtin_destructor
     let args = vector::make(NamedParameter)
     args.push([ _tpe = pointer(tpe) ] !NamedParameter)
-    if not tm.builtin_destructor {
+    if not tpe.builtin_destructor {
         destructor = scope::generate_function(builtins::builtins, parser::make_identifier("__destruct__"), args, true)
-        tm.builtin_destructor = destructor
+        tpe.builtin_destructor = destructor
         if lookup and consteval::is_static and destructor {
             compiler::create_destructor(destructor.tpe)
         }
     }
+    // The problem is if we cache this value in consteval the relevant functions might not exist
     if not consteval::is_static {
         if destructor {
-            tm.has_builtin_destructor = 1
+            tpe.has_builtin_destructor = Ternary::TRUE
         } else {
-            tm.has_builtin_destructor = -1
+            tpe.has_builtin_destructor = Ternary::FALSE
         }
     }
     return destructor
 }
 
 export def get_user_defined_destructor(tpe: &Type) -> &scope::Value {
-    let tm = get_meta(tpe)
-    if tm.has_destructor != 0 {
-        if tm.destructor { return tm.destructor }
+    if tpe.has_destructor != Ternary::UNDEFINED {
+        if tpe.destructor { return tpe.destructor }
     }
     if tpe.module {
         let args = vector::make(NamedParameter)
@@ -343,9 +328,9 @@ export def get_user_defined_destructor(tpe: &Type) -> &scope::Value {
             if consteval::is_static {
                 destructor = consteval::compile_function(destructor, tpe.module.scope, args)
             } else {
-                tm.has_destructor = 1
+                tpe.has_destructor = Ternary::TRUE
             }
-            tm.destructor = destructor
+            tpe.destructor = destructor
             return destructor 
         }
     }
@@ -354,8 +339,7 @@ export def get_user_defined_destructor(tpe: &Type) -> &scope::Value {
 
 export def get_constructor(tpe: &Type, lookup: bool = true) -> &scope::Value {
     has_copy_constructor(tpe, lookup)
-    let tm = get_meta(tpe)
-    return tm.constructor
+    return tpe.constructor
 }
 
 export def has_user_defined_copy_constructor(tpe: &Type) -> bool {
@@ -365,9 +349,8 @@ export def has_user_defined_copy_constructor(tpe: &Type) -> bool {
         return false        
     }
 
-    let tm = get_meta(tpe)
-    if tm.has_user_defined_constructor != 0 {
-        return tm.has_user_defined_constructor == 1
+    if tpe.has_user_defined_constructor != Ternary::UNDEFINED {
+        return tpe.has_user_defined_constructor == Ternary::TRUE
     }
 
     var res = false
@@ -384,13 +367,13 @@ export def has_user_defined_copy_constructor(tpe: &Type) -> bool {
             if consteval::is_static {
                 constructor = consteval::compile_function(constructor, module.scope, args)
             }
-            tm.constructor = constructor
+            tpe.constructor = constructor
             res = true 
         }
     }
     if not consteval::is_static {
-        if res { tm.has_user_defined_constructor = 1 }
-        else { tm.has_user_defined_constructor = -1 }
+        if res { tpe.has_user_defined_constructor = Ternary::TRUE }
+        else { tpe.has_user_defined_constructor = Ternary::FALSE }
     }
     return res
 }
@@ -399,9 +382,8 @@ export def get_builtin_constructor(tpe: &Type) -> &scope::Value {
     if not tpe { return null }
     if is_polymorph(tpe) { return null }
 
-    let tm = get_meta(tpe)
-    if tm.has_constructor == -1 or tm.has_constructor == 1 and tm.constructor {
-        return tm.constructor
+    if tpe.has_constructor != Ternary::UNDEFINED and tpe.constructor {
+        return tpe.constructor
     }
 
     let args = vector::make(NamedParameter)
@@ -412,13 +394,13 @@ export def get_builtin_constructor(tpe: &Type) -> &scope::Value {
         compiler::create_constructor(tm.constructor.tpe)
     }
     if not consteval::is_static {
-        if tm.constructor {
-            tm.has_constructor = 1
+        if tpe.constructor {
+            tpe.has_constructor = Ternary::TRUE
         } else {
-            tm.has_constructor = -1
+            tpe.has_constructor = Ternary::FALSE
         }
     }
-    return tm.constructor
+    return tpe.constructor
 }
 
 // Returns true if there's any copy constructor
@@ -433,11 +415,10 @@ export def has_copy_constructor(tpe: &Type, lookup: bool = true) -> bool {
         return false 
     }
 
-    let tm = get_meta(tpe)
-    if tm.has_constructor != 0 {
-        if tm.has_constructor == 1 and tm.constructor {
+    if tpe.has_constructor != 0 {
+        if tpe.has_constructor == Ternary::TRUE and tpe.constructor {
             return true
-        } else if tm.has_constructor == -1 {
+        } else if tpe.has_constructor == Ternary::FALSE {
             return false
         }
     } 
@@ -470,71 +451,45 @@ export def has_copy_constructor(tpe: &Type, lookup: bool = true) -> bool {
         }
     }
 
-    if not tm.constructor and lookup {
+    if not tpe.constructor and lookup {
         let args = vector::make(NamedParameter)
         vector::push(args, [ _tpe = pointer(tpe) ] !NamedParameter)
         vector::push(args, [ _tpe = pointer(tpe) ] !NamedParameter)
-        tm.constructor = scope::generate_function(builtins::builtins, parser::make_identifier("__construct__"), args, dry_run = true)
-        if consteval::is_static and tm.constructor {
-            compiler::create_constructor(tm.constructor.tpe)
+        tpe.constructor = scope::generate_function(builtins::builtins, parser::make_identifier("__construct__"), args, dry_run = true)
+        if consteval::is_static and tpe.constructor {
+            compiler::create_constructor(tpe.constructor.tpe)
         }
     }
 
     if not consteval::is_static {
         if res {
-            tm.has_constructor = 1
+            tpe.has_constructor = Ternary::TRUE
         } else {
-            tm.has_constructor = -1
+            tpe.has_constructor = Ternary::FALSE
         }
     }
 
     return res
 }
 
-export def defmodule(tpe: &Type) -> weak &toolchain::Module {
-    if not tpe { return null }
-    if tpe._defmodule { return tpe._defmodule }
-    return tpe.module
-}
-
-export def tpe(tpe: &Type) -> &Type {
-    if not tpe { return null }
-    if tpe._tpe and tpe._tpe.kind == TypeKind::BOX {
-        return tpe._tpe.wk
-    }
-    return tpe._tpe
-}
-
+// This returns a type's module OR if it is a box (i.e references or pointers)
+// returns the module of the wrapped type
 export def get_module(tpe: &Type) -> &toolchain::Module {
     if not tpe { return null }
     if is_box(tpe) { return get_module(tpe.tpe) }
     return tpe.module
 }
 
-export def box(tpe: &Type) -> &Type {
-    if not tpe { return null }
-    let box = make_type_raw(TypeKind::BOX)
-    box.wk = tpe
-    return box
-}
-
 export type NamedParameter = struct {
     // Might be empty for positional parameters
     name: Str
-    _tpe: &Type
+    tpe: TypeId
+    generic: &Generic
     varargs: bool
     node: weak &parser::Node
     value: &compiler::Value
     kw: parser::VarDecl
     type_node: weak &parser::Node
-}
-
-export def tpe(np: NamedParameter) -> &Type {
-    if not np._tpe { return null }
-    if np._tpe.kind == TypeKind::BOX {
-        return np._tpe.wk
-    }
-    return np._tpe
 }
 
 export type State = struct {
@@ -548,7 +503,7 @@ export type State = struct {
     current_variable: &scope::Value
     // TODO This should be a parameter but its currently too hard to fix
     block_implicit_conv: bool
-    current_lambda: &Type
+    current_lambda: TypeId
     context: &scope::Scope
 }
 
@@ -755,154 +710,259 @@ export def append_module(name: Str, module: Str) -> Str {
     return res
 }
 
-export def make_type_type(tpe: &Type) -> &Type {
-    return [
-        line = -1,
-        kind = TypeKind::TYPE,
-        _tpe = tpe
-    ] !Type
-}
-
-export def make_type_raw(kind: TypeKind) -> &Type {
-    return [
-        line = -1,
-        kind = kind
-    ] !Type
-}
-
-export def make_type(kind: TypeKind, node: &parser::Node) -> &Type {
-    assert(node.kind == parser::NodeKind::IDENTIFIER)
-    let name = parser::identifier_to_str(node)
-    var t = make_type_raw(kind)
-    t.line = node.loc.line
-    t.type_name = append_module(name, node.loc.module)
-    t.name = name
-
-    return t
-}
-
-export def make_function_type() -> &Type {
+def make_function_type() -> &Type {
     let tpe = make_type_raw(TypeKind::FUNCTION)
     tpe.size = size_of type def [] -> []
     tpe.align = align_of type def [] -> []
     return tpe
 }
 
-export def make_closure_type() -> &Type, &Type {
-    let fun = make_function_type()
-    fun.parameter_t = vector::make(NamedParameter)
-    fun.parameter_t.push([ name = "__data", _tpe = reference(null) ] !NamedParameter)
-    fun.return_t = vector::make(type &Type)
+type Signature = struct {
+    parameter_t: &Vector(NamedParameter)
+    return_t: &Vector(TypeId)
+    name: Str
+}
+export def hash(signature: Signature) -> uint64 {
+    var hash: uint64
+    for var par in signature.parameter_t { // TODO hash for vectors
+        hash = combine_hashes(hash, hash(par))
+    }
+    for var r in signature.return_t {
+        hash = combine_hashes(hash, r !uint64)
+    }
+    hash = combine_hashes(hash, hash(signature.name))
+    return hash
+}
+export def == (this: Signature, other: Signature) --> bool {
+    if this.parameter_t.length != other.parameter_t.length { return false }
+    if this.return_t.length != other.return_t.length { return false }
+    for var i in 0..this.parameter_t.length {
+        if this.parameter_t(i) != other.parameter_t(i) { return false }
+    }
+    for var i in 0..this.return_t.length {
+        if this.return_t(i) != other.return_t(i) { return false }
+    }
+    if this.name != other.name { return false }
+    return true
+}
+export def != (this: Signature, other: Signature) -> bool {
+    return not (this == other)
+}
+
+let type_registry_closure = map::make(Signature, type &Type)
+
+def closure(parameter_t: &Vector(NamedParameter), return_t: &Vector(&Type)) -> TypeId {
+    let signature = [ parameter_t = parameter_t, return_t = return_t ] !Signature
+    if type_registry_closure.contains(signature) {
+        return type_registry_closure(signature)
+    }
+    
+    parameter_t.insert(0, [ name = "__data", _tpe = reference(null) ] !NamedParameter)
+    let fun = function("", parameter_t, return_t, extern = true)
 
     let types = allocate_ref(StructMember, 2)
     types(0) = [ tpe = pointer(fun), name = "function" ] !StructMember
-    types(1) = [ tpe = reference(null), name = "data"] !StructMember
+    types(1) = [ tpe = reference(null), name = "data" ] !StructMember
     let tpe = make_struct_type(types)
+    tpe.id = next_type_id()
     tpe.kind = TypeKind::CLOSURE
-    return tpe, fun
+
+    type_registry_closure(signature) = tpe
+    register(tpe.id, tpe)
+    return tpe.id
 }
 
-export def make_function_type_n(
-    name: &parser::Node, 
+let type_registry_function = map::make(Signature, type &Type)
+
+export def function(
+    name: Str, 
     parameter_t: &Vector(NamedParameter), 
     return_t: &Vector(&Type), 
     module: &toolchain::Module = null,
     extern: bool = false,
     test: bool = false,
     context: &toolchain::Module = null
-) -> &Type {
-
-    let tpe = make_function_type()
-    tpe.parameter_t = parameter_t
-    tpe.return_t = return_t
-    tpe.name = parser::identifier_to_str(name, false)
+) -> TypeId {
+    var type_name: Str
     if extern {
-        tpe.type_name = tpe.name
+        type_name = tpe.name
     } else {
         let name = append_module(tpe.name, module.module) if module else tpe.name
-        tpe.type_name = mangle_function_name(name, parameter_t, test, context)
+        type_name = mangle_function_name(name, parameter_t, test, context)
     }
-    tpe.line = name.loc.line
-    tpe.module = module
-    tpe.context = context
-    return tpe
+
+    let signature = [ 
+        parameter_t = parameter_t, 
+        return_t = return_t, 
+        name = type_name 
+    ] !Signature
+
+    if type_registry_function.contains(signature) {
+        return type_registry_function(signature)
+    }
+
+    let tpe = make_function_type()
+    tpe.id = next_type_id()
+    tpe.parameter_t = parameter_t
+    tpe.return_t = return_t
+    tpe.name = name
+    tpe.type_name = type_name
+    
+    type_registry_function(signature) = signature
+    register(tpe.id, tpe)
+
+    return tpe.id
 }
 
-export def pointer(tpe: &Type, kw: parser::VarDecl) -> &Type {
-    var t = make_type_raw(TypeKind::POINTER)
-    t._tpe = tpe
-    t.kw = kw
-    t.size = (size_of type *)
-    t.align = (align_of type *)
-    return t
+// This is used to lookup box types like pointers and arrays in the type registry
+type Box = struct {
+    id: TypeId
+    kw: parser::VarDecl
+    size: size_t
 }
+export def hash(this: Box) -> uint64 { return combine_hashes(this.id !uint64, this.kw !uint64, this.size !uint64) }
+export def == (this: Box, other: Box) -> bool { return this.id == other.id and this.kw == other.kw and this.size == other.size }
+export def != (this: Box, other: Box) -> bool { return not (this == other) }
+
+let type_registry_pointer = map::make(Box, type &Type)
 
 // TODO Use default arguments for this, right now its bugged (it doesn't define the type)
-export def pointer(tpe: &Type) -> &Type {
+export def pointer(tpe: &Type, kw: parser::VarDecl) -> TypeId {
+    let pid = [ id = tpe.id; kw = kw ] !Box
+    if type_registry_pointer.contains(pid) {
+        return type_registry_pointer(pid)
+    }
+    let ptrtpe = [
+        kind = TypeKind::POINTER,
+        id = next_type_id(),
+        tpe = tpe.id,
+        kw = kw,
+        size = (size_of type *),
+        align = (align_of type *)
+    ] !&Type
+    type_registry_pointer(pid) = ptrtpe
+    register(ptrtpe.id, ptrtpe)
+    return ptrtpe
+}
+
+export def pointer(tpe: &Type) -> TypeId {
     return pointer(tpe, parser::VarDecl::VAR)
 }
 
-export def byref(tpe: &Type) -> &Type {
-    var t = make_type_raw(TypeKind::BYREF)
-    t._tpe = tpe
-    t.size = (size_of *)
-    t.align = (align_of *)
-    return t
+let type_registry_byref = map::make(Box, type &Type)
+
+export def byref(tpe: &Type) -> TypeId {
+    let pid = [ id = tpe.id ] !Box
+    if type_registry_byref.contains(pid) {
+        return type_registry_byref(pid)
+    }
+    let reftpe = [
+        kind = TypeKind::BYREF,
+        id = next_type_id(),
+        tpe = tpe.id,
+        size = (size_of type *),
+        align = (align_of type *)
+    ] !&Type
+    type_registry_byref(pid) = reftpe
+    register(reftpe.id, reftpe)
+    return reftpe
 }
 
-export def reference(tpe: &Type, kw: parser::VarDecl) -> &Type {
-    var t = make_type_raw(TypeKind::REFERENCE)
-    t._tpe = tpe
-    t.kw = kw
-    // TODO replace with correct size_of once this is implemented
-    t.size = (size_of runtime::Ref)
-    t.align = (align_of runtime::Ref)
-    return t
+let type_registry_reference = map::make(Box, type &Type)
+
+export def reference(tpe: &Type, kw: parser::VarDecl) -> TypeId {
+    let rid = [ id = tpe.id; kw = kw ] !Box
+    if type_registry_reference.contains(rid) {
+        return type_registry_reference(rid)
+    }
+    let reftpe = [
+        kind = TypeKind::REFERENCE,
+        id = next_type_id(),
+        tpe = tpe.id,
+        kw = kw,
+        size = (size_of type &),
+        align = (align_of type &)
+    ] !&Type
+    type_registry_reference(rid) = reftpe
+    register(reftpe.id, reftpe)
+    return reftpe
 }
 
-export def reference(tpe: &Type) -> &Type {
+export def reference(tpe: &Type) -> TypeId {
     return reference(tpe, parser::VarDecl::VAR)
 }
 
-export def weak_reference(tpe: &Type, kw: parser::VarDecl) -> &Type {
-    var t = make_type_raw(TypeKind::WEAK_REF)
-    t._tpe = tpe
-    t.kw = kw
-    t.size = (size_of runtime::Ref)
-    t.align = (align_of runtime::Ref)
-    return t
+let type_registry_weak_reference = map::make(Pointer, type &Type)
+
+export def weak_reference(tpe: &Type, kw: parser::VarDecl) -> TypeId {
+    let rid = [ id = tpe.id; kw = kw ] !Box
+    if type_registry_weak_reference.contains(pid) {
+        return type_registry_weak_reference(pid)
+    }
+    let reftpe = [
+        kind = TypeKind::WEAK_REF,
+        id = next_type_id(),
+        tpe = tpe.id,
+        kw = kw,
+        size = (size_of type &),
+        align = (align_of type &)
+    ] !&Type
+    type_registry_reference(rid) = reftpe
+    register(reftpe.id, reftpe)
+    return reftpe
 }
 
 export def weak_reference(tpe: &Type) -> &Type {
     return weak_reference(tpe, parser::VarDecl::VAR)
 }
 
-export def array(tpe: &Type, kw: parser::VarDecl) -> &Type {
-    var t = make_type_raw(TypeKind::ARRAY)
-    (@t)._tpe = tpe
-    // TODO This is really bad, sure string is an array but we can do better than this
-    (@t).size = (size_of string)
-    (@t).align = (align_of string)
-    (@t).kw = kw
-    return t
+let type_registry_array = map::make(Pointer, type &Type)
+
+export def array(tpe: &Type, kw: parser::VarDecl) -> TypeId {
+    let rid = [ id = tpe.id; kw = kw ] !Box
+    if type_registry_array.contains(pid) {
+        return type_registry_array(pid)
+    }
+    let arrtpe = [
+        kind = TypeKind::ARRAY,
+        id = next_type_id(),
+        tpe = tpe.id,
+        kw = kw,
+        size = (size_of type []),
+        align = (align_of type [])
+    ] !&Type
+    type_registry_array(rid) = arrtpe
+    register(arrtpe.id, arrtpe)
+    return arrtpe
 }
 
-export def array(tpe: &Type) -> &Type {
+export def array(tpe: &Type) -> TypeId {
     return array(tpe, parser::VarDecl::VAR)
 }
 
-export def make_static_array(array_tpe: &Type, size: size_t, kw: parser::VarDecl) -> &Type {
-    let tpe = make_type_raw(TypeKind::STATIC_ARRAY)
-    (@tpe)._tpe = array_tpe
-    (@tpe).length = size
-    (@tpe).size = (@tpe).length * (@array_tpe).size
-    (@tpe).align = (@array_tpe).align
-    (@tpe).kw = kw
-    return tpe
+let type_registry_static_array = map::make(Pointer, type &Type)
+
+export def static_array(array_tpe: &Type, size: size_t, kw: parser::VarDecl) -> TypeId {
+    let rid = [ id = tpe.id; kw = kw; size = size ] !Box
+    if type_registry_static_array.contains(pid) {
+        return type_registry_static_array(pid)
+    }
+    let arrtpe = [
+        kind = TypeKind::STATIC_ARRAY,
+        id = next_type_id(),
+        tpe = tpe.id,
+        kw = kw,
+        length = size,
+        size = size * tpe.size,
+        align = tpe.align
+    ] !&Type
+    type_registry_static_array(rid) = arrtpe
+    register(arrtpe.id, arrtpe)
+    return arrtpe
 }
 
-export def make_static_array(array_tpe: &Type, size: size_t) -> &Type {
-    return make_static_array(array_tpe, size, parser::VarDecl::VAR)
+export def static_array(array_tpe: &Type, size: size_t) -> TypeId {
+    return static_array(array_tpe, size, parser::VarDecl::VAR)
 }
 
 def make_unique_name(name: Str, state: &State) -> Str {
@@ -911,58 +971,50 @@ def make_unique_name(name: Str, state: &State) -> Str {
     return state.module.module + "::" + name + '.' + cnt
 }
 
-// Map of type names to identify which ones
-// implement structural types
-// Map of TypeEntry
-export let types_map = map::make(type &TypeEntry)
-
+/*
 // The repl needs to invalidate the cache
 export def clear_type_cache {
-    let keys = map::keys(types_map)
+    let keys = map::keys(type_registry)
     for var i in 0..keys.size {
         let key = keys(i)
-        let type_entry = types_map(key)
+        let type_entry = type_registry(key)
         map::clear(type_entry.cached)
     }
-}
+}*/
 
-export def iterate_member_functions(tpe: &Type, visited: &Set(&Type) = null, check_embed: bool = true) -> TypeEntryMember {
+export def iterate_member_functions(tpe: &Type, visited: &Set(TypeId) = null, check_embed: bool = true) -> TypeEntryMember {
     if not tpe { return }
-    let name = debug::type_to_str(tpe, full_name = true)
-    
-    let entry = types_map.get_or_default(name, null)
-    if entry {
-        for var i in 0..entry.functions.length {
-            yield entry.functions(i)
-        }
-        if check_embed and entry.tpe and is_struct(entry.tpe) {
-            for var field in @entry.tpe.fields {
-                if field.is_embed {
-                    yield from iterate_member_functions(field.tpe, visited)
-                }
+
+    for var i in 0..tpe.functions.length {
+        yield tpe.functions(i)
+    }
+    if check_embed and is_struct(tpe) {
+        for var field in @tpe.fields {
+            if field.is_embed {
+                yield from iterate_member_functions(field.tpe, visited)
             }
         }
     }
 
     let module = get_module(tpe)
     if module {
-        for var key in @types_map.keys() {
-            let entry = types_map(key)
+        for var key in @type_registry.keys() {
+            let entry = type_registry(key)
 
-            if entry.tpe == tpe { continue }
-            if not visited { visited = set::make(type &Type) }
+            if entry == tpe { continue }
+            if not visited { visited = set::make(TypeId) }
 
-            if is_ref_or_weak(entry.tpe) and is_interface(entry.tpe.tpe) {
-                if visited.contains(entry.tpe.tpe) { continue }
-                visited.add(entry.tpe.tpe)
-            } else {
+            if is_ref_or_weak(entry) and is_interface(entry.tpe) {
                 if visited.contains(entry.tpe) { continue }
                 visited.add(entry.tpe)
+            } else {
+                if visited.contains(entry) { continue }
+                visited.add(entry)
             }
 
-            if is_interface(entry.tpe) and implements(tpe, entry.tpe, module, visited) or 
-                is_ref_or_weak(entry.tpe) and is_interface(entry.tpe.tpe) and 
-                    implements(tpe, entry.tpe.tpe, module, visited) {
+            if is_interface(entry) and implements(tpe, entry, module, visited) or 
+                is_ref_or_weak(entry) and is_interface(entry.tpe) and 
+                    implements(tpe, entry.tpe, module, visited) {
 
                 for var i in 0..entry.functions.length {
                     yield entry.functions(i)
@@ -971,7 +1023,9 @@ export def iterate_member_functions(tpe: &Type, visited: &Set(&Type) = null, che
         }
     }
 
-    let initial = tpe
+    // FIXME is this needed?
+
+    /*let initial = tpe
     let cpy = copy(tpe)
     tpe = cpy
     var prev: &Type = cpy
@@ -990,9 +1044,9 @@ export def iterate_member_functions(tpe: &Type, visited: &Set(&Type) = null, che
 
     for var entry in iterate_member_functions(cpy) {
         yield entry
-    }
+    }*/
 }
-
+/*
 def do_get_member_functions(name: Str, vec: &Vector(TypeEntryMember)) {
     let type_entry = types_map.get_or_default(name, null)
     if not type_entry { return }
@@ -1033,20 +1087,20 @@ export def get_member_functions(tpe: &Type) -> &Vector(TypeEntryMember) {
         }
         return vec
     }
-}
+}*/
 
 type CacheEntry = enum {
     CONTAINS
     NOT_CONTAINS
 }
 
-export type TypeEntry = struct {
+/*export type TypeEntry = struct {
     tpe: &Type
     // Vector of TypeEntryMember
     functions: &Vector(TypeEntryMember)
     cached: &SMap(CacheEntry)
-}
-
+}*/
+/*
 export type TypeEntryMember = struct {
     function: &Type
     exported: bool
@@ -1090,7 +1144,8 @@ export def create_type_entry(tpe: &Type, exported: bool, entry: &Type, module: &
     type_entry.functions.push(member_function)
     return true
 }
-
+*/
+/*
 // TODO Remove this
 export def copy_parameter_t(parameter_t: &Vector(NamedParameter)) -> &Vector(NamedParameter) {
     let new = vector::make(NamedParameter)
@@ -1155,8 +1210,9 @@ export def shallow_copy(tpe: &Type) -> &Type {
     }
     return ret
 }
+*/
 
-export def equals(a: &Type, b: &Type) -> bool {
+/*export def equals(a: &Type, b: &Type) -> bool {
     if a !* == b !* {
         return true
     }
@@ -1282,11 +1338,11 @@ export def equals(a: &Type, b: &Type) -> bool {
     }
 
     assert
-}
+}*/
 
-export def contains(a: &Type) -> &Set(&Type) {
+export def contains(a: &Type) -> &Set(TypeId) {
     if is_ref_or_weak(a) { a = a.tpe }
-    let res = set::make(type &Type)
+    let res = set::make(type TypeId)
     if not is_struct(a) { return res }
     for var field in @a.fields {
         if field.is_embed {
@@ -1297,6 +1353,7 @@ export def contains(a: &Type) -> &Set(&Type) {
     return res
 }
 
+/*
 def is_setter(mb: StructuralTypeMember) -> bool {
     return mb.name.starts_with("__set_") and mb.name.ends_with("__")
 }
@@ -1375,6 +1432,7 @@ def has_function(entry: &TypeEntry, intf: &Type, mb: StructuralTypeMember, modul
     }
     return false
 }
+*/
 
 // Returns true if a implements b
 // b needs to be a structural type
@@ -1567,7 +1625,7 @@ const IMPLICIT = 15
 // The return value is -1 if b can't be converted to a
 // if the types are equal, 0 is returned.
 // Otherwise a positive integer is returned.
-export def convert_type_score(a: &Type, b: &Type, module: &toolchain::Module, is_type: bool = false, impl: bool = true) -> int {
+export def convert_type_score(a: &Generic, b: &Type, module: &toolchain::Module, is_type: bool = false, impl: bool = true) -> int {
     if not a or not b { return 0 }
     if a.kind == TypeKind::BOX {
         a = a.wk
@@ -1884,7 +1942,7 @@ export def get_generic(tpe: &Type) -> &Type {
     return null
 }
 
-export def is_polymorph(tpe: &Type, is_ref: bool = false) -> bool {
+/*export def is_polymorph(tpe: &Type, is_ref: bool = false) -> bool {
     if not tpe { return false }
     else if tpe.tc_incomplete {
         return true
@@ -1912,7 +1970,7 @@ export def is_polymorph(tpe: &Type, is_ref: bool = false) -> bool {
         return false
     }
     return false
-}
+}*/
 
 export def is_polymorph(args: &Vector(NamedParameter)) -> bool {
     for var i in 0..vector::length(args) {
@@ -2502,7 +2560,7 @@ export def generate_concrete_functions(type_constructor: &Type, tpe: &Type, stat
     }
 }
 
-export def type_lookup(node: &parser::Node, state: &State, current_type: &Type = null, lookup_default: bool = false, cache: &SMap(&Type) = null, prefix: String = null) -> &Type {
+export def type_lookup(node: &parser::Node, state: &State, lookup_default: bool = false, prefix: String = null) -> &Generic {
     var tpe = do_type_lookup(node, state, current_type, lookup_default, cache, prefix)
     if node { node.tpe = tpe }
     if tpe !* == current_type !* { return current_type }
@@ -2520,20 +2578,11 @@ export def type_lookup(node: &parser::Node, state: &State, current_type: &Type =
     }
     if tpe and (tpe.kind == TypeKind::STRUCT or tpe.kind == TypeKind::UNION) {
         if check_is_recursive(tpe) {
-            if not tpe.node.is_recursive_type { 
-                errors::errorn(tpe.node, "Recursive type declaration!")
-            }
-            tpe.node.is_recursive_type = true
-            tpe = make_type_raw(TypeKind::STUB)
+            errors::errorn(tpe.node, "Recursive type declaration!")
+            return null
         }
     }
-
-    if tpe { 
-        tpe.node = node
-        if not tpe.module { 
-            tpe.module = state.module 
-        }
-    }
+    
     return tpe
 }
 
@@ -2614,8 +2663,31 @@ def lookup_field_type(node: &parser::Node, state: &State, current_type: &Type, c
     }
 }
 
-// TODO current_type is basically a hack, there's really no reason why you should already have a type and then look it up again
-export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Type = null, lookup_default: bool = false, cache: &map::SMap(&Type) = null, prefix: String = null) -> &Type {
+type TypeTuple = struct {
+    ctor: TypeId
+    types: &Vector(TypeId)
+}
+
+export def hash(this: TypeTuple) -> uint64 {
+    var hash: uint64 = hash(this.ctor)
+    for var id in this.types {
+        hash = combine_hashes(hash, id !uint64)
+    }
+    return hash
+}
+export def == (this: TypeTuple, other: TypeTuple) -> bool {
+    if this.ctor != other.ctor { return false }
+    if this.types.length != other.types.length { return false }
+    for var i in 0..this.types.length {
+        if this.types(i) != other.types(i) { return false }
+    }
+    return true
+}
+export def != (this: TypeTuple, other: TypeTuple) -> bool { return not (this == other) }
+
+let type_registry_instance = map::make(TypeTuple, type &Type)
+
+export def do_type_lookup(node: &parser::Node, state: &State, lookup_default: bool = false, prefix: String = null) -> &Type {
     if not node { return null }
     if node.kind == parser::NodeKind::IDENTIFIER {
         if current_type and not lookup_default and current_type.kind != TypeKind::STUB {
@@ -3132,7 +3204,7 @@ export def do_type_lookup(node: &parser::Node, state: &State, current_type: &Typ
             }
         }
 
-        sort_by_typename(variants)
+        sort_by_typeid(variants)
 
         var fields = allocate_ref(StructMember, variants.length)
         for var i in 0..variants.length {
@@ -4805,22 +4877,22 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
     node.tpe = tpe
 }
 
-def check_is_recursive(tpe: &Type, types: &SMap(&Type) = null) -> bool {
+def check_is_recursive(tpe: &Type, types: &Set(&Type) = null) -> bool {
     if not tpe { return false }
-    if not types { types = map::make(type &Type) }
+    if not types { types = set::make(type &Type) }
     if tpe.kind == TypeKind::STATIC_ARRAY {
         return check_is_recursive(tpe.tpe, types)
     }
     if tpe.kind == TypeKind::STRUCT or tpe.kind == TypeKind::UNION {
         if tpe.name != "<anonymous>" {
-            if map::contains(types, tpe.type_name) { return true }
-            types(tpe.type_name) = tpe
+            if map::contains(types, tpe) { return true }
+            types.add(tpe)
         }
         for var i in 0..tpe.fields.size {
-            let new_types = map::make(type &Type)
+            let new_types = set::make(type &Type)
             let keys = map::keys(types)
             for var j in 0..keys.size {
-                new_types(keys(j)) = types(keys(j))
+                new_types.add(keys(j))
             }
             if check_is_recursive(tpe.fields(i).tpe, new_types) { return true }
         }
@@ -5706,7 +5778,7 @@ def walk_Ptr(node: &parser::Node, state: &State) {
             if value {
                 @node = @expr
                 node.svalue = value
-            }
+            } 
         }
     }
 
@@ -5768,7 +5840,8 @@ def walk_MemberAccess_ucs(node: &parser::Node, state: &State) -> bool {
     return true
 }
 
-export def lookup_struct_member(member: StructMember, resolved: &SSet = null) {
+// FIXME Remove 
+/*export def lookup_struct_member(member: StructMember, resolved: &SSet = null) {
     let tpe = member.tpe
     if not tpe { return }
     if not resolved { resolved = set::make() }
@@ -5819,7 +5892,7 @@ def resolve_member(tpe: &Type, name: String) -> &Type {
         }
     }
     return null
-}
+}*/
 
 def walk_MemberAccess(node: &parser::Node, state: &State) {
     let left = node.value.bin_op.left
