@@ -81,7 +81,7 @@ export type Value = struct {
     kind: ValueKind
 
     // This is needed to store the location
-    name_node: weak &parser::Node
+    name_node: &parser::Node
     share: parser::ShareMarker
     modifier: parser::VarDecl
     // Name used by the source code
@@ -91,7 +91,7 @@ export type Value = struct {
     _assembly_name: Str
     offset: size_t
 
-    tpe: &typechecking::Type
+    tpe: typechecking::TypeId
     value: &compiler::Value
     _scope: &Scope
     _module: weak &Scope // This is needed for modules referencing each other
@@ -107,7 +107,7 @@ export type Value = struct {
     dllexport: bool
     // Definition of the value
     node: weak &parser::Node
-    state: &typechecking::State
+    // state: &typechecking::State
     // For imported scopes, this checks if a value is exported before accessing it
     // Also used by serialize to signal that a function is imported (ffi)
     imported: bool
@@ -158,7 +158,7 @@ def ambigous_reference(node: &parser::Node) {
 
 export def loc(value: &Value) -> parser::SourceLoc {
     if not value.name_node { 
-        if value.tpe and value.tpe.kind == typechecking::TypeKind::NAMESPACE {
+        if value.kind == ValueKind::NAMESPACE {
             let module = value._module.module
             return [
                 filename = module.filename,
@@ -732,9 +732,9 @@ def find_function(scope: &Scope, node: &parser::Node, v: &Value, parameter_t: &V
     var d = false
     loop {
         if not v { break }
-        if v.node and v.state {
+        /*if v.node and v.state {
             v.tpe = typechecking::lookup_parameters(v.node, v.state)
-        }
+        }*/
 
         let s = typechecking::overload_score(v.tpe, parameter_t, context.module, false)
         //print(scope.module.module if scope.module else to_str("<unknown>"), " ", v.tpe.type_name, " ", s, "\n")
@@ -783,9 +783,9 @@ export def find_implicit_function(scope: &Scope, parameter_t: &Vector(typechecki
         var d = false
         for var i in 0..scope.implicits.length {
             let v = scope.implicits(i)
-            if v.node and v.state {
+            /*if v.node and v.state {
                 v.tpe = typechecking::lookup_parameters(v.node, v.state)
-            }
+            }*/
 
             if not typechecking::equals(v.tpe.return_t(0), r) { continue }
             let s = typechecking::convert_type_score(v.tpe.parameter_t(0).tpe, parameter_t(0).tpe, context.module, impl = false)
@@ -834,15 +834,14 @@ export def find_implicit_function(scope: &Scope, parameter_t: &Vector(typechecki
         value = find_implicit_function(scope.parent, parameter_t, ret, force_compile, context)
     }
 
-    if value and value.phase == Phase::DEFINED and value.state and value.node and force_compile {
+    if value and value.phase == Phase::DEFINED and value.node and force_compile {
         // TODO Factor this out
         if typechecking::is_polymorph(value.tpe) {
-            typechecking::walk_Def_with_type_argument(value.node, parameter_t, scope, value.state)
+            typechecking::walk_Def_with_type_argument(value.node, parameter_t, scope, typechecking::make_state(value.module))
         } else {
-            let prev_context = value.state.context
-            value.state.context = value.node.scope
-            typechecking::walk_Def(value.node, value.state)
-            value.state.context = prev_context
+            let state = typechecking::make_state(value.module)
+            state.context = value.node.scope
+            typechecking::walk_Def(value.node, state)
         }
     }
     return value
@@ -906,14 +905,14 @@ export def generate_function(scope: &Scope, node: &parser::Node, parameter_t: &V
         var first_parameter = parameter_t(0)
         if not first_parameter.tpe { return null }
 
-        var ftpe = first_parameter.tpe
+        var ftpe = first_parameter.tpe.resolve()
         if is_ref_or_weak(ftpe) and 
             (ftpe.tpe and ftpe.tpe.kind == typechecking::TypeKind::STRUCTURAL) {
             
             // Switch to strong reference
             // TODO this removes the reference's canonical name but this is needed to only create one function
             // We should really get rid of the string name creating a hash
-            ftpe = reference(ftpe.tpe)
+            ftpe = reference(ftpe.tpe).resolve()
             
             //let equals = get(toolchain::runtime_.scope, parser::make_identifier("equals"))
             //consteval::compile_function(equals, scope)
@@ -921,7 +920,7 @@ export def generate_function(scope: &Scope, node: &parser::Node, parameter_t: &V
             let parameter_t2 = vector::copy(parameter_t)
             vector::remove(parameter_t2, 0)
 
-            let stpe = ftpe.tpe
+            let stpe = ftpe.tpe.resolve()
             let module = stpe.module
             let scope = module.scope
 
@@ -1077,35 +1076,34 @@ export def create_underscore(scope: &Scope, name_node: &parser::Node, tpe: &type
     return value
 }
 
-export def typecheck_function(value: &Value, id: &parser::Node, scope: &Scope, dry_run: bool, parameter_t: &Vector(typechecking::NamedParameter), context: &Scope) -> &Value {
-    let tpe = typechecking::lookup_parameters(value.node, value.state)
+export def typecheck_function(value: &Value, parameter_t: &Vector(typechecking::NamedParameter), context: &Scope) -> &Value {
+    //let tpe = typechecking::lookup_parameters(value.node, value.state)
     if typechecking::is_polymorph(value.tpe) {
-        let node = typechecking::walk_Def_with_type_argument(value.node, parameter_t, context, value.state)
+        let node = typechecking::walk_Def_with_type_argument(value.node, parameter_t, context, typechecking::make_state(value.module))
         let value = node.value.def_.function.value
         return value
     } else {
-        let prev_context = value.state.context
-        value.state.context = value.node.scope
-        typechecking::walk_Def(value.node, value.state)
+        let state = typechecking::make_state(value.module)
+        state.context = value.node.scope
+        typechecking::walk_Def(value.node, state)
         value.tpe = value.node.tpe
-        value.state.context = prev_context
         return value
     }
 }
 
 export def typecheck(value: &Value) {
-    if not value.node or not value.state { return }
+    if not value.node { return }
+    let state = typechecking::make_state(value.module)
     if value.node.kind == parser::NodeKind::DEF {
-        let tpe = typechecking::lookup_parameters(value.node, value.state)
-        if not typechecking::is_polymorph(tpe) {
-            let prev_context = value.state.context
-            value.state.context = value.node.scope
-            typechecking::walk_Def(value.node, value.state)
+        //let tpe = typechecking::lookup_parameters(value.node, value.state)
+        let tpe = value.tpe.resolve()
+        if tpe.kind == typechecking::TypeKind::FUNCTION and not typechecking::is_polymorph(tpe.parameter_t) {
+            state.context = value.node.scope
+            typechecking::walk_Def(value.node, state)
             value.tpe = value.node.tpe
-            value.state.context = prev_context
         }
     } else {
-        typechecking::walk(value.node.parent, value.node, value.state)
+        typechecking::walk(value.node.parent, value.node, state)
     }
 }
 
@@ -1294,7 +1292,7 @@ export def get_function_check(
         }
         
         if value and value.phase == Phase::DEFINED and force_compile {
-            value = typecheck_function(value, id, scope, dry_run, parameter_t, context)
+            value = typecheck_function(value, parameter_t, context)
         }
 
 
@@ -1406,7 +1404,7 @@ export def get(
                 let _, (value) = find_function(scope, id, value, id.value.identifier.types, *score, true, context)
 
                 if value and force_compile and value.phase == Phase::DEFINED {
-                    value = typecheck_function(value, id, scope, false, id.value.identifier.types, context)
+                    value = typecheck_function(value, id.value.identifier.types, context)
                 }
                 return value
             } else if is_function(value.tpe) and id.parent and id.parent.kind == parser::NodeKind::PTR and value.next {
@@ -1436,7 +1434,7 @@ export def get(
                         var score = 0
                         let _, (value2) = find_function(scope, id, value2, id.value.identifier.types, *score, true, context)
                         if value2 and force_compile and value2.phase == Phase::DEFINED {
-                            value2 = typecheck_function(value2, id, scope, false, id.value.identifier.types, context)
+                            value2 = typecheck_function(value2, id.value.identifier.types, context)
                         }
                     } else {
                         if force_compile and value2.phase == Phase::DEFINED {
@@ -1552,6 +1550,7 @@ export def last_path_element(node: &parser::Node) -> String {
     return node.value.identifier.path(length - 1)
 }
 
+// TODO I don't like this at all
 // This overwrites value with the changes from other,
 // while preserving some of the contents
 def merge(value: &Value, other: &Value) {
@@ -1637,9 +1636,9 @@ export def create_function(scope: &Scope, name_node: &parser::Node, v: &Value, i
         }
         var next = val
         loop {
-            if phase == Phase::COMPILED and next.node and next.state {
+            /*if phase == Phase::COMPILED and next.node and next.state {
                 next.tpe = typechecking::lookup_parameters(next.node, next.state)
-            }
+            }*/
             let s = typechecking::overload_score((@next).tpe, (@tpe).parameter_t, scope.module, true, impl = false)
             if next.tpe and s == 0 {
                 //if phase == Phase::DECLARED { return next }
@@ -1753,7 +1752,7 @@ export def create_polymorph(
 
 export def create_variable(
     scope: &Scope, name_node: &parser::Node, share: parser::ShareMarker, 
-    modifier: parser::VarDecl, tpe: &typechecking::Type, extern: bool, dllimport: bool, dllexport: bool,
+    modifier: parser::VarDecl, tpe: typechecking::TypeId, extern: bool, dllimport: bool, dllexport: bool,
     value: &compiler::Value, phase: Phase, node: &parser::Node, state: &typechecking::State) -> &Value {
     
     scope = create_path(scope, name_node)
@@ -1775,7 +1774,6 @@ export def create_variable(
         global = global,
         phase = phase,
         node = node,
-        state = state,
         ident = make_ident(name, scope.module, node._hash if node else 0),
         references = vector::make(parser::SourceLoc),
         module = scope.module
@@ -1832,16 +1830,15 @@ export def create_variable(
 
 export def create_type(
     scope: &Scope, name_node: &parser::Node, 
-    share: parser::ShareMarker, tpe: &typechecking::Type, 
-    phase: Phase, node: &parser::Node, state: &typechecking::State,
-    no_svalue: bool = false
+    share: parser::ShareMarker, tpe: typechecking::TypeId, 
+    phase: Phase, node: &parser::Node, state: &typechecking::State
 ) -> &Value {
 
     scope = create_path(scope, name_node)
     if not scope { return null }
     let name = last_path_element(name_node)
 
-    let value_tpe = [ kind = compiler::ValueKind::TYPE, tpe = builtins::type_, value_tpe = tpe ] !compiler::Value
+    let value_tpe = [ kind = compiler::ValueKind::TYPE, /*tpe = builtins::type_,*/ value_tpe = tpe ] !compiler::Value
 
     let global = is_global(scope)
     let v = [
@@ -1851,13 +1848,12 @@ export def create_type(
         modifier = parser::VarDecl::TYPE,
         name = name,
         _assembly_name = name,
-        tpe = builtins::type_,
+        //tpe = builtins::type_,
         value = value_tpe,
-        _module = tpe.scope,
+        _module = tpe.resolve().scope,
         global = global,
         phase = phase,
         node = node,
-        state = state,
         ident = make_ident(name, scope.module),
         references = vector::make(parser::SourceLoc),
         module = scope.module
@@ -1870,32 +1866,11 @@ export def create_type(
 
     let value = scope.fields.get_or_default(name, null)
     if value {
-        let tpe2 = value.value
-        // TODO This logic is flawed, rethink how we handle phases and make sure that types can be declared multiple times but only defined once.
-        if phase == Phase::DEFINED and value.phase != Phase::DECLARED or 
-            phase == Phase::COMPILED and value.phase != Phase::DEFINED and value.phase != Phase::DECLARED and not typechecking::is_stub(tpe2.value_tpe) or 
-            value.tpe.kind != typechecking::TypeKind::TYPE {
-            
-            if phase == Phase::DEFINED and value.phase != Phase::DECLARED or value.tpe.kind != typechecking::TypeKind::TYPE {
-                errors::errorn(node, "Redeclaration of `", name, "`")
-            }
-            
-            return value
-        } 
-        //if phase != Phase::DECLARED {
-            if not no_svalue { tpe.svalue = value }
-            if tpe.kind != typechecking::TypeKind::STUB or 
-                tpe2.value_tpe.kind == typechecking::TypeKind::STUB or
-                phase !int > value.phase !int { // Only overwrite with non stub types
-                
-                @tpe2.value_tpe = @tpe
-                v.value = tpe2
-                merge(value, v)
-            }
-        //}
+        if phase == Phase::DEFINED and value.phase != Phase::DECLARED or value.kind != ValueKind::TYPE {
+            errors::errorn(node, "Redeclaration of `", name, "`")
+        }
         return value
     } else {
-        if not no_svalue { tpe.svalue = v }
         scope.fields(name) = v
     }
     return v
@@ -1903,8 +1878,8 @@ export def create_type(
 
 export def create_type(
     scope: &Scope, name_node: &parser::Node, 
-    share: parser::ShareMarker, tpe: &typechecking::Type, no_svalue: bool = false) -> &Value {
-    return create_type(scope, name_node, share, tpe, Phase::COMPILED, null, null, no_svalue = no_svalue)
+    share: parser::ShareMarker, tpe: typechecking::TypeId) -> &Value {
+    return create_type(scope, name_node, share, tpe, Phase::COMPILED, null, null)
 }
 
 export def enter_namespace(scope: &Scope, scope2: &Scope, node: &parser::Node) -> &Value {
@@ -1912,7 +1887,7 @@ export def enter_namespace(scope: &Scope, scope2: &Scope, node: &parser::Node) -
     scope = create_path(scope, node)
     if not scope { return null }
     let name = last_path_element(node)
-    let tpe = typechecking::make_type(typechecking::TypeKind::NAMESPACE, node)
+    //let tpe = typechecking::make_type(typechecking::TypeKind::NAMESPACE, node)
 
     let v = [
         kind = ValueKind::NAMESPACE,
@@ -1920,7 +1895,7 @@ export def enter_namespace(scope: &Scope, scope2: &Scope, node: &parser::Node) -
         modifier = parser::VarDecl::CONST,
         name = name,
         _assembly_name = name,
-        tpe = tpe,
+        //tpe = tpe,
         _scope = scope2,
         global = is_global(scope),
         module = scope.module
