@@ -21,7 +21,12 @@ type Serialize = struct {
 
 const MAGIC = "PRNCSVI"
 
-def add_type(tpe: &typechecking::Type, state: &Serialize) -> int64 {
+let TYPE_MOD: byte = -1
+let TYPE_REF: byte = -2
+let VARARGS: byte = -3
+let NO_TYPE: byte = -4
+
+/*def add_type(tpe: &typechecking::Type, state: &Serialize) -> int64 {
     if not tpe { return -1 }
 
     if tpe.kind == typechecking::TypeKind::BOX {
@@ -88,14 +93,9 @@ def add_type(tpe: &typechecking::Type, state: &Serialize) -> int64 {
     }
 
     return index
-}
+}*/
 
-let TYPE_MOD: byte = -1
-let TYPE_REF: byte = -2
-let VARARGS: byte = -3
-let NO_TYPE: byte = -4
-
-def write_module_reference(fp: File, tpe: &typechecking::Type, state: &Serialize) {
+/*def write_module_reference(fp: File, tpe: &typechecking::Type, state: &Serialize) {
     // Module reference
     fp.write(*TYPE_MOD)
 
@@ -131,161 +131,148 @@ def write_type(fp: File, tpe: &typechecking::Type, state: &Serialize) {
         fp.write(*TYPE_REF)
         fp.write(*index)
     }
-}
+}*/
 
 def serialize_type(fp: File, tpe: &typechecking::Type, state: &Serialize) {
     if not tpe {
         fp.write(*NO_TYPE)
         return
     }
-    if tpe.kind == typechecking::TypeKind::BOX {
-        tpe = tpe.wk
+
+    typechecking::get_builtin_destructor(tpe)
+    typechecking::get_builtin_constructor(tpe)
+
+    let id = tpe.kind !byte
+    fp.write(*id)
+    let hash = tpe.hash
+    fp.write(*hash)
+    fp.write_str(tpe.name)
+    fp.write_str(tpe.type_name)
+    fp.write_str(tpe.defmodule.module !String if tpe.defmodule else null)
+    fp.write_str(tpe.module.module !String if tpe.module else null)
+    
+    var has_builtin_destructor = meta.has_builtin_destructor == 1
+    var has_constructor = meta.has_constructor == 1
+    fp.write(*has_builtin_destructor)
+    fp.write(*has_constructor)
+
+    fp.write(*tpe.tc_incomplete)
+    
+    let has_tc_tpe = tpe.tc_tpe !bool
+    fp.write(*has_tc_tpe)
+    if has_tc_tpe {
+        write_type(fp, tpe.tc_tpe, state)
     }
-    assert tpe.kind != typechecking::TypeKind::BOX
 
-    if tpe.defmodule and tpe.defmodule != state.module and tpe.name and not tpe.tc_args {
-        write_module_reference(fp, tpe, state)
+    if tpe.tc_args {
+        fp.write(*tpe.tc_args.length)
+        for var i in 0..tpe.tc_args.length {
+            write_type(fp, tpe.tc_args(i), state)
+        }
     } else {
-        let meta = typechecking::get_meta(tpe)
+        let empty: int64 = -1
+        fp.write(*empty)
+    }
 
-        if not typechecking::is_polymorph(tpe) {
-            typechecking::get_builtin_destructor(tpe)
-            typechecking::get_builtin_constructor(tpe)
+    fp.write(*tpe.size)
+    fp.write(*tpe.align)
+
+    if tpe.kind == typechecking::TypeKind::WORD {
+        fp.write(*tpe.unsig)
+    } else if tpe.kind == typechecking::TypeKind::STATIC_ARRAY {
+        let len = tpe.length
+        fp.write(*len)
+        write_type(fp, tpe.tpe, state)
+    } else if typechecking::is_box(tpe) or tpe.kind == typechecking::TypeKind::TYPE or
+        tpe.kind == typechecking::TypeKind::TYPE_DEF {
+
+        write_type(fp, tpe.tpe, state)
+    } else if typechecking::is_struct(tpe) {
+        let sz = tpe.fields.size
+        fp.write(*sz)
+        for var i in 0..sz {
+            let field = tpe.fields(i)
+            write_type(fp, field.tpe, state)
+            fp.write(*field.line)
+            fp.write(*field.is_bitfield)
+            fp.write(*field.bit_size)
+            fp.write_str(field.name)
+        }
+        if tpe.kind == typechecking::TypeKind::UNION {
+            write_type(fp, tpe.field_types(0).tpe, state)
+        }
+    } else if tpe.kind == typechecking::TypeKind::FUNCTION or
+        tpe.kind == typechecking::TypeKind::CLOSURE {
+        fp.write(*tpe.parameter_t.length)
+        for var i in 0..tpe.parameter_t.length {
+            let np = tpe.parameter_t(i)
+            write_type(fp, np.tpe, state)
+            fp.write_str(np.name)
+        }
+        fp.write(*tpe.return_t.length)
+        for var i in 0..tpe.return_t.length {
+            write_type(fp, tpe.return_t(i), state)
         }
 
-        let id = tpe.kind !byte
-        fp.write(*id)
-        let hash = tpe.hash
-        fp.write(*hash)
-        fp.write_str(tpe.name)
-        fp.write_str(tpe.type_name)
-        fp.write_str(tpe.defmodule.module !String if tpe.defmodule else null)
-        fp.write_str(tpe.module.module !String if tpe.module else null)
-        
-        var has_builtin_destructor = meta.has_builtin_destructor == 1
-        var has_constructor = meta.has_constructor == 1
-        fp.write(*has_builtin_destructor)
-        fp.write(*has_constructor)
-
-        fp.write(*tpe.tc_incomplete)
-        
-        let has_tc_tpe = tpe.tc_tpe !bool
-        fp.write(*has_tc_tpe)
-        if has_tc_tpe {
-            write_type(fp, tpe.tc_tpe, state)
+        if tpe.kind == typechecking::TypeKind::CLOSURE {
+            // Function pointer type embedded into the closure
+            write_type(fp, tpe.fields(0).tpe)
+            write_type(fp, tpe.fields(1).tpe) // reference(0)
         }
 
-        if tpe.tc_args {
-            fp.write(*tpe.tc_args.length)
-            for var i in 0..tpe.tc_args.length {
-                write_type(fp, tpe.tc_args(i), state)
-            }
-        } else {
-            let zero: uint64 = 0
-            fp.write(*zero)
-        }
-
-        fp.write(*tpe.size)
-        fp.write(*tpe.align)
-
-        if tpe.kind == typechecking::TypeKind::WORD {
-            fp.write(*tpe.unsig)
-        } else if tpe.kind == typechecking::TypeKind::STATIC_ARRAY {
-            let len = tpe.length
-            fp.write(*len)
-            write_type(fp, tpe.tpe, state)
-        } else if typechecking::is_box(tpe) or tpe.kind == typechecking::TypeKind::TYPE or
-            tpe.kind == typechecking::TypeKind::TYPE_DEF {
-
-            write_type(fp, tpe.tpe, state)
-        } else if typechecking::is_struct(tpe) {
-            let sz = tpe.fields.size
-            fp.write(*sz)
-            for var i in 0..sz {
-                let field = tpe.fields(i)
-                write_type(fp, field.tpe, state)
-                fp.write(*field.line)
-                fp.write(*field.is_bitfield)
-                fp.write(*field.bit_size)
-                fp.write_str(field.name)
-            }
-            if tpe.kind == typechecking::TypeKind::UNION {
-                write_type(fp, tpe.field_types(0).tpe, state)
-            }
-        } else if tpe.kind == typechecking::TypeKind::FUNCTION or
-            tpe.kind == typechecking::TypeKind::CLOSURE {
-            fp.write(*tpe.parameter_t.length)
-            for var i in 0..tpe.parameter_t.length {
-                let np = tpe.parameter_t(i)
+    } else if tpe.kind == typechecking::TypeKind::INTERFACE {
+        fp.write(*tpe.members.length)
+        for var i in 0..tpe.members.length {
+            let member = tpe.members(i)
+            fp.write_str(member.name)
+            fp.write(*member.parameter_t.length)
+            for var i in 0..member.parameter_t.length {
+                let np = member.parameter_t(i)
                 write_type(fp, np.tpe, state)
                 fp.write_str(np.name)
             }
-            fp.write(*tpe.return_t.length)
-            for var i in 0..tpe.return_t.length {
-                write_type(fp, tpe.return_t(i), state)
+            fp.write(*member.return_t.length)
+            for var i in 0..member.return_t.length {
+                write_type(fp, member.return_t(i), state)
             }
-        } else if tpe.kind == typechecking::TypeKind::STRUCTURAL {
-            fp.write(*tpe.members.length)
-            for var i in 0..tpe.members.length {
-                let member = tpe.members(i)
-                fp.write_str(member.name)
-                fp.write(*member.parameter_t.length)
-                for var i in 0..member.parameter_t.length {
-                    let np = member.parameter_t(i)
-                    write_type(fp, np.tpe, state)
-                    fp.write_str(np.name)
-                }
-                fp.write(*member.return_t.length)
-                for var i in 0..member.return_t.length {
-                    write_type(fp, member.return_t(i), state)
-                }
-            }
-        } else if tpe.kind == typechecking::TypeKind::STUB {
-            // nothing here
-        } else if tpe.kind == typechecking::TypeKind::ENUM {
-            write_type(fp, tpe.tpe, state)
-
-            let scpe = tpe.scope
-            let ekeys = scpe.fields.keys()
-            let sz = ekeys.size
-            fp.write(*sz)
-            for var i in 0..sz {
-                let key = ekeys(i)
-                let value = scpe.fields(key)
-                assert value.modifier == parser::VarDecl::CONST
-                fp.write_str(value.name)
-                fp.write(*value.value.i)
-            }
-        } else if tpe.kind == typechecking::TypeKind::TYPE_CONSTRUCTOR {
-            fp.write(*tpe.parameter_t.length)
-            for var i in 0..tpe.parameter_t.length {
-                let np = tpe.parameter_t(i)
-                fp.write_str(np.name)
-            }
-            let loc = tpe.tc_node.loc
-            fp.write(*loc.line)
-            fp.write(*loc.column)
-            fp.write(*loc.end_line)
-            fp.write(*loc.end_column)
-        } else if tpe.kind == typechecking::TypeKind::GENERIC {
-            assert tpe.tpe != null
-            write_type(fp, tpe.tpe, state)
-        } else if tpe.kind == typechecking::TypeKind::CHAR {
-        } else if tpe.kind == typechecking::TypeKind::TUNION {
-            let sz = tpe.variants.size
-            fp.write(*sz)
-            for var v in @tpe.variants.keys() {
-                write_type(fp, v, state)
-            }
-        } else if tpe.kind == typechecking::TypeKind::TUPLE {
-            fp.write(*tpe.return_t.length)
-            for var e in tpe.return_t {
-                write_type(fp, e, state)
-            }
-        } else {
-            error(tpe.kind, "\n")
-            assert
         }
+    } else if tpe.kind == typechecking::TypeKind::ENUM {
+        write_type(fp, tpe.tpe, state)
+
+        let scpe = tpe.scope
+        let ekeys = scpe.fields.keys()
+        let sz = ekeys.size
+        fp.write(*sz)
+        for var i in 0..sz {
+            let key = ekeys(i)
+            let value = scpe.fields(key)
+            assert value.modifier == parser::VarDecl::CONST
+            fp.write_str(value.name)
+            fp.write(*value.value.i)
+        }
+    } else if tpe.kind == typechecking::TypeKind::TYPE_CONSTRUCTOR {
+        fp.write(*tpe.parameter_t.length)
+        for var i in 0..tpe.parameter_t.length {
+            let np = tpe.parameter_t(i)
+            fp.write_str(np.name)
+        }
+        let loc = tpe.tc_node.loc
+        fp.write(*loc.line)
+        fp.write(*loc.column)
+        fp.write(*loc.end_line)
+        fp.write(*loc.end_column)
+    } else if tpe.kind == typechecking::TypeKind::CHAR or 
+        tpe.kind == typechecking::TypeKind::BOOL {
+        // SNIP
+    } else if tpe.kind == typechecking::TypeKind::TUPLE or 
+        tpe.kind == typechecking::TypeKind::TUNION {
+        fp.write(*tpe.return_t.length)
+        for var e in tpe.return_t {
+            write_type(fp, e, state)
+        }
+    } else {
+        error(tpe.kind, "\n")
+        assert
     }
 }
 
@@ -312,17 +299,18 @@ def serialize_function(fp: File, value: &scope::Value, state: &Serialize) {
         let np = tpe.parameter_t(i)
         fp.write_str(np.name)
         fp.write(*np.varargs)
+        fp.write(np.generic != null) // is_generic
         if not np.tpe and np.varargs {
             fp.write(*VARARGS)
             let f = false
             fp.write(*f) // has_value
         } else {
-            let has_value = np.value and np.value.kind != compiler::ValueKind::TYPE
-            if np.value and np.value.kind == compiler::ValueKind::TYPE {
-                // TODO This shouldn't be in value but instead be stored on the type directly
-                np.tpe._tpe = np.value.value_tpe
+            let has_value = np.value !bool
+            if np.generic != null {
+                serialize_generic(fp, np.generic, state)
+            } else {
+                write_type(fp, np.tpe, state)
             }
-            write_type(fp, np.tpe, state)
             fp.write(*has_value)
             if has_value {
                 serialize_value(fp, np.value, state)
@@ -334,6 +322,7 @@ def serialize_function(fp: File, value: &scope::Value, state: &Serialize) {
         let tpe = tpe.return_t(i)
         write_type(fp, tpe, state)
     }
+    
     // TODO This is because is_polymorph (incorrectly) returns true for TYPE_DEF
     // This is needed in some other places, hence the workaround
     let is_polymorph = typechecking::is_polymorph(tpe) and value.node
@@ -347,7 +336,56 @@ def serialize_function(fp: File, value: &scope::Value, state: &Serialize) {
     }
 }
 
-def create_type_if_absent(module: &toolchain::Module, tpe: &typechecking::Type) -> &typechecking::Type {
+def serialize_generic(fp: File, generic: &typechecking::Generic, state: &Serialize) {
+    var is_type = typechecking::is_type(generic)
+    fp.write(*is_type)
+    if is_type {
+        write_type(generic.tpe)
+        return
+    }
+
+    fp.write(*generic.kind)
+    fp.write(*generic.length)
+    fp.write_str(generic.name)
+    
+    var has_generic = generic.generic != null
+    fp.write(*has_generic)
+    if has_generic {
+        serialize_generic(fp, generic.generic, state)
+    }
+
+    let zero: uint64 = -1
+    if generic.parameter_t {
+        fp.write(*generic.parameter_t.length)
+        for var g in generic.parameter_t {
+            serialize_generic(fp, g, state)
+        }
+    } else {
+        fp.write(*zero)
+    }
+    
+    if generic.return_t {
+        fp.write(*generic.return_t.length)
+        for var g in generic.return_t {
+            serialize_generic(fp, g, state)
+        }
+    } else {
+        fp.write(*zero)
+    }
+}
+
+// This function serializes all types in the type registry
+def serialize_types(fp: File, state: &Serialize) {
+    fp.write(*typechecking::type_registry.size)
+    fp.write(*typechecking::current_type_id)
+
+    for var id in typechecking::type_registry.keys() {
+        var tpe = typechecking::type_registry(id)
+        serialize_type(fp, tpe, state)
+    }
+}
+
+/*def create_type_if_absent(module: &toolchain::Module, tpe: &typechecking::Type) -> &typechecking::Type {
     let ident = parser::make_identifier(tpe.name)
     tpe._defmodule = module
     var value = scope::get(module.scope, ident, force_compile = false, dry_run = true, same_module = true)
@@ -357,7 +395,7 @@ def create_type_if_absent(module: &toolchain::Module, tpe: &typechecking::Type) 
     value = scope::create_type(module.scope, ident, parser::ShareMarker::EXPORT, tpe, scope::Phase::DECLARED, null, module.state)
     value.identifier = ident
     return tpe
-}
+}*/
 
 def deserialize_node(deserialize: &Deserialize, loc: parser::SourceLoc) -> &parser::Node {
     let tokens = lexer::lex(deserialize.module.text, loc.line, loc.column, loc.end_line, loc.end_column)
@@ -379,307 +417,358 @@ def deserialize_type_node(deserialize: &Deserialize, loc: parser::SourceLoc) -> 
     return node
 }
 
-def deserialize_type(deserialize: &Deserialize, fp: File, tpe: &typechecking::Type = null) -> &typechecking::Type {
+def read_type(deserialize: &Deserialize, fp: File) -> typechecking::TypeId {
+    var id: int64
+    fp.read(*id)
+    return id !typechecking::TypeId
+}
+
+def deserialize_type(deserialize: &Deserialize, fp: File) {
     var kind: byte
     fp.read(*kind)
-    if kind == NO_TYPE { return null }
-    if kind == VARARGS { return null }
+    if kind == NO_TYPE { return }
+    if kind == VARARGS { return }
 
-    if not tpe {
-        tpe = [ kind = typechecking::TypeKind::STUB, share = scope::ShareMarker::EXPORT ] !&typechecking::Type
+    var tpekind = kind !typechecking::TypeKind
+
+    var id: typechecking::TypeId
+    fp.read(*id)
+    var name = fp.read_str()
+    var type_name = fp.read_str()
+    var defmodule_str = fp.read_str()
+
+    var has_builtin_destructor: bool
+    fp.read(*has_builtin_destructor)
+    var has_constructor: bool
+    fp.read(*has_constructor)
+    
+    var defmodule: &toolchain::Module
+    if defmodule_str {
+        defmodule = toolchain::find_module(defmodule_str)
     }
 
-    if kind == TYPE_MOD {
-        let module = fp.read_str()
-        let filename = fp.read_str()
-        let name = fp.read_str()
-        let type_name = fp.read_str()
-        if filename == "builtins" {
-            @tpe = @builtins::builtins_module.scope.get_type(parser::make_identifier(name))
-            return tpe
+    var tc_tpe: typechecking::TypeId
+    var has_tc_tpe: bool
+    fp.read(*has_tc_tpe)
+    if has_tc_tpe {
+        tc_tpe = read_type(deserialize, fp)
+    }
+
+    var sz: int64
+    var tc_args: &Vector(typechecking::TypeId)
+    fp.read(*sz)
+    if sz > 0 {
+        tc_args = vector::make(typechecking::TypeId)
+        for var i in 0..sz {
+            tc_args.push(read_type(deserialize, fp))
         }
-        tpe.type_name = type_name
-        tpe.name = name
-        return create_type_if_absent(toolchain::create_module_if_absent(filename, module), tpe)
-    } else if kind == TYPE_REF {
-        var index: int64
-        fp.read(*index)
+    }
 
-        if index < 0 { return null }
-        if index < deserialize.types.length {
-            let tpe = deserialize.types(index)
-            if tpe { return tpe }
+    var size: uint64
+    fp.read(*size)
+    var align: uint64
+    fp.read(*align)
+
+    var tpe = [
+        kind = tpekind, 
+        id = id,
+        name = name, 
+        type_name = type_name,
+        defmodule = defmodule,
+        size = size,
+        align = align,
+        tc_args = tc_args,
+        tc_tpe = tc_tpe
+    ] !typechecking::Type
+
+    switch tpekind !int {
+    case typechecking::TypeKind::CHAR
+        // SNIP
+    case typechecking::TypeKind::WORD
+        fp.read(*tpe.unsig)
+        if not has_tc_tpe {
+            typechecking::type_registry_word(
+                [ size = size, align = align, signed = not tpe.unsig ] !typechecking::Primitive
+            ) = tpe
         }
-
-        tpe.kind = typechecking::TypeKind::STUB
-        deserialize.types.resize(max(index + 1, deserialize.types.length) !size_t)
-        deserialize.types(index) = tpe
-
-        return tpe
-    } else {
-        var tpekind = kind !typechecking::TypeKind
-
-        var hash: uint64
-        fp.read(*hash)
-        var name = fp.read_str()
-        var type_name = fp.read_str()
-        var defmodule_str = fp.read_str()
-        var module_str = fp.read_str()
-
-        var has_builtin_destructor: bool
-        fp.read(*has_builtin_destructor)
-        var has_constructor: bool
-        fp.read(*has_constructor)
         
-        var defmodule: &toolchain::Module
-        if module_str {
-            defmodule = toolchain::find_module(defmodule_str)
-        } else {
-            defmodule = deserialize.module
+    case typechecking::TypeKind::STATIC_ARRAY
+        fp.read(*tpe.kw)
+        fp.read(*tpe.length)
+        tpe.tpe = read_type(deserialize, fp)
+
+        if not has_tc_tpe {
+            typechecking::type_registry_static_array(
+                [ id = tpe.tpe, kw = tpe.kw, size = tpe.length ] !typechecking::Box
+            ) = tpe
+        }
+    case typechecking::TypeKind::TYPE, 
+        typechecking::TypeKind::POINTER,
+        typechecking::TypeKind::REFERENCE,
+        typechecking::TypeKind::WEAK_REF,
+        typechecking::TypeKind::ARRAY,
+        typechecking::TypeKind::BYREF
+        
+        if tpekind != typechecking::TypeKind::TYPE {
+            fp.read(*tpe.kw)
         }
 
-        var module: &toolchain::Module
-        if module_str {
-            module = toolchain::find_module(module_str)
-        } else {
-            module = deserialize.module
+        tpe.tpe = read_type(deserialize, fp)
+
+        if not has_tc_tpe {
+            let box = [ id = tpe.tpe, kw = tpe.kw ] !typechecking::Box
+            
+            switch tpekind !int {
+                case typechecking::TypeKind::TYPE
+                    typechecking::type_registry_type(box) = tpe
+                case typechecking::TypeKind::POINTER
+                    typechecking::type_registry_pointer(box) = tpe
+                case typechecking::TypeKind::REFERENCE
+                    typechecking::type_registry_reference(box) = tpe
+                case typechecking::TypeKind::WEAK_REF
+                    typechecking::type_registry_weak_reference(box) = tpe
+                case typechecking::TypeKind::ARRAY
+                    typechecking::type_registry_array(box) = tpe
+                case typechecking::TypeKind::BYREF
+                    typechecking::type_registry_byref(box) = tpe
+            }
         }
-
-        var tc_incomplete: bool
-        fp.read(*tc_incomplete)
-
-        var tc_tpe: &typechecking::Type
-        var has_tc_tpe: bool
-        fp.read(*has_tc_tpe)
-        if has_tc_tpe {
-            tc_tpe = deserialize_type(deserialize, fp)
-        }
-
-        var sz: uint64
-        var tc_args: &Vector(&typechecking::Type)
+    case typechecking::TypeKind::STRUCT,
+        typechecking::TypeKind::UNION
+        
+        var sz: size_t
         fp.read(*sz)
-        if sz > 0 {
-            tc_args = vector::make(type &typechecking::Type)
-            for var i in 0..sz {
-                tc_args.push(deserialize_type(deserialize, fp))
+
+        let fields = allocate_ref(typechecking::StructMember, sz)
+        for var i in 0..sz {
+            var np = [] !typechecking::StructMember
+            np.tpe = read_type(deserialize, fp)
+            fp.read(*np.line)
+            fp.read(*np.is_bitfield)
+            fp.read(*np.bit_size)
+            np.name = fp.read_str()
+            fields(i) = np
+        }
+        tpe.fields = fields
+        
+        if tpekind == typechecking::TypeKind::UNION {
+            let biggest_type = read_type(deserialize, fp)
+            let field_types = vector::make(typechecking::TypeMember)
+            let type_member = [ tpe = biggest_type, offset = 0 ] !typechecking::TypeMember
+            field_types.push(type_member)
+            tpe.field_types = field_types
+        } else {
+            typechecking::make_struct_type(fields, null, tpe)
+        }
+        tpe.size = size
+        tpe.align = align
+    case typechecking::TypeKind::FUNCTION,
+        typechecking::TypeKind::CLOSURE
+
+        var fun: &typechecking::Type
+        let parameter_t = vector::make(typechecking::NamedParameter)
+        var size: size_t
+        fp.read(*size)
+        for var i in 0..size {
+            var np: typechecking::NamedParameter
+            np.tpe = read_type(deserialize, fp)
+            np.name = fp.read_str()
+            parameter_t.push(np)
+            if fun {
+                fun.parameter_t.push(np)
             }
         }
 
+        let return_t = vector::make(typechecking::TypeId)
+        fp.read(*size)
+        for var i in 0..size {
+            let ret_tpe = read_type(deserialize, fp)
+            return_t.push(ret_tpe)
+            if fun {
+                fun.return_t.push(ret_tpe)
+            }
+        }
+        tpe.parameter_t = parameter_t
+        tpe.return_t = return_t
+
+        if tpekind == typechecking::TypeKind::CLOSURE {
+            let funptr = read_type(deserialize, fp)
+            let ref_zero = read_type(deserialize, fp)
+
+            let parameter_t2 = parameter_t.copy()
+            parameter_t2.insert(0, [ name = "__data", tpe = ref_zero ] !NamedParameter)
+
+            let types = allocate_ref(StructMember, 2)
+            types(0) = [ tpe = funptr, name = "function" ] !StructMember
+            types(1) = [ tpe = ref_zero, name = "data" ] !StructMember
+            typechecking::make_struct_type(types, null, tpe)
+            tpe.kind = typechecking::TypeKind::CLOSURE
+        }
+
+        if not has_tc_tpe {
+            let signature = [ 
+                parameter_t = parameter_t, 
+                return_t = return_t, 
+                name = type_name 
+            ] !typechecking::Signature
+
+            if tpekind == typechecking::TypeKind::CLOSURE {
+                typechecking::type_registry_closure(signature) = tpe
+            } else {
+                typechecking::type_registry_function(signature) = tpe
+            }
+        }
+    case typechecking::TypeKind::INTERFACE
+        let members = vector::make(typechecking::StructuralTypeMember)
+        var size: size_t
+        fp.read(*size)
+        for var i in 0..size {
+            var member: typechecking::StructuralTypeMember
+            member.name = fp.read_str()
+
+            var size: size_t
+            member.parameter_t = vector::make(typechecking::NamedParameter)
+            fp.read(*size)
+            for var i in 0..size {
+                var np: typechecking::NamedParameter
+                let ftpe = read_type(deserialize, fp)
+                np.tpe = ftpe
+                np.name = fp.read_str()
+                member.parameter_t.push(np)
+            }
+            member.return_t = vector::make(typechecking::TypeId)
+            fp.read(*size)
+            for var i in 0..size {
+                member.return_t.push(read_type(deserialize, fp))
+            }
+            members.push(member)
+        }
+        tpe.members = members
+    case typechecking::TypeKind::ENUM
+        tpe.tpe = read_type(deserialize, fp)
+
+        let scpe = scope::enter_scope(deserialize.module.scope)
+        deserialize.scopes.push(scpe)
+        var size: size_t
+        fp.read(*size)
+        for var i in 0..size {
+            let name = parser::make_identifier(fp.read_str())
+            var value: int64
+            fp.read(*value)
+            let v = scope::create_variable(scpe,
+                name, parser::ShareMarker::EXPORT, parser::VarDecl::CONST, tpe.id, 
+                [ kind = compiler::ValueKind::INT, tpe = tpe.tpe, i = value ] !compiler::Value
+            )
+            v.identifier = name
+        }
+        tpe.scope = scpe
+    case typechecking::TypeKind::TYPE_CONSTRUCTOR
+        tpe.parameter_t = vector::make(typechecking::NamedParameter)
+
+        var size: size_t
+        fp.read(*size)
+        for var i in 0..size {
+            let name = fp.read_str()
+            var np: typechecking::NamedParameter
+            np.name = name
+            tpe.parameter_t.push(np)
+        }
+
+        var loc: parser::SourceLoc
+        fp.read(*loc.line)
+        fp.read(*loc.column)
+        fp.read(*loc.end_line)
+        fp.read(*loc.end_column)
+        if not deserialize.module.is_dirty {
+            let node = deserialize_type_node(deserialize, loc)
+            tpe.tc_node = node
+        }
+    case typechecking::TypeKind::BOOL
+        // SNIP
+    case typechecking::TypeKind::TUPLE, typechecking::TypeKind::TUNION
+        tpe.return_t = vector::make(typechecking::TypeId)
         var size: uint64
         fp.read(*size)
-        var align: uint64
-        fp.read(*align)
-
-        let share = tpe.share
-        @tpe = [ 
-            kind = tpekind, 
-            name = name, 
-            type_name = type_name,
-            is_in_type_cache = false,
-            module = module,
-            _defmodule = defmodule,
-            tc_incomplete = tc_incomplete,
-            size = size,
-            align = align,
-            _hash = hash,
-            tc_args = tc_args,
-            tc_tpe = tc_tpe,
-            share = share
-        ] !typechecking::Type
-
-        switch tpekind !int {
-        case typechecking::TypeKind::CHAR
-            tpe = builtins::char_
-        case typechecking::TypeKind::WORD
-            fp.read(*tpe.unsig)
-        case typechecking::TypeKind::STATIC_ARRAY
-            fp.read(*tpe.length)
-            tpe._tpe = deserialize_type(deserialize, fp)
-        case typechecking::TypeKind::TYPE, 
-            typechecking::TypeKind::TYPE_DEF,
-            typechecking::TypeKind::POINTER,
-            typechecking::TypeKind::REFERENCE,
-            typechecking::TypeKind::WEAK_REF,
-            typechecking::TypeKind::ARRAY
-
-            let ptpe = deserialize_type(deserialize, fp)
-            if ptpe and ptpe.is_in_type_cache {
-                tpe._tpe = typechecking::box(ptpe)
-            } else {
-                tpe._tpe = ptpe
-            }
-        case typechecking::TypeKind::STRUCT,
-            typechecking::TypeKind::UNION
-            
-            var sz: size_t
-            fp.read(*sz)
-
-            let fields = allocate_ref(typechecking::StructMember, sz)
-            for var i in 0..sz {
-                var np = [] !typechecking::StructMember
-                np.tpe = deserialize_type(deserialize, fp)
-                fp.read(*np.line)
-                fp.read(*np.is_bitfield)
-                fp.read(*np.bit_size)
-                np.name = fp.read_str()
-                fields(i) = np
-            }
-            tpe.fields = fields
-            
-            if tpekind == typechecking::TypeKind::UNION {
-                let biggest_type = deserialize_type(deserialize, fp)
-                let field_types = vector::make(typechecking::TypeMember)
-                let type_member = [ tpe = biggest_type, offset = 0 ] !typechecking::TypeMember
-                field_types.push(type_member)
-                tpe.field_types = field_types
-            } else {
-                typechecking::make_struct_type(fields, null, tpe)
-            }
-            tpe.size = size
-            tpe.align = align
-        case typechecking::TypeKind::FUNCTION,
-            typechecking::TypeKind::CLOSURE
-
-            var fun: &typechecking::Type
-            if tpekind == typechecking::TypeKind::CLOSURE {
-                var ntpe, (fun) = typechecking::make_closure_type()
-                @tpe = @ntpe
-                tpe._hash = hash
-                tpe.type_name = type_name
-                tpe.name = name
-                tpe.module = module
-                tpe._defmodule = defmodule
-                tpe.tc_incomplete = tc_incomplete
-                tpe.tc_args = tc_args
-                tpe.tc_tpe = tc_tpe
-                tpe.share = share
-            }
-
-            let parameter_t = vector::make(typechecking::NamedParameter)
-            var size: size_t
-            fp.read(*size)
-            for var i in 0..size {
-                var np: typechecking::NamedParameter
-                np._tpe =  deserialize_type(deserialize, fp)
-                np.name = fp.read_str()
-                parameter_t.push(np)
-                if fun {
-                    fun.parameter_t.push(np)
-                }
-            }
-
-            let return_t = vector::make(type &typechecking::Type)
-            fp.read(*size)
-            for var i in 0..size {
-                let ret_tpe = deserialize_type(deserialize, fp)
-                return_t.push(ret_tpe)
-                if fun {
-                    fun.return_t.push(ret_tpe)
-                }
-            }
-            tpe.parameter_t = parameter_t
-            tpe.return_t = return_t
-        case typechecking::TypeKind::STRUCTURAL
-            let members = vector::make(typechecking::StructuralTypeMember)
-            var size: size_t
-            fp.read(*size)
-            for var i in 0..size {
-                var member: typechecking::StructuralTypeMember
-                member.name = fp.read_str()
-
-                var size: size_t
-                member.parameter_t = vector::make(typechecking::NamedParameter)
-                fp.read(*size)
-                for var i in 0..size {
-                    var np: typechecking::NamedParameter
-                    let ftpe = deserialize_type(deserialize, fp)
-                    if ftpe and ftpe.is_in_type_cache {
-                        np._tpe =  typechecking::box(ftpe)
-                    } else {
-                        np._tpe =  ftpe
-                    }
-                    np.name = fp.read_str()
-                    member.parameter_t.push(np)
-                }
-                member.return_t = vector::make(type &typechecking::Type)
-                fp.read(*size)
-                for var i in 0..size {
-                    member.return_t.push(deserialize_type(deserialize, fp))
-                }
-                members.push(member)
-            }
-            tpe.members = members
-        case typechecking::TypeKind::STUB
-            // nothing here
-        case typechecking::TypeKind::ENUM
-            tpe._tpe = deserialize_type(deserialize, fp)
-
-            let scpe = scope::enter_scope(deserialize.module.scope)
-            deserialize.scopes.push(scpe)
-            var size: size_t
-            fp.read(*size)
-            for var i in 0..size {
-                let name = parser::make_identifier(fp.read_str())
-                var value: int64
-                fp.read(*value)
-                let v = scope::create_variable(scpe,
-                    name, parser::ShareMarker::EXPORT, parser::VarDecl::CONST, tpe, 
-                    [ kind = compiler::ValueKind::INT, tpe = tpe.tpe, i = value ] !compiler::Value
-                )
-                v.identifier = name
-            }
-            tpe.scope = scpe
-        case typechecking::TypeKind::TYPE_CONSTRUCTOR
-            tpe.parameter_t = vector::make(typechecking::NamedParameter)
-
-            var size: size_t
-            fp.read(*size)
-            for var i in 0..size {
-                let name = fp.read_str()
-                var np: typechecking::NamedParameter
-                np._tpe =  builtins::type_
-                np.name = name
-                tpe.parameter_t.push(np)
-            }
-
-            var loc: parser::SourceLoc
-            fp.read(*loc.line)
-            fp.read(*loc.column)
-            fp.read(*loc.end_line)
-            fp.read(*loc.end_column)
-            if not deserialize.module.is_dirty {
-                let node = deserialize_type_node(deserialize, loc)
-                tpe.tc_node = node
-            }
-            tpe.cache = map::make(type typechecking::TypeRef, type &typechecking::Type)
-        case typechecking::TypeKind::GENERIC
-            tpe._tpe = deserialize_type(deserialize, fp)
-        case typechecking::TypeKind::BOOL
-            return builtins::bool_
-        case typechecking::TypeKind::TUNION
-            tpe.variants = set::make(type &typechecking::Type)
-            var size: uint64
-            fp.read(*size)
-            for var i in 0..size {
-                tpe.variants.add(deserialize_type(deserialize, fp))
-            }
-        case typechecking::TypeKind::TUPLE
-            tpe.return_t = vector::make(type &typechecking::Type)
-            var size: uint64
-            fp.read(*size)
-            for var i in 0..size {
-                tpe.return_t.push(deserialize_type(deserialize, fp))
-            }
-        case
-            error(tpe.kind, "\n")
-            assert
+        for var i in 0..size {
+            tpe.return_t.push(read_type(deserialize, fp))
         }
-
-        let meta = typechecking::get_meta(tpe)
-        meta.has_builtin_destructor = 1 if has_builtin_destructor else 0
-        meta.has_constructor = 1 if has_constructor else 0
-        return tpe
+        let signature = [ 
+            return_t = tpe.return_t
+        ] !typechecking::Signature
+        if not has_tc_tpe {
+            if tpekind == typechecking::TypeKind::TUPLE {
+                typechecking::type_registry_tuple(signature) = tpe
+            } else {
+                typechecking::type_registry_variant(signature) = tpe
+            }
+        }
+    case
+        error(tpe.kind, "\n")
+        assert
     }
+
+    tpe.has_builtin_destructor = typechecking::Ternary::TRUE if has_builtin_destructor else
+        typechecking::Ternary::UNDEFINED
+    tpe.has_constructor = typechecking::Ternary::TRUE if has_constructor else
+        typechecking::Ternary::UNDEFINED
+
+    if has_tc_tpe {
+        typechecking::register_type_instance(tpe)
+    }
+    
+    typechecking::register(id, tpe)
+}
+
+def deserialize_generic(deserialize: &Deserialize, fp: File) -> &typechecking::Generic {
+    var is_type: bool
+    fp.read(*is_type)
+    if is_type {
+        let tpe = read_type(deserialize, fp)
+        return [ tpe = tpe ] !&typechecking::Generic
+    }
+    
+    let generic = [] !&typechecking::Generic
+    fp.read(*generic.kind)
+    fp.read(*generic.length)
+    generic.name = fp.read_str()
+
+    var has_generic: bool
+    fp.read(*has_generic)
+    if has_generic {
+        generic.generic = deserialize_generic(deserialize, fp)
+    }
+
+    var len: size_t
+    fp.read(*len)
+    if len !int64 >= 0 {
+        generic.parameter_t = vector::make(type &typechecking::Generic)
+        for var i in 0..len {
+            generic.parameter_t.push(deserialize_generic(deserialize, fp))
+        }
+    }
+
+    fp.read(*len)
+    if len !int64 >= 0 {
+        generic.return_t = vector::make(type &typechecking::Generic)
+        for var i in 0..len {
+            generic.return_t.push(deserialize_generic(deserialize, fp))
+        }
+    }
+
+    return generic
+}
+
+def deserialize_types(deserialize: &Deserialize, fp: File) {
+    var size: size_t
+    fp.read(*size)
+    var current_type_id: int64
+    fp.read(*current_type_id)
+    
+    for var i in 0..size {
+        deserialize_type(deserialize, fp)
+    }
+
+    typechecking::current_type_id = current_type_id
 }
 
 def deserialize_function(deserialize: &Deserialize, fp: File) {
@@ -709,7 +798,17 @@ def deserialize_function(deserialize: &Deserialize, fp: File) {
         var name = fp.read_str()
         var varargs: bool
         fp.read(*varargs)
-        let tpe = deserialize_type(deserialize, fp)
+
+        var generic: &typechecking::Generic
+        var tpe: typechecking::TypeId
+        var is_generic: bool
+        fp.read(*is_generic) 
+        if is_generic {
+            generic = deserialize_generic(deserialize, fp)
+        } else {
+            tpe = read_type(deserialize, fp)
+        }
+        
         var has_value: bool
         fp.read(*has_value)
 
@@ -717,25 +816,21 @@ def deserialize_function(deserialize: &Deserialize, fp: File) {
         if has_value {
             value = deserialize_value(deserialize, fp)
         }
-        parameter_t.push([ name = name, _tpe = tpe, varargs = varargs, value = value ] !typechecking::NamedParameter)
+        parameter_t.push([ name = name, tpe = tpe, varargs = varargs, value = value ] !typechecking::NamedParameter)
     }
 
-    let return_t = vector::make(type &typechecking::Type)
+    let return_t = vector::make(typechecking::TypeId)
     fp.read(*size)
     for var i in 0..size {
-        let tpe = deserialize_type(deserialize, fp)
+        let tpe = read_type(deserialize, fp)
         return_t.push(tpe)
     }
 
     var node: &parser::Node
-    var state: &typechecking::State
-
-    let ftpe = typechecking::make_function_type()
-    ftpe.type_name = type_name
-    ftpe.name = name
-    ftpe.module = deserialize.module
-    ftpe.parameter_t = parameter_t
-    ftpe.return_t = return_t
+    let ftpe = typechecking::function(
+        name, parameter_t, return_t, deserialize.module, 
+        type_name = to_string(type_name)
+    ).resolve()
 
     var is_polymorph: bool
     fp.read(*is_polymorph)
@@ -755,7 +850,6 @@ def deserialize_function(deserialize: &Deserialize, fp: File) {
                 unmangled = ftpe.name
             ] !&compiler::Function
         }
-        state = deserialize.module.state
     }
 
     deserialize.functions.push([
@@ -763,8 +857,7 @@ def deserialize_function(deserialize: &Deserialize, fp: File) {
         hash = hash,
         share = share !parser::ShareMarker,
         node = node,
-        state = state,
-        ftpe = ftpe,
+        ftpe = ftpe.id,
         imported = imported,
         polymorph = polymorph,
         impl = impl
@@ -812,7 +905,7 @@ def deserialize_variable(deserialize: &Deserialize, fp: File) {
     fp.read(*dllexport)
     let name = fp.read_str()
 
-    let tpe = deserialize_type(deserialize, fp)
+    let tpe = read_type(deserialize, fp)
     var is_constant: bool
     fp.read(*is_constant)
     var value: &compiler::Value
@@ -842,6 +935,10 @@ def serialize_value(fp: File, value: &compiler::Value, state: &Serialize) {
     }
     let kind = value.kind !byte
     fp.write(*kind)
+    if value.tpe == compiler::ValueKind::TYPE {
+        write_type(fp, value.tpe, state)
+    }
+
     fp.write(*value.metadata)
     fp.write(*value.distinct)
     fp.write_str(value.name)
@@ -871,20 +968,25 @@ def deserialize_value(deserialize: &Deserialize, fp: File) -> &compiler::Value {
 
     let value = [] !&compiler::Value
     value.kind = kind !compiler::ValueKind
+    if value.kind == compiler::ValueKind::TYPE {
+        value.value_tpe = read_type(deserialize, fp)
+        return value
+    }
+
     fp.read(*value.metadata)
     fp.read(*value.distinct)
     value.name = fp.read_str()
     fp.read(*value.i)
     fp.read(*value.f)
     value.s = fp.read_str().to_array()
-    value.value_tpe = deserialize_type(deserialize, fp)
+    value.value_tpe = read_type(deserialize, fp)
     var sz: uint64
     fp.read(*sz)
     value.values = allocate_ref(type compiler::Value, sz)
     for var i in 0..sz {
         value.values(i) = @deserialize_value(deserialize, fp)
     }
-    value.tpe = deserialize_type(deserialize, fp)
+    value.tpe = read_type(deserialize, fp)
 
     return value
 }
@@ -897,16 +999,17 @@ export def serialize(module: &toolchain::Module) {
     fp.write(MAGIC)
     fp.write_str(module.filename)
 
-    if module.module == "main" {
-        // Write the offset so that we can start from there
-        fp.write(*consteval::compiler_state.global_counter)
-    }
-
     let state = [
         types = map::make(type &typechecking::Type, int64),
         module = module,
         dependencies = set::make(scope::Ident)
     ] !&Serialize
+
+    if module.module == "main" {
+        // Write the offset so that we can start from there
+        fp.write(*consteval::compiler_state.global_counter)
+        serialize_types(fp, state)
+    }
 
     if module.deserialize and not toolchain::no_incremental and not module.is_dirty {
         // Add dependencies
@@ -962,7 +1065,7 @@ export def serialize(module: &toolchain::Module) {
     for var value in functions {
         // We need to serialize types of local variables
         // as these are referencing types in the types module
-        if value.node {
+        /*if value.node {
             let function = value.node.value.def_.function
             if function.used_type_meta {
                 let keys = function.used_type_meta.keys()
@@ -971,7 +1074,7 @@ export def serialize(module: &toolchain::Module) {
                     add_type(tpe, state)
                 }
             }
-        }
+        }*/
         if not value.is_generated { 
             exported_functions.push(value)
         }
@@ -1022,6 +1125,7 @@ export def serialize(module: &toolchain::Module) {
         write_type(fp, value.value.value_tpe, state)
     }
 
+    /*
     let types_size = state.types.size
     fp.write(*types_size) // Number of types
     let keys1 = state.types.keys()
@@ -1030,7 +1134,7 @@ export def serialize(module: &toolchain::Module) {
         serialize_type(fp, key, state)
     }
     assert types_size == state.types.size // Make sure we don't add any new types on the way
-
+    */
     // Add dependencies from main function
     let main_fun = scope::get(module.scope, parser::make_identifier("__main__"))
     if main_fun {
@@ -1064,8 +1168,7 @@ type FunctionEntry = struct {
     hash: uint64
     share: parser::ShareMarker
     node: &parser::Node
-    state: &typechecking::State
-    ftpe: &typechecking::Type
+    ftpe: typechecking::TypeId
     imported: bool
     polymorph: bool
     impl: bool
@@ -1079,7 +1182,7 @@ type VariableEntry = struct {
     extern: bool
     dllimport: bool
     dllexport: bool
-    tpe: &typechecking::Type
+    tpe: typechecking::TypeId
     value: &compiler::Value
 }
 
@@ -1087,12 +1190,11 @@ type TypeEntry = struct {
     name: Str
     share: parser::ShareMarker
     hash: uint64
-    tpe: &typechecking::Type
+    tpe: typechecking::TypeId
 }
 
 export type Deserialize = struct {
     module: weak &toolchain::Module
-    types: &Vector(&typechecking::Type)
     nodes: &Vector(&parser::Node) // Strong references to nodes
     scopes: &Vector(&scope::Scope) // Strong references to enum scopes
     dependencies: &[scope::Ident]
@@ -1114,7 +1216,6 @@ export def resolver_pass(module: &toolchain::Module) {
 
     let deserialize = [
         module = module,
-        types = vector::make(type &typechecking::Type),
         nodes = vector::make(type &parser::Node),
         scopes = vector::make(type &scope::Scope),
         functions = vector::make(FunctionEntry),
@@ -1143,6 +1244,7 @@ export def resolver_pass(module: &toolchain::Module) {
     
     if module.module == "main" {
         fp.read(*consteval::compiler_state.global_counter)
+        deserialize_types(deserialize, fp)
     }
 
     var size: size_t
@@ -1168,9 +1270,9 @@ export def resolver_pass(module: &toolchain::Module) {
             ident.value.identifier.types = vector::make(typechecking::NamedParameter)
         }
         for var j in 0..types_size {
-            let tpe = deserialize_type(deserialize, fp)
+            let tpe = read_type(deserialize, fp)
             ident.value.identifier.types.push([
-                _tpe = tpe
+                tpe = tpe
             ] !typechecking::NamedParameter)
         }
         scope::insert_re_export(module.scope, ident, mod)
@@ -1193,8 +1295,7 @@ export def resolver_pass(module: &toolchain::Module) {
         fp.read(*share)
         var hash: uint64
         fp.read(*hash)
-        let tpe = deserialize_type(deserialize, fp)
-        tpe.share = share !parser::ShareMarker
+        let tpe = read_type(deserialize, fp)
 
         deserialize.rtypes.push([
             name = name,
@@ -1204,7 +1305,7 @@ export def resolver_pass(module: &toolchain::Module) {
         ] !TypeEntry)
     }
 
-    fp.read(*size)
+    /*fp.read(*size)
     for var i in 0..size {
         if i >= deserialize.types.length {
             deserialize.types.resize(i + 1)
@@ -1216,8 +1317,8 @@ export def resolver_pass(module: &toolchain::Module) {
         }
 
         deserialize.types(i) = tpe
-        deserialize.types(i) = deserialize_type(deserialize, fp, tpe)
-    }
+        deserialize.types(i) = read_type(deserialize, fp, tpe)
+    }*/
 
     for var i in 0..deserialize.rtypes.length {
         let entry = deserialize.rtypes(i)
@@ -1236,21 +1337,16 @@ export def resolver_pass(module: &toolchain::Module) {
         let name_node = parser::make_identifier(entry.name)
         name_node.loc.module = module.module
 
-        let phase = scope::Phase::DEFINED if typechecking::is_polymorph(entry.ftpe) else scope::Phase::COMPILED
+        let ftpe = entry.ftpe.resolve()
+        let phase = scope::Phase::DEFINED if typechecking::is_polymorph(ftpe.parameter_t) else scope::Phase::COMPILED
         let value = scope::create_function_without_checking(
             module.scope, name_node, entry.share, entry.ftpe, entry.impl
         )
         value.phase = phase
         value.node = entry.node
-        value.state = entry.state
-
-        if entry.ftpe.parameter_t.length > 0 {
-            let first_type = entry.ftpe.parameter_t(0).tpe
-            typechecking::create_type_entry(first_type, true, entry.ftpe, module, overwrite = true)
-        }
 
         value.imported = entry.imported
-        value.ident = scope::make_ident(entry.name, module, entry.hash, entry.ftpe.type_name)
+        value.ident = scope::make_ident(entry.name, module, entry.hash, ftpe.type_name)
         value.identifier = name_node
         value.polymorph = entry.polymorph
     }
