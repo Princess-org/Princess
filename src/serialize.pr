@@ -112,26 +112,12 @@ let NO_TYPE: byte = -4
     fp.write_str(tpe.name)
     fp.write_str(tpe.type_name)
 }
+*/
 
-def write_type(fp: File, tpe: &typechecking::Type, state: &Serialize) {
-    if not tpe { 
-        fp.write(*NO_TYPE) 
-        return
-    }
-
-    if tpe.defmodule and tpe.defmodule != state.module and tpe.name and not tpe.tc_args {
-        write_module_reference(fp, tpe, state)
-        return
-    }
-
-    let index = add_type(tpe, state)
-    if index < 0 {
-        fp.write(*NO_TYPE)
-    } else {
-        fp.write(*TYPE_REF)
-        fp.write(*index)
-    }
-}*/
+def write_type(fp: File, tpe: typechecking::TypeId, state: &Serialize) {
+    let id = tpe !int64
+    fp.write(*id)
+}
 
 def serialize_type(fp: File, tpe: &typechecking::Type, state: &Serialize) {
     if not tpe {
@@ -149,14 +135,11 @@ def serialize_type(fp: File, tpe: &typechecking::Type, state: &Serialize) {
     fp.write_str(tpe.name)
     fp.write_str(tpe.type_name)
     fp.write_str(tpe.defmodule.module !String if tpe.defmodule else null)
-    fp.write_str(tpe.module.module !String if tpe.module else null)
     
-    var has_builtin_destructor = meta.has_builtin_destructor == 1
-    var has_constructor = meta.has_constructor == 1
+    var has_builtin_destructor = tpe.has_builtin_destructor == typechecking::Ternary::TRUE
+    var has_constructor = tpe.has_constructor == typechecking::Ternary::TRUE
     fp.write(*has_builtin_destructor)
     fp.write(*has_constructor)
-
-    fp.write(*tpe.tc_incomplete)
     
     let has_tc_tpe = tpe.tc_tpe !bool
     fp.write(*has_tc_tpe)
@@ -216,8 +199,8 @@ def serialize_type(fp: File, tpe: &typechecking::Type, state: &Serialize) {
 
         if tpe.kind == typechecking::TypeKind::CLOSURE {
             // Function pointer type embedded into the closure
-            write_type(fp, tpe.fields(0).tpe)
-            write_type(fp, tpe.fields(1).tpe) // reference(0)
+            write_type(fp, tpe.fields(0).tpe, state)
+            write_type(fp, tpe.fields(1).tpe, state) // reference(0)
         }
 
     } else if tpe.kind == typechecking::TypeKind::INTERFACE {
@@ -277,7 +260,7 @@ def serialize_type(fp: File, tpe: &typechecking::Type, state: &Serialize) {
 }
 
 def serialize_function(fp: File, value: &scope::Value, state: &Serialize) {
-    let tpe = value.tpe
+    let tpe = value.tpe.resolve()
     let hash = value.ident._hash
     let share = value.share !byte
     fp.write(*hash)
@@ -299,7 +282,8 @@ def serialize_function(fp: File, value: &scope::Value, state: &Serialize) {
         let np = tpe.parameter_t(i)
         fp.write_str(np.name)
         fp.write(*np.varargs)
-        fp.write(np.generic != null) // is_generic
+        let is_generic = np.generic != null
+        fp.write(*is_generic) // is_generic
         if not np.tpe and np.varargs {
             fp.write(*VARARGS)
             let f = false
@@ -325,9 +309,18 @@ def serialize_function(fp: File, value: &scope::Value, state: &Serialize) {
     
     // TODO This is because is_polymorph (incorrectly) returns true for TYPE_DEF
     // This is needed in some other places, hence the workaround
-    let is_polymorph = typechecking::is_polymorph(tpe) and value.node
-    fp.write(*is_polymorph)
-    if is_polymorph {
+    let polymorph = typechecking::is_polymorph(tpe.parameter_t) and value.node
+    fp.write(*polymorph)
+    if polymorph {
+        let type_defs = value.local_type_defs.type_defs
+        let sz = type_defs.size
+        fp.write(*sz)
+        for var name in @type_defs.keys() {
+            let id = type_defs(name)
+            fp.write_str(name)
+            fp.write(*id)
+        }
+
         let loc = value.node.loc
         fp.write(*loc.line)
         fp.write(*loc.column)
@@ -340,7 +333,7 @@ def serialize_generic(fp: File, generic: &typechecking::Generic, state: &Seriali
     var is_type = typechecking::is_type(generic)
     fp.write(*is_type)
     if is_type {
-        write_type(generic.tpe)
+        write_type(fp, generic.tpe, state)
         return
     }
 
@@ -379,7 +372,7 @@ def serialize_types(fp: File, state: &Serialize) {
     fp.write(*typechecking::type_registry.size)
     fp.write(*typechecking::current_type_id)
 
-    for var id in typechecking::type_registry.keys() {
+    for var id in @typechecking::type_registry.keys() {
         var tpe = typechecking::type_registry(id)
         serialize_type(fp, tpe, state)
     }
@@ -592,6 +585,7 @@ def deserialize_type(deserialize: &Deserialize, fp: File) {
         tpe.return_t = return_t
 
         if tpekind == typechecking::TypeKind::CLOSURE {
+            // TODO This whole dance seems stupid, closures shouldn't imitate structs
             let funptr = read_type(deserialize, fp)
             let ref_zero = read_type(deserialize, fp)
 
@@ -832,9 +826,20 @@ def deserialize_function(deserialize: &Deserialize, fp: File) {
         type_name = to_string(type_name)
     ).resolve()
 
+    let local_type_defs = typechecking::make_local_type_defs()
+
     var is_polymorph: bool
     fp.read(*is_polymorph)
     if is_polymorph {
+        var sz: size_t
+        fp.read(*sz)
+        for var i in 0..sz {
+            let name = fp.read_str()
+            var id: int64
+            fp.read(*id)
+            local_type_defs.type_defs(name) = id
+        }
+
         var loc: parser::SourceLoc
         fp.read(*loc.line)
         fp.read(*loc.column)
@@ -858,6 +863,7 @@ def deserialize_function(deserialize: &Deserialize, fp: File) {
         share = share !parser::ShareMarker,
         node = node,
         ftpe = ftpe.id,
+        local_type_defs = local_type_defs,
         imported = imported,
         polymorph = polymorph,
         impl = impl
@@ -1017,9 +1023,9 @@ export def serialize(module: &toolchain::Module) {
             state.dependencies.add(dep)
         }
         // Keep types that have been deserialized for this module
-        for var i in 0..module.deserialize.types.length {
-            add_type(module.deserialize.types(i), state)
-        }
+        //for var i in 0..module.deserialize.types.length {
+        //    add_type(module.deserialize.types(i), state)
+        //}
     }
 
     let zero: uint64 = 0
@@ -1101,10 +1107,10 @@ export def serialize(module: &toolchain::Module) {
             state.dependencies.add_all(value.dependencies)
         } else {
             if value.modifier == parser::VarDecl::CONST {
-                if value.tpe.kind != typechecking::TypeKind::FUNCTION and value.tpe.kind != typechecking::TypeKind::NAMESPACE {
+                if value.kind != scope::ValueKind::FUNCTION and value.kind != scope::ValueKind::NAMESPACE {
                     variables.push(value)
                 }
-            } else if value.modifier != parser::VarDecl::TYPE {
+            } else if value.kind != scope::ValueKind::TYPE {
                 variables.push(value)
             }
         }
@@ -1169,6 +1175,7 @@ type FunctionEntry = struct {
     share: parser::ShareMarker
     node: &parser::Node
     ftpe: typechecking::TypeId
+    local_type_defs: &typechecking::LocalTypeDefs
     imported: bool
     polymorph: bool
     impl: bool
@@ -1326,7 +1333,7 @@ export def resolver_pass(module: &toolchain::Module) {
         name_node.loc.module = module.module
         let val = scope::create_type(
             deserialize.module.scope, name_node, entry.share, 
-            entry.tpe, scope::Phase::COMPILED, null, null
+            entry.tpe, scope::Phase::COMPILED, null
         )
         val.ident = scope::make_ident(entry.name, module, entry.hash)
         val.identifier = name_node
@@ -1340,7 +1347,7 @@ export def resolver_pass(module: &toolchain::Module) {
         let ftpe = entry.ftpe.resolve()
         let phase = scope::Phase::DEFINED if typechecking::is_polymorph(ftpe.parameter_t) else scope::Phase::COMPILED
         let value = scope::create_function_without_checking(
-            module.scope, name_node, entry.share, entry.ftpe, entry.impl
+            module.scope, name_node, entry.share, entry.ftpe, entry.local_type_defs, entry.impl
         )
         value.phase = phase
         value.node = entry.node
@@ -1434,28 +1441,25 @@ export def dependency_pass(module: &toolchain::Module) {
     toolchain::progress_update(module, toolchain::ProgressUpdate::END)
 }
 
-export def generate_ctor_and_dtor(module: &toolchain::Module) {
-    if not module.deserialize { return }
-    debug::trace("Generating type metadata for " + module.module + " (" + module.deserialize.types.length + ")")
+export def generate_ctor_and_dtor() {
+    debug::trace("Generating type metadata (" + typechecking::type_registry.size + ")")
+
     def create_type(tpe: &typechecking::Type) {
         if not tpe { return }
-        if typechecking::is_polymorph(tpe) or 
-        tpe.kind == typechecking::TypeKind::TYPE_CONSTRUCTOR { return }
+        if tpe.kind == typechecking::TypeKind::TYPE_CONSTRUCTOR { return }
 
         // TODO These functions are weird, we want to generate both
-        let meta = typechecking::get_meta(tpe)
-        if meta.has_builtin_destructor == 1 {
-            meta.has_destructor = 1
+        if tpe.has_builtin_destructor == typechecking::Ternary::TRUE {
+            tpe.has_destructor = typechecking::Ternary::TRUE
             typechecking::get_builtin_destructor(tpe)
         }
-        if meta.has_constructor == 1 {
+        if tpe.has_constructor == typechecking::Ternary::TRUE {
             typechecking::get_builtin_constructor(tpe)
         }
-        compiler::create_type(tpe, module)
     }
 
-    for var i in 0..module.deserialize.types.length {
-        let tpe = module.deserialize.types(i)
+    for var key in 0..@typechecking::type_registry.keys() {
+        let tpe = typechecking::type_registry(key)
         create_type(tpe)
     }
 }

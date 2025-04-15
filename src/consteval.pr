@@ -63,7 +63,6 @@ def set_current_function -> &compiler::Function {
         allocas = vector::make(type &compiler::Insn),
         block = block,
         function_locals = set::make(),
-        used_type_meta = set::make(type &typechecking::Type),
         is_compiled = is_compiled
     ] !&compiler::Function
     compiler_state.function_stack.push(function)
@@ -185,7 +184,7 @@ def walk_Import(node: &parser::Node, state: &typechecking::State) {
 def walk_From(node: &parser::Node, state: &typechecking::State) {
     let module = node.value.from_.module
     let imprt = scope::get(state.scope, module, force_compile = false, dry_run = true)
-    if not imprt or not imprt.tpe or imprt.tpe.kind != typechecking::TypeKind::NAMESPACE {
+    if not imprt or not imprt.tpe or imprt.kind != scope::ValueKind::NAMESPACE {
         errors::errorn(module, "Can't find module `", parser::identifier_to_str(module), "`, did you forget to import it?")
     }
     let mod = toolchain::consteval_module(module, state.module)
@@ -200,7 +199,7 @@ def walk_From(node: &parser::Node, state: &typechecking::State) {
     }
 }
 
-export def evaluate_parameter(node: &parser::Node, param: &parser::Node, tpe: &typechecking::Type, state: &typechecking::State) -> &compiler::Value {
+export def evaluate_parameter(node: &parser::Node, param: &parser::Node, tpe: typechecking::TypeId, state: &typechecking::State) -> &compiler::Value {
     var value: &compiler::Value = null
     if param.value.param.value {
         // Set up temporary scope
@@ -257,7 +256,7 @@ export def evaluate_parameter(node: &parser::Node, param: &parser::Node, tpe: &t
     return value
 }
 
-def unwrap_type_def(tpe: &typechecking::Type) -> &typechecking::Type {
+/*def unwrap_type_def(tpe: &typechecking::Type) -> &typechecking::Type {
     if not tpe { return tpe }
     if tpe.kind != typechecking::TypeKind::TYPE_DEF { return tpe }
 
@@ -271,7 +270,7 @@ def unwrap_type_def(tpe: &typechecking::Type) -> &typechecking::Type {
     }
 
     return res
-}
+}*/
 
 def walk_Lambda(node: &parser::Node, state: &typechecking::State) {
     let body = node.value.lambda.body
@@ -318,14 +317,14 @@ export def walk_Def(node: &parser::Node, state: &typechecking::State) {
     if not name { return }
 
     let parameter_t = vector::make(typechecking::NamedParameter)
-    let return_t = vector::make(type &typechecking::Type)
+    var return_t = vector::make(typechecking::TypeId)
     let local_type_defs = typechecking::make_local_type_defs()
 
     if test {
         parameter_t.push([
             kw = parser::VarDecl::LET,
             name = "env",
-            _tpe = pointer(builtins::TestEnvironment_)
+            tpe = pointer(builtins::TestEnvironment_)
         ] !NamedParameter)
     }
 
@@ -349,12 +348,15 @@ export def walk_Def(node: &parser::Node, state: &typechecking::State) {
         } else {
             generic = typechecking::type_lookup(param.value.param.tpe, state, local_type_defs = local_type_defs)
             if param.value.param.is_ref {
-                generic = typechecking::byref(tpe)
+                generic = typechecking::byref(generic)
             }
         }
 
         var tpe: TypeId
-        if generic.is_type() { tpe = generic.tpe }
+        if generic.is_type() { 
+            tpe = generic.tpe
+            generic = null
+        }
 
         var value: &compiler::Value
         if param.value.param.value {
@@ -369,30 +371,25 @@ export def walk_Def(node: &parser::Node, state: &typechecking::State) {
             tpe = tpe,
             varargs = (@param).value.param.varargs,
             node = name,
-            value = value,
-            type_node = param.value.param.tpe
+            value = value
         ] !typechecking::NamedParameter)
     }
     for var i in 0..vector::length(returns) {
         let n = returns(i)
-        let generic = typechecking::type_lookup(n, state, local_type_defs = local_type_defs)
-        return_t.push(generic)
+        let tpe = typechecking::type_lookup(n, state, local_type_defs = local_type_defs).tpe
+        return_t.push(tpe)
     }
 
     // Unpack tuple
     if return_t and return_t.length == 1 {
-        let ret = return_t(0)
-        if typechecking::is_type(ret) {
+        let ret = return_t(0).resolve()
+        if typechecking::is_tuple(ret) {
             let tpe = ret.tpe.resolve()
-            if tpe.kind == TypeKind::TUPLE {
-                return_t = tpe.return_t.copy()
-            }
-        } else {
-            return_t = ret.return_t.copy()
+            return_t = tpe.return_t.copy()
         }
     }
 
-    let tpe = typechecking::function(perser::identifier_to_str(name), parameter_t, return_t, state.module, extern, test = test).resolve()
+    var tpe = typechecking::function(parser::identifier_to_str(name), parameter_t, return_t, state.module, extern, test = test).resolve()
     //tpe.node = node
     let current_function = errors::current_function
     let current_signature = errors::current_signature
@@ -407,12 +404,13 @@ export def walk_Def(node: &parser::Node, state: &typechecking::State) {
 
     if state.function_stack.length <= 1 {
         if function {
+            function.value.local_type_defs = local_type_defs
             node.svalue = scope::create_function(state.scope, name, function.value)
         } else {
             if body {
-                node.svalue = scope::create_function(state.scope, name, share, tpe, scope::Phase::DEFINED, node, copy_state(state), impl = impl)
+                node.svalue = scope::create_function(state.scope, name, share, tpe.id, scope::Phase::DEFINED, node, local_type_defs, impl = impl)
             } else {
-                node.svalue = scope::create_function(state.scope, name, share, tpe, scope::Phase::DECLARED, node, null)
+                node.svalue = scope::create_function(state.scope, name, share, tpe.id, scope::Phase::DECLARED, node, local_type_defs)
             }
         }
         if node.svalue {
@@ -424,9 +422,9 @@ export def walk_Def(node: &parser::Node, state: &typechecking::State) {
 
     if not function {
         function = [
-            tpe = tpe,
+            tpe = tpe.id,
             module = state.module,
-            locals = map::make(type &typechecking::Type),
+            locals = map::make(typechecking::TypeId),
             unmangled = parser::identifier_to_str(name),
             is_closure = node.parent.kind != parser::NodeKind::PROGRAM,
             scope = state.scope,
@@ -442,7 +440,7 @@ export def walk_Def(node: &parser::Node, state: &typechecking::State) {
     }
     function.has_yield = has_yield
 
-    if has_yield {
+    /*if has_yield {
         let generator_ctor = typechecking::type_lookup(parser::make_identifier("Generator"), state, lookup_default = true)
         var generator = typechecking::make_struct_type([] !&[StructMember])
         //generator.tc_incomplete = true
@@ -455,12 +453,13 @@ export def walk_Def(node: &parser::Node, state: &typechecking::State) {
         tpe.return_t.push(reference(generator))
         let name = typechecking::append_module(tpe.name, state.module.module)
         tpe.type_name = typechecking::mangle_function_name(name, tpe.parameter_t)
-    }
+    }*/
 
     // TODO Move this to typechecking maybe
+    /*
     if vector::length(tpe.parameter_t) > 0 {
         let first_param = tpe.parameter_t(0)
-        typechecking::create_type_entry(unwrap_type_def(first_param.tpe), exported, tpe, state.module)
+        //typechecking::create_type_entry(unwrap_type_def(first_param.tpe), exported, tpe, state.module)
 
         let type_constructor = typechecking::get_type_constructor(first_param.tpe)
         if type_constructor and type_constructor.cache {
@@ -471,11 +470,11 @@ export def walk_Def(node: &parser::Node, state: &typechecking::State) {
                 type_constructor.cache(_ref) = first_param.tpe
             } 
         }    
-    }
+    }*/
 
     errors::current_function = current_function
     errors::current_signature = current_signature
-    node.tpe = tpe
+    node.tpe = tpe.id
 }
 
 export def walk_TypeDecl(node: &parser::Node, state: &typechecking::State) {
@@ -523,9 +522,13 @@ export def walk_TypeDecl(node: &parser::Node, state: &typechecking::State) {
 
         if value {
             if value.kind == parser::NodeKind::ENUM_T {
-                let type_value = typechecking::type_lookup(value, state).resolve()
-                type_value.name = parser::identifier_to_str(name)
-                type_value.type_name = typechecking::append_module(tpe.name, value.loc.module)
+                let enum_tpe = [ 
+                    kind = typechecking::TypeKind::ENUM,
+                    tpe = typechecking::type_lookup(value, state).tpe
+                ] !&typechecking::Type
+
+                enum_tpe.name = parser::identifier_to_str(name)
+                enum_tpe.type_name = typechecking::append_module(enum_tpe.name, value.loc.module)
 
                 var constant: int64 = 0
                 // Create all the constants
@@ -536,7 +539,7 @@ export def walk_TypeDecl(node: &parser::Node, state: &typechecking::State) {
                         constant = expr(iddecl.value.id_decl_enum.value, state).i
                     }
 
-                    let c = [ kind = compiler::ValueKind::INT, tpe = tpe.tpe, i = constant ] !&compiler::Value
+                    let c = [ kind = compiler::ValueKind::INT, tpe = enum_tpe.tpe, i = constant ] !&compiler::Value
                     scope::create_variable(state.scope, iddecl.value.id_decl_enum.ident, 
                         share, parser::VarDecl::CONST, tpe, c)
 
@@ -544,26 +547,27 @@ export def walk_TypeDecl(node: &parser::Node, state: &typechecking::State) {
                 }
 
                 value.scope = state.scope
-                tpe.scope = state.scope
+                enum_tpe.scope = state.scope
                 state.scope = scope::exit_scope(state.scope)
 
                 // Create to_string function
                 let parameter_t = vector::make(typechecking::NamedParameter)
-                let return_t = vector::make(type &typechecking::Type)
-                parameter_t.push([ name = "enum", _tpe = tpe] !typechecking::NamedParameter)
+                let return_t = vector::make(typechecking::TypeId)
+                parameter_t.push([ name = "enum", tpe = tpe] !typechecking::NamedParameter)
                 return_t.push(builtins::string_)
 
                 let ident = parser::make_identifier("to_string")
                 let ftpe = typechecking::function("to_string", parameter_t, return_t)
-                let v = scope::create_function(state.scope, ident, parser::ShareMarker::EXPORT, ftpe)
+                let v = scope::create_function(state.scope, ident, parser::ShareMarker::EXPORT, ftpe, local_type_defs = make_local_type_defs())
                 v.identifier = ident
-                left.svalue = scope::create_type(state.scope, name, share, tpe, scope::Phase::DEFINED, null, null)
+                left.svalue = scope::create_type(state.scope, name, share, tpe, scope::Phase::DEFINED, null)
+                typechecking::register(tpe, enum_tpe)
             } else {
-                left.svalue = scope::create_type(state.scope, name, share, tpe, scope::Phase::DEFINED, typedef, copy_state(state))
+                left.svalue = scope::create_type(state.scope, name, share, tpe, scope::Phase::DEFINED, typedef)
             }
             value.tpe = tpe
         } else {
-            left.svalue = scope::create_type(state.scope, name, share, tpe, scope::Phase::DECLARED, null, null)
+            left.svalue = scope::create_type(state.scope, name, share, tpe, scope::Phase::DECLARED, null)
         }
 
         parent.body.insert(parent.body.index_of(node), typedef)
@@ -639,7 +643,7 @@ export def walk_top_VarDecl(node: &parser::Node, state: &typechecking::State) {
 
                 n.svalue = scope::create_variable(
                     state.scope, n.value.id_decl.value, 
-                    share, kw, typechecking::make_type_raw(typechecking::TypeKind::STUB), 
+                    share, kw, 0, 
                     extern, dllimport, dllexport, null, scope::Phase::DEFINED, node, copy_state(state)
                 )
             }
@@ -780,7 +784,7 @@ export def compile_function(value: &scope::Value, context: &scope::Scope, argume
     load_function(value)
 
     var node = value.node
-    var state = value.state
+    var module = value.module
 
     var is_repurposed = false // When There's no node and we find a new function we don't need to typecheck anymore
     if not node {
@@ -798,20 +802,20 @@ export def compile_function(value: &scope::Value, context: &scope::Scope, argume
         if not node {
             return value 
         }
-        state = new_value.state
+        module = new_value.module
     }
 
     var function = node.value.def_.function
     if function.is_typechecked and not is_repurposed { return value }
 
-    let is_polymorph = typechecking::is_polymorph(function.tpe)
+    let is_polymorph = typechecking::is_polymorph(function.tpe.resolve().parameter_t)
     if not is_polymorph { 
         compiler::predeclare_function(function, overwrite = true)
         const_module.result.functions(function.name) = function 
     }
 
-    if not state { return value }
-    if not is_polymorph { state.module.result.functions(function.name) = function }
+    if not module { return value }
+    if not is_polymorph { module.result.functions(function.name) = function }
 
     if function.is_compiled { return value }
     if not node.value.def_.body { return value }
@@ -819,6 +823,7 @@ export def compile_function(value: &scope::Value, context: &scope::Scope, argume
     let prev_static = is_static
     is_static = true
     
+    let state = typechecking::make_state(module)
     if not function.is_typechecked {
         if arguments and is_polymorph {
             node = typechecking::walk_Def_with_type_argument(node, arguments, context, state)
@@ -829,7 +834,7 @@ export def compile_function(value: &scope::Value, context: &scope::Scope, argume
             walk_Def(node, state)
             let prev_context = state.context
             state.context = node.scope
-            node.tpe = value.tpe = typechecking::lookup_parameters(node, state)
+            //node.tpe = value.tpe = typechecking::lookup_parameters(node, state)
             print(node.tpe.type_name, "\n")
             typechecking::walk_Def(node, state)
             state.context = prev_context
@@ -1210,7 +1215,7 @@ export def consteval(state: &typechecking::State) {
     let function = [
         unmangled = "__main",
         is_global = true,
-        locals = map::make(type &typechecking::Type)
+        locals = map::make(typechecking::TypeId)
     ] !&compiler::Function
     node.value.program.function = function
 
@@ -1239,7 +1244,7 @@ export def consteval(node: &parser::Node, state: &typechecking::State) {
     
     let function = [
         is_global = true,
-        locals = map::make(type &typechecking::Type)
+        locals = map::make(typechecking::TypeId)
     ] !&compiler::Function
     node.value.program.function = function
 

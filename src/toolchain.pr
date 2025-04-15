@@ -198,11 +198,11 @@ export type Stage = enum {
 }
 
 export type Cast = struct {
-    src: &typechecking::Type
-    dst: &typechecking::Type
+    src: typechecking::TypeId
+    dst: typechecking::TypeId
 }
 export def hash(cast: Cast) -> int64 {
-    return combine_hashes(hash(cast.src), hash(cast.dst))
+    return combine_hashes(cast.src !uint64, cast.dst !uint64)
 }
 export def == (a: Cast, b: Cast) -> bool { return a.src == b.src and a.dst == b.dst }
 export def != (a: Cast, b: Cast) -> bool { return not (a == b) }
@@ -230,10 +230,10 @@ export type Module = struct {
     // List of Type
     // TODO These should be sets
     // This is a list of functions that are generated for dynamic dispatch
-    dyn_dispatch_consteval: &Vector(&typechecking::Type)
-    dyn_dispatch: &Vector(&typechecking::Type)
+    dyn_dispatch_consteval: &Vector(typechecking::TypeId)
+    dyn_dispatch: &Vector(typechecking::TypeId)
 
-    dyn_casts: &Map(Cast, &typechecking::Type)
+    dyn_casts: &Map(Cast, typechecking::TypeId)
 
     // This is needed to generate functions from create_destructor
     compiler_state: &compiler::State
@@ -255,13 +255,13 @@ export type Module = struct {
     is_deleted: bool
 
     // We keep track of interface implementations for this module
-    interfaces: &Map(&typechecking::Type, &Map(&typechecking::Type, &typechecking::Type))
+    //interfaces: &Map(&typechecking::Type, &Map(&typechecking::Type, &typechecking::Type))
     // Only used by const_module, this contains nodes of functions which still need to be compiled
     // This is needed for the repl because we only compile the current module multiple times
     delayed_compile: &Vector(&parser::Node)
 }
 
-export def get_impl(module: &Module, intf: &typechecking::Type, wrap: &typechecking::Type) -> &typechecking::Type {
+/*export def get_impl(module: &Module, intf: &typechecking::Type, wrap: &typechecking::Type) -> &typechecking::Type {
     if module.interfaces.contains(intf) {
         let m = module.interfaces(intf)
         if m.contains(wrap) {
@@ -280,7 +280,7 @@ export def add_impl(module: &Module, intf: &typechecking::Type, wrap: &typecheck
         interfaces = module.interfaces(intf)
     }
     interfaces(wrap) = impl
-}
+}*/
 
 export def destruct(module: *Module) {
     delete(module.tokens)
@@ -318,14 +318,13 @@ export def make_module(
         imported = set::make(Str),
         imports = set::make(Str),
         dependants = set::make(type weak &Module),
-        dyn_dispatch_consteval = vector::make(type &typechecking::Type),
-        dyn_dispatch = vector::make(type &typechecking::Type),
-        dyn_casts = map::make(Cast, type &typechecking::Type),
+        dyn_dispatch_consteval = vector::make(typechecking::TypeId),
+        dyn_dispatch = vector::make(typechecking::TypeId),
+        dyn_casts = map::make(Cast, typechecking::TypeId),
         unresolved = map::make(scope::Ident, type weak &scope::Value),
         inlay_hints = vector::make(type &parser::Node),
         closures = vector::make(type &scope::Value),
-        is_dirty = no_incremental,
-        interfaces = map::make(type &typechecking::Type, type &map::Map(&typechecking::Type, &typechecking::Type))
+        is_dirty = no_incremental
     ] !&Module
     module.compiler_state = compiler::make_state(module)
     module.file = util::replace_all(module.module, "::", ".")
@@ -499,8 +498,8 @@ export def reset(module: &Module) {
     for var value in all_values {
         value.phase = scope::Phase::DECLARED // Reset values
         if value.tpe and value.modifier == parser::VarDecl::CONST and 
-            value.tpe.kind == typechecking::TypeKind::FUNCTION and 
-            typechecking::is_polymorph(value.tpe) {
+            typechecking::is_function(value.tpe) and 
+            typechecking::is_polymorph(value.tpe.resolve().parameter_t) {
                 
             polymorphs.push(value)
         }
@@ -541,7 +540,7 @@ export def consteval_module(module: &Module, display_name: String = null) {
     
     let ident = make_identifier("__file__")
     if not scope::get(module.scope, ident) {
-        let filename_type = typechecking::make_static_array(builtins::char_, module.filename.length() + 1)
+        let filename_type = typechecking::static_array(builtins::char_, module.filename.length() + 1)
         let exe_global = compiler::make_global_value(
             filename_type, "__file__", 
             [ kind = compiler::ValueKind::STRING, tpe = filename_type, s = module.filename.to_array() ] !&compiler::Value,
@@ -632,7 +631,7 @@ def create_runtime_module {
     runtime_module.scope.module = runtime_module 
 
     let exe_file = executable_file()
-    let exe_file_type = typechecking::make_static_array(builtins::char_, exe_file.length() + 1)
+    let exe_file_type = typechecking::static_array(builtins::char_, exe_file.length() + 1)
     let exe_global = compiler::make_global_value(
         exe_file_type, "executable", 
         [ kind = compiler::ValueKind::STRING, tpe = exe_file_type, s = exe_file.to_array() ] !&compiler::Value,
@@ -691,7 +690,7 @@ export def prepare_preload {
     for var i in 0..keys.size {
         let name = keys(i)
         let value = runtime_.scope.fields(name)
-        if typechecking::equals(value.tpe, builtins::type_) {
+        if value.kind == scope::ValueKind::TYPE {
             let tpe = value.value.value_tpe
             types.result.structures(tpe.type_name) = tpe
         }
@@ -707,11 +706,11 @@ export def create_types_main {
     let args = vector::make(typechecking::NamedParameter)
     args.push([
         name = "args",
-        _tpe = typechecking::array(builtins::string_)
+        tpe = typechecking::array(builtins::string_)
     ] !typechecking::NamedParameter)
 
-    let main_tpe = typechecking::make_function_type_n(types_main_ident, args, vector::make(type &typechecking::Type), types)
-    let value = scope::create_function(types.scope, types_main_ident, parser::ShareMarker::EXPORT, main_tpe)
+    let main_tpe = typechecking::function("main::__main__", args, vector::make(typechecking::TypeId), types)
+    let value = scope::create_function(types.scope, types_main_ident, parser::ShareMarker::EXPORT, main_tpe, local_type_defs = typechecking::make_local_type_defs())
     value.identifier = types_main_ident
 
     let types_main = compiler::predeclare_function(main_tpe, types)
@@ -831,16 +830,11 @@ export def compile_main_file(filename: String) {
 
     compile_module(module)
     
-    let keys = modules.keys()
-    for var i in 0..keys.size {
-        let filename = keys(i)
-        let module = modules(filename)
-        if module.module == "builtin" { continue }
-        serialize::generate_ctor_and_dtor(module)
-    }
+    serialize::generate_ctor_and_dtor()
 
-    debug::trace("Resolving types")
-    compiler::resolve_stub_types() // TODO Remove this function
+    //debug::trace("Resolving types")
+    //compiler::resolve_stub_types() // TODO Remove this function
+    debug::trace("Generating reflection data")
     compiler::generate_reflection_data()
     debug::trace("Creating builtin functions")
     compiler::create_builtin_functions()

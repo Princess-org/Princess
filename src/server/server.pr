@@ -144,7 +144,7 @@ def find_member(node: &parser::Node) -> &parser::Node, &typechecking::Type {
     if not node.svalue and node.parent and node.parent.kind == parser::NodeKind::MEMBER_ACCESS and
         node == node.parent.value.bin_op.right and node.kind == parser::NodeKind::IDENTIFIER { 
 
-        let tpe = node.parent.value.bin_op.left.tpe
+        let tpe = node.parent.value.bin_op.left.tpe.resolve()
         if not tpe or (tpe.kind != typechecking::TypeKind::STRUCT and tpe.kind != typechecking::TypeKind::UNION) { 
             return null, null
         }
@@ -156,7 +156,7 @@ def find_member(node: &parser::Node) -> &parser::Node, &typechecking::Type {
             let field = tpe.fields(i)
             if field.name == ident {
                 id_decl = field.node
-                field_tpe = field.tpe
+                field_tpe = field.tpe.resolve()
                 break
             }
         }
@@ -185,13 +185,13 @@ def hover(id: int, params: HoverParams) {
         let svalue = node.svalue
         if not svalue or not svalue.tpe { send_reply(id, null); return }
 
-        if svalue.tpe.kind == typechecking::TypeKind::FUNCTION {
+        if svalue.kind == scope::ValueKind::FUNCTION {
             res = "(function) " + svalue.name + ": " + debug::type_to_str(svalue.tpe)
-        } else if svalue.tpe.kind == typechecking::TypeKind::NAMESPACE {
+        } else if svalue.kind == scope::ValueKind::NAMESPACE {
             res = "(module) " + svalue.name
-        } else if svalue.modifier == VarDecl::TYPE {
+        } else if svalue.kind == scope::ValueKind::TYPE {
             let tpe = svalue.value.value_tpe
-            if tpe.kind == typechecking::TypeKind::STRUCTURAL {
+            if tpe.kind == typechecking::TypeKind::INTERFACE {
                 res = "(interface) " + svalue.name
             } else if tpe.kind == typechecking::TypeKind::STRUCT {
                 res = "(struct) " + svalue.name
@@ -367,7 +367,7 @@ def push_completion_value(value: &scope::Value, module: &toolchain::Module, comp
     var detail: Str
     var function_type: Str
 
-    if value.modifier == parser::VarDecl::TYPE {
+    if value.kind == scope::ValueKind::TYPE {
         let value_tpe = value.value.value_tpe
         if typechecking::is_struct(value_tpe) {
             kind = CompletionItemKind::Struct
@@ -378,17 +378,13 @@ def push_completion_value(value: &scope::Value, module: &toolchain::Module, comp
         } else {
             kind = CompletionItemKind::Interface
         }
-    } else if value.modifier == parser::VarDecl::CONST and value.tpe {
-        if value.tpe.kind == typechecking::TypeKind::FUNCTION {
-            kind = CompletionItemKind::Function
-            detail = params_to_string(value.tpe)
-        } else if value.tpe.kind == typechecking::TypeKind::NAMESPACE {
-            kind = CompletionItemKind::Module
-        } else {
-            kind = CompletionItemKind::Constant
-            detail = ": " + debug::type_to_str(value.tpe)
-        }
+    } else if value.kind == scope::ValueKind::FUNCTION {
+        kind = CompletionItemKind::Function
+        detail = params_to_string(value.tpe)
+    } else if value.kind == scope::ValueKind::NAMESPACE {
+        kind = CompletionItemKind::Module
     } else {
+        kind = CompletionItemKind::Constant
         detail = ": " + debug::type_to_str(value.tpe)
     }
 
@@ -400,7 +396,7 @@ def push_completion_value(value: &scope::Value, module: &toolchain::Module, comp
     var format = InsertTextFormat::PlainText !int
     var insert_text = value.name
     if kind == CompletionItemKind::Function {
-        if value.tpe.parameter_t.length > 0 {
+        if value.tpe.resolve().parameter_t.length > 0 {
             insert_text += "($0)"
             format = InsertTextFormat::Snippet !int
         } else {
@@ -424,7 +420,7 @@ def push_members(node: &parser::Node, completions: &Vector(CompletionItem)) {
     let left = node.value.bin_op.left
     if left {
         let scpe = left.scope
-        let tpe = left.tpe
+        let tpe = left.tpe.resolve()
         if typechecking::is_struct(tpe) {
             for var field in @tpe.fields {
                 completions.push([
@@ -437,7 +433,7 @@ def push_members(node: &parser::Node, completions: &Vector(CompletionItem)) {
                 ] !CompletionItem)
             }
         }
-        let functions = scope::find_functions(scpe, tpe)
+        let functions = scope::find_functions(scpe, tpe.id)
         for var i in 0..functions.length {
             let function = functions(i)
             if function.is_internal { continue }
@@ -495,8 +491,8 @@ def complete(id: int, params: CompletionParams) {
                 let values = scope::find_all(parent.scope, check_export)
                 for var i in 0..values.length {
                     let value = values(i)
-                    if value.modifier == parser::VarDecl::TYPE or 
-                        value.modifier == parser::VarDecl::CONST and value.tpe.kind == typechecking::TypeKind::NAMESPACE {
+                    if value.kind == scope::ValueKind::TYPE or 
+                        value.kind == scope::ValueKind::NAMESPACE {
                         push_completion_value(value, module, completions)
                     }
                 }
@@ -587,12 +583,13 @@ type SignatureHelpParams = struct {
 def create_signature(value: &scope::Value) -> SignatureInformation {
     var name = value.name + "("
     var parameters = vector::make(ParameterInformation)
-    for var i in 0..value.tpe.parameter_t.length {
+    let value_tpe = value.tpe.resolve()
+    for var i in 0..value_tpe.parameter_t.length {
         let start_index = name.length() !uint
-        let param = value.tpe.parameter_t(i)
+        let param = value_tpe.parameter_t(i)
         name += param_to_string(param)
         let end_index = name.length() !uint
-        if i < value.tpe.parameter_t.length - 1 {
+        if i < value_tpe.parameter_t.length - 1 {
             name += ", "
         }
         parameters.push([
@@ -600,11 +597,11 @@ def create_signature(value: &scope::Value) -> SignatureInformation {
         ] !ParameterInformation)
     }
     name += ")"
-    if value.tpe.return_t.length > 0 {
+    if value_tpe.return_t.length > 0 {
         name += " -> "
-        for var i in 0..value.tpe.return_t.length {
-            name += debug::type_to_str(value.tpe.return_t(i))
-            if i < value.tpe.return_t.length - 1 {
+        for var i in 0..value_tpe.return_t.length {
+            name += debug::type_to_str(value_tpe.return_t(i))
+            if i < value_tpe.return_t.length - 1 {
                 name += ", "
             }
         }
@@ -673,14 +670,14 @@ def signature_help(id: int, params: SignatureHelpParams) {
     for var i in 0..node.value.func_call.args.length {
         let arg = node.value.func_call.args(i)
         if not arg { continue }
-        args.push([ _tpe = arg.tpe ] !typechecking::NamedParameter)
+        args.push([ tpe = arg.tpe ] !typechecking::NamedParameter)
     }
     for var i in 0..node.value.func_call.kwargs.length {
         let kwarg = node.value.func_call.kwargs(i)
         if not kwarg { continue }
         args.push([ 
             name = parser::identifier_to_str(kwarg.value.named_arg.name),
-            _tpe = kwarg.value.named_arg.value.tpe 
+            tpe = kwarg.value.named_arg.value.tpe 
         ] !typechecking::NamedParameter)
     }
 
@@ -691,7 +688,7 @@ def signature_help(id: int, params: SignatureHelpParams) {
     let infos = vector::make(SignatureInformation)
     for var i in 0..functions.length {
         let fun = functions(i)
-        let score = typechecking::overload_score(fun.tpe, args, module, false, partial = true)
+        let score = typechecking::overload_score(fun.tpe, args, module, false, partial = true, local_type_defs = fun.local_type_defs)
         if score >= 0 and score < smallest_score { 
             active_sig = i
             smallest_score = score 
@@ -701,7 +698,7 @@ def signature_help(id: int, params: SignatureHelpParams) {
     }
 
     if active_function {
-        let params = active_function.tpe.parameter_t
+        let params = active_function.tpe.resolve().parameter_t
         if active_par >= params.length and params.length > 0 and params(params.length - 1).varargs {
             active_par = (params.length - 1) !int
         }
@@ -900,7 +897,7 @@ def document_symbol(id: int, params: DocumentSymbolParams) {
             if not node.value.def_.name or not node.tpe { continue }
             if node.value.def_.is_generic_instance { continue }
             
-            let tpe = node.tpe
+            let tpe = node.tpe.resolve()
             var name: StringBuffer = parser::identifier_to_str(node.value.def_.name) + "("
             for var i in 0..tpe.parameter_t.length {
                 let param = tpe.parameter_t(i)
