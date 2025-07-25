@@ -655,7 +655,7 @@ def make_parameter(generic: &Generic, node: &parser::Node = null, name: String =
 
 export type State = struct {
     module: weak &toolchain::Module
-    scope: weak &scope::Scope
+    scope: &scope::Scope
     // Vector of Type
     function_stack: &Vector(&compiler::Function)
     in_defer: bool
@@ -943,8 +943,12 @@ export def hash(signature: Signature) -> uint64 {
     var hash: uint64
     if signature.parameter_t {
         for var par in signature.parameter_t { // TODO hash for vectors
-            assert par.tpe or par.varargs
-            hash = combine_hashes(hash, par.tpe !uint64)
+            if par.generic {
+                hash = combine_hashes(hash, par.generic !* !uint64) // Unique ID
+            } else {
+                assert par.tpe or par.varargs
+                hash = combine_hashes(hash, par.tpe !uint64)
+            }   
         }
     }
     for var r in signature.return_t {
@@ -2164,7 +2168,7 @@ export def convert_type_score(a: &Type, b: &Type, module: &toolchain::Module, im
     if a.kind == TypeKind::TYPE and b.kind == TypeKind::TYPE /*or b.may_be_type*/ { 
         return 4
     }
-    if equals(a, builtins::TypeT_) and b.kind == TypeKind::TYPE and b.tpe {
+    if builtins::TypeT_ and equals(a, builtins::TypeT_) and b.kind == TypeKind::TYPE and b.tpe {
         return 4
     }
     if (is_pointer(a) or a.kind == TypeKind::REFERENCE or a.kind == TypeKind::WEAK_REF) and (@b).kind == TypeKind::NULL {
@@ -2908,17 +2912,18 @@ def lookup_type_constructor(tc: &parser::Node, node: &parser::Node, state: &Stat
 }*/
 
 export def type_lookup(node: &parser::Node, state: &State, is_type: bool = false, local_type_defs: &LocalTypeDefs = null) -> &Generic {
-    var generic = do_type_lookup(node, state, is_type)
+    var generic = do_type_lookup(node, state, is_type, local_type_defs)
     if not generic { return null }
     if generic.is_type() {
         let tpe = generic.tpe
+        if tpe > 0 {
+            if node { node.tpe = tpe }
 
-        if node { node.tpe = tpe }
-
-        if tpe and (tpe.kind == TypeKind::STRUCT or tpe.kind == TypeKind::UNION) {
-            if check_is_recursive(tpe) {
-                errors::errorn(node, "Recursive type declaration!")
-                return null
+            if tpe.kind == TypeKind::STRUCT or tpe.kind == TypeKind::UNION {
+                if check_is_recursive(tpe) {
+                    errors::errorn(node, "Recursive type declaration!")
+                    return null
+                }
             }
         }
     }
@@ -3059,6 +3064,17 @@ export def make_local_type_defs -> &LocalTypeDefs {
     ] !&LocalTypeDefs
 }
 
+export def next_local_type_def(name: Str, defs: &LocalTypeDefs) -> TypeId {
+    if not defs.type_defs.contains(name) {
+        let id = defs.last_type_id
+        defs.type_defs(name) = id
+        defs.last_type_id -= 1
+        return id
+    } else {
+        return defs.type_defs(name)
+    }
+}
+
 def do_type_lookup(node: &parser::Node, state: &State, is_type: bool = false, local_type_defs: &LocalTypeDefs = null) -> &Generic {
     if not node { return null }
     if not local_type_defs { local_type_defs = make_local_type_defs() }
@@ -3066,10 +3082,7 @@ def do_type_lookup(node: &parser::Node, state: &State, is_type: bool = false, lo
         let name = parser::identifier_to_str(node)
         if is_type {
             // If there isn't a local type def with the given name, create a new one pointing at nothing
-            if not local_type_defs.type_defs.contains(name) {
-                local_type_defs.type_defs(name) = local_type_defs.last_type_id
-                local_type_defs.last_type_id -= 1
-            }
+            next_local_type_def(name, local_type_defs)
             return [ kind = TypeKind::TYPE, name = name ] !&Generic
         } else /*if not lookup_default*/ {
             if local_type_defs.type_defs.contains(name) {
@@ -3078,8 +3091,8 @@ def do_type_lookup(node: &parser::Node, state: &State, is_type: bool = false, lo
 
             let value = scope::get(state.scope, node)
             if not value {
-                errors::errorn(node, "Unknown identifier `", parser::identifier_to_str(node), "`")
-                scope::create_dependency(state.current_value(), scope::make_ident(parser::identifier_to_str(node)))
+                errors::errorn(node, "Unknown identifier `", name, "`")
+                scope::create_dependency(state.current_value(), scope::make_ident(name))
                 return null
             } else {
                 if value.modifier != parser::VarDecl::TYPE { return null }
@@ -4950,7 +4963,7 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
             }
         }
         if test {
-            scope::create_variable(inner_scope, parser::make_identifier("env"), parser::ShareMarker::NONE, parser::VarDecl::LET, pointer(builtins::test_environment_t()), null)
+            scope::create_variable(inner_scope, parser::make_identifier("env"), parser::ShareMarker::NONE, parser::VarDecl::LET, pointer(builtins::TestEnvironment_), null)
         }
     }
 
