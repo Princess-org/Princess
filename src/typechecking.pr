@@ -440,7 +440,7 @@ export def get_builtin_destructor(tpe: &Type, lookup: bool = true) -> &scope::Va
         destructor = scope::generate_function(builtins::builtins, parser::make_identifier("__destruct__"), args, true)
         tpe.builtin_destructor = destructor
         if lookup and consteval::is_static and destructor {
-            compiler::create_destructor(destructor.tpe)
+            compiler::create_destructor(destructor.fdef)
         }
     }
     // The problem is if we cache this value in consteval the relevant functions might not exist
@@ -531,7 +531,7 @@ export def get_builtin_constructor(tpe: &Type) -> &scope::Value {
     vector::push(args, [ tpe = pointer(tpe.id) ] !NamedParameter)
     tpe.constructor = scope::generate_function(builtins::builtins, parser::make_identifier("__construct__"), args, dry_run = true)
     if consteval::is_static and tpe.constructor {
-        compiler::create_constructor(tpe.constructor.tpe)
+        compiler::create_constructor(tpe.constructor.fdef)
     }
     if not consteval::is_static {
         if tpe.constructor {
@@ -597,7 +597,7 @@ export def has_copy_constructor(tpe: &Type, lookup: bool = true) -> bool {
         vector::push(args, [ tpe = pointer(tpe.id) ] !NamedParameter)
         tpe.constructor = scope::generate_function(builtins::builtins, parser::make_identifier("__construct__"), args, dry_run = true)
         if consteval::is_static and tpe.constructor {
-            compiler::create_constructor(tpe.constructor.tpe)
+            compiler::create_constructor(tpe.constructor.fdef)
         }
     }
 
@@ -934,10 +934,58 @@ export def _word(signed: bool, size: size_t, align: size_t) -> TypeId {
     return tpe.id
 }
 
+export type FunctionDef = struct {
+    name: Str
+    unmangled: Str
+    sig: Signature
+}
+export def hash(fdef: FunctionDef) -> uint64 {
+    return combine_hashes(hash(fdef.name), hash(fdef.sig))
+}
+export def == (this: FunctionDef, other: FunctionDef) -> bool {
+    return this.sig == other.sig and this.name == other.name
+}
+export def != (this: FunctionDef, other: FunctionDef) -> bool {
+    return not (this == other)
+}
+
+export def function_def(
+    name: Str, 
+    parameter_t: &Vector(NamedParameter), 
+    return_t: &Vector(TypeId), 
+    module: &toolchain::Module = null,
+    extern: bool = false,
+    test: bool = false,
+    context: &toolchain::Module = null,
+    type_name: String = null
+) -> FunctionDef {
+    var tname: Str
+
+    if extern {
+        tname = name
+    } else if type_name {
+        tname = type_name
+    } else {
+        let name = append_module(name, module.module) if module else name
+        tname = mangle_function_name(name, parameter_t, test, context)
+    }
+    
+    return [
+        name = tname,
+        unmangled = name,
+        sig = [
+            parameter_t = parameter_t,
+            return_t = return_t
+        ] !Signature
+    ] !FunctionDef
+}
+export def to_type(fdef: FunctionDef) -> TypeId {
+    return function(fdef.sig.parameter_t, fdef.sig.return_t)
+}
+
 export type Signature = struct {
     parameter_t: &Vector(NamedParameter)
     return_t: &Vector(TypeId)
-    name: Str
 }
 export def hash(signature: Signature) -> uint64 {
     var hash: uint64
@@ -954,7 +1002,6 @@ export def hash(signature: Signature) -> uint64 {
     for var r in signature.return_t {
         hash = combine_hashes(hash, r !uint64)
     }
-    hash = combine_hashes(hash, hash(signature.name))
     return hash
 }
 export def == (this: Signature, other: Signature) -> bool {
@@ -968,7 +1015,6 @@ export def == (this: Signature, other: Signature) -> bool {
     for var i in 0..this.return_t.length {
         if this.return_t(i) != other.return_t(i) { return false }
     }
-    if this.name != other.name { return false }
     return true
 }
 export def != (this: Signature, other: Signature) -> bool {
@@ -992,7 +1038,7 @@ def callable_generic(kind: TypeKind, parameter_t: &Vector(NamedParameter), retur
     if kind == TypeKind::CLOSURE {
         return [ tpe = closure(parameter_t, return_t_tpe) ] !&Generic
     } else {
-        return [ tpe = function("", parameter_t, return_t_tpe) ] !&Generic
+        return [ tpe = function(parameter_t, return_t_tpe) ] !&Generic
     }
 }
 
@@ -1004,7 +1050,7 @@ def closure(parameter_t: &Vector(NamedParameter), return_t: &Vector(TypeId)) -> 
     
     let parameter_t2 = parameter_t.copy()
     parameter_t2.insert(0, [ name = "__data", tpe = reference(0) ] !NamedParameter)
-    let fun = function("", parameter_t2, return_t, extern = true)
+    let fun = function(parameter_t2, return_t)
 
     let types = allocate_ref(StructMember, 2)
     types(0) = [ tpe = pointer(fun), name = "function" ] !StructMember
@@ -1019,29 +1065,13 @@ def closure(parameter_t: &Vector(NamedParameter), return_t: &Vector(TypeId)) -> 
 }
 
 export def function(
-    name: Str, 
     parameter_t: &Vector(NamedParameter), 
-    return_t: &Vector(TypeId), 
-    module: &toolchain::Module = null,
-    extern: bool = false,
-    test: bool = false,
-    context: &toolchain::Module = null,
-    type_name: String = null
+    return_t: &Vector(TypeId)
 ) -> TypeId {
-    var tname: Str
-    if extern {
-        tname = name
-    } else if type_name {
-        tname = type_name
-    } else {
-        let name = append_module(name, module.module) if module else name
-        tname = mangle_function_name(name, parameter_t, test, context)
-    }
 
     let signature = [ 
         parameter_t = parameter_t, 
-        return_t = return_t, 
-        name = tname 
+        return_t = return_t
     ] !Signature
 
     if type_registry_function.contains(signature) {
@@ -1052,9 +1082,7 @@ export def function(
     tpe.id = next_type_id()
     tpe.parameter_t = parameter_t
     tpe.return_t = return_t
-    tpe.name = name
-    tpe.type_name = tname
-    
+
     type_registry_function(signature) = tpe
     register(tpe.id, tpe)
 
@@ -2523,12 +2551,12 @@ export def replace_type_defs(
 }
 
 export def overload_score(
-    a: &Type, param_b: &Vector(NamedParameter), module: &toolchain::Module, 
+    a: FunctionDef, param_b: &Vector(NamedParameter), module: &toolchain::Module, 
     positional: bool, partial: bool = false, impl: bool = true, 
     local_type_defs: &LocalTypeDefs = null) -> int {
 
     return overload_score(
-        a.parameter_t, a.return_t, param_b, module, 
+        a.sig.parameter_t, a.sig.return_t, param_b, module, 
         positional, partial, impl, local_type_defs
     )
 }
@@ -4484,7 +4512,7 @@ def walk_Cast(node: &parser::Node, state: &State) {
         let params = vector::make(NamedParameter)
         params.push([ name = "src", tpe = ltpe ] !NamedParameter)
         params.push([ name = "dst", tpe = dst] !NamedParameter)
-        let fun = function(
+        let fun = function_def(
             "__cast", 
             params, 
             vector::make(TypeId),
@@ -4655,7 +4683,7 @@ export def walk_Lambda(node: &parser::Node, state: &State) {
     let outer_scope = node.scope
     let inner_scope = node.inner_scope
 
-    var tpe: TypeId
+    var fdef: FunctionDef
     var closure_type: TypeId
 
     let parameter_t = vector::make(NamedParameter)
@@ -4695,13 +4723,13 @@ export def walk_Lambda(node: &parser::Node, state: &State) {
     node.value.lambda.closure_type = closure_type
 
     // Create function type
-    tpe = function(name, parameter_t, return_t, state.module)
+    fdef = function_def(name, parameter_t, return_t, state.module)
 
     let function = [
-        tpe = tpe,
+        fdef = fdef,
         module = state.module,
         locals = map::make(Str, TypeId),
-        unmangled = tpe.resolve().name,
+        unmangled = fdef.unmangled,
         is_closure = true,
         scope = state.scope,
         inner_scope = inner_scope,
@@ -4725,14 +4753,14 @@ def walk_Lambda_body(node: &parser::Node, state: &State) {
     let outer_scope = node.scope
     let function = node.value.lambda.function
 
-    let tpe = function.tpe
+    let fdef = function.fdef
     if function.is_typechecked { return }
 
     // State parameter
     let value = scope::create_variable(inner_scope, parser::make_identifier("__state"), parser::ShareMarker::NONE, parser::VarDecl::VAR, reference(0), null)
 
     // Create parameters
-    let parameter_t = tpe.resolve().parameter_t
+    let parameter_t = fdef.sig.parameter_t
     for var i in 0..parameter_t.length - 1 {
         let np = parameter_t(i + 1)
         if not np.node { continue }
@@ -4829,7 +4857,7 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
 
     let is_closure = state.function_stack.length > 1 // Main function is 0
 
-    var tpe: TypeId
+    var fdef: &FunctionDef
     var closure_type: TypeId
     var state_node = parser::make_identifier("__state") // This is needed for ref counting reasons
     let current_function = errors::current_function
@@ -4891,8 +4919,8 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
         arr(state.function_stack.length - 1) = parser::identifier_to_str(name)
 
         // Unpack tuple
-        if node.tpe {
-            let node_return_t = node.tpe.resolve().return_t
+        if node.fdef {
+            let node_return_t = node.fdef.sig.return_t
             if node_return_t and node_return_t.length == 1 {
                 let tuple = node_return_t(0).resolve()
                 if tuple and tuple.kind == TypeKind::TUPLE {
@@ -4902,16 +4930,16 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
         }
         
 
-        tpe = function(identifier_to_str(make_identifier(arr)) + "." + lambda_counter, parameter_t, return_t, state.module)
+        fdef = function_def(identifier_to_str(make_identifier(arr)) + "." + lambda_counter, parameter_t, return_t, state.module) !&FunctionDef
         lambda_counter += 1
 
         closure_type = closure(parameter_t, return_t)
 
         delete(arr)
     } else {
-        if not node.tpe { return }
-        tpe = node.tpe
-        check_is_valid_function(name, tpe.resolve().parameter_t, state)
+        if not node.fdef { return }
+        fdef = node.fdef
+        check_is_valid_function(name, fdef.sig.parameter_t, state)
     } 
 
     if not fun {
@@ -4934,13 +4962,13 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
         ] !&compiler::Function
         node.value.def_.function = fun*/
     } else {
-        fun.tpe = tpe
+        fun.fdef = @fdef
     }
 
     var phase = scope::Phase::DECLARED
     if body {
         phase = scope::Phase::COMPILED
-        let parameter_t = tpe.resolve().parameter_t
+        let parameter_t = fdef.sig.parameter_t
         for var i in 0..vector::length(parameter_t) {
             let np = parameter_t(i)
             if not np.node { continue }
@@ -4971,36 +4999,35 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
         //tpe.parameter_t.get(0).node = null // TODO This is ugly, maybe NamedParameter should have a strong reference instead?
         fun.value = scope::create_variable(outer_scope, name, parser::ShareMarker::NONE, parser::VarDecl::CONST, closure_type, null)
     } else {
-        errors::current_function = tpe.type_name
+        errors::current_function = fdef.name
         errors::current_signature = node.signature_hash
         if not fun.value {
             if polymorph and parser::identifier_to_str(name) != "construct" {
-                fun.value = scope::create_polymorph(outer_scope, node.scope, name, tpe, phase, node, local_type_defs = fun.local_type_defs, impl = impl)
+                fun.value = scope::create_polymorph(outer_scope, node.scope, name, @fdef, phase, node, local_type_defs = fun.local_type_defs, impl = impl)
             } else {
-                fun.value = scope::create_function(outer_scope, name, share, tpe, phase, node, local_type_defs = fun.local_type_defs, impl = impl)
+                fun.value = scope::create_function(outer_scope, name, share, @fdef, phase, node, local_type_defs = fun.local_type_defs, impl = impl)
             }
             if is_closure { state.module.closures.push(fun.value) }
             fun.value.polymorph = polymorph
             fun.value.imported = imported
         }
         if impl {
-            let this_tpe = tpe.resolve()
             for var i in 0..outer_scope.implicits.length {
                 let value = outer_scope.implicits(i)
                 if (value !*) == fun.value !* { continue }
 
                 let value_tpe = value.tpe.resolve()
-                if this_tpe.parameter_t.length == 1 and 
-                    this_tpe.return_t.length == 1 and
-                    equals(value_tpe.parameter_t(0).tpe, this_tpe.parameter_t(0).tpe) and
-                    equals(value_tpe.return_t(0), this_tpe.return_t(0)) {
+                if fdef.sig.parameter_t.length == 1 and 
+                    fdef.sig.return_t.length == 1 and
+                    equals(value_tpe.parameter_t(0).tpe, fdef.sig.parameter_t(0).tpe) and
+                    equals(value_tpe.return_t(0), fdef.sig.return_t(0)) {
                     errors::errorn(name, "Duplicate implicit function")
                 }
             }
         }
     }
 
-    let parameter_t = tpe.resolve().parameter_t
+    let parameter_t = fdef.sig.parameter_t
     for var i in 0..parameter_t.length {
         let param = params(i)
         if i >= parameter_t.length { continue }
@@ -5028,13 +5055,14 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
             ] !parser::NodeTypeConstructor
 
             var generator = type_lookup(generator_ctor, state).tpe
-            let return_t = tpe.resolve().return_t.copy()
+            let return_t = fdef.sig.return_t.copy()
             return_t(0) = reference(generator)
 
-            fun.tpe = tpe = function(
-                tpe.name, tpe.resolve().parameter_t, return_t, 
+            fdef = function_def(
+                fdef.unmangled, fdef.sig.parameter_t, return_t, 
                 state.module, extern, test, state.context.module
-            )
+            ) !&FunctionDef
+            fun.fdef = @fdef
 
             has_destructor(generator)
             has_copy_constructor(generator)
@@ -5087,7 +5115,8 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
     errors::current_function = current_function
     errors::current_signature = current_signature
 
-    node.tpe = tpe
+    node.fdef = fdef
+    node.tpe = fdef.to_type()
 }
 
 def check_is_recursive(tpe: &Type, types: &Set(&Type) = null) -> bool {
@@ -5206,11 +5235,11 @@ def walk_Return(node: &parser::Node, state: &State) {
     let body = node.value.body
 
     if state.current_lambda {
-        let cur_lambda = state.current_lambda.tpe.resolve()
-        let return_t = cur_lambda.return_t.copy()
+        let cur_lambda = state.current_lambda.fdef
+        let return_t = cur_lambda.sig.return_t.copy()
 
         let rtypes = collapse_types(node, return_t, body, state)
-        if cur_lambda.return_t.length != 0 {
+        if cur_lambda.sig.return_t.length != 0 {
             // Check if the types match up
             if return_t.length != rtypes.length {
                 errors::errorn(node, "Return types for lambda disagree with previous return statement")
@@ -5225,7 +5254,8 @@ def walk_Return(node: &parser::Node, state: &State) {
         } else {
             return_t.add_all(rtypes)
         }
-        state.current_lambda.tpe = closure(cur_lambda.parameter_t, return_t)
+        // FIXME Shouldn't this be a closure type?
+        state.current_lambda.fdef = function_def("", cur_lambda.sig.parameter_t, return_t)
         return
     }
 
@@ -5238,8 +5268,8 @@ def walk_Return(node: &parser::Node, state: &State) {
     }
     if not current_fun.value { return }
 
-    let tpe = current_fun.value.tpe
-    let ltypes = tpe.resolve().return_t
+    let fdef = current_fun.fdef
+    let ltypes = fdef.sig.return_t
     let rtypes = collapse_types(node, ltypes, body, state)
 
     if not current_fun.has_yield {
@@ -5252,7 +5282,7 @@ def walk_Return(node: &parser::Node, state: &State) {
         }
     }
     
-    node.tpe = tpe
+    node.tpe = fdef.to_type()
 }
 
 def walk_Yield(node: &parser::Node, state: &State) {
@@ -5458,7 +5488,8 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
     }
     // We need to do this because member access overwrites the parent node
     left = node.value.func_call.left
-    var tpe = (@left).tpe
+    var fdef: &FunctionDef
+    var tpe: &Type = left.tpe.resolve()
 
     var arguments = vector::make(NamedParameter)
     for var i in 0..vector::length(node.value.func_call.args) {
@@ -5549,7 +5580,7 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
                 let e, za_fun = scope::get_function_check(state.scope, left, args, true, not consteval::is_static, context = state.context)
                 
                 // make sure we only try this if there's something returned
-                if e and za_fun.tpe.resolve().return_t.length == 1 and access_check(za_fun, node, state) {
+                if e and za_fun.fdef.sig.return_t.length == 1 and access_check(za_fun, node, state) {
                     // Build the zero args function
                     let za_args = vector::make(type &parser::Node)
                     if node.value.func_call.is_member_access {
@@ -5557,7 +5588,8 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
                     }
                     let za_call = make_function_call(left, left, za_args)
                     za_call.tpe = za_fun.tpe.resolve().return_t(0)
-                    za_call.function = za_fun.tpe
+                    za_call.fdef = za_fun.fdef
+                    za_call.call_type = za_fun.tpe
                     
                     let args = vector::copy(arguments)
                     if node.value.func_call.is_member_access {
@@ -5592,7 +5624,7 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
                     errors::errorn(left, "Function overload not found")
                     return false
                 }
-                if overload_score(function.tpe, arguments, state.module, false, local_type_defs = function.local_type_defs) < 0 {
+                if overload_score(function.fdef, arguments, state.module, false, local_type_defs = function.local_type_defs) < 0 {
                     var msg: StringBuffer = "Incorrect arguments to overloaded function. "
                     msg += append_arguments(arguments)
                     errors::errorn(left, msg)
@@ -5656,7 +5688,8 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
                 }
             }
             
-            tpe = function.tpe
+            fdef = function.fdef !&FunctionDef
+            tpe = fdef.to_type().resolve()
         } else if left.kind == parser::NodeKind::MEMBER_ACCESS and left.tpe and arguments.length == 0 {
             // "Call" a field
             node.tpe = left.tpe
@@ -5667,12 +5700,12 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
         }
     }
 
-    node.function = tpe
+    node.fdef = fdef
     if is_function_pointer(tpe) {
         tpe = tpe.tpe
     }
     
-    let parameter_t = tpe.resolve().parameter_t
+    let parameter_t = tpe.parameter_t
 
     // Implicit conversions, this also removes type parameters from the argument list
     for var i in 0..vector::length(node.value.func_call.args) {
@@ -5710,7 +5743,8 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
         implicit_conversion(arg, rhstpe, state)
     }
 
-    node.tpe = flatten_return_type(node, tpe.resolve().return_t)
+    node.call_type = tpe.id
+    node.tpe = flatten_return_type(node, tpe.return_t)
     return true
 }
 
@@ -6758,9 +6792,9 @@ export def walk_Def_with_type_argument(node: &parser::Node, args: &Vector(NamedP
     var body = node.value.def_.body
     let test = node.value.def_.test
 
-    let tpe = fun.tpe.resolve()
-    let parameter_t = tpe.parameter_t.copy()
-    let return_t = tpe.return_t.copy()
+    let fdef = fun.fdef
+    let parameter_t = fdef.sig.parameter_t.copy()
+    let return_t = fdef.sig.return_t.copy()
 
     for var i in 0..vector::length(args) {
         let np = args(i)
@@ -6827,11 +6861,12 @@ export def walk_Def_with_type_argument(node: &parser::Node, args: &Vector(NamedP
         }
     }*/
 
-    node.tpe = fun.tpe = function(
+    fun.fdef = function_def(
         parser::identifier_to_str(name), 
-        tpe.parameter_t, tpe.return_t, state.module, 
+        fdef.sig.parameter_t, fdef.sig.return_t, state.module, 
         extern, test, context.module
     )
+    node.fdef = fun.fdef !&FunctionDef
 
     walk_Def(node, state, polymorph = true)
     state.context = prev_context
@@ -6945,8 +6980,8 @@ export def typecheck(state: &State) {
         tpe = string_array_tpe
     ] !NamedParameter)
 
-    let main_tpe = function("__main__", args, vector::make(TypeId), state.module)
-    let value = scope::create_function(node.scope, ident, parser::ShareMarker::EXPORT, main_tpe, local_type_defs = make_local_type_defs())
+    let main_fdef = function_def("__main__", args, vector::make(TypeId), state.module)
+    let value = scope::create_function(node.scope, ident, parser::ShareMarker::EXPORT, main_fdef, local_type_defs = make_local_type_defs())
     value.identifier = ident
 
     node.value.program.function.value = value

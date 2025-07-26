@@ -92,6 +92,7 @@ export type Value = struct {
     offset: size_t
 
     tpe: typechecking::TypeId
+    fdef: typechecking::FunctionDef
     value: &compiler::Value
     local_type_defs: &typechecking::LocalTypeDefs
 
@@ -432,26 +433,26 @@ export def all_values(scope: &Scope) -> &Value {
     }
 }
 
-def find_functions(value: &Value, resolved: &SMap(&Vector(typechecking::TypeId)), result: &Vector(typechecking::TypeId), template: &typechecking::Type) {
+def find_functions(value: &Value, resolved: &SMap(&Vector(typechecking::FunctionDef)), result: &Vector(typechecking::FunctionDef), template: &typechecking::Type) {
     if not value { return }
 
-    let function = value.tpe.resolve()
+    let sig = value.fdef.sig
     let new_resolved = map::make(typechecking::TypeId)
-    if vector::length(function.parameter_t) == vector::length(template.parameter_t) and
-        vector::length(function.return_t) == vector::length(template.return_t) {
+    if vector::length(sig.parameter_t) == vector::length(template.parameter_t) and
+        vector::length(sig.return_t) == vector::length(template.return_t) {
         var equal = true
         // TODO What about varargs functions?
-        for var i in 0..vector::length(function.parameter_t) {
-            let left = function.parameter_t(i)
+        for var i in 0..vector::length(sig.parameter_t) {
+            let left = sig.parameter_t(i)
             let right = template.parameter_t(i)
             if not typechecking::equals(left.tpe, right.tpe) {
                 equal = false
                 break
-            } 
+            }
         }
         if equal {
-            for var i in 0..vector::length(function.return_t) {
-                let left = function.return_t(i)
+            for var i in 0..vector::length(sig.return_t) {
+                let left = sig.return_t(i)
                 let right = template.return_t(i)
                 if not typechecking::equals(left, right) {
                     equal = false
@@ -460,7 +461,7 @@ def find_functions(value: &Value, resolved: &SMap(&Vector(typechecking::TypeId))
             }
         }
         if equal {
-            result.push(function.id)
+            result.push(value.fdef)
         }
     }
 }
@@ -635,11 +636,11 @@ export def find_all(scope: &Scope, check_export: bool = false) -> &Vector(&Value
     return ret
 }
 
-export def find_functions(scope: &Scope, node: &parser::Node, template: &typechecking::Type) -> &Vector(typechecking::TypeId), &SMap(&Vector(typechecking::TypeId)) {
+export def find_functions(scope: &Scope, node: &parser::Node, template: &typechecking::Type) -> &Vector(typechecking::FunctionDef), &SMap(&Vector(typechecking::FunctionDef)) {
     assert template.kind == typechecking::TypeKind::FUNCTION
 
-    var resolved = map::make(type &Vector(typechecking::TypeId))
-    var result = vector::make(typechecking::TypeId)
+    var resolved = map::make(type &Vector(typechecking::FunctionDef))
+    var result = vector::make(typechecking::FunctionDef)
     
     var first_value = get_function(scope, node, template.parameter_t, true)
     find_functions(first_value, resolved, result, template)
@@ -677,7 +678,7 @@ def find_function(scope: &Scope, node: &parser::Node, v: &Value, parameter_t: &V
 
         loop {
             if not v { break }
-            let s = typechecking::overload_score(v.tpe, node.value.identifier.types, context.module, true, local_type_defs = v.local_type_defs)
+            let s = typechecking::overload_score(v.fdef, node.value.identifier.types, context.module, true, local_type_defs = v.local_type_defs)
             if s == 0 {
                 @score = 0
                 return true, v
@@ -712,7 +713,7 @@ def find_function(scope: &Scope, node: &parser::Node, v: &Value, parameter_t: &V
             v.tpe = typechecking::lookup_parameters(v.node, v.state)
         }*/
 
-        let s = typechecking::overload_score(v.tpe, parameter_t, context.module, false, local_type_defs = v.local_type_defs)
+        let s = typechecking::overload_score(v.fdef, parameter_t, context.module, false, local_type_defs = v.local_type_defs)
         //print(scope.module.module if scope.module else to_str("<unknown>"), " ", v.tpe.type_name, " ", s, "\n")
         if s >= 0 {
             if s < @score {
@@ -826,12 +827,11 @@ export def find_implicit_function(scope: &Scope, parameter_t: &Vector(typechecki
     return value
 }
 
-export def has_function(scope: &Scope, ftpe_id: typechecking::TypeId) -> &Value {
-    let ftpe = ftpe_id.resolve()
-    var value = get(scope, parser::make_identifier(ftpe.name), false, false, true)
+export def has_function(scope: &Scope, fdef: typechecking::FunctionDef) -> &Value {
+    var value = get(scope, parser::make_identifier(fdef.unmangled), false, false, true)
     if value and is_function(value.tpe) {
         while value {
-            if value.tpe.type_name == ftpe.type_name {
+            if value.fdef.name == fdef.name {
                 return value
             }
             value = value.next
@@ -958,19 +958,19 @@ export def generate_function(scope: &Scope, node: &parser::Node, parameter_t: &V
                 name = "__ref",
                 tpe = ftpe.id
             ] !typechecking::NamedParameter)
-            let tpe = typechecking::function(name, parameter_t3, return_t, module)
-            let fun = has_function(scope, tpe)
+            let fdef = typechecking::function_def(name, parameter_t3, return_t, module)
+            let fun = has_function(scope, fdef)
             if fun { return fun }
 
             // TODO The share is export for now but maybe we want to make sure that it gets the same share as the first argument
             // The problem is that tpe.share doesn't work when you define it like this:
             // export type X = &interface { ... } and tpe.share is a bit of a hack anyway.
-            let value = create_function_without_checking(scope, name_node, parser::ShareMarker::EXPORT, tpe, local_type_defs)
+            let value = create_function_without_checking(scope, name_node, parser::ShareMarker::EXPORT, fdef, local_type_defs)
             value.identifier = name_node
             value.is_generated = true
             
-            module.dyn_dispatch.push(tpe)
-            module.dyn_dispatch_consteval.push(tpe)
+            module.dyn_dispatch.push(fdef)
+            module.dyn_dispatch_consteval.push(fdef)
 
             return value
         } else if vector::length(parameter_t) == 1 and is_pointer(ftpe) and 
@@ -983,15 +983,15 @@ export def generate_function(scope: &Scope, node: &parser::Node, parameter_t: &V
             ] !typechecking::NamedParameter)
 
             let name_node = parser::make_identifier("__destruct__")
-            let tpe = typechecking::function("__destruct__", args, vector::make(typechecking::TypeId))
-            let fun = has_function(builtins::builtins, tpe)
+            let fdef = typechecking::function_def("__destruct__", args, vector::make(typechecking::TypeId))
+            let fun = has_function(builtins::builtins, fdef)
             if fun { return fun }
 
-            let value = create_function_without_checking(builtins::builtins, name_node, parser::ShareMarker::EXPORT, tpe, typechecking::make_local_type_defs())
+            let value = create_function_without_checking(builtins::builtins, name_node, parser::ShareMarker::EXPORT, fdef, typechecking::make_local_type_defs())
             if module {
-                compiler::predeclare_function(tpe, module)
+                compiler::predeclare_function(fdef, module)
             }
-            compiler::destructors.add(tpe)
+            compiler::destructors.add(fdef)
             value.identifier = name_node
             value.is_generated = true
             return value
@@ -1011,15 +1011,15 @@ export def generate_function(scope: &Scope, node: &parser::Node, parameter_t: &V
                 ] !typechecking::NamedParameter)
 
                 let name_node = parser::make_identifier("__construct__")
-                let tpe = typechecking::function("__construct__", args, vector::make(typechecking::TypeId))
-                let fun = has_function(builtins::builtins, tpe)
+                let fdef = typechecking::function_def("__construct__", args, vector::make(typechecking::TypeId))
+                let fun = has_function(builtins::builtins, fdef)
                 if fun { return fun }
                 
-                let value = create_function_without_checking(builtins::builtins, name_node, parser::ShareMarker::EXPORT, tpe, typechecking::make_local_type_defs())
+                let value = create_function_without_checking(builtins::builtins, name_node, parser::ShareMarker::EXPORT, fdef, typechecking::make_local_type_defs())
                 if module {
-                    compiler::predeclare_function(tpe, module)
+                    compiler::predeclare_function(fdef, module)
                 }
-                compiler::constructors(debug::type_to_str(ftpe, full_name = true)) = tpe
+                compiler::constructors.add(fdef)
                 value.identifier = name_node
                 value.is_generated = true
                 return value
@@ -1119,7 +1119,7 @@ export def get_function_check(
             let re_export = scope.re_exports(i)
             if pattern_matches(id, re_export.pattern) {
                 var _, value2 = get_function_check(re_export.module.scope, id, parameter_t, dry_run, force_compile, only_function, false, context, path)
-                if value2 and not pattern_matches(id, re_export.pattern, value2.tpe.resolve().parameter_t) { continue }
+                if value2 and not pattern_matches(id, re_export.pattern, value2.fdef.sig.parameter_t) { continue }
                 if value2 and value2.share !int & parser::ShareMarker::EXPORT !int {
                     if value and value !* != value2 !* {
                         if not dry_run {
@@ -1560,13 +1560,9 @@ def merge(value: &Value, other: &Value) {
 
 export def create_function_without_checking(
     scope: &Scope, name_node: &parser::Node, share: parser::ShareMarker, 
-    tpe: typechecking::TypeId, local_type_defs: &typechecking::LocalTypeDefs, 
+    fdef: typechecking::FunctionDef, local_type_defs: &typechecking::LocalTypeDefs, 
     impl: bool = false
 ) -> &Value {
-
-    if not tpe { return null }
-    let ftpe = tpe.resolve()
-    assert typechecking::is_function(ftpe)
 
     scope = create_path(scope, name_node)
     if not scope { return null }
@@ -1582,12 +1578,12 @@ export def create_function_without_checking(
         name = name,
         _assembly_name = name,
         impl = impl,
-        tpe = tpe,
+        fdef = fdef,
         local_type_defs = local_type_defs,
         phase = Phase::COMPILED,
         global = global,
-        ident = make_ident(name, scope.module, 0, ftpe.type_name),
-        polymorph = typechecking::is_polymorph(ftpe.parameter_t),
+        ident = make_ident(name, scope.module, 0, fdef.name),
+        polymorph = typechecking::is_polymorph(fdef.sig.parameter_t),
         module = scope.module
     ] !&Value
 
@@ -1621,11 +1617,11 @@ export def create_function(scope: &Scope, name_node: &parser::Node, v: &Value, i
 
     let name = last_path_element(name_node)
     let phase = v.phase
-    let tpe = v.tpe.resolve()
+    let fdef = v.fdef
 
     if scope.fields.contains(name) {
         var val = scope.fields(name)
-        if not typechecking::is_function((@val).tpe) {
+        if val.kind != ValueKind::FUNCTION {
             errors::errorn(name_node, "Redeclaration of `", name, "`")
             return null 
         }
@@ -1634,8 +1630,8 @@ export def create_function(scope: &Scope, name_node: &parser::Node, v: &Value, i
             /*if phase == Phase::COMPILED and next.node and next.state {
                 next.tpe = typechecking::lookup_parameters(next.node, next.state)
             }*/
-            let s = typechecking::overload_score((@next).tpe, (@tpe).parameter_t, scope.module, true, impl = false, local_type_defs = next.local_type_defs)
-            if next.tpe and s == 0 {
+            let s = typechecking::overload_score(next.fdef, fdef.sig.parameter_t, scope.module, true, impl = false, local_type_defs = next.local_type_defs)
+            if s == 0 {
                 //if phase == Phase::DECLARED { return next }
                 if phase == Phase::DEFINED and next.phase != Phase::DECLARED {
                     errors::errorn(name_node, "Function `", name, "` was already declared previously (same arguments)")
@@ -1643,7 +1639,7 @@ export def create_function(scope: &Scope, name_node: &parser::Node, v: &Value, i
                 } else {
                     // Make sure we keep the chain intact
                     // TODO This is quite dodgy but its apparently needed for some reason
-                    next.tpe = v.tpe
+                    next.fdef = v.fdef
                     v.next = next.next
                     merge(next, v)
                 }
@@ -1667,13 +1663,10 @@ export def create_function(scope: &Scope, name_node: &parser::Node, v: &Value, i
 
 def create_function_value(
     scope: &Scope, name_node: &parser::Node, share: parser::ShareMarker, 
-    phase: Phase, node: &parser::Node, tpe: typechecking::TypeId,
+    phase: Phase, node: &parser::Node, fdef: typechecking::FunctionDef,
     local_type_defs: &typechecking::LocalTypeDefs,
     impl: bool) -> &Value {
         
-    let ftpe = tpe.resolve()
-    assert typechecking::is_function(ftpe)
-
     let name = last_path_element(name_node)
     let global = is_global(scope)
 
@@ -1685,13 +1678,13 @@ def create_function_value(
         name = name,
         _assembly_name = name,
         impl = impl,
-        tpe = tpe,
+        fdef = fdef,
         local_type_defs = local_type_defs,
         phase = phase,
         global = global,
         node = node,
-        ident = make_ident(name, scope.module, node.signature_hash if node else 0, ftpe.type_name),
-        polymorph = typechecking::is_polymorph(ftpe.parameter_t),
+        ident = make_ident(name, scope.module, node.signature_hash if node else 0, fdef.name),
+        polymorph = typechecking::is_polymorph(fdef.sig.parameter_t),
         references = vector::make(parser::SourceLoc),
         module = scope.module
     ] !&Value
@@ -1710,27 +1703,25 @@ def create_function_value(
 // TODO Give better error messages, where was the function/variable declared previously?
 export def create_function(
     scope: &Scope, name_node: &parser::Node, share: parser::ShareMarker, 
-    tpe: typechecking::TypeId, phase: Phase, node: &parser::Node, 
+    fdef: typechecking::FunctionDef, phase: Phase, node: &parser::Node, 
     local_type_defs: &typechecking::LocalTypeDefs, impl: bool = false) -> &Value {
-
-    assert typechecking::is_function(tpe)
 
     scope = create_path(scope, name_node)
     if not scope { return null }
     
-    let v = create_function_value(scope, name_node, share, phase, node, tpe, local_type_defs, impl)
+    let v = create_function_value(scope, name_node, share, phase, node, fdef, local_type_defs, impl)
 
     return create_function(scope, name_node, v, impl)
 }
 
 export def create_function(
     scope: &Scope, name_node: &parser::Node, share: parser::ShareMarker, 
-    tpe: typechecking::TypeId, local_type_defs: &typechecking::LocalTypeDefs, impl: bool = false) -> &Value {
-    return create_function(scope, name_node, share, tpe, Phase::COMPILED, null, local_type_defs, impl)
+    fdef: typechecking::FunctionDef, local_type_defs: &typechecking::LocalTypeDefs, impl: bool = false) -> &Value {
+    return create_function(scope, name_node, share, fdef, Phase::COMPILED, null, local_type_defs, impl)
 }
  
 export def create_polymorph(
-    scope: &Scope, context: &Scope, name_node: &parser::Node, tpe: typechecking::TypeId, 
+    scope: &Scope, context: &Scope, name_node: &parser::Node, fdef: typechecking::FunctionDef, 
     phase: Phase, node: &parser::Node, local_type_defs: &typechecking::LocalTypeDefs, 
     impl: bool = false) -> &Value {
     
@@ -1747,7 +1738,7 @@ export def create_polymorph(
         scope.polymorphics(module_name) = poly_scope
     }
 
-    let v = create_function_value(scope, name_node, parser::ShareMarker::NONE, Phase::COMPILED, node, tpe, local_type_defs, impl)
+    let v = create_function_value(scope, name_node, parser::ShareMarker::NONE, Phase::COMPILED, node, fdef, local_type_defs, impl)
     return create_function(poly_scope, name_node, v, impl)
 }
 
