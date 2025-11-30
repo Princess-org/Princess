@@ -473,7 +473,6 @@ export type Function = struct {
     dllexport: bool
     test: bool
     polymorph: bool
-    local_type_defs: &typechecking::LocalTypeDefs
 
     // True if we have C style varargs
     varargs: bool
@@ -1086,14 +1085,14 @@ def make_return_type(rtpe: &typechecking::Type) -> typechecking::TypeId {
 
     assert typechecking::is_tuple(rtpe)
     let length = vector::length(rtpe.return_t)
-    let fields = allocate_ref(typechecking::StructMember, length)
+    let fields = vector::make(typechecking::StructMember)
 
     for var i in 0..length {
         let t = rtpe.return_t(i)
         // TODO Add an underscore in front for the debugger
         let name = to_string(i)
 
-        fields(i) = [ name = name, tpe = t ] !typechecking::StructMember
+        fields.push([ name = name, tpe = t ] !typechecking::StructMember)
     }
 
     let struct_type = typechecking::make_struct_type(fields)
@@ -1104,13 +1103,13 @@ def make_return_type(rtpe: &typechecking::Type) -> typechecking::TypeId {
     return struct_type.id
 }
 
-def import_structure(tpe: typechecking::TypeId, module: &toolchain::Module) {
+def import_structure(tpe: &typechecking::Type, module: &toolchain::Module) {
     if not tpe { return }
     if not module.result.structures.contains(tpe.type_name) {
-        module.result.structures(tpe.type_name) = tpe
-        let fields = tpe.resolve().fields
+        module.result.structures(tpe.type_name) = tpe.id
+        let fields = tpe.fields
         if fields {
-            for var i in 0..fields.size {
+            for var i in 0..fields.length() {
                 let field = fields(i)
                 //typechecking::lookup_struct_member(field)
                 import_structures(field.tpe, module)
@@ -1119,9 +1118,9 @@ def import_structure(tpe: typechecking::TypeId, module: &toolchain::Module) {
     }
 }
 
-export def import_structures(tpe: typechecking::TypeId, module: &toolchain::Module) {
+export def import_structures(tpe: &typechecking::Type, module: &toolchain::Module) {
     if not tpe { return }
-    typechecking::used_types.add(tpe)
+    typechecking::used_types.add(tpe.id)
     switch tpe.kind !int {
         case typechecking::TypeKind::STRUCT..=typechecking::TypeKind::UNION
             import_structure(tpe, module)
@@ -1133,7 +1132,7 @@ export def import_structures(tpe: typechecking::TypeId, module: &toolchain::Modu
             typechecking::TypeKind::WEAK_REF
             import_structures(tpe.tpe, module)
         case typechecking::TypeKind::FUNCTION, typechecking::TypeKind::CLOSURE
-            let ftpe = tpe.resolve()
+            let ftpe = tpe
             for var i in 0..vector::length(ftpe.parameter_t) {
                 let param = ftpe.parameter_t(i)
                 import_structures(param.tpe, module)
@@ -1143,14 +1142,14 @@ export def import_structures(tpe: typechecking::TypeId, module: &toolchain::Modu
                 import_structures(t, module)
             }
         case typechecking::TypeKind::TUPLE, typechecking::TypeKind::TUNION
-            let ttpe = tpe.resolve()
+            let ttpe = tpe
             for var i in 0..vector::length(ttpe.return_t) {
                 let t = ttpe.return_t(i)
                 import_structures(t, module)
             }
         case typechecking::TypeKind::OPAQUE
             if not map::contains(module.result.structures, tpe.type_name) {
-            	module.result.structures(tpe.type_name) = tpe
+            	module.result.structures(tpe.type_name) = tpe.id
             }
     }
 }
@@ -1571,10 +1570,10 @@ def convert_ref_to_ptr(tpe: typechecking::TypeId, value: Value, loc: &Value, sta
 var _ref_meta: &typechecking::Type
 export def ref_meta -> typechecking::TypeId {
     if not _ref_meta {
-        _ref_meta = typechecking::make_struct_type([
-            [ tpe = builtins::int64_, name = "refcount" ] !typechecking::StructMember,
-            [ tpe = builtins::int64_, name = "weakcount" ] !typechecking::StructMember
-        ])
+        let args = vector::make(typechecking::StructMember)
+        args.push([ tpe = builtins::int64_, name = "refcount" ] !typechecking::StructMember)
+        args.push([ tpe = builtins::int64_, name = "weakcount" ] !typechecking::StructMember)
+        _ref_meta = typechecking::make_struct_type(args)
         _ref_meta.id = typechecking::next_type_id()
         typechecking::register_internal(_ref_meta.id, _ref_meta)
     }
@@ -2135,7 +2134,7 @@ def convert_to(kind: InsnKind, loc: &Value, value: Value, tpe: typechecking::Typ
 def get_embed_field(left: &typechecking::Type, right: &typechecking::Type, state: &State) -> &Vector(&typechecking::StructMember) {    
     let res = vector::make(type &typechecking::StructMember)
     // Early return if we already implement the interface!
-    if is_interface(left) and typechecking::implements(right, left, state.module, check_embed = false) { return res }
+    if is_interface(left) and typechecking::implements(right, left, state.scope, check_embed = false) { return res }
 
     if is_ref(right) {
         // Unwrap reference
@@ -2143,14 +2142,14 @@ def get_embed_field(left: &typechecking::Type, right: &typechecking::Type, state
     }
     if is_struct(right) {
         if is_struct(left) and typechecking::equals(left, right) or 
-            is_interface(left) and typechecking::implements(right, left, state.module, check_embed = false) {
+            is_interface(left) and typechecking::implements(right, left, state.scope, check_embed = false) {
             return res 
         }
 
         for var field in @right.fields {
-            if field.is_embed {
+            if field.properties.is_embed {
                 if is_struct(left) and typechecking::equals(left, field.tpe) or
-                    is_interface(left) and typechecking::implements(field.tpe, left, state.module, check_embed = false) {
+                    is_interface(left) and typechecking::implements(field.tpe, left, state.scope, check_embed = false) {
                     
                     res.push(field)
                     return res
@@ -2184,9 +2183,10 @@ def convert_to(loc: &Value, value: Value, tpe: typechecking::TypeId, state: &Sta
                 consteval::compile_function(conv, state.scope)
             }
 
-            import_structures(conv.tpe, state.module)
+            let ftpe = conv.fdef.to_type().resolve()
+            import_structures(ftpe, state.module)
             predeclare_function(conv.fdef, state.module)
-            state.module.imported.add(conv.tpe.type_name)
+            state.module.imported.add(conv.fdef.name)
 
             value = load_value(value, loc, state)
             if typechecking::has_copy_constructor(value.tpe) {
@@ -2195,10 +2195,10 @@ def convert_to(loc: &Value, value: Value, tpe: typechecking::TypeId, state: &Sta
                 value = state.load(value.tpe, ret, loc)
             }
 
-            value = convert_to(loc, value, conv.tpe.resolve().parameter_t(0).tpe, state)
+            value = convert_to(loc, value, ftpe.parameter_t(0).tpe, state)
             
             let addr = state.alloca(tpe, loc)
-            value = call(state, conv.tpe.type_name, tpe, [value], loc)
+            value = call(state, conv.fdef.name, tpe, [value], loc)
             state.store(addr, value, loc)
             create_temporary(addr, value, loc, state)
             return value
@@ -2376,8 +2376,8 @@ def convert_to(loc: &Value, value: Value, tpe: typechecking::TypeId, state: &Sta
     if typechecking::is_ref_or_weak(tpe) and typechecking::is_ref_or_weak(value.tpe) {
         return convert_ref_to_ref(tpe, load_value(value, loc, state), loc, state)
     }
-    if typechecking::is_ref_or_weak(tpe) and (typechecking::is_assignable(tpe.tpe, value.tpe, state.module) or 
-        typechecking::is_assignable(tpe, typechecking::reference(value.tpe), state.module) or 
+    if typechecking::is_ref_or_weak(tpe) and (typechecking::is_assignable(tpe.tpe, value.tpe, state.scope) or 
+        typechecking::is_assignable(tpe, typechecking::reference(value.tpe), state.scope) or 
         tpe.tpe == null or value.tpe.kind == typechecking::TypeKind::NULL) {
         return convert_value_to_ref(tpe, load_value(value, loc, state), loc, state)
     }
@@ -2429,7 +2429,7 @@ def walk_StructLitUnion(node: &parser::Node, state: &State) -> Value {
         arg = (@kwarg).value.named_arg.value
         let name = typechecking::last_ident_to_str((@kwarg).value.named_arg.name)
 
-        for var j in 0..fields.size {
+        for var j in 0..fields.length() {
             let field = fields(j)
             if field.name == name {
                 arg_tpe = field.tpe
@@ -2556,9 +2556,9 @@ def struct_lit_create_value(tpe: typechecking::TypeId, kwargs: &Vector(&parser::
 
     if is_struct(tpe) {
         let fields = tpe.resolve().fields
-        for var k in 0..fields.size {
+        for var k in 0..fields.length() {
             let field = fields(k)
-            if field.is_embed {
+            if field.properties.is_embed {
                 let new_values = struct_lit_create_value(field.tpe, kwargs, loc, state)
                 let new_value = [
                     kind = ValueKind::STRUCT,
@@ -2579,7 +2579,7 @@ def struct_lit_create_value(tpe: typechecking::TypeId, kwargs: &Vector(&parser::
         let value = walk_expression((@kwarg).value.named_arg.value, state)
         
         let fields = tpe.resolve().fields
-        for var j in 0..fields.size {
+        for var j in 0..fields.length() {
             let field = fields(j)
             if field.name == name {
                 values(j) = convert_to(kwarg, value, field.tpe, state)
@@ -3044,7 +3044,7 @@ def insert_call(
 
         if multiple_returns {
             let fields = ret.resolve().fields
-            for var i in 0..fields.size {
+            for var i in 0..fields.length() {
                 let field = fields(i)
                 let ret2 = state.gep(pointer(field.tpe), ret, addr, [make_int_value(0), make_int_value(i)])
                 create_temporary(ret2, state.load(field.tpe, ret2, loc), loc, state)
@@ -3435,11 +3435,11 @@ def walk_Identifier(node: &parser::Node, state: &State) -> Value {
         let name = val.assembly_name(state)
         (@(@state).module).imported.add(name)
         if val.module != state.module and 
-            not is_function(val.tpe) and
+            val.kind != scope::ValueKind::FUNCTION and
             not state.module.result.globals.contains(name) {
 
             state.module.result.globals(name) = [
-                tpe = val.tpe,
+                tpe = val.get_type(),
                 name = name,
                 external = true
             ] !&Global
@@ -3559,12 +3559,12 @@ def insert_destructors(scpe: &scope::Scope, loc: &Value, state: &State) {
             kind = ValueKind::GLOBAL
         }
         if state.current_function and not map::contains(state.current_function.function_locals, name) { continue }
-        insert_destructor([ kind = kind, tpe = pointer(value.tpe), name = name ] !Value, loc, state)
+        insert_destructor([ kind = kind, tpe = pointer(value.tpe.resolve(scpe)), name = name ] !Value, loc, state)
     }
     if scpe.is_function and scpe.underscore {
         insert_destructor([ 
             kind = ValueKind::LOCAL, 
-            tpe = pointer(scpe.underscore.tpe), 
+            tpe = pointer(scpe.underscore.tpe.resolve(scpe)), 
             name = scpe.underscore.assembly_name(state) 
         ] !Value, loc, state)
     }
@@ -3676,7 +3676,7 @@ def insert_destructor(value: Value, loc: &Value, state: &State) {
             }
         }
 
-        let dtor_name = destructor.tpe.type_name
+        let dtor_name = destructor.fdef.name
         state.module.imported.add(dtor_name)
         state.call(dtor_name, 0, [value], loc)
 
@@ -3774,18 +3774,18 @@ def call_set_attribute(n: &parser::Node, l: &parser::Node, value_type: typecheck
     let set_attrib = scope::get_function(state.scope, parser::make_identifier("__set_" + parser::identifier_to_str(name) + "__"), args)
     if set_attrib {
         let set_attrib_def = set_attrib.fdef
-        let left = (set_attrib_def.sig.parameter_t(0)).tpe
-        let right = (set_attrib_def.sig.parameter_t(1)).tpe
+        let left = (set_attrib_def.parameter_t(0)).tpe
+        let right = (set_attrib_def.parameter_t(1)).tpe
 
         var obj = walk_and_load_expression(l.value.bin_op.left, state)
-        obj = convert_to(n, obj, left, state)
+        obj = convert_to(n, obj, left.resolve(state.scope), state)
         if typechecking::has_copy_constructor(obj.tpe) {
             let ret = state.alloca(obj.tpe, loc, no_yield_capture = true)
             insert_copy_constructor(ret, obj, loc, state)
             obj = state.load(obj.tpe, ret, loc)
         }
 
-        value = convert_to(n, value, right, state)
+        value = convert_to(n, value, right.resolve(state.scope), state)
         if typechecking::has_copy_constructor(value.tpe) {
             let ret = state.alloca(value.tpe, loc, no_yield_capture = true)
             insert_copy_constructor(ret, value, loc, state)
@@ -3816,7 +3816,7 @@ def create_temporary(addr: Value, ret: Value, loc: &Value, state: &State) {
             ident,
             parser::ShareMarker::NONE,
             parser::VarDecl::LET,
-            ret.tpe, true, null // extern so that we don't change the variable name
+            typechecking::make_type_ref(ret.tpe), true, null // extern so that we don't change the variable name
         )
         v.is_internal = true
         v.identifier = ident // TODO Strong reference
@@ -3880,7 +3880,7 @@ def assign_post(n: &parser::Node, l: &parser::Node, value_type: typechecking::Ty
             insert_destructor(@addr, loc, state)
         } else if l.svalue and l.svalue.previous_underscore {
             let pu = l.svalue.previous_underscore
-            let addr = [ kind = ValueKind::LOCAL, name = pu.assembly_name(state), tpe = pointer(pu.tpe) ] !Value
+            let addr = [ kind = ValueKind::LOCAL, name = pu.assembly_name(state), tpe = pointer(pu.get_type()) ] !Value
             insert_destructor(addr, loc, state)
         }
         
@@ -3943,7 +3943,7 @@ export def walk_Assign(node: &parser::Node, state: &State) -> Value {
                 if l.svalue and l.svalue.name == "_" {
                     let alloca = make_insn_dbg(InsnKind::ALLOCA, loc)
                     alloca.value.alloca = [
-                        ret = [ kind = ValueKind::LOCAL, name = l.svalue.assembly_name(state), tpe = l.svalue.tpe ] !Value
+                        ret = [ kind = ValueKind::LOCAL, name = l.svalue.assembly_name(state), tpe = l.svalue.get_type() ] !Value
                     ] !InsnAlloca
                     push_alloca(alloca, state)
                 }
@@ -3990,7 +3990,7 @@ export def walk_Assign(node: &parser::Node, state: &State) -> Value {
             if l.svalue and l.svalue.name == "_" {
                 let alloca = make_insn_dbg(InsnKind::ALLOCA, loc)
                 alloca.value.alloca = [
-                    ret = [ kind = ValueKind::LOCAL, name = l.svalue.assembly_name(state), tpe = l.svalue.tpe ] !Value
+                    ret = [ kind = ValueKind::LOCAL, name = l.svalue.assembly_name(state), tpe = l.svalue.get_type() ] !Value
                 ] !InsnAlloca
                 push_alloca(alloca, state)
             }
@@ -4118,10 +4118,10 @@ type Member = struct {
 }
 
 // This list needs to be reversed to find the actual indices
-def resolve_member(vec: &Vector(Member), tpe: typechecking::TypeId, name: Str) -> bool {
-    let fields = tpe.resolve().fields
+def resolve_member(vec: &Vector(Member), tpe: &typechecking::Type, name: Str) -> bool {
+    let fields = tpe.fields
     if not fields { return false }
-    for var i in 0..fields.size {
+    for var i in 0..fields.length() {
         let field = fields(i)
         if field.name {
             if field.name == name {
@@ -4134,23 +4134,23 @@ def resolve_member(vec: &Vector(Member), tpe: typechecking::TypeId, name: Str) -
             }
         } else {
             var tpe = field.tpe
-            if field.is_embed and is_ref(tpe) { tpe = tpe.tpe }
+            if field.properties.is_embed and is_ref(tpe) { tpe = tpe.tpe }
             let found = resolve_member(vec, tpe, name)
             if found {
                 let member = [
                     index = field.index !int,
                     tpe = field.tpe,
-                    is_embed = field.is_embed
+                    is_embed = field.properties.is_embed
                 ] !Member
                 vec.push(member)
                 return true
             }
         }
     }
-    for var field in @tpe.resolve().const_fields {
+    for var field in tpe.const_fields {
         if field.name == name {
             let member = [
-                value = field.value
+                value = field.properties.value
             ] !Member
             vec.push(member)
             return true
@@ -4250,7 +4250,7 @@ def walk_MemberAccess(node: &parser::Node, state: &State) -> Value {
         if not fun { return NO_VALUE }
         
         let tmp = state.alloca(builtins::type_t(), loc)
-        res = state.call(fun.tpe.type_name, builtins::TypeT_, [res], loc)
+        res = state.call(fun.fdef.name, builtins::TypeT_, [res], loc)
         state.store(tmp, res, loc)
         create_temporary(tmp, res, loc, state)
 
@@ -5638,11 +5638,13 @@ def walk_For_generator(node: &parser::Node, state: &State) {
     push_label(start_label, state)
 
     let next_function = node.value.for_loop.generator_next.fdef
+    let nftpe = next_function.to_type().resolve()
+
     predeclare_function(next_function, state.module)
     state.module.imported.add(next_function.name)
 
     gen = state.load(expr.tpe, gen_ptr)
-    let next = state.call(next_function.name, next_function.sig.return_t(0), [gen], expr_loc)
+    let next = state.call(next_function.name, nftpe.return_t(0), [gen], expr_loc)
     let cond = state.extract_value(builtins::bool_, next, [0], expr_loc)
     let locv = for_create_var(iddecl, loc, state)
     
@@ -5918,7 +5920,7 @@ export def walk_VarDecl(node: &parser::Node, state: &State, set_constant: bool =
                 }
             }
 
-            state.add_local(state.current_function(), value, value.tpe)
+            state.add_local(state.current_function(), value, value.get_type())
 
             v.is_initializer = true
             assign_left.push(v)
@@ -5956,7 +5958,7 @@ def walk_Lambda(node: &parser::Node, state: &State) -> Value {
     //typechecking::create_type_entry(typechecking::reference(context_tpe))
     let context_ptr = create_closure_context(function, ret, loc, state, insert_temporary = true)
 
-    predeclare_function(function)
+    predeclare_function(function.fdef, state.module)
     create_function(node, function.fdef, node.value.lambda.body, node.inner_scope, null, state, is_closure = true, params = node.value.lambda.parameters)
     state.module.imported.add(function.fdef.name)
 
@@ -5985,7 +5987,7 @@ def walk_Def(node: &parser::Node, state: &State) {
     let ret = [
         kind = ValueKind::LOCAL,
         name = value.assembly_name(state),
-        tpe = value.tpe
+        tpe = value.tpe.resolve(state.scope)
     ] !Value
 
     state.current_function().function_locals.add(value.assembly_name(state))
@@ -6001,7 +6003,7 @@ def walk_Def(node: &parser::Node, state: &State) {
 
     let context_ptr = create_closure_context(function, ret, loc, state)
 
-    predeclare_function(function)
+    predeclare_function(function, state.scope)
     create_function(node, @node.fdef, node.value.def_.body, node.inner_scope, null, state, is_closure = true, params = node.value.def_.params)
     state.module.imported.add(node.tpe.type_name)
 
@@ -6051,21 +6053,22 @@ def create_closure_context_captures(function: &Function, loc: &Value, state: &St
 
     for var i in 0..function.captures.length {
         let capture = function.captures(i)
+        let ctpe = capture.get_type()
         var svalue = scope::get(state.scope, parser::make_identifier(capture.name))
         var value = NO_VALUE
         if capture.name.starts_with("__ref.") and not svalue {
             svalue = scope::get(state.scope, parser::make_identifier(capture.name.substring(6, capture.name.length)))
-            value = [ kind = ValueKind::LOCAL, tpe = capture.tpe, name = svalue.assembly_name(state) ] !Value
+            value = [ kind = ValueKind::LOCAL, tpe = ctpe, name = svalue.assembly_name(state) ] !Value
         } else {
-            let addr = [ kind = ValueKind::LOCAL, tpe = pointer(capture.tpe), name = svalue.assembly_name(state) ] !Value
+            let addr = [ kind = ValueKind::LOCAL, tpe = pointer(ctpe), name = svalue.assembly_name(state) ] !Value
             if is_ref_or_weak(addr.tpe.tpe) {
                 increase_ref_count(addr, loc, state)
-                value = state.load(capture.tpe, addr, loc)
+                value = state.load(ctpe, addr, loc)
             } else if has_copy_constructor(addr.tpe.tpe) {
-                value = state.load(capture.tpe, addr, loc)
+                value = state.load(ctpe, addr, loc)
                 insert_copy_constructor(addr, value, loc, state)
             } else {
-                value = state.load(capture.tpe, addr, loc)
+                value = state.load(ctpe, addr, loc)
             }
         }
         context = state.insert_value(context_tpe.id, context, value, [i], loc)
@@ -6317,16 +6320,16 @@ def walk_Assert(node: &parser::Node, state: &State) {
         return
     }
 
-    import_structures(scope::get(state.scope, parser::make_identifier("fprintf")).tpe, state.module)
+    import_structures(scope::get(state.scope, parser::make_identifier("fprintf")).get_type(), state.module)
 
     let std_module = toolchain::find_module("std")
-    let stderr_fun = scope::get(std_module.scope, parser::make_identifier("stderr")).tpe
-    let print_stacktrace_fun = scope::get(std_module.scope, parser::make_identifier("print_stacktrace")).tpe
+    let stderr_fun = scope::get(std_module.scope, parser::make_identifier("stderr"))
+    let print_stacktrace_fun = scope::get(std_module.scope, parser::make_identifier("print_stacktrace"))
     //let fun = predeclare_function(stderr_fun, std_module)
     //state.module.result.functions[stderr_fun.type_name] = fun
 
-    state.module.imported.add(stderr_fun.type_name)
-    state.module.imported.add(print_stacktrace_fun.type_name)
+    state.module.imported.add(stderr_fun.fdef.name)
+    state.module.imported.add(print_stacktrace_fun.fdef.name)
     import_cstd_function("fprintf", state)
     import_cstd_function("abort", state)
 
@@ -6385,7 +6388,7 @@ def walk_Assert(node: &parser::Node, state: &State) {
     mcall.value.call = [
         name = [
             kind = ValueKind::GLOBAL,
-            name = stderr_fun.type_name
+            name = stderr_fun.fdef.name
         ] !Value,
         ret = stderr,
         args = allocate_ref(Value, 0)
@@ -6418,7 +6421,7 @@ def walk_Assert(node: &parser::Node, state: &State) {
     ] !InsnCall
     push_insn(fprintf, state)
 
-    state.call(print_stacktrace_fun.type_name, 0, [] ![Value], loc)
+    state.call(print_stacktrace_fun.fdef.name, 0, [] ![Value], loc)
 
     let abort = make_insn_dbg(InsnKind::CALL, loc)
     abort.value.call = [
@@ -6520,8 +6523,8 @@ def di_basic_type(tpe: &typechecking::Type, name: Str, c: Str, state: &State) ->
 }
 
 def di_composite_type(value: &Value, tpe: &typechecking::Type, name: Str, c: Str, state: &State) -> &Value {
-    let elementsarr = allocate_ref(Value, tpe.fields.size)
-    for var i in 0..tpe.fields.size {
+    let elementsarr = allocate_ref(Value, tpe.fields.length())
+    for var i in 0..tpe.fields.length() {
         let elem = tpe.fields(i)
         let elem_tpe = elem.tpe.resolve()
         let debug_values = allocate_ref(DebugParam, 8)
@@ -6538,7 +6541,7 @@ def di_composite_type(value: &Value, tpe: &typechecking::Type, name: Str, c: Str
             name = "file", value = meta_to_debug_value((@state).difile)
         ] !DebugParam
         debug_values(4) = [
-            name = "line", value = [ kind = DebugValueKind::INT, i = elem.line + 1 ] !DebugValue
+            name = "line", value = [ kind = DebugValueKind::INT, i = 0 ] !DebugValue // TODO Get line number somehow
         ] !DebugParam
         debug_values(5) = [
             name = "baseType", value = meta_to_debug_value(di_type(elem_tpe, state))
@@ -6758,17 +6761,17 @@ def di_static_array_type(tpe: &typechecking::Type, state: &State) -> &Value {
 
 def di_array_type(value: &Value, tpe: &typechecking::Type, state: &State) -> &Value {
     // TODO This should probably be an array type instead (see documentation)
-    let fields = allocate_ref(typechecking::StructMember, 2)
-    fields(0) = [ name = "size", tpe = builtins::size_t_ ] !typechecking::StructMember
-    fields(1) = [ name = "value", tpe = typechecking::pointer(tpe.tpe) ] !typechecking::StructMember
+    let fields = vector::make(typechecking::StructMember)
+    fields.push([ name = "size", tpe = builtins::size_t_ ] !typechecking::StructMember)
+    fields.push([ name = "value", tpe = typechecking::pointer(tpe.tpe) ] !typechecking::StructMember)
     return di_composite_type(value, typechecking::make_struct_type(fields), "<array>", "DW_TAG_structure_type", state)
 }
 
 def di_ref_type(value: &Value, tpe: &typechecking::Type, is_weak: bool, state: &State) -> &Value {
-    let fields = allocate_ref(typechecking::StructMember, 3)
-    fields(0) = [ name = "ref_count", tpe = typechecking::pointer(builtins::int64_) ] !StructMember
-    fields(1) = [ name = "value", tpe = typechecking::pointer(tpe.tpe) ] !StructMember
-    fields(2) = [ name = "tpe", tpe = typechecking::pointer(builtins::type_t()) ] !StructMember
+    let fields = vector::make(typechecking::StructMember)
+    fields.push([ name = "ref_count", tpe = typechecking::pointer(builtins::int64_) ] !typechecking::StructMember)
+    fields.push([ name = "value", tpe = typechecking::pointer(tpe.tpe) ] !typechecking::StructMember)
+    fields.push([ name = "tpe", tpe = typechecking::pointer(builtins::type_t()) ] !typechecking::StructMember)
     let _ref = typechecking::make_struct_type(fields)
  
     return di_composite_type(value, _ref, "<weak_ref>" if is_weak else "<ref>", "DW_TAG_structure_type", state)
@@ -6811,9 +6814,9 @@ def di_type(tpe: &typechecking::Type, state: &State) -> &Value {
             @ditpe = @di_composite_type(ditpep, tpe, name, "DW_TAG_structure_type", state)
         case typechecking::TypeKind::TUPLE
             // TODO Do this without creating a new type
-            let fields = allocate_ref(typechecking::StructMember, tpe.return_t.length)
-            for var i in 0..tpe.return_t.length {
-                fields(i) = [ tpe = tpe.return_t(i), name = "_" + i ] !typechecking::StructMember
+            let fields = vector::make(typechecking::StructMember)
+            for var i in 0..tpe.return_t.length() {
+                fields.push([ tpe = tpe.return_t(i), name = "_" + i ] !typechecking::StructMember)
             }
             @ditpe = @di_composite_type(ditpep, make_struct_type(fields), name, "DW_TAG_structure_type", state)
         case typechecking::TypeKind::UNION
@@ -6841,9 +6844,9 @@ def di_type(tpe: &typechecking::Type, state: &State) -> &Value {
         case typechecking::TypeKind::TYPE
             @ditpe = @di_composite_type(ditpep, builtins::type_t(), "<type>", "DW_TAG_structure_type", state)
         case typechecking::TypeKind::TUNION
-            let members = allocate_ref(StructMember, 2)
-            members(0) = [ tpe = pointer(builtins::type_t()), name = "tpe" ] !StructMember
-            members(1) = [ tpe = tpe.tpe, name = "union" ] !StructMember
+            let members = vector::make(typechecking::StructMember)
+            members.push([ tpe = pointer(builtins::type_t()), name = "tpe" ] !StructMember)
+            members.push([ tpe = tpe.tpe, name = "union" ] !StructMember)
             @ditpe = @di_composite_type(ditpep, typechecking::make_struct_type(members), "<tagged_union>", "DW_TAG_structure_type", state)
         case
             error(tpe.kind, "\n") 
@@ -6891,14 +6894,14 @@ def generate_defer_types_post(state: &State) {
     if not function.has_defer { return }
 
     let env_name = function.name + ".env"
-    let env_fields = allocate_ref(typechecking::StructMember, map::size(function.locals))
+    let env_fields = vector::make(typechecking::StructMember)
 
     let keys = map::keys(function.locals)
     for var i in 0..keys.size {
         let tpe = function.locals(keys(i))
-        env_fields(i) = [
+        env_fields.push([
             tpe = tpe
-        ] !typechecking::StructMember
+        ] !typechecking::StructMember)
     }
     
     let env = typechecking::make_struct_type(env_fields)
@@ -6908,11 +6911,11 @@ def generate_defer_types_post(state: &State) {
     state.module.result.structures(env_name) = env.id
 
     let defers_name = function.name + ".defers"
-    let defers_fields = allocate_ref(typechecking::StructMember, 3)
+    let defers_fields = vector::make(typechecking::StructMember)
 
-    defers_fields(0) = [
+    defers_fields.push([
         tpe = env.id
-    ] !typechecking::StructMember
+    ] !typechecking::StructMember)
 
     let defer_parameter_t = vector::make(typechecking::NamedParameter)
     defer_parameter_t.push([
@@ -6922,13 +6925,13 @@ def generate_defer_types_post(state: &State) {
     let defer_function = typechecking::function(defer_parameter_t, vector::make(typechecking::TypeId))
     
     let defer_functionp = typechecking::pointer(defer_function)
-    defers_fields(1) = [
+    defers_fields.push([
         tpe = defer_functionp
-    ] !typechecking::StructMember
+    ] !typechecking::StructMember)
 
-    defers_fields(2) = [
+    defers_fields.push([
         tpe = typechecking::pointer(function.defers)
-    ] !typechecking::StructMember
+    ] !typechecking::StructMember)
 
     let defers = typechecking::make_struct_type(defers_fields)
     defers.type_name = defers_name
@@ -7110,12 +7113,12 @@ export def predeclare_function(fdef: typechecking::FunctionDef, module: &toolcha
             module = module
         ] !&Function
     }
-    predeclare_function(function)
+    predeclare_function(function, module.scope)
     return function
 }
 
 // TODO Do we need overwrite here?
-export def predeclare_function(function: &Function, overwrite: bool = false) {
+export def predeclare_function(function: &Function, scpe: &scope::Scope, overwrite: bool = false) {
     let fdef = function.fdef
     
     function.name = fdef.name
@@ -7126,25 +7129,34 @@ export def predeclare_function(function: &Function, overwrite: bool = false) {
     }
     function.function_locals = set::make()
 
-    if vector::length(fdef.sig.parameter_t) > 0 {
-        let last_parameter = vector::peek(fdef.sig.parameter_t)
+    if vector::length(fdef.parameter_t) > 0 {
+        let last_parameter = vector::peek(fdef.parameter_t)
         if last_parameter.varargs and not last_parameter.tpe {
             function.varargs = true
         }
     }
     
-    if vector::length(fdef.sig.return_t) > 1 {
+    if vector::length(fdef.return_t) > 1 {
         function.ret = make_return_type(fdef.to_type())
         function.multiple_returns = true
-    } else if vector::length(fdef.sig.return_t) == 1 {
-        function.ret = vector::peek(fdef.sig.return_t)
+    } else if vector::length(fdef.return_t) == 1 {
+        function.ret = vector::peek(fdef.return_t).resolve(scpe)
     }
 
     function.args = vector::make(typechecking::NamedParameter)
-    for var i in 0..vector::length(fdef.sig.parameter_t) {
-        let np = fdef.sig.parameter_t(i)
-        if not np.tpe or not is_type(np.tpe) {
-           function.args.push(np)
+    for var i in 0..vector::length(fdef.parameter_t) {
+        let np = fdef.parameter_t(i)
+        let restpe = np.tpe.resolve(scpe)
+        if restpe {
+            let resnp = [
+                name = np.name,
+                tpe = restpe,
+                value = np.value,
+                kw = np.kw,
+                varargs = np.varargs,
+                node = np.node
+            ] !typechecking::NamedParameter
+            function.args.push(resnp)
         }
     }
 
@@ -7252,7 +7264,7 @@ def create_generator(
     ])
     let context_ptr = state.bitcast(pointer(context), context_ptr_i8)
 
-    let parameter_t = fdef.sig.parameter_t
+    let parameter_t = fdef.to_type().resolve().parameter_t
     for var i in 0..parameter_t.length {
         let par = parameter_t(i)
         let local_ptr = state.gep(pointer(par.tpe), context, context_ptr, [make_int_value(0), make_int_value(i + 1)])
@@ -7335,10 +7347,11 @@ def inline_call(node: &parser::Node, function: &Function, tpe: typechecking::Typ
             let param = node.value.def_.params(i).value.param.name
             let svalue = param.svalue
             if not svalue { continue }
-            state.add_local(function, svalue, svalue.tpe)
+            let rtpe = svalue.get_type()
+            state.add_local(function, svalue, rtpe)
             let loc = make_location(param, state)
 
-            let addr = [ kind = ValueKind::LOCAL, name = svalue.assembly_name(state), tpe = svalue.tpe ] !Value
+            let addr = [ kind = ValueKind::LOCAL, name = svalue.assembly_name(state), tpe = rtpe ] !Value
             let alloca = make_insn(InsnKind::ALLOCA)
             alloca.value.alloca = [
                 ret = addr
@@ -7426,7 +7439,7 @@ export def create_function(
         for var i in 0..vector::length(params) {
             let param = params(i).value.param.name
             if not param or not param.svalue { continue }
-            state.add_local(function, param.svalue, param.svalue.tpe)
+            state.add_local(function, param.svalue, param.svalue.get_type())
         }
     }
 
@@ -7448,7 +7461,7 @@ export def create_function(
 
         if function.has_yield {
             assert node != null
-            generator = fdef.sig.return_t(0).tpe
+            generator = fdef.return_t(0).tpe
 
             let option_ctor = [
                 kind = parser::NodeKind::TYPE_CONSTRUCTOR
@@ -7469,7 +7482,7 @@ export def create_function(
         //    add_type_meta(reference(function.state), state)
         //}
 
-        let ftpe = fdef.to_type()
+        let ftpe = fdef.to_type(scpe)
         import_structures(ftpe, state.module)
         state.module.imported.add(fdef.name)
         create_debug_info(node, function, ftpe, state)
@@ -7566,7 +7579,7 @@ export def create_function(
                 let ret = [
                     kind = ValueKind::LOCAL,
                     name = capture.assembly_name(state),
-                    tpe = capture.tpe
+                    tpe = capture.tpe.resolve(scpe)
                 ] !Value
 
                 let alloca = make_insn(InsnKind::ALLOCA)
@@ -7574,9 +7587,9 @@ export def create_function(
                     ret = ret
                 ] !InsnAlloca
                 push_alloca(alloca, state)
-                ret.tpe = pointer(capture.tpe)
+                ret.tpe = pointer(capture.tpe.resolve(scpe))
                 
-                let capture_value = state.extract_value(capture.tpe, context, [i])
+                let capture_value = state.extract_value(capture.tpe.resolve(scpe), context, [i])
                 state.store(ret, capture_value)
             }
         }
@@ -7749,12 +7762,14 @@ export def create_function(
 
         if function.has_yield {
             // Implementation
+            // TODO We don't want to do this twice, create a function that can convert
             let parameter_t = vector::make(typechecking::NamedParameter)
             parameter_t.push([ name = "__context", tpe = generator_type ] !typechecking::NamedParameter)
-            let return_t = vector::make(typechecking::TypeId)
-            return_t.push(function.optional)
+            let return_t = vector::make(&typechecking::TypeRef)
+            return_t.push(typechecking::make_type_ref(function.optional))
+
             let impl_def = typechecking::function_def(function.fdef.name + ".impl",
-                parameter_t, return_t, state.module, context = state.module
+                typechecking::wrap_ref(parameter_t), return_t, state.module, context = state.module
             )
 
             state.store(
@@ -7775,11 +7790,11 @@ export def create_function(
 
             // Make context type
             let keys = function.all_locals.keys()
-            let fields = allocate_ref(typechecking::StructMember, keys.size + 1)
-            fields(0) = [ name = "__loc", tpe = builtins::int_ ] !typechecking::StructMember
+            let fields = vector::make(typechecking::StructMember)
+            fields.push([ name = "__loc", tpe = builtins::int_ ] !typechecking::StructMember)
             for var i in 0..keys.size {
                 let tpe = function.all_locals(keys(i))
-                fields(i + 1) = [ name = to_string(i), tpe = tpe ] !typechecking::StructMember
+                fields.push([ name = to_string(i), tpe = tpe ] !typechecking::StructMember)
             }
 
             let context_name = function.fdef.name + ".context"
@@ -7799,7 +7814,7 @@ export def create_function(
             let parameter_t2 = vector::make(typechecking::NamedParameter)
             parameter_t2.push([ name = "__context", tpe = typechecking::pointer(0) ] !typechecking::NamedParameter)
             let free_context_def = typechecking::function_def(function.name + ".free_context." + state.context_ptr,
-                free_context_parameters, vector::make(typechecking::TypeId), state.module, context = function.module
+                typechecking::wrap_ref(free_context_parameters), vector::make(type &typechecking::TypeRef), state.module, context = function.module
             )
             state.context_ptr += 1
 
@@ -7907,7 +7922,7 @@ export def walk_TypeDecl(node: &parser::Node, state: &State) {
             ] !typechecking::NamedParameter)
 
             let svalue = scope::get_function(node.scope, parser::make_identifier("to_string"), parameter_t)
-            let type_name = svalue.tpe.type_name
+            let type_name = svalue.fdef.name
 
             let function = [
                 name = type_name,
@@ -7975,8 +7990,8 @@ export def walk_TypeDecl(node: &parser::Node, state: &State) {
             (@retinsn).value.ret.value = ret
             push_insn(retinsn, state)
             
-            import_structures((@svalue).tpe, state.module)
-            (@(@state).module).imported.add((@function).name)
+            import_structures(svalue.get_type(), state.module)
+            state.module.imported.add(function.name)
             state.module.result.functions(function.name) = function
             state.function_stack.pop()
         }
@@ -8134,7 +8149,7 @@ def insert_module_main(module: &toolchain::Module, name: &parser::Node, scpe: &s
         kwargs = vector::make(type &parser::Node)
     ] !parser::NodeFuncCall
 
-    let fun = module.result.functions.get_or_default(main_value.tpe.type_name, null)
+    let fun = module.result.functions.get_or_default(main_value.fdef.name, null)
     insert_function(state.module, fun)
 
     body.push(call)
@@ -8283,7 +8298,8 @@ export def create_constructor(fdef: typechecking::FunctionDef) {
     consteval::const_module.result.functions(function.name) = function
     function.forward_declare = false
     state.module.imported.add(fdef.name)
-    import_structures(fdef.to_type(), state.module)
+    let ftpe = fdef.to_type().resolve()
+    import_structures(ftpe.id, state.module)
     
     state.function_stack.push(function)
     let block = make_block()
@@ -8291,7 +8307,7 @@ export def create_constructor(fdef: typechecking::FunctionDef) {
     let previous_block = state.current_block
     state.current_block = block
 
-    let first_arg = fdef.sig.parameter_t(0).tpe
+    let first_arg = ftpe.parameter_t(0).tpe
     let copy = [ kind = ValueKind::LOCAL, tpe = first_arg, name = "__copy.value" ] !Value
     let this = [ kind = ValueKind::LOCAL, tpe = first_arg, name = "__this.value" ] !Value
     state.store(copy, state.load(this.tpe.tpe, this))
@@ -8408,7 +8424,7 @@ def create_constructor(copy: Value, this: Value, state: &State) {
                         insert_copy_constructor(copy_ptr, state.load(member.tpe, this_ptr), null, state)
                     } else {
                         let ctor = typechecking::get_constructor(member.tpe)
-                        state.call(ctor.tpe.type_name, 0, [copy_ptr, this_ptr])
+                        state.call(ctor.fdef.name, 0, [copy_ptr, this_ptr])
                     }
                 } else if typechecking::is_ref_or_weak(member.tpe) {
                     let copy_ptr = state.gep(pointer(member.tpe), copy_vtpe.id, copy, [make_int_value(0), make_int_value(i)])
@@ -8451,7 +8467,8 @@ export def create_destructor(fdef: typechecking::FunctionDef) {
     consteval::const_module.result.functions(function.name) = function
     function.forward_declare = false
     state.module.imported.add(fdef.name)
-    import_structures(fdef.to_type(), state.module)
+    let ftpe = fdef.to_type().resolve()
+    import_structures(ftpe.id, state.module)
     
     state.function_stack.push(function)
     let block = make_block()
@@ -8459,7 +8476,7 @@ export def create_destructor(fdef: typechecking::FunctionDef) {
     let previous_block = state.current_block
     state.current_block = block
 
-    let first_arg = (fdef.sig.parameter_t(0)).tpe
+    let first_arg = (ftpe.parameter_t(0)).tpe
     create_destructor(first_arg, [ kind = ValueKind::LOCAL, tpe = first_arg, name = "__ptr.value" ] !Value, state)
 
     state.ret(NO_VALUE)
@@ -8626,7 +8643,7 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
                 let destructor = typechecking::get_builtin_destructor(structure_type.tpe)
 
                 if destructor {
-                    state.call(destructor.tpe.type_name, 0, [array_val])
+                    state.call(destructor.fdef.name, 0, [array_val])
                 }
             }
 
@@ -8674,9 +8691,9 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
         // There can only be one destructor for this type
         var destructor = typechecking::get_user_defined_destructor(structure_type)
         if destructor {
-            let dtor = destructor.tpe.resolve()
+            let dtor = destructor.fdef.to_type().resolve()
             predeclare_function(destructor.fdef, state.module)
-            state.module.imported.add(dtor.type_name)
+            state.module.imported.add(destructor.fdef.name)
 
             if typechecking::is_ref(tpe.tpe) {
                 let _ref = state.load(tpe.tpe, value)
@@ -8686,11 +8703,11 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
             // Check if we have a destructor that returns a boolean to sidestep default cleanup behavior
             if dtor.return_t.length == 1 and 
                 dtor.return_t(0).resolve().kind == typechecking::TypeKind::BOOL {
-                let run_default = state.call(dtor.type_name, builtins::bool_, [value])
+                let run_default = state.call(destructor.fdef.name, builtins::bool_, [value])
                 run_default_deinit = make_insn(InsnKind::BR)
                 run_default_deinit.value.br.cond = run_default
             } else {
-                state.call(dtor.type_name, 0, [value])
+                state.call(destructor.fdef.name, 0, [value])
             }
         }
     }
@@ -8724,7 +8741,7 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
             obj = value
         }
         
-        //for var i in 0..structure_type.fields.size {
+        //for var i in 0..structure_type.fields.length() {
         //    typechecking::lookup_struct_member(structure_type.fields(i))
         //}
 
@@ -8741,8 +8758,9 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
                     let destructor = typechecking::get_builtin_destructor(field.tpe)
 
                     if destructor {
+                        let dtortpe = destructor.get_type().resolve()
                         let field_value = state.gep(ptpe, structure_type.id, obj, [make_int_value(0), make_int_value(i)])
-                        state.call(destructor.tpe.type_name, 0, [field_value])
+                        state.call(dtortpe.type_name, 0, [field_value])
                     }
                 }
             }
@@ -8827,7 +8845,7 @@ def do_create_type(tpe: &typechecking::Type, svalue: &scope::Value, module: &too
     let global2 = [
         private = false,
         name = svalue.assembly_name(state),
-        tpe = svalue.tpe,
+        tpe = svalue.get_type(),
         value = value,
         line = -1
     ] !&Global
@@ -8847,14 +8865,16 @@ def do_create_type(tpe: &typechecking::Type, svalue: &scope::Value, module: &too
         let fp = type_.field_types(1).tpe
         // Add destructor reference
         let dtor = typechecking::get_builtin_destructor(tpe, lookup = false)
-        value.values(1) = [ kind = ValueKind::GLOBAL, tpe = pointer(dtor.tpe), name = dtor.tpe.type_name] !Value
+        let fdef = dtor.fdef.to_type()
+        value.values(1) = [ kind = ValueKind::GLOBAL, tpe = pointer(fdef), name = dtor.fdef.name] !Value
     }
 
     if is_ref(tpe) and typechecking::has_copy_constructor(tpe) {
         let fp = type_.field_types(2).tpe
         // Add constructor reference
         let ctor = typechecking::get_constructor(tpe, lookup = false)
-        value.values(2) = [ kind = ValueKind::GLOBAL, tpe = pointer(ctor.tpe), name = ctor.tpe.type_name ] !Value
+        let fdef = ctor.fdef.to_type()
+        value.values(2) = [ kind = ValueKind::GLOBAL, tpe = pointer(fdef), name = ctor.fdef.name ] !Value
     }
 
     value.kind = ValueKind::STRUCT
@@ -8930,7 +8950,7 @@ export def create_type(tpe: &typechecking::Type, module: &toolchain::Module, res
         print("create_type: ", name, "\n")
         svalue = scope::create_variable(
             toolchain::types.scope, ident, parser::ShareMarker::NONE, 
-            parser::VarDecl::CONST, builtins::type_t(), 
+            parser::VarDecl::CONST, typechecking::make_type_ref(builtins::type_t()), 
             false, false, false, null, scope::Phase::COMPILED, null, null)
 
         let entry = [ tpe = tpe, value = svalue, module = module ] !TypeEntry
@@ -8948,7 +8968,7 @@ export def create_type(tpe: &typechecking::Type, module: &toolchain::Module, res
         if is_box(tpe) {
             create_type(tpe.tpe, module, res)
         } else if is_struct(tpe) {
-            for var i in 0..tpe.fields.size {
+            for var i in 0..tpe.fields.length() {
                 let field = tpe.fields(i)
                 create_type(field.tpe, module, res)
             }
@@ -9010,7 +9030,7 @@ def declare_reflection_type_id_fun(state: &State) -> &scope::Value {
     }
 
     predeclare_function(fun_type_id.fdef, state.module)
-    state.module.imported.add(fun_type_id.tpe.type_name)
+    state.module.imported.add(fun_type_id.fdef.name)
 
     return fun_type_id
 }
@@ -9023,7 +9043,7 @@ def change_value_to_type(tpe: &typechecking::Type, loc: &Value, state: &State) -
     if not fun { return NO_VALUE }
     let hash = md5::high(md5::md5(debug::type_to_str(tpe, full_name = true)))
     let tmp = state.alloca(builtins::type_t(), loc)
-    let res = state.call(fun.tpe.type_name, builtins::TypeT_, [[ tpe = builtins::uint64_, kind = ValueKind::INT, i = hash ] !Value], loc)
+    let res = state.call(fun.fdef.name, builtins::TypeT_, [[ tpe = builtins::uint64_, kind = ValueKind::INT, i = hash ] !Value], loc)
     state.store(tmp, res, loc)
     create_temporary(tmp, res, loc, state)
     return res
@@ -9170,7 +9190,7 @@ export def generate_reflection_data_queued -> &io::ByteStream, &UniquedStrings{
         args(3) = [ kind = ValueKind::GLOBAL, name = strings_ident, tpe = pointer(builtins::char_)]
 
         call.value.call = [
-            name = [ kind = ValueKind::GLOBAL, name = fun_load_types.tpe.type_name ],
+            name = [ kind = ValueKind::GLOBAL, name = fun_load_types.fdef.name ],
             ret = NO_VALUE,
             args = args
         ] !InsnCall
@@ -9239,7 +9259,7 @@ def generate_reflection_data_2(tpe: &typechecking::Type, data: &ByteStream, stri
 
     switch tpe.kind {
     case typechecking::TypeKind::STRUCT, typechecking::TypeKind::UNION
-        for var member in @tpe.fields {
+        for var member in tpe.fields {
             data.write(member.tpe.hash)
         }
     case typechecking::TypeKind::INTERFACE
@@ -9297,10 +9317,10 @@ def generate_reflection_data_1(tpe: &typechecking::Type, data: &ByteStream, stri
     case typechecking::TypeKind::STRUCT, typechecking::TypeKind::UNION
         data.write(tpe.size !int)
         data.write(tpe.align !int)
-        data.write(tpe.fields.size !int)
+        data.write(tpe.fields.length() !int)
 
-        print("\tsize: ", tpe.size, " align: ", tpe.align, " members: ", tpe.fields.size, "\n")
-        for var i in 0..tpe.fields.size {
+        print("\tsize: ", tpe.size, " align: ", tpe.align, " members: ", tpe.fields.length(), "\n")
+        for var i in 0..tpe.fields.length() {
             let field = tpe.fields(i)
             let member = tpe.field_types(field.index)
             data.write(strings.write_zt(field.name))
@@ -9374,9 +9394,8 @@ export def predeclare_functions(module: &toolchain::Module) {
                 var value = m_scope.fields(keys(i))
                 while value {
                     if value.share !int & parser::ShareMarker::EXPORT !int {
-                        if typechecking::is_function(value.tpe) {
-                            let ftpe = value.tpe.resolve()
-                            if not typechecking::is_polymorph(ftpe.parameter_t) {
+                        if value.kind == scope::ValueKind::FUNCTION {
+                            if not typechecking::is_polymorph(value.tpe) {
                                 var fun: &Function
                                 if value.node {
                                     fun = value.node.value.def_.function
@@ -9386,11 +9405,11 @@ export def predeclare_functions(module: &toolchain::Module) {
                                 }
                                 insert_function(module, fun)
                             }
-                        } else if not typechecking::is_type(value.tpe) {
+                        } else if value.kind == scope::ValueKind::VALUE {
                             let name = value._assembly_name
                             let global = [
                                 name = name,
-                                tpe = value.tpe,
+                                tpe = value.tpe.resolve(module.scope),
                                 external = true,
                                 line = -1,
                                 dllimport = value.dllimport,
@@ -9407,7 +9426,8 @@ export def predeclare_functions(module: &toolchain::Module) {
 }
 
 def generate_vtable_function(function: &Function, fdef: typechecking::FunctionDef, state: &State) {
-    let first_param = (fdef.sig.parameter_t(0)).tpe
+    let ftpe = fdef.to_type().resolve()
+    let first_param = (ftpe.parameter_t(0)).tpe
     let intf = typechecking::get_interface(first_param)
 
     function.block = make_block()
@@ -9416,10 +9436,10 @@ def generate_vtable_function(function: &Function, fdef: typechecking::FunctionDe
     state.current_block = function.block
 
     var ret_tpe: typechecking::TypeId
-    if vector::length(fdef.sig.return_t) > 1 {
-        ret_tpe = make_return_type(fdef.to_type())
-    } else if vector::length(fdef.sig.return_t) == 1 {
-        ret_tpe = vector::peek(fdef.sig.return_t)
+    if vector::length(ftpe.return_t) > 1 {
+        ret_tpe = make_return_type(ftpe)
+    } else if vector::length(ftpe.return_t) == 1 {
+        ret_tpe = vector::peek(ftpe.return_t)
     }
 
     // Extract type
@@ -9442,8 +9462,9 @@ def generate_vtable_function(function: &Function, fdef: typechecking::FunctionDe
     let hashes = set::make(uint64)
     let keys = map::keys(typechecking::type_registry)
     for var i in 0..keys.size {
-        let type_entry = typechecking::type_registry(keys(i)).id
-        if is_ref(type_entry.tpe) and typechecking::implements(type_entry, intf, state.module) {
+        let type_entry = typechecking::type_registry(keys(i))
+        if is_ref(type_entry.tpe) and typechecking::implements(type_entry, intf, state.scope) {
+            // FIXME This whole branch isn't working yet because interfaces don't work right now
             let hash = md5::high(md5::md5(debug::type_to_str(type_entry, full_name = true)))
             if hashes.contains(hash) { continue }
             hashes.add(hash)
@@ -9454,8 +9475,8 @@ def generate_vtable_function(function: &Function, fdef: typechecking::FunctionDe
 
             state.module.imported.add(type_entry.tpe.type_name)
 
-            let parameter_t = vector::copy(fdef.sig.parameter_t)
-            parameter_t(0) = [ tpe = type_entry ] !typechecking::NamedParameter
+            let parameter_t = vector::copy(ftpe.parameter_t)
+            parameter_t(0) = [ tpe = type_entry.id ] !typechecking::NamedParameter
             
             var score = std::MAX_INT32 !int
             var fun: &typechecking::FunctionDef
@@ -9486,7 +9507,7 @@ def generate_vtable_function(function: &Function, fdef: typechecking::FunctionDe
                 if consteval::is_static {
                     let fun = scope::get_function(module.scope, parser::make_identifier(fun.unmangled), parameter_t, false, false, false)
                     let val = consteval::compile_function(fun, state.scope)
-                    import_structures(val.tpe, state.module)
+                    import_structures(val.get_type(), state.module)
                 }
             }
 
@@ -9506,14 +9527,14 @@ def generate_vtable_function(function: &Function, fdef: typechecking::FunctionDe
             switch_values.push(svalue)
 
             
-            let target_type = fun.sig.parameter_t(0).tpe if fun else type_entry
+            let target_type = fun.to_type().resolve().parameter_t(0).tpe if fun else type_entry.id
             let reference = convert_ref_to_ref(target_type, [ kind = ValueKind::LOCAL, tpe = first_param, name = "__ref.value"] !Value, null, state)
             
             if kind == 0 {
-                let args = allocate_ref(Value, vector::length(fdef.sig.parameter_t))
+                let args = allocate_ref(Value, vector::length(ftpe.parameter_t))
                 args(0) = reference
-                for var i in 1..vector::length(fdef.sig.parameter_t) {
-                    let np = fdef.sig.parameter_t(i)
+                for var i in 1..vector::length(ftpe.parameter_t) {
+                    let np = ftpe.parameter_t(i)
                     args(i) = [ kind = ValueKind::LOCAL, tpe = np.tpe, name = np.name + ".value" ] !Value
                 }
                 let r = state.call(fun.name, ret_tpe, args)
@@ -9532,7 +9553,7 @@ def generate_vtable_function(function: &Function, fdef: typechecking::FunctionDe
                     }
                 }
 
-                let np = fdef.sig.parameter_t(1)
+                let np = ftpe.parameter_t(1)
                 let arg = [ kind = ValueKind::LOCAL, tpe = np.tpe, name = np.name + ".value" ] !Value
                 value = state.insert_value(type_entry.tpe, value, arg, [findex !int])
                 state.store(deref, value)
@@ -9555,7 +9576,7 @@ def generate_vtable_function(function: &Function, fdef: typechecking::FunctionDe
                 }
 
                 if is_const {
-                    let res = convert_to(null !&Value, @const_field.value, ret_tpe, state)
+                    let res = convert_to(null !&Value, @const_field.properties.value, ret_tpe, state)
                     state.ret(res)
                 } else {
                     var stpe = type_entry.tpe
@@ -9664,8 +9685,8 @@ export def compile(state: &State, is_main: bool, no_cleanup: bool = false) {
 
     let finalizer = typechecking::function_def(
         "__finalizer__",
-        vector::make(typechecking::NamedParameter), 
-        vector::make(typechecking::TypeId), state.module
+        vector::make(typechecking::NamedParameterPre), 
+        vector::make(type &typechecking::TypeRef), state.module
     )
     state.module.result.finalizer = finalizer
 
@@ -9882,10 +9903,10 @@ export def compile(state: &State, is_main: bool, no_cleanup: bool = false) {
 
     for var i in 0..vector::length(node.body) {
         let n = node.body(i)
-        if n.kind == parser::NodeKind::DEF and not typechecking::is_polymorph(n.tpe.resolve().parameter_t) {
+        if n.kind == parser::NodeKind::DEF and not typechecking::is_polymorph(n.fdef.parameter_t) {
             let function = n.value.def_.function
             if function {
-                predeclare_function(function, overwrite = true)
+                predeclare_function(function, state.scope, overwrite = true)
             }
         }
     }
@@ -9898,7 +9919,7 @@ export def compile(state: &State, is_main: bool, no_cleanup: bool = false) {
         let n = node.body(i)
         switch (@n).kind !int {
             case parser::NodeKind::DEF
-                if n.value.def_.body and n.fdef and not typechecking::is_polymorph(n.fdef.sig.parameter_t) {
+                if n.value.def_.body and n.fdef and not typechecking::is_polymorph(n.fdef.parameter_t) {
                     //if not n.value.def_.is_generic_instance { verify_function(n) }
                     create_function(
                         n, @n.fdef, n.value.def_.body, n.inner_scope, null, state
@@ -9993,7 +10014,7 @@ export def compile(state: &State, is_main: bool, no_cleanup: bool = false) {
         }
 
         // Create destructor
-        insert_destructor([ kind = ValueKind::GLOBAL, tpe = pointer(value.tpe), name = value.assembly_name(state) ] !Value, null, state)
+        insert_destructor([ kind = ValueKind::GLOBAL, tpe = pointer(value.get_type()), name = value.assembly_name(state) ] !Value, null, state)
     }
 
     if builtins::builtins.fields.contains("DEBUG_REF_CYCLES") and state.module.module == "main" {

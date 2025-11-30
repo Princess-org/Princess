@@ -36,7 +36,7 @@ import eval
 export def make_value(value: compiler::Value) -> &scope::Value {
     let svalue = [
         value = value,
-        tpe = value.tpe
+        tpe = typechecking::make_type_ref(value.tpe)
     ] !&scope::Value
     return svalue
 }
@@ -225,14 +225,14 @@ export def evaluate_parameter(node: &parser::Node, param: &parser::Node, tpe: ty
             if global.value {
                 value = global.value
 
-                if not typechecking::is_assignable(tpe, value.tpe, state.module) {
+                if not typechecking::is_assignable(tpe, value.tpe, state.scope) {
                     errors::errorn(param.value.param.value, debug::type_to_str(value.tpe), " is not assignable to ", debug::type_to_str(tpe))
                 }
             } else {
                 global.private = false
                 value = [ kind = compiler::ValueKind::GLOBAL, tpe = typechecking::pointer(global.tpe), name = global.name ] !&compiler::Value
 
-                if not typechecking::is_assignable(tpe, global.tpe, state.module) {
+                if not typechecking::is_assignable(tpe, global.tpe, state.scope) {
                     errors::errorn(param.value.param.value, debug::type_to_str(global.tpe), " is not assignable to ", debug::type_to_str(tpe))
                 }
             }
@@ -316,16 +316,15 @@ export def walk_Def(node: &parser::Node, state: &typechecking::State) {
 
     if not name { return }
 
-    let parameter_t = vector::make(typechecking::NamedParameter)
-    var return_t = vector::make(typechecking::TypeId)
-    let local_type_defs = typechecking::make_local_type_defs()
+    let parameter_t = vector::make(typechecking::NamedParameterPre)
+    var return_t = vector::make(&typechecking::TypeRef)
 
     if test {
         parameter_t.push([
             kw = parser::VarDecl::LET,
             name = "env",
-            tpe = pointer(builtins::TestEnvironment_)
-        ] !NamedParameter)
+            tpe = typechecking::make_type_ref(pointer(builtins::TestEnvironment_))
+        ] !NamedParameterPre)
     }
 
     if impl {
@@ -341,23 +340,16 @@ export def walk_Def(node: &parser::Node, state: &typechecking::State) {
         let param = params(i)
         assert param.kind == parser::NodeKind::PARAMETER
 
-        var generic: &typechecking::Generic = null
+        var tpe: &typechecking::TypeRef = null
         if param.value.param.kw == parser::VarDecl::TYPE {
             if not param.value.param.name { continue }
             let name = scope::last_path_element(param.value.param.name)
-            generic = [ name = name ] !&typechecking::Generic
-            typechecking::next_local_type_def(name, local_type_defs)
+            tpe = typechecking::make_type_ref(name)
         } else {
-            generic = typechecking::type_lookup(param.value.param.tpe, state, local_type_defs = local_type_defs)
+            tpe = typechecking::type_lookup(param.value.param.tpe, state)
             if param.value.param.is_ref {
-                generic = typechecking::byref(generic)
+                tpe = typechecking::byref(tpe)
             }
-        }
-
-        var tpe: TypeId
-        if generic and generic.is_type() { 
-            tpe = generic.tpe
-            generic = null
         }
 
         var value: &compiler::Value
@@ -369,25 +361,29 @@ export def walk_Def(node: &parser::Node, state: &typechecking::State) {
         parameter_t.push([
             kw = param.value.param.kw,
             name = last_ident_to_str(name),
-            generic = generic,
             tpe = tpe,
             varargs = (@param).value.param.varargs,
             node = name,
             value = value
-        ] !typechecking::NamedParameter)
+        ] !typechecking::NamedParameterPre)
     }
     for var i in 0..vector::length(returns) {
         let n = returns(i)
-        let tpe = typechecking::type_lookup(n, state, local_type_defs = local_type_defs).tpe
+        let tpe = typechecking::type_lookup(n, state)
         return_t.push(tpe)
     }
 
     // Unpack tuple
     if return_t and return_t.length == 1 {
-        let ret = return_t(0).resolve()
-        if typechecking::is_tuple(ret) {
-            let tpe = ret.tpe.resolve()
-            return_t = tpe.return_t.copy()
+        let ret = return_t(0)
+        if ret.tpe and typechecking::is_tuple(ret.tpe) {
+            let tuple_return_t = ret.tpe.resolve().return_t
+            return_t = vector::make(&typechecking::TypeRef)
+            for var i in 0..vector::length(tuple_return_t) {
+                return_t.push(typechecking::make_type_ref(tuple_return_t(i)))
+            }
+        } else if ret.pattern and ret.pattern.kind == typechecking::TypeKind::TUPLE {
+            return_t = ret.pattern.return_t.copy()
         }
     }
 
@@ -406,13 +402,12 @@ export def walk_Def(node: &parser::Node, state: &typechecking::State) {
 
     if state.function_stack.length <= 1 {
         if function {
-            function.value.local_type_defs = local_type_defs
             node.svalue = scope::create_function(state.scope, name, function.value)
         } else {
             if body {
-                node.svalue = scope::create_function(state.scope, name, share, @fdef, scope::Phase::DEFINED, node, local_type_defs, impl = impl)
+                node.svalue = scope::create_function(state.scope, name, share, @fdef, scope::Phase::DEFINED, node, impl = impl)
             } else {
-                node.svalue = scope::create_function(state.scope, name, share, @fdef, scope::Phase::DECLARED, node, local_type_defs)
+                node.svalue = scope::create_function(state.scope, name, share, @fdef, scope::Phase::DECLARED, node)
             }
         }
         if node.svalue {
@@ -435,8 +430,7 @@ export def walk_Def(node: &parser::Node, state: &typechecking::State) {
             dllimport = dllimport,
             dllexport = dllexport or test,
             test = test,
-            imported = imported,
-            local_type_defs = local_type_defs
+            imported = imported
         ] !&compiler::Function
         node.value.def_.function = function
     }
@@ -557,7 +551,7 @@ export def walk_TypeDecl(node: &parser::Node, state: &typechecking::State) {
 
                     let c = [ kind = compiler::ValueKind::INT, tpe = enum_tpe.tpe, i = constant ] !&compiler::Value
                     scope::create_variable(state.scope, iddecl.value.id_decl_enum.ident, 
-                        share, parser::VarDecl::CONST, tpe, c)
+                        share, parser::VarDecl::CONST, typechecking::make_type_ref(tpe), c)
 
                     constant += 1
                 }
@@ -567,19 +561,19 @@ export def walk_TypeDecl(node: &parser::Node, state: &typechecking::State) {
                 state.scope = scope::exit_scope(state.scope)
 
                 // Create to_string function
-                let parameter_t = vector::make(typechecking::NamedParameter)
-                let return_t = vector::make(typechecking::TypeId)
-                parameter_t.push([ name = "enum", tpe = tpe] !typechecking::NamedParameter)
-                return_t.push(builtins::string_)
+                let parameter_t = vector::make(typechecking::NamedParameterPre)
+                let return_t = vector::make(type &typechecking::TypeRef)
+                parameter_t.push([ name = "enum", tpe = typechecking::make_type_ref(tpe)] !typechecking::NamedParameterPre)
+                return_t.push(typechecking::make_type_ref(builtins::string_))
 
                 let ident = parser::make_identifier("to_string")
                 let fdef = typechecking::function_def("to_string", parameter_t, return_t)
-                let v = scope::create_function(state.scope, ident, parser::ShareMarker::EXPORT, fdef, local_type_defs = make_local_type_defs())
+                let v = scope::create_function(state.scope, ident, parser::ShareMarker::EXPORT, fdef)
                 v.identifier = ident
-                left.svalue = scope::create_type(state.scope, name, share, tpe, scope::Phase::DEFINED, null)
+                left.svalue = scope::create_type(state.scope, name, share, typechecking::make_type_ref(tpe), scope::Phase::DEFINED, null)
                 typechecking::register(tpe, enum_tpe)
             } else {
-                left.svalue = scope::create_type(state.scope, name, share, tpe, scope::Phase::DEFINED, typedef)
+                left.svalue = scope::create_type(state.scope, name, share, typechecking::make_type_ref(tpe), scope::Phase::DEFINED, typedef)
             }
             value.tpe = tpe
         } else {
@@ -590,7 +584,7 @@ export def walk_TypeDecl(node: &parser::Node, state: &typechecking::State) {
             opaque.defmodule = state.module
 
             register(tpe, opaque)
-            left.svalue = scope::create_type(state.scope, name, share, tpe, scope::Phase::DECLARED, null)
+            left.svalue = scope::create_type(state.scope, name, share, typechecking::make_type_ref(tpe), scope::Phase::DECLARED, null)
         }
 
         parent.body.insert(parent.body.index_of(node), typedef)
@@ -666,7 +660,7 @@ export def walk_top_VarDecl(node: &parser::Node, state: &typechecking::State) {
 
                 n.svalue = scope::create_variable(
                     state.scope, n.value.id_decl.value, 
-                    share, kw, 0, 
+                    share, kw, null, 
                     extern, dllimport, dllexport, null, scope::Phase::DEFINED, node, copy_state(state)
                 )
             }
@@ -721,8 +715,8 @@ def walk_VarDecl(node: &parser::Node, state: &typechecking::State) {
             let value = scope::get(state.scope, name)
             // TODO We need to serialize these ones as well, move them out of the function
             let mem = locals(value.assembly_name(compiler_state))
-            let ptr = eval::get(mem, typechecking::pointer(value.tpe))
-            let constant = eval::get(ptr.i !*, value.tpe)
+            let ptr = eval::get(mem, typechecking::pointer(value.get_type()))
+            let constant = eval::get(ptr.i !*, value.get_type())
             value.value = constant
         }
  
@@ -831,9 +825,9 @@ export def compile_function(value: &scope::Value, context: &scope::Scope, argume
     var function = node.value.def_.function
     if function.is_typechecked and not is_repurposed { return value }
 
-    let is_polymorph = typechecking::is_polymorph(function.fdef.sig.parameter_t)
+    let is_polymorph = typechecking::is_polymorph(function.fdef.parameter_t)
     if not is_polymorph { 
-        compiler::predeclare_function(function, overwrite = true)
+        compiler::predeclare_function(function, context, overwrite = true)
         const_module.result.functions(function.name) = function 
     }
 
@@ -851,7 +845,7 @@ export def compile_function(value: &scope::Value, context: &scope::Scope, argume
         if arguments and is_polymorph {
             node = typechecking::walk_Def_with_type_argument(node, arguments, context, state)
             function = node.value.def_.function
-            compiler::predeclare_function(function, overwrite = true)
+            compiler::predeclare_function(function, context, overwrite = true)
             const_module.result.functions(function.name) = function 
         } else {
             walk_Def(node, state)
@@ -1210,7 +1204,7 @@ export def consteval(module: &toolchain::Module) {
     if module.module == "std" {
         toolchain::load_file_type()
     } else if module.module == "reflection" {
-        builtins::TypeT_ = module.scope.get_type(parser::make_identifier("Type"))
+        builtins::TypeT_ = module.scope.get_type_id(parser::make_identifier("Type"))
     }
 }
 

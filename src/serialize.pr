@@ -26,6 +26,10 @@ let TYPE_REF: byte = -2
 let VARARGS: byte = -3
 let NO_TYPE: byte = -4
 
+let K_TYPE: byte = 0
+let K_NAME: byte = 1
+let K_GENERIC: byte = 2
+
 /*def add_type(tpe: &typechecking::Type, state: &Serialize) -> int64 {
     if not tpe { return -1 }
 
@@ -176,14 +180,13 @@ def serialize_type(fp: File, tpe: &typechecking::Type) {
         }
         write_type(fp, tpe.tpe)
     } else if typechecking::is_struct(tpe) {
-        let sz = tpe.fields.size
+        let sz = tpe.fields.length()
         fp.write(*sz)
         for var i in 0..sz {
             let field = tpe.fields(i)
             write_type(fp, field.tpe)
-            fp.write(*field.line)
-            fp.write(*field.is_bitfield)
-            fp.write(*field.bit_size)
+            fp.write(*field.properties.is_bitfield)
+            fp.write(*field.properties.bit_size)
             fp.write_str(field.name)
         }
         if tpe.kind == typechecking::TypeKind::UNION {
@@ -217,12 +220,12 @@ def serialize_type(fp: File, tpe: &typechecking::Type) {
             fp.write(*member.parameter_t.length)
             for var i in 0..member.parameter_t.length {
                 let np = member.parameter_t(i)
-                write_type(fp, np.tpe)
+                serialize_typeref(fp, np.tpe)
                 fp.write_str(np.name)
             }
             fp.write(*member.return_t.length)
             for var i in 0..member.return_t.length {
-                write_type(fp, member.return_t(i))
+                serialize_typeref(fp, member.return_t(i))
             }
         }
     } else if tpe.kind == typechecking::TypeKind::ENUM {
@@ -266,7 +269,7 @@ def serialize_type(fp: File, tpe: &typechecking::Type) {
 }
 
 def serialize_function(fp: File, value: &scope::Value, state: &Serialize) {
-    let tpe = value.tpe.resolve()
+    let fdef = value.fdef
     let hash = value.ident._hash
     let share = value.share !byte
     fp.write(*hash)
@@ -277,49 +280,43 @@ def serialize_function(fp: File, value: &scope::Value, state: &Serialize) {
     fp.write(*value.impl)
     // TODO Get Function object with dllexport and dllimport
     fp.write_str(value.name)
-    fp.write_str(tpe.type_name)
+    fp.write_str(fdef.name)
 
     if not value.is_generated and not value.polymorph {
         state.dependencies.add_all(value.dependencies)
     }
 
-    fp.write(*tpe.parameter_t.length)
-    for var i in 0..tpe.parameter_t.length {
-        let np = tpe.parameter_t(i)
+    fp.write(*fdef.parameter_t.length)
+    for var i in 0..fdef.parameter_t.length {
+        let np = fdef.parameter_t(i)
         fp.write_str(np.name)
         fp.write(*np.varargs)
-        let is_generic = np.generic != null
-        fp.write(*is_generic) // is_generic
+        serialize_typeref(fp, np.tpe)
         let has_value = np.value !bool
-        if np.generic != null {
-            serialize_generic(fp, np.generic)
-        } else {
-            write_type(fp, np.tpe)
-        }
         fp.write(*has_value)
         if has_value {
             serialize_value(fp, np.value)
         }
     }
-    fp.write(*tpe.return_t.length)
-    for var i in 0..tpe.return_t.length {
-        let tpe = tpe.return_t(i)
-        write_type(fp, tpe)
+    fp.write(*fdef.return_t.length)
+    for var i in 0..fdef.return_t.length {
+        let tpe = fdef.return_t(i)
+        serialize_typeref(fp, tpe)
     }
     
     // TODO This is because is_polymorph (incorrectly) returns true for TYPE_DEF
     // This is needed in some other places, hence the workaround
-    let polymorph = typechecking::is_polymorph(tpe.parameter_t) and value.node
+    let polymorph = typechecking::is_polymorph(fdef.parameter_t) and value.node
     fp.write(*polymorph)
     if polymorph {
-        let type_defs = value.local_type_defs.type_defs
+        /*let type_defs = value.local_type_defs.type_defs
         let sz = type_defs.size
         fp.write(*sz)
         for var name in @type_defs.keys() {
             let id = type_defs(name)
             fp.write_str(name)
             fp.write(*id)
-        }
+        }*/
 
         let loc = value.node.loc
         fp.write(*loc.line)
@@ -329,29 +326,40 @@ def serialize_function(fp: File, value: &scope::Value, state: &Serialize) {
     }
 }
 
-def serialize_generic(fp: File, generic: &typechecking::Generic) {
-    var is_type = typechecking::is_type(generic)
-    fp.write(*is_type)
-    if is_type {
-        write_type(fp, generic.tpe)
+def serialize_typeref(fp: File, typeref: &typechecking::TypeRef) {
+    var kind = K_GENERIC
+    if typeref.tpe {
+        kind = K_TYPE
+    } else if typeref.name {
+        kind = K_NAME
+    }
+    fp.write(*kind)
+
+    if kind == K_TYPE {
+        write_type(fp, typeref.tpe)
+        return
+    } else if kind == K_NAME {
+        fp.write_str(typeref.name)
         return
     }
 
+    var generic = typeref.pattern
     fp.write(*generic.kind)
     fp.write(*generic.length)
-    fp.write_str(generic.name)
+    fp.write(*generic.kw)
     
-    var has_generic = generic.generic != null
+    var has_generic = generic.tpe != null
     fp.write(*has_generic)
     if has_generic {
-        serialize_generic(fp, generic.generic)
+        serialize_typeref(fp, generic.tpe)
     }
 
     let zero: uint64 = -1
     if generic.parameter_t {
         fp.write(*generic.parameter_t.length)
         for var g in generic.parameter_t {
-            serialize_generic(fp, g)
+            fp.write_str(g.name)
+            serialize_typeref(fp, g.tpe)
         }
     } else {
         fp.write(*zero)
@@ -360,11 +368,15 @@ def serialize_generic(fp: File, generic: &typechecking::Generic) {
     if generic.return_t {
         fp.write(*generic.return_t.length)
         for var g in generic.return_t {
-            serialize_generic(fp, g)
+            serialize_typeref(fp, g)
         }
     } else {
         fp.write(*zero)
     }
+
+    // TODO We currently don't support struct and union patterns
+    assert generic.kind != typechecking::TypeKind::STRUCT and 
+        generic.kind != typechecking::TypeKind::UNION
 }
 
 // This function serializes all types in the type registry
@@ -547,13 +559,12 @@ def deserialize_type(fp: File) {
         var sz: size_t
         fp.read(*sz)
 
-        let fields = allocate_ref(typechecking::StructMember, sz)
+        let fields = vector::make(typechecking::StructMember)
         for var i in 0..sz {
             var np = [] !typechecking::StructMember
             np.tpe = read_type(fp)
-            fp.read(*np.line)
-            fp.read(*np.is_bitfield)
-            fp.read(*np.bit_size)
+            fp.read(*np.properties.is_bitfield)
+            fp.read(*np.properties.bit_size)
             np.name = fp.read_str()
             fields(i) = np
         }
@@ -608,9 +619,9 @@ def deserialize_type(fp: File) {
             let parameter_t2 = parameter_t.copy()
             parameter_t2.insert(0, [ name = "__data", tpe = ref_zero ] !NamedParameter)
 
-            let types = allocate_ref(StructMember, 2)
-            types(0) = [ tpe = funptr, name = "function" ] !StructMember
-            types(1) = [ tpe = ref_zero, name = "data" ] !StructMember
+            let types = vector::make(typechecking::StructMember)
+            types.push([ tpe = funptr, name = "function" ] !typechecking::StructMember)
+            types.push([ tpe = ref_zero, name = "data" ] !typechecking::StructMember)
             typechecking::make_struct_type(types, null, tpe)
             tpe.kind = typechecking::TypeKind::CLOSURE
         }
@@ -636,19 +647,19 @@ def deserialize_type(fp: File) {
             member.name = fp.read_str()
 
             var size: size_t
-            member.parameter_t = vector::make(typechecking::NamedParameter)
+            member.parameter_t = vector::make(typechecking::NamedParameterPre)
             fp.read(*size)
             for var i in 0..size {
-                var np: typechecking::NamedParameter
-                let ftpe = read_type(fp)
+                var np: typechecking::NamedParameterPre
+                let ftpe = deserialize_typeref(fp)
                 np.tpe = ftpe
                 np.name = fp.read_str()
                 member.parameter_t.push(np)
             }
-            member.return_t = vector::make(typechecking::TypeId)
+            member.return_t = vector::make(type &typechecking::TypeRef)
             fp.read(*size)
             for var i in 0..size {
-                member.return_t.push(read_type(fp))
+                member.return_t.push(deserialize_typeref(fp))
             }
             members.push(member)
         }
@@ -667,7 +678,7 @@ def deserialize_type(fp: File) {
             var value: int64
             fp.read(*value)
             let v = scope::create_variable(scpe,
-                name, parser::ShareMarker::EXPORT, parser::VarDecl::CONST, tpe.id, 
+                name, parser::ShareMarker::EXPORT, parser::VarDecl::CONST, typechecking::make_type_ref(tpe.tpe), 
                 [ kind = compiler::ValueKind::INT, tpe = tpe.tpe, i = value ] !compiler::Value
             )
             v.identifier = name
@@ -731,43 +742,51 @@ def deserialize_type(fp: File) {
     typechecking::register(id, tpe)
 }
 
-def deserialize_generic(deserialize: &Deserialize, fp: File) -> &typechecking::Generic {
-    var is_type: bool
-    fp.read(*is_type)
-    if is_type {
+def deserialize_typeref(fp: File) -> &typechecking::TypeRef {
+    var kind: int
+    fp.read(*kind)
+    if kind == K_TYPE {
         let tpe = read_type(fp)
-        return [ tpe = tpe ] !&typechecking::Generic
+        return typechecking::make_type_ref(tpe)
+    } else if kind == K_NAME {
+        var name = fp.read_str()
+        return typechecking::make_type_ref(name)
     }
     
-    let generic = [] !&typechecking::Generic
-    fp.read(*generic.kind)
-    fp.read(*generic.length)
-    generic.name = fp.read_str()
+    let pattern = [] !&typechecking::Pattern
+    fp.read(*pattern.kind)
+    fp.read(*pattern.length)
+    fp.read(*pattern.kw)
 
-    var has_generic: bool
-    fp.read(*has_generic)
-    if has_generic {
-        generic.generic = deserialize_generic(deserialize, fp)
+    var has_pattern: bool
+    fp.read(*has_pattern)
+    if has_pattern {
+        pattern.tpe = deserialize_typeref(fp)
     }
 
     var len: size_t
     fp.read(*len)
     if len !int64 >= 0 {
-        generic.parameter_t = vector::make(type &typechecking::Generic)
+        pattern.parameter_t = vector::make(type typechecking::NamedParameterPre)
         for var i in 0..len {
-            generic.parameter_t.push(deserialize_generic(deserialize, fp))
+            let name = fp.read_str()
+            pattern.parameter_t.push([ name = name, tpe = deserialize_typeref(fp)] !typechecking::NamedParameterPre)
         }
     }
 
     fp.read(*len)
     if len !int64 >= 0 {
-        generic.return_t = vector::make(type &typechecking::Generic)
+        pattern.return_t = vector::make(type &typechecking::TypeRef)
         for var i in 0..len {
-            generic.return_t.push(deserialize_generic(deserialize, fp))
+            pattern.return_t.push(deserialize_typeref(fp))
         }
     }
 
-    return generic
+    // TODO We currently don't support struct and union patterns
+    assert pattern.kind != typechecking::TypeKind::UNION and 
+        pattern.kind != typechecking::TypeKind::STRUCT
+
+    return typechecking::make_type_ref(pattern)
 }
 
 export def deserialize_types {
@@ -812,22 +831,13 @@ def deserialize_function(deserialize: &Deserialize, fp: File) {
     var size: size_t
     fp.read(*size)
 
-    let parameter_t = vector::make(typechecking::NamedParameter)
+    let parameter_t = vector::make(typechecking::NamedParameterPre)
     for var i in 0..size {
         var name = fp.read_str()
         var varargs: bool
         fp.read(*varargs)
 
-        var generic: &typechecking::Generic
-        var tpe: typechecking::TypeId
-        var is_generic: bool
-        fp.read(*is_generic) 
-        if is_generic {
-            generic = deserialize_generic(deserialize, fp)
-        } else {
-            tpe = read_type(fp)
-        }
-        
+        var tpe = deserialize_typeref(fp)
         var has_value: bool
         fp.read(*has_value)
 
@@ -835,13 +845,13 @@ def deserialize_function(deserialize: &Deserialize, fp: File) {
         if has_value {
             value = deserialize_value(deserialize, fp)
         }
-        parameter_t.push([ name = name, tpe = tpe, varargs = varargs, value = value ] !typechecking::NamedParameter)
+        parameter_t.push([ name = name, tpe = tpe, varargs = varargs, value = value ] !typechecking::NamedParameterPre)
     }
 
-    let return_t = vector::make(typechecking::TypeId)
+    let return_t = vector::make(&typechecking::TypeRef)
     fp.read(*size)
     for var i in 0..size {
-        let tpe = read_type(fp)
+        let tpe = deserialize_typeref(fp)
         return_t.push(tpe)
     }
 
@@ -851,19 +861,17 @@ def deserialize_function(deserialize: &Deserialize, fp: File) {
         type_name = to_string(type_name)
     )
 
-    let local_type_defs = typechecking::make_local_type_defs()
-
     var is_polymorph: bool
     fp.read(*is_polymorph)
     if is_polymorph {
-        var sz: size_t
+        /*var sz: size_t
         fp.read(*sz)
         for var i in 0..sz {
             let name = fp.read_str()
             var id: int64
             fp.read(*id)
             local_type_defs.type_defs(name) = id
-        }
+        }*/
 
         var loc: parser::SourceLoc
         fp.read(*loc.line)
@@ -889,7 +897,6 @@ def deserialize_function(deserialize: &Deserialize, fp: File) {
         share = share !parser::ShareMarker,
         node = node,
         fdef = fdef,
-        local_type_defs = local_type_defs,
         imported = imported,
         polymorph = polymorph,
         impl = impl
@@ -914,7 +921,7 @@ def serialize_variable(fp: File, value: &scope::Value, state: &Serialize) {
         state.dependencies.add_all(value.dependencies)
     }
 
-    write_type(fp, value.tpe)
+    serialize_typeref(fp, value.tpe)
     fp.write(*is_constant)
     if is_constant {
         serialize_value(fp, value.value)
@@ -937,7 +944,7 @@ def deserialize_variable(deserialize: &Deserialize, fp: File) {
     fp.read(*dllexport)
     let name = fp.read_str()
 
-    let tpe = read_type(fp)
+    let tpe = deserialize_typeref(fp)
     var is_constant: bool
     fp.read(*is_constant)
     var value: &compiler::Value
@@ -1196,7 +1203,6 @@ type FunctionEntry = struct {
     share: parser::ShareMarker
     node: &parser::Node
     fdef: typechecking::FunctionDef
-    local_type_defs: &typechecking::LocalTypeDefs
     imported: bool
     polymorph: bool
     impl: bool
@@ -1210,7 +1216,7 @@ type VariableEntry = struct {
     extern: bool
     dllimport: bool
     dllexport: bool
-    tpe: typechecking::TypeId
+    tpe: &typechecking::TypeRef
     value: &compiler::Value
 }
 
@@ -1356,7 +1362,7 @@ export def resolver_pass(module: &toolchain::Module) {
         name_node.loc.module = module.module
         let val = scope::create_type(
             deserialize.module.scope, name_node, entry.share, 
-            entry.tpe, scope::Phase::COMPILED, null
+            typechecking::make_type_ref(entry.tpe), scope::Phase::COMPILED, null
         )
         val.ident = scope::make_ident(entry.name, module, entry.hash)
         val.identifier = name_node
@@ -1368,9 +1374,9 @@ export def resolver_pass(module: &toolchain::Module) {
         name_node.loc.module = module.module
 
         let fdef = entry.fdef
-        let phase = scope::Phase::DEFINED if typechecking::is_polymorph(fdef.sig.parameter_t) else scope::Phase::COMPILED
+        let phase = scope::Phase::DEFINED if typechecking::is_polymorph(fdef.parameter_t) else scope::Phase::COMPILED
         let value = scope::create_function_without_checking(
-            module.scope, name_node, entry.share, fdef, entry.local_type_defs, entry.impl
+            module.scope, name_node, entry.share, fdef, entry.impl
         )
         value.phase = phase
         value.node = entry.node

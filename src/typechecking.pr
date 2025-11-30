@@ -70,14 +70,8 @@ export type TypeMember = struct {
     offset: size_t
 }
 
-export type StructMember = struct {
-    // Source line
-    line: int
+type MemberProperties = struct {
     node: weak &parser::Node
-    name: Str
-    tpe: TypeId
-    // index into the field_types vector
-    index: size_t
 
     is_bitfield: bool
     bit_size: size_t
@@ -88,15 +82,27 @@ export type StructMember = struct {
     value: &compiler::Value
 }
 
+export type StructMemberPre = struct {
+    name: Str
+    tpe: &TypeRef
+    properties: MemberProperties
+}
+
+export type StructMember = struct {
+    name: Str
+    tpe: TypeId
+    // index into the field_types vector
+    index: size_t
+    properties: MemberProperties
+}
+
 export type StructuralTypeMember = struct {
     name: Str
-    // Vector of NamedParameter
-    parameter_t: &Vector(NamedParameter)
-    // Vector of Type
+    parameter_t: &Vector(NamedParameterPre)
     return_t: &Vector(&TypeRef)
 }
 
-def make_type_member(name: Str, parameter_t: &Vector(NamedParameter), return_t: &Vector(&TypeRef)) -> StructuralTypeMember {
+def make_type_member(name: Str, parameter_t: &Vector(NamedParameterPre), return_t: &Vector(&TypeRef)) -> StructuralTypeMember {
     return [
         name = name,
         parameter_t = parameter_t,
@@ -144,9 +150,9 @@ export type Type = struct {
     tpe: TypeId
     packed: bool
     // Fields for struct, array of StructMember
-    fields: &[StructMember]
+    fields: &Vector(StructMember)
     // Constants
-    const_fields: &[StructMember]
+    const_fields: &Vector(StructMember)
     // Vector of TypeMember
     field_types: &Vector(TypeMember)
     // Function and Tuple
@@ -156,6 +162,7 @@ export type Type = struct {
     // Enum scope
     scope: &scope::Scope
     // Structural types
+    // These aren't uniqued but always created as is inline
     members: &Vector(StructuralTypeMember)
     // Type constructors save a template of a type
     tc_node: weak &parser::Node
@@ -223,17 +230,21 @@ export type Ternary = enum {
 export type TypeRef = struct {
     tpe: TypeId
     name: Str
-    generic: &Pattern
+    pattern: &Pattern
 }
 
-def make_type_ref(tpe: TypeId) -> &TypeRef {
+export def make_type_ref(tpe: TypeId) -> &TypeRef {
     return [ tpe = tpe ] !&TypeRef
 }
-def make_type_ref(name: Str) -> &TypeRef {
+export def make_type_ref(name: Str) -> &TypeRef {
     return [ name = name ] !&TypeRef
 }
-def make_type_ref(generic: &Pattern) -> &TypeRef {
-    return [ generic = generic ] !&TypeRef
+export def make_type_ref(pattern: &Pattern) -> &TypeRef {
+    return [ pattern = pattern ] !&TypeRef
+}
+
+export def is_type(typeref: &TypeRef) -> bool {
+    return typeref.tpe != 0
 }
 
 export def hash(typeref: &TypeRef) -> uint64 {
@@ -241,14 +252,20 @@ export def hash(typeref: &TypeRef) -> uint64 {
         return hash(typeref.tpe)
     } else if typeref.name {
         return hash(typeref.name)
-    } else if typeref.generic {
-        return hash(generic_to_string(typeref.generic))
+    } else if typeref.pattern {
+        return hash(generic_to_string(typeref.pattern))
     }
     assert
 }
 
-export def is_type(typeref: &TypeRef) -> bool {
-    return typeref.tpe != 0
+export def kind(typeref: &TypeRef) -> TypeKind {
+    if typeref.tpe {
+        return typeref.tpe.resolve().kind
+    } else if typeref.name {
+        return TypeKind::TYPE
+    } else if typeref.pattern {
+        return typeref.pattern.kind
+    }
 }
 
 export def resolve(typeref: &TypeRef, scpe: &Scope) -> TypeId {
@@ -256,12 +273,12 @@ export def resolve(typeref: &TypeRef, scpe: &Scope) -> TypeId {
         return typeref.tpe
     }
     if typeref.name {
-        let id = scope::get_type(scpe, parser::make_identifier(typeref.name))
+        let id = scope::get_type_id(scpe, parser::make_identifier(typeref.name))
         typeref.tpe = id
         return id
     }
-    if typeref.generic {
-        let id = resolve_generic(typeref.generic, scpe)
+    if typeref.pattern {
+        let id = resolve_generic(typeref.pattern, scpe)
         typeref.tpe = id
         return id
     }
@@ -286,12 +303,12 @@ def resolve_generic(generic: &Pattern, scpe: &Scope) -> TypeId {
             }
             var return_ids: &Vector(TypeId) = vector::make(TypeId)
             for var ret in generic.return_t {
-                vector::push(return_ids, resolve(ret.tpe, scpe))
+                vector::push(return_ids, resolve(ret, scpe))
             }
             if generic.kind == TypeKind::CLOSURE {
-                return closure(param_ids, return_ids)
+                return closure(params, return_ids)
             } else {
-                return function(param_ids, return_ids)
+                return function(params, return_ids)
             }
         case TypeKind::TUPLE, TypeKind::TUNION
             var param_ids: &Vector(TypeId) = vector::make(TypeId)
@@ -303,6 +320,32 @@ def resolve_generic(generic: &Pattern, scpe: &Scope) -> TypeId {
             } else {
                 return variant(param_ids)
             }
+        case TypeKind::UNION, TypeKind::STRUCT
+            var fields: &Vector(StructMember) = vector::make(StructMember)
+            for var field in generic.fields {
+                vector::push(fields, [
+                    name = field.name,
+                    tpe = resolve(field.tpe, scpe),
+                    properties = field.properties
+                ] !StructMember)
+            }
+            var const_fields: &Vector(StructMember) = vector::make(StructMember)
+            for var field in generic.const_fields {
+                vector::push(const_fields, [
+                    name = field.name,
+                    tpe = resolve(field.tpe, scpe),
+                    properties = field.properties
+                ] !StructMember)
+            }
+            var tpe: &Type
+            if generic.kind == TypeKind::STRUCT {
+                tpe = make_struct_type(fields, const_fields)
+            } else {
+                tpe = make_union_type(fields, const_fields)
+            }
+            tpe.id = next_type_id()
+            register_internal(tpe.id, tpe)
+            return tpe.id
         case; assert
     }
 }
@@ -312,29 +355,40 @@ export type Pattern = struct {
     length: size_t
     tpe: &TypeRef
     kw: parser::VarDecl
-    parameter_t: &Vector(&TypeRef)
+    // Name for type constructor
+    name: Str
+    parameter_t: &Vector(NamedParameterPre)
     // Also used for type constructors
     return_t: &Vector(&TypeRef)
+    // Structs and unions
+    fields: &Vector(StructMemberPre)
+    const_fields: &Vector(StructMemberPre)
+}
+
+export def generic_to_string(typeref: &TypeRef) -> Str {
+    if typeref.tpe {
+        return debug::type_to_str(typeref.tpe)
+    } else if typeref.name {
+        return "type " + typeref.name
+    } else if typeref.pattern {
+        return generic_to_string(typeref.pattern)
+    }
 }
 
 def generic_to_string(generic: &Pattern) -> Str {
-    if is_type(generic) {
-        return debug::type_to_str(generic.tpe, true)
-    } else if generic.name {
-        return "type " + generic.name
-    } else if generic.kind == TypeKind::REFERENCE {
-        return "&" + generic_to_string(generic.generic) // FIXME *let kw
+    if generic.kind == TypeKind::REFERENCE {
+        return "&" + generic_to_string(generic.tpe) // FIXME *let kw
     } else if generic.kind == TypeKind::POINTER {
-        return "*" + generic_to_string(generic.generic) // FIXME &let kw
+        return "*" + generic_to_string(generic.tpe) // FIXME &let kw
     } else if generic.kind == TypeKind::ARRAY {
-        return "[" + generic_to_string(generic.generic) + "]"
+        return "[" + generic_to_string(generic.tpe) + "]"
     } else if generic.kind == TypeKind::STATIC_ARRAY {
-        return "[" + generic.length + "; " + generic_to_string(generic.generic) + "]"
+        return "[" + generic.length + "; " + generic_to_string(generic.tpe) + "]"
     } else if generic.kind == TypeKind::TUPLE {
         var res: StringBuffer = "["
         let len = generic.parameter_t.length()
         for var i in 0..len {
-            res += generic_to_string(generic.parameter_t(i))
+            res += generic_to_string(generic.parameter_t(i).tpe)
             if i < len - 1 {
                 res += ", "
             }
@@ -345,7 +399,7 @@ def generic_to_string(generic: &Pattern) -> Str {
         var res: StringBuffer = "def [" if generic.kind == TypeKind::CLOSURE else "["
         var len = generic.parameter_t.length()
         for var i in 0..len {
-            res += generic_to_string(generic.parameter_t(i))
+            res += generic_to_string(generic.parameter_t(i).tpe)
             if i < len - 1 {
                 res += ", "
             }
@@ -360,9 +414,9 @@ def generic_to_string(generic: &Pattern) -> Str {
         return res
     } else if generic.kind == TypeKind::TUNION {
         var res: StringBuffer = "("
-        let len = generic.parameter_t.length()
+        let len = generic.return_t.length()
         for var i in 0..len {
-            res += generic_to_string(generic.parameter_t(i))
+            res += generic_to_string(generic.return_t(i))
             if i < len - 1 {
                 res += " | "
             }
@@ -433,12 +487,12 @@ export let range_inc = [ kind = TypeKind::RANGE_INC, id = 6] !&Type
 export implicit def resolve(id: TypeId) -> &Type {
     switch id !int64 {
         case 0; return null
-        case null_.id;      return null_
-        case void.id;       return void
-        case to_infer.id;   return to_infer
-        case undef_.id;     return undef_
-        case range.id;      return range
-        case range_inc.id;  return range_inc
+        case 1; return null_
+        case 2; return void
+        case 3; return to_infer
+        case 4; return undef_
+        case 5; return range
+        case 6; return range_inc
     }
     var res = type_registry.get_or_default(id, null)
     if not res { res = type_registry_internal.get_or_default(id, null) }
@@ -480,7 +534,7 @@ export def has_destructor(tpe: &Type) -> bool {
     } else if tpe.defmodule and get_user_defined_destructor(tpe) != null {
         res = true
     } else if tpe.kind == TypeKind::STRUCT {
-        for var i in 0..tpe.fields.size {
+        for var i in 0..tpe.fields.length() {
             let field = tpe.fields(i)
             if has_destructor(field.tpe) {
                 res = true
@@ -649,7 +703,7 @@ export def has_copy_constructor(tpe: &Type, lookup: bool = true) -> bool {
     var res = false
     if has_user_defined_copy_constructor(tpe) { res = true }
     else if tpe.kind == TypeKind::STRUCT {
-        for var i in 0..tpe.fields.size {
+        for var i in 0..tpe.fields.length() {
             let field = tpe.fields(i)
             if has_copy_constructor(field.tpe) or is_ref(field.tpe) {  
                 res = true
@@ -703,31 +757,49 @@ export def get_module(tpe: &Type) -> &toolchain::Module {
     return tpe.defmodule
 }
 
+export type NamedParameterPre = struct {
+    name: Str
+    tpe: &TypeRef
+    value: &compiler::Value
+    kw: parser::VarDecl
+    varargs: bool
+    node: weak &parser::Node
+}
+
+def make_parameter(tref: &TypeRef, node: &parser::Node = null, name: String = null) -> NamedParameterPre {
+    return [ name = name, tpe = tref, node = node ] !NamedParameterPre
+}
+
+export def wrap_ref(params: &Vector(NamedParameter)) -> &Vector(NamedParameterPre) {
+    var res: &Vector(NamedParameterPre) = vector::make(NamedParameterPre)
+    for var param in params {
+        // TODO Other parameters
+        vector::push(res, make_parameter(make_type_ref(param.tpe), param.node, param.name))
+    }
+    return res
+}
+export def wrap_ref(rets: &Vector(TypeId)) -> &Vector(&TypeRef) {
+    var res: &Vector(&TypeRef) = vector::make(&TypeRef)
+    for var ret in rets {
+        vector::push(res, make_type_ref(ret))
+    }
+    return res
+}
+
 export type NamedParameter = struct {
     // Might be empty for positional parameters
     name: Str
-    tpe: &TypeRef
-    varargs: bool
-    node: weak &parser::Node
+    tpe: TypeId
     value: &compiler::Value
     kw: parser::VarDecl
-    //type_node: weak &parser::Node
+    varargs: bool
+    node: weak &parser::Node
 }
 export def == (this: NamedParameter, other: NamedParameter) -> bool {
-    return this.tpe == other.tpe
+    return equals(this.tpe, other.tpe)
 }
 export def != (this: NamedParameter, other: NamedParameter) -> bool { return not (this == other) }
 
-export def is_type(param: NamedParameter) -> bool {
-    return is_type(param.tpe)
-}
-
-def make_parameter(tpe: TypeId, node: &parser::Node = null, name: String = null) -> NamedParameter {
-    return [ name = name, tpe = [ tpe = tpe] !&TypeRef, node = node ] !NamedParameter
-}
-def make_parameter(tref: &TypeRef, node: &parser::Node = null, name: String = null) -> NamedParameter {
-    return [ name = name, tpe = tref, node = node ] !NamedParameter
-}
 
 export type State = struct {
     module: weak &toolchain::Module
@@ -1013,13 +1085,38 @@ export def _word(signed: bool, size: size_t, align: size_t) -> TypeId {
 export type FunctionDef = struct {
     name: Str
     unmangled: Str
-    sig: Signature
+    context: weak &toolchain::Module
+    parameter_t: &Vector(NamedParameterPre)
+    return_t: &Vector(&TypeRef)
 }
 export def hash(fdef: FunctionDef) -> uint64 {
-    return combine_hashes(hash(fdef.name), hash(fdef.sig))
+    var h: uint64
+    if fdef.parameter_t {
+        for var par in fdef.parameter_t { // TODO hash for vectors
+            h = combine_hashes(h, hash(par.tpe))  
+        }
+    }
+    for var r in fdef.return_t {
+        h = combine_hashes(h, hash(r))
+    }
+    return combine_hashes(hash(fdef.name), h)
 }
 export def == (this: FunctionDef, other: FunctionDef) -> bool {
-    return this.sig == other.sig and this.name == other.name
+    if this.name != other.name { return false }
+    if this.context != other.context { return false }
+
+    if this.parameter_t and other.parameter_t {
+        if this.parameter_t.length != other.parameter_t.length { return false }
+        for var i in 0..this.parameter_t.length {
+            if this.parameter_t(i) != other.parameter_t(i) { return false }
+        }
+    }
+    if this.return_t.length != other.return_t.length { return false }
+    for var i in 0..this.return_t.length {
+        if this.return_t(i) != other.return_t(i) { return false }
+    }
+
+    return true
 }
 export def != (this: FunctionDef, other: FunctionDef) -> bool {
     return not (this == other)
@@ -1027,7 +1124,7 @@ export def != (this: FunctionDef, other: FunctionDef) -> bool {
 
 export def function_def(
     name: Str, 
-    parameter_t: &Vector(NamedParameter), 
+    parameter_t: &Vector(NamedParameterPre), 
     return_t: &Vector(&TypeRef), 
     module: &toolchain::Module = null,
     extern: bool = false,
@@ -1049,30 +1146,28 @@ export def function_def(
     return [
         name = tname,
         unmangled = name,
-        sig = [
-            parameter_t = parameter_t,
-            return_t = return_t
-        ] !Signature
+        context = context,
+        parameter_t = parameter_t,
+        return_t = return_t
     ] !FunctionDef
 }
+export def to_type(fdef: FunctionDef, scpe: &scope::Scope) -> TypeId {
+    return function(fdef.parameter_t, fdef.return_t).resolve(scpe)
+}
 export def to_type(fdef: FunctionDef) -> TypeId {
-    return function(fdef.sig.parameter_t, fdef.sig.return_t)
+    assert fdef.context != null
+    return function(fdef.parameter_t, fdef.return_t).resolve(fdef.context.scope)
 }
 
 export type Signature = struct {
     parameter_t: &Vector(NamedParameter)
-    return_t: &Vector(&TypeRef)
+    return_t: &Vector(TypeId)
 }
 export def hash(signature: Signature) -> uint64 {
     var hash: uint64
     if signature.parameter_t {
         for var par in signature.parameter_t { // TODO hash for vectors
-            if par.generic {
-                hash = combine_hashes(hash, par.generic !* !uint64) // Unique ID
-            } else {
-                assert par.tpe or par.varargs
-                hash = combine_hashes(hash, par.tpe !uint64)
-            }   
+            hash = combine_hashes(hash, par.tpe !uint64)  
         }
     }
     for var r in signature.return_t {
@@ -1097,24 +1192,29 @@ export def != (this: Signature, other: Signature) -> bool {
     return not (this == other)
 }
 
-def callable_generic(kind: TypeKind, parameter_t: &Vector(NamedParameter), return_t: &Vector(&TypeRef)) -> &TypeRef {
+def callable_generic(kind: TypeKind, parameter_t: &Vector(NamedParameterPre), return_t: &Vector(&TypeRef)) -> &TypeRef {
     if is_polymorph(parameter_t) {
-        let generic_pars = vector::make(type &Pattern)
-        for var par in parameter_t {
-            if par.generic { generic_pars.push(par.generic) }
-            else { generic_pars.push([ tpe = par.tpe ] !&Pattern) }
-        }
-        return make_type_ref([ kind = kind, parameter_t = generic_pars, return_t = return_t ] !&Pattern)
+        return make_type_ref([ kind = kind, parameter_t = parameter_t, return_t = return_t ] !&Pattern)
     }
+
+    var pars = vector::make(NamedParameter)
+    for var par in parameter_t {
+        pars.push([ name = par.name, tpe = par.tpe.tpe, value = par.value, kw = par.kw, varargs = par.varargs, node = par.node ] !NamedParameter)
+    }
+
     let rets = vector::make(TypeId)
     for var ret in return_t {
         rets.push(ret.tpe)
     }
     if kind == TypeKind::CLOSURE {
-        return make_type_ref(closure(parameter_t, rets))
+        return make_type_ref(closure(pars, rets))
     } else {
-        return make_type_ref(function(parameter_t, rets))
+        return make_type_ref(function(pars, rets))
     }
+}
+
+export def closure(parameter_t: &Vector(NamedParameterPre), return_t: &Vector(&TypeRef)) -> &TypeRef {
+    return callable_generic(TypeKind::CLOSURE, parameter_t, return_t)
 }
 
 def closure(parameter_t: &Vector(NamedParameter), return_t: &Vector(TypeId)) -> TypeId {
@@ -1127,9 +1227,9 @@ def closure(parameter_t: &Vector(NamedParameter), return_t: &Vector(TypeId)) -> 
     parameter_t2.insert(0, [ name = "__data", tpe = reference(0) ] !NamedParameter)
     let fun = function(parameter_t2, return_t)
 
-    let types = allocate_ref(StructMember, 2)
-    types(0) = [ tpe = pointer(fun), name = "function" ] !StructMember
-    types(1) = [ tpe = reference(0), name = "data" ] !StructMember
+    let types = vector::make(StructMember)
+    types.push([ tpe = pointer(fun), name = "function" ] !StructMember)
+    types.push([ tpe = reference(0), name = "data" ] !StructMember)
     let tpe = make_struct_type(types)
     tpe.id = next_type_id()
     tpe.kind = TypeKind::CLOSURE
@@ -1137,6 +1237,10 @@ def closure(parameter_t: &Vector(NamedParameter), return_t: &Vector(TypeId)) -> 
     type_registry_closure(signature) = tpe
     register(tpe.id, tpe)
     return tpe.id
+}
+
+export def function(parameter_t: &Vector(NamedParameterPre), return_t: &Vector(&TypeRef)) -> &TypeRef {
+    return callable_generic(TypeKind::FUNCTION, parameter_t, return_t)
 }
 
 export def function(
@@ -1194,7 +1298,7 @@ export def tuple(types: &Vector(TypeId)) -> TypeId {
     for var t in types {
         fields.push([ tpe = t ] !StructMember)
     }
-    let struct_type = make_struct_type(fields.to_array())
+    let struct_type = make_struct_type(fields)
 
     let tuple = [ kind = TypeKind::TUPLE ] !&Type
     tuple.id = next_type_id()
@@ -1231,9 +1335,9 @@ export def variant(types: &Vector(TypeId)) -> TypeId {
     variant.size = (ceil(offset / biggest_type.align !double) * biggest_type.align) !int
     variant.align = util::lcm(align !int, biggest_type.align !int)
         
-    var fields = allocate_ref(StructMember, generics.length)
-    for var i in 0..generics.length {
-        fields(i) = [ name = "_" + to_string(i), tpe = generics(i).tpe ] !StructMember
+    var fields = vector::make(StructMember)
+    for var i in 0..types.length {
+        fields.push([ name = "_" + to_string(i), tpe = types(i) ] !StructMember)
     }
 
     let union_tpe = make_union_type(fields)
@@ -1312,10 +1416,10 @@ export def pointer(tpe: TypeId, kw: parser::VarDecl) -> TypeId {
     return ptrtpe.id
 }
 
-def pointer(generic: &TypeId, kw: parser::VarDecl) -> &TypeId {
+export def pointer(generic: &TypeRef, kw: parser::VarDecl) -> &TypeRef {
     if generic == null { make_type_ref(pointer(0, kw)) }
     if is_type(generic) { return make_type_ref(pointer(generic.tpe, kw)) }
-    return make_type_ref([ kind = TypeKind::POINTER, generic = generic ] !&Pattern)
+    return make_type_ref([ kind = TypeKind::POINTER, tpe = generic ] !&Pattern)
 }
 
 export def pointer(tpe: TypeId) -> TypeId {
@@ -1342,7 +1446,7 @@ export def byref(tpe: TypeId) -> TypeId {
 export def byref(generic: &TypeRef) -> &TypeRef {
     if generic == null { return make_type_ref(byref(0)) }
     if is_type(generic) { return make_type_ref(byref(generic.tpe)) }
-    return make_type_ref([ kind = TypeKind::BYREF, generic = generic ] !&Pattern)
+    return make_type_ref([ kind = TypeKind::BYREF, tpe = generic ] !&Pattern)
 }
 export def reference(tpe: TypeId, kw: parser::VarDecl) -> TypeId {
     let rid = [ id = tpe, kw = kw ] !Box
@@ -1362,10 +1466,10 @@ export def reference(tpe: TypeId, kw: parser::VarDecl) -> TypeId {
     return reftpe.id
 }
 
-def reference(generic: &TypeRef, kw: parser::VarDecl) -> &TypeRef {
+export def reference(generic: &TypeRef, kw: parser::VarDecl) -> &TypeRef {
     if generic == null { return make_type_ref(reference(0, kw)) }
     if is_type(generic) { return make_type_ref(reference(generic.tpe, kw)) }
-    return make_type_ref([ kind = TypeKind::REFERENCE, generic = generic ] !&Pattern)
+    return make_type_ref([ kind = TypeKind::REFERENCE, tpe = generic ] !&Pattern)
 }
 export def reference(tpe: TypeId) -> TypeId {
     return reference(tpe, parser::VarDecl::VAR)
@@ -1393,10 +1497,10 @@ export def weak_reference(tpe: TypeId) -> TypeId {
     return weak_reference(tpe, parser::VarDecl::VAR)
 }
 
-def weak_reference(generic: &TypeRef, kw: parser::VarDecl) -> &TypeRef {
+export def weak_reference(generic: &TypeRef, kw: parser::VarDecl) -> &TypeRef {
     if generic == null { return make_type_ref(weak_reference(0, kw)) }
     if is_type(generic) { return make_type_ref(weak_reference(generic.tpe, kw)) }
-    return make_type_ref([ kind = TypeKind::WEAK_REF, generic = generic ] !&Pattern)
+    return make_type_ref([ kind = TypeKind::WEAK_REF, tpe = generic ] !&Pattern)
 }
 export def array(tpe: TypeId, kw: parser::VarDecl) -> TypeId {
     let rid = [ id = tpe, kw = kw ] !Box
@@ -1416,9 +1520,9 @@ export def array(tpe: TypeId, kw: parser::VarDecl) -> TypeId {
     return arrtpe.id
 }
 
-def array(generic: &TypeRef, kw: parser::VarDecl) -> &TypeRef {
+export def array(generic: &TypeRef, kw: parser::VarDecl) -> &TypeRef {
     if is_type(generic) { return make_type_ref(array(generic.tpe, kw)) }
-    return make_type_ref([ kind = TypeKind::ARRAY, generic = generic ] !&Pattern)
+    return make_type_ref([ kind = TypeKind::ARRAY, tpe = generic ] !&Pattern)
 }
 
 export def array(tpe: TypeId) -> TypeId {
@@ -1445,9 +1549,9 @@ export def static_array(array_tpe: TypeId, size: size_t, kw: parser::VarDecl) ->
     return arrtpe.id
 }
 
-def static_array(generic: &TypeRef, size: size_t, kw: parser::VarDecl) -> &TypeRef {
+export def static_array(generic: &TypeRef, size: size_t, kw: parser::VarDecl) -> &TypeRef {
     if is_type(generic) { return make_type_ref(static_array(generic.tpe, size, kw)) }
-    return make_type_ref([ kind = TypeKind::STATIC_ARRAY, length = size, generic = generic ] !&Pattern)
+    return make_type_ref([ kind = TypeKind::STATIC_ARRAY, length = size, tpe = generic ] !&Pattern)
 }
 
 export def static_array(array_tpe: TypeId, size: size_t) -> TypeId {
@@ -1831,8 +1935,8 @@ export def contains(a: &Type) -> &Set(TypeId) {
     if is_ref_or_weak(a) { a = a.tpe }
     let res = set::make(type TypeId)
     if not is_struct(a) { return res }
-    for var field in @a.fields {
-        if field.is_embed {
+    for var field in a.fields {
+        if field.properties.is_embed {
             res.add(field.tpe)
             res.add_all(contains(field.tpe))
         }
@@ -2107,43 +2211,45 @@ def infer_interface_types(a: &Type, b: &Type, module: &toolchain::Module) -> &Ty
     return tpe
 }*/
 
-export def convert_type_score(a: &Pattern, b: &Type, scope: &scope::Scope, impl: bool = true) -> int {
-    if not local_type_defs { local_type_defs = make_local_type_defs() }
-    
-    if is_type(a) {
-        return convert_type_score(a.tpe, b, scope, impl)
+export def convert_type_score(a: &TypeRef, b: &Type, scpe: &scope::Scope, impl: bool = true) -> int {
+    if a.pattern {
+        return convert_type_score(a.pattern, b, scpe, impl)
+    } else if a.name {
+        if scope::get_type(scpe, parser::make_identifier(a.name)) { return 1 }
+    } else {
+        return convert_type_score(a.resolve(scpe), b, scpe, impl)
     }
-    if a.name {
-        if local_type_defs.type_defs.contains(a.name) {
-            local_type_defs.type_mapping(local_type_defs.type_defs(a.name)) = b.id
-        } 
-        return 1
+}
+
+export def convert_type_score(a: &Pattern, b: &Type, scpe: &scope::Scope, impl: bool = true) -> int {
+    if a.kind == TypeKind::TYPE {
+        return convert_type_score(a.tpe, b, scpe, impl)
     }
 
     if a.kind == b.kind == TypeKind::STATIC_ARRAY {
         if a.length == b.length {
-            return convert_type_score(a.generic, b.tpe, scope, impl)
+            return convert_type_score(a.tpe, b.tpe, scpe, impl)
         }
         return -1
     }
 
     if a.kind == TypeKind::ARRAY and b.kind == TypeKind::STATIC_ARRAY {
-        let score = convert_type_score(a.generic, b.tpe, scope, impl)
+        let score = convert_type_score(a.tpe, b.tpe, scpe, impl)
         if score >= 0 { return 1 }
         return -1
     }
     if a.kind == b.kind and b.kind == TypeKind::STATIC_ARRAY {
         if a.length != b.length { return -1 }
-        return convert_type_score(a.generic, b.tpe, scope, impl)
+        return convert_type_score(a.tpe, b.tpe, scpe, impl)
     }
     if a.kind == b.kind and is_box(b) {
-        return convert_type_score(a.generic, b.tpe, scope, impl)
+        return convert_type_score(a.tpe, b.tpe, scpe, impl)
     }
     if a.kind == b.kind == TypeKind::TUPLE {
         if a.return_t.length != b.return_t.length { return -1 }
         var max_conv = 0 
         for var i in 0..a.return_t.length {
-            let conv = convert_type_score(a.return_t(i), b.return_t(i), scope, impl)
+            let conv = convert_type_score(a.return_t(i), b.return_t(i), scpe, impl)
             if conv < 0 { return -1 }
             if conv > max_conv { max_conv = conv }
         }
@@ -2167,14 +2273,14 @@ export def convert_type_score(a: &Pattern, b: &Type, scope: &scope::Scope, impl:
             for var i in 0..fun.parameter_t.length {
                 let param_a = a.parameter_t(i)
                 let param_b = resolve(fun.parameter_t(i).tpe)
-                let score = convert_type_score(param_a, param_b, scope, impl)
+                let score = convert_type_score(param_a.tpe, param_b, scpe, impl)
                 if score < 0 { return -1 }
                 if score > max_conv { max_conv = score }
             }
             for var i in 0..fun.return_t.length {
                 let ret_a = a.return_t(i)
                 let ret_b = resolve(fun.return_t(i))
-                let score = convert_type_score(ret_a, ret_b, scope, impl)
+                let score = convert_type_score(ret_a.tpe, ret_b, scpe, impl)
                 if score < 0 { return -1 }
                 if score > max_conv { max_conv = score }
             }
@@ -2204,7 +2310,7 @@ const IMPLICIT = 15
 // The return value is -1 if b can't be converted to a
 // if the types are equal, 0 is returned.
 // Otherwise a positive integer is returned.
-export def convert_type_score(a: &Type, b: &Type, scope: &scope::Scope, impl: bool = true) -> int {
+export def convert_type_score(a: &Type, b: &Type, scpe: &scope::Scope, impl: bool = true) -> int {
     if not a or not b { return 0 }
     if a.id == b.id {
         return 0
@@ -2217,10 +2323,10 @@ export def convert_type_score(a: &Type, b: &Type, scope: &scope::Scope, impl: bo
 
     // Convert anonymous struct to value
     if a.kind == b.kind and b.kind == TypeKind::STRUCT and b.is_anon {
-        if a.fields.size != b.fields.size { return -1 }
-        for var af in @a.fields {
+        if a.fields.length() != b.fields.length() { return -1 }
+        for var af in a.fields {
             var found = false
-            for var bf in @b.fields {
+            for var bf in b.fields {
                 if equals(af.tpe, bf.tpe) and af.name == bf.name {
                     found = true
                     break
@@ -2253,8 +2359,8 @@ export def convert_type_score(a: &Type, b: &Type, scope: &scope::Scope, impl: bo
     // Embedded structs
     if b.kind == TypeKind::STRUCT or (is_ref(b) and is_struct_t(b.tpe)) {
         var nb = b.tpe.resolve() if is_ref(b) else b
-        for var field in @nb.fields {
-            if field.is_embed {
+        for var field in nb.fields {
+            if field.properties.is_embed {
                 if equals(field.tpe, a) {
                     return 7
                 } else if is_ref(a) and equals(field.tpe, a.tpe) {
@@ -2328,7 +2434,7 @@ export def convert_type_score(a: &Type, b: &Type, scope: &scope::Scope, impl: bo
     if a.kind == TypeKind::TUPLE and b.kind == TypeKind::STATIC_ARRAY and a.return_t.length == b.length {
         var max_conv = 1
         for var tpe in a.return_t {
-            let conv = convert_type_score(b.tpe, tpe, scope, impl)
+            let conv = convert_type_score(b.tpe, tpe, scpe, impl)
             if conv > max_conv { max_conv = conv }
             else if conv == -1 { max_conv = -1; break }
         }
@@ -2344,7 +2450,7 @@ export def convert_type_score(a: &Type, b: &Type, scope: &scope::Scope, impl: bo
     if a.kind == TypeKind::STATIC_ARRAY and b.kind == TypeKind::TUPLE {
         var max_conv = 1
         for var tpe in b.return_t {
-            let conv = convert_type_score(a.tpe, tpe, scope, impl)
+            let conv = convert_type_score(a.tpe, tpe, scpe, impl)
             if conv > max_conv {
                 max_conv = conv
             } else if conv == -1 {
@@ -2368,7 +2474,7 @@ export def convert_type_score(a: &Type, b: &Type, scope: &scope::Scope, impl: bo
         if b.kind == TypeKind::TUPLE {
             var max_conv = 1
             for var tpe in b.return_t {
-                let conv = convert_type_score(a.tpe, tpe, scope, impl)
+                let conv = convert_type_score(a.tpe, tpe, scpe, impl)
                 if conv > max_conv {
                     max_conv = conv
                 } else if conv == -1 {
@@ -2451,10 +2557,10 @@ export def convert_type_score(a: &Type, b: &Type, scope: &scope::Scope, impl: bo
     if impl and a.kind != TypeKind::TYPE {
         let parameter_t = vector::make(NamedParameter)
         parameter_t.push([ tpe = b.id ] !NamedParameter)
-        let conv = scope::find_implicit_function(scope, parameter_t, a, not consteval::is_static)
+        let conv = scope::find_implicit_function(scpe, parameter_t, a, not consteval::is_static)
         if conv {
             if consteval::is_static {
-                consteval::compile_function(conv, scope, parameter_t)
+                consteval::compile_function(conv, scpe, parameter_t)
             }
             return IMPLICIT
         }
@@ -2463,13 +2569,13 @@ export def convert_type_score(a: &Type, b: &Type, scope: &scope::Scope, impl: bo
     let intfp = get_interface(a)
     if intfp {
         if a.kind == TypeKind::REFERENCE and b.kind == TypeKind::REFERENCE {
-            if b.tpe and b.tpe.kind == TypeKind::NULL or implements(b.tpe, intfp, scope) {
+            if b.tpe and b.tpe.kind == TypeKind::NULL or implements(b.tpe, intfp, scpe) {
                 return 6
             }
         }
-        if a.kind == TypeKind::REFERENCE and implements(reference(b.tpe), intfp, scope) { return 6 }
-        if a.kind == TypeKind::REFERENCE and implements(b, intfp, scope) { return 6 }
-        if implements(b, intfp, scope) { return 0 } // This is so that new specializations always win
+        if a.kind == TypeKind::REFERENCE and implements(reference(b.tpe), intfp, scpe) { return 6 }
+        if a.kind == TypeKind::REFERENCE and implements(b, intfp, scpe) { return 6 }
+        if implements(b, intfp, scpe) { return 0 } // This is so that new specializations always win
     }
 
     /*if is_type { 
@@ -2514,10 +2620,11 @@ export def get_generic(tpe: &Type) -> &Type {
     return null
 }
 
-export def is_polymorph(generic: &Pattern) -> bool {
-    if not generic { return false }
-    if is_type(generic) { return false }
-    return true
+export def is_polymorph(tpe: &TypeRef) -> bool {
+    if not tpe { return false }
+    if tpe.pattern { return true }
+    if tpe.name { return true }
+    return false
 }
 
 /*export def is_polymorph(tpe: &Type, is_ref: bool = false) -> bool {
@@ -2550,10 +2657,10 @@ export def is_polymorph(generic: &Pattern) -> bool {
     return false
 }*/
 
-export def is_polymorph(args: &Vector(NamedParameter)) -> bool {
+export def is_polymorph(args: &Vector(NamedParameterPre)) -> bool {
     for var i in 0..vector::length(args) {
         let np = args(i)
-        if not is_type(np) {
+        if not is_polymorph(np.tpe) {
             return true
         }
     }
@@ -2562,24 +2669,15 @@ export def is_polymorph(args: &Vector(NamedParameter)) -> bool {
 
 // NOTE: This function mutates param_a and return_t, watch out!
 export def replace_type_defs(
-    param_a: &Vector(NamedParameter), 
+    param_a: &Vector(NamedParameterPre), 
     return_t: &Vector(&TypeRef), 
     param_b: &Vector(NamedParameter), 
-    module: &toolchain::Module,
-    local_type_defs: &LocalTypeDefs,
+    scpe: &scope::Scope,
     replace: bool = true,
     impl: bool = true) {
 
     for var i in 0..vector::length(param_a) {
         let left = param_a.get(i)
-
-        var ltpe = left.generic    
-        if left.tpe {
-            ltpe = [ tpe = left.tpe ] !&Pattern
-        }
-
-        if not ltpe { continue }
-
         var right: *NamedParameter = null
         for var j in 0..vector::length(param_b) {
             let r = param_b.get(j)
@@ -2601,7 +2699,7 @@ export def replace_type_defs(
         }
 
         if not rtpe { return }
-        if convert_type_score(ltpe, rtpe, module, impl) < 0 { return }
+        if convert_type_score(left.tpe, rtpe, scpe, impl) < 0 { return }
 
         /*let intf = get_interface(ltpe.tpe)
         if intf and replace {
@@ -2620,19 +2718,42 @@ export def replace_type_defs(
         }*/
 
         if replace {
-            left.tpe = rtpe
+            left.tpe = make_type_ref(rtpe)
         }
     }
 }
 
 export def overload_score(
-    a: FunctionDef, param_b: &Vector(NamedParameter), module: &toolchain::Module, 
-    positional: bool, partial: bool = false, impl: bool = true, 
-    local_type_defs: &LocalTypeDefs = null) -> int {
+    a: FunctionDef, param_b: &Vector(NamedParameterPre), scpe: &scope::Scope, 
+    positional: bool, partial: bool = false, impl: bool = true) -> int {
+        
+    // TODO Factor this out into a function and make sure that its used everywhere
+    let param_b_converted = vector::make(NamedParameter)
+    for var i in 0..vector::length(param_b) {
+        let npb = param_b(i)
+        param_b_converted.push([
+            name = npb.name,
+            tpe = npb.tpe.resolve(scpe),
+            value = npb.value,
+            kw = npb.kw,
+            varargs = npb.varargs,
+            node = npb.node
+        ] !NamedParameter)
+    }
 
     return overload_score(
-        a.sig.parameter_t, a.sig.return_t, param_b, module, 
-        positional, partial, impl, local_type_defs
+        a.parameter_t, a.return_t, param_b_converted, scpe, 
+        positional, partial, impl
+    )
+}
+
+export def overload_score(
+    a: FunctionDef, param_b: &Vector(NamedParameter), scpe: &scope::Scope, 
+    positional: bool, partial: bool = false, impl: bool = true) -> int {
+
+    return overload_score(
+        a.parameter_t, a.return_t, param_b, scpe, 
+        positional, partial, impl
     )
 }
 
@@ -2641,12 +2762,12 @@ export def overload_score(
 // -1 is returned if the argument types don't match.
 
 export def overload_score(
-    param_a: &Vector(NamedParameter), 
+    param_a: &Vector(NamedParameterPre), 
     return_t: &Vector(&TypeRef), 
     param_b: &Vector(NamedParameter),
-    module: &toolchain::Module, 
+    scpe: &scope::Scope, 
     positional: bool, partial: bool = false,
-    impl: bool = true, local_type_defs: &LocalTypeDefs = null
+    impl: bool = true
 ) -> int {
     
     param_a = param_a.copy()
@@ -2654,7 +2775,7 @@ export def overload_score(
 
     if vector::length(param_a) > vector::length(param_b) and not partial {
         let a = param_a(vector::length(param_b))
-        let not_default_param = a.value == null or a.tpe.resolve().kind == TypeKind::TYPE
+        let not_default_param = a.value == null or a.tpe.kind == TypeKind::TYPE
         if vector::length(param_a) == vector::length(param_b) + 1 {
             if not vector::peek(param_a).varargs and not_default_param {
                 return -1
@@ -2664,13 +2785,12 @@ export def overload_score(
         }
     }
 
-    if not local_type_defs { local_type_defs = make_local_type_defs() }
-    replace_type_defs(param_a, return_t, param_b, module, local_type_defs, false, impl = impl)
+    replace_type_defs(param_a, return_t, param_b, scpe, false, impl = impl)
 
     var sum = 0
     for var i in 0..vector::length(param_b) {
         let right = param_b(i)
-        var left: *NamedParameter = null
+        var left: *NamedParameterPre = null
         if right.name and not positional {
             for var i in 0..vector::length(param_a) {
                 let param = param_a.get(i)
@@ -2695,47 +2815,22 @@ export def overload_score(
         var lvalue = left.tpe
         if i == vector::length(param_a) - 1 and 
             left.varargs and not right.varargs and left.tpe and
-            convert_type_score(array(left.tpe), right.tpe, module, impl = impl) >= 0 {
+            convert_type_score(array(left.tpe, parser::VarDecl::VAR), right.tpe, scpe, impl = impl) >= 0 {
 
-            lvalue = array(left.tpe)
+            lvalue = array(left.tpe, parser::VarDecl::VAR)
         }
         var score = -1
-        if lvalue and lvalue.kind == TypeKind::TYPE {
-            // TODO This is not documented and weird in more than one place
-            // I think the confusion comes from the fact that sometimes the type is stored in the NamedParameter
-            // and sometimes in the type directly. The latter would make more sense
-            /*if right.tpe.may_be_type {
-                // This is what it should look like for the others as well
-                if not left.tpe.tpe {
-                    score = 4
-                } else if right.tpe.may_be_type.tpe.tpe and equals(left.tpe.tpe, right.tpe.may_be_type.tpe.tpe) {
-                    score = 0
-                }
-            } else if equals(right.tpe, pointer(builtins::type_t())) {
-                if left.value {
-                    if equals(left.value.value_tpe, right.tpe.tpe.tpe) {
-                        score = 0
-                    }
-                } else {
-                    if left.tpe and equals(left.tpe.tpe, right.tpe.tpe.tpe) {
-                        score = 0
-                    } else if not left.tpe.tpe {
-                        score = 0
-                    }
-                }
-            } else */ if is_type(right.tpe) {
+        if lvalue and lvalue.kind() == TypeKind::TYPE {
+            if kind(right.tpe) == TypeKind::TYPE {
                 if left.value and right.value and equals(left.value.value_tpe, right.value.value_tpe) {
                     score = 0
-                } else if not left.tpe.tpe and not right.tpe.tpe {
-                    score = 0
-                } else if left.tpe.tpe and right.tpe.tpe and equals(left.tpe.tpe, right.tpe.tpe) {
-                    score = 0
-                } else if not left.tpe.tpe and right.value {
+                } else if not left.value.value_tpe and right.value {
+                    // TODO test this
                     score = 4
                 }
             }
         } else {
-            score = convert_type_score(lvalue, right.tpe, module, impl = impl)
+            score = convert_type_score(lvalue, right.tpe, scpe, impl = impl)
         }
         if score < 0 { return -1 }
         sum += score
@@ -2748,7 +2843,7 @@ export def overload_score(
     return sum
 }
 
-export def mangle_function_name(name: Str, parameter_t: &Vector(NamedParameter), test: bool = false, context: &toolchain::Module = null) -> Str {
+export def mangle_function_name(name: Str, parameter_t: &Vector(NamedParameterPre), test: bool = false, context: &toolchain::Module = null) -> Str {
     var res = name
     if context {
         res = context.module + "#" + name
@@ -2765,10 +2860,10 @@ export def mangle_function_name(name: Str, parameter_t: &Vector(NamedParameter),
         if np.varargs {
             res += '['
         }
-        if np.tpe {
-            res += debug::type_to_str(np.tpe, true)
-        } else if np.generic {
-            res += generic_to_string(np.generic)
+        if np.tpe.tpe {
+            res += debug::type_to_str(np.tpe.tpe, true)
+        } else if np.tpe.pattern {
+            res += generic_to_string(np.tpe.pattern)
         } else { assert }
 
         if np.varargs {
@@ -2797,7 +2892,7 @@ export def last_ident_to_str(node: &parser::Node) -> String {
     return node.value.identifier.path(0)
 }
 
-def flatten_return_type(node: &parser::Node, return_t: &Vector(&TypeRef)) -> TypeId {
+def flatten_return_type(node: &parser::Node, return_t: &Vector(TypeId)) -> TypeId {
     let len = vector::length(return_t) 
     if len > 1 {
         // TODO size and alignment! Same as a struct,
@@ -2820,7 +2915,12 @@ def check_is_identifier_assignable(node: &parser::Node, state: &State) -> bool {
     return true
 }
 
-export def make_union_type(fields: &[StructMember], const_fields: &[StructMember] = null) -> &Type {
+export def make_union_type(fields: &Vector(StructMemberPre), const_fields: &Vector(StructMemberPre) = null) -> &TypeRef {
+    let pattern = [ kind = TypeKind::UNION, fields = fields, const_fields = const_fields ] !&Pattern
+    return make_type_ref(pattern)
+}
+
+export def make_union_type(fields: &Vector(StructMember), const_fields: &Vector(StructMember) = null) -> &Type {
     let tpe = [] !&Type
     tpe.kind = TypeKind::UNION
     let field_types = vector::make(TypeMember)
@@ -2828,7 +2928,7 @@ export def make_union_type(fields: &[StructMember], const_fields: &[StructMember
     var size = 0 !size_t
     var align = 1 !size_t
     var biggest_type: TypeId
-    for var i in 0..fields.size {
+    for var i in 0..fields.length() {
         let field = fields(i)
         var field_tpe = field.tpe.resolve()
         if field_tpe {
@@ -2836,9 +2936,10 @@ export def make_union_type(fields: &[StructMember], const_fields: &[StructMember
                 size = field_tpe.size
                 biggest_type = field_tpe.id
             }
-            if field_tpe.kind == TypeKind::TYPE_CONSTRUCTOR {
+            // TODO No node, no error, catch this somewhere before calling this function
+            /*if field_tpe.kind == TypeKind::TYPE_CONSTRUCTOR {
                 errors::errorn(field.node, "Can't use type constructor as field type")
-            }
+            }*/
             // TODO Alignment of bit fields on Windows is strange
             align = max(field_tpe.align, align) !size_t
         }
@@ -2847,16 +2948,22 @@ export def make_union_type(fields: &[StructMember], const_fields: &[StructMember
     let type_member = [ tpe = biggest_type, offset = 0 ] !TypeMember
     field_types.push(type_member)
 
+    tpe.name = "<anonymous>"
     tpe.size = size
     tpe.align = align
     tpe.fields = fields
-    tpe.const_fields = (const_fields if const_fields else allocate_ref(StructMember, 0))
+    tpe.const_fields = (const_fields if const_fields else vector::make(StructMember))
     tpe.field_types = field_types
 
     return tpe
 }
 
-export def make_struct_type(fields: &[StructMember], const_fields: &[StructMember] = null, struct_tpe: &Type = null) -> &Type {
+export def make_struct_type(fields: &Vector(StructMemberPre), const_fields: &Vector(StructMemberPre) = null) -> &TypeRef {
+    let pattern = [ kind = TypeKind::STRUCT, fields = fields, const_fields = const_fields ] !&Pattern
+    return make_type_ref(pattern)
+}
+
+export def make_struct_type(fields: &Vector(StructMember), const_fields: &Vector(StructMember) = null, struct_tpe: &Type = null) -> &Type {
     if not struct_tpe {
         struct_tpe = [] !&Type
     }
@@ -2868,18 +2975,19 @@ export def make_struct_type(fields: &[StructMember], const_fields: &[StructMembe
     var bit_offset = 0
     var bit_type: &Type = null
 
-    for var i in 0..fields.size {
-        let field = *fields(i)
+    for var i in 0..fields.length() {
+        let field = fields.get(i)
         let tpe = field.tpe.resolve()
         if not tpe { continue }
         field.index = j
 
-        if tpe.kind == TypeKind::TYPE_CONSTRUCTOR {
+        // TODO We don't have the node anymore so this needs to be done elsewhere
+        /*if tpe.kind == TypeKind::TYPE_CONSTRUCTOR {
             errors::errorn(field.node, "Can't use type constructor as field type")
             continue
-        }
+        }*/
 
-        if field.is_bitfield {
+        if field.properties.is_bitfield {
             #if defined WIN32 {
                 // TODO Windows
                 bit_type = tpe
@@ -2889,13 +2997,13 @@ export def make_struct_type(fields: &[StructMember], const_fields: &[StructMembe
                 if not bit_type {
                     bit_type = tpe
                 }
-                if bit_offset + field.bit_size < bit_type.size * 8 {
+                if bit_offset + field.properties.bit_size < bit_type.size * 8 {
                     // Go back and extend the type
                     if tpe.size > bit_type.size {
                         bit_type = tpe
                     }
-                    field.bit_offset = bit_offset
-                    bit_offset += field.bit_size
+                    field.properties.bit_offset = bit_offset
+                    bit_offset += field.properties.bit_size
                     continue
                 } else {
                     // It doesn't fit so let's make a new entry
@@ -2905,7 +3013,7 @@ export def make_struct_type(fields: &[StructMember], const_fields: &[StructMembe
 
                     bit_type = tpe
                     bit_offset = 0
-                    field.bit_offset = 0
+                    field.properties.bit_offset = 0
 
                     j += 1
                     continue
@@ -2954,10 +3062,12 @@ export def make_struct_type(fields: &[StructMember], const_fields: &[StructMembe
 
     offset = (ceil(offset / align !double) * align) !int
 
+    struct_tpe.name = "<anonymous>"
+    // type_name is set up later
     struct_tpe.size = offset
     struct_tpe.align = align
     struct_tpe.fields = fields
-    struct_tpe.const_fields = const_fields if const_fields else allocate_ref(StructMember, 0)
+    struct_tpe.const_fields = const_fields if const_fields else vector::make(StructMember)
     struct_tpe.field_types = field_types
 
     return struct_tpe
@@ -3208,14 +3318,12 @@ def do_type_lookup(node: &parser::Node, state: &State, is_type: bool = false) ->
         node.scope = state.scope
         if node.value.t_parr.tpe { node.value.t_parr.tpe.parent = node }
         var tpe = type_lookup(node.value.t_parr.tpe, state, is_type)
-        tpe = pointer(tpe, node.value.t_parr.kw)
-        return tpe
+        return pointer(tpe, node.value.t_parr.kw)
     } else if node.kind == parser::NodeKind::REF_T {
         node.scope = state.scope
         if node.value.t_parr.tpe { node.value.t_parr.tpe.parent = node }
         var tpe = type_lookup(node.value.t_parr.tpe, state, is_type)
-        tpe = reference(tpe, node.value.t_parr.kw)
-        return tpe
+        return reference(tpe, node.value.t_parr.kw)
     } else if node.kind == parser::NodeKind::WEAK_REF_T {
         node.scope = state.scope
         if node.value.t_parr.tpe { node.value.t_parr.tpe.parent = node }
@@ -3223,21 +3331,19 @@ def do_type_lookup(node: &parser::Node, state: &State, is_type: bool = false) ->
         if not tpe or tpe.kind != TypeKind::REFERENCE {
             errors::errorn(node, "Weak reference must point at a reference!")
         }
-        tpe = weak_reference(tpe, parser::VarDecl::VAR) // FIXME proper kw
-        return tpe
+        return weak_reference(tpe, parser::VarDecl::VAR) // FIXME proper kw
     } else if node.kind == parser::NodeKind::STRUCT_T or node.kind == parser::NodeKind::UNION_T {
         
         let length = vector::length(node.value.body)
-        let fields = vector::make(StructMember)
-        let const_fields = vector::make(StructMember)
+        let fields = vector::make(StructMemberPre)
+        let const_fields = vector::make(StructMemberPre)
 
         for var i in 0..length {
             let field = node.value.body(i)
             if not field { continue }
             field.scope = state.scope
-            let line = (@field).loc.line
 
-            var field_tpe: TypeId
+            var field_tpe: &TypeRef
             var name: Str
             var is_bitfield = false
             var is_embed = field.value.id_decl_struct.is_embed
@@ -3248,12 +3354,12 @@ def do_type_lookup(node: &parser::Node, state: &State, is_type: bool = false) ->
             if (@field).kind == parser::NodeKind::ID_DECL_STRUCT {
                 if field.value.id_decl_struct.is_embed {
                     let ftpe = field.value.id_decl_struct.tpe
-                    field_tpe = type_lookup(ftpe, state, is_type).tpe
+                    field_tpe = type_lookup(ftpe, state, is_type)
                 } else {
                     let ident = (@field).value.id_decl_struct.ident
                     name = last_ident_to_str(ident)
                     if field.value.id_decl_struct.tpe { field.value.id_decl_struct.tpe.parent = field }
-                    field_tpe = type_lookup((@field).value.id_decl_struct.tpe, state, is_type).tpe
+                    field_tpe = type_lookup((@field).value.id_decl_struct.tpe, state, is_type)
                     if field.value.id_decl_struct.is_bitfield {
                         is_bitfield = true
                         bit_size = field.value.id_decl_struct.bit_size
@@ -3265,37 +3371,38 @@ def do_type_lookup(node: &parser::Node, state: &State, is_type: bool = false) ->
                 }
             } else if (@field).kind == parser::NodeKind::STRUCT_T or
                 (@field).kind == parser::NodeKind::UNION_T {
-                field_tpe = type_lookup(field, state, is_type).tpe
+                field_tpe = type_lookup(field, state, is_type)
             }
             
             let member = [ 
-                node = field,
-                line = line, 
                 name = name, 
                 tpe = field_tpe,
-                is_bitfield = is_bitfield,
-                is_embed = is_embed,
-                bit_size = bit_size,
-                is_const = is_const,
-                value = value
-            ] !StructMember
+                properties = [
+                    node = field,
+                    is_bitfield = is_bitfield,
+                    is_embed = is_embed,
+                    bit_size = bit_size,
+                    is_const = is_const,
+                    value = value
+                ] !MemberProperties
+            ] !StructMemberPre
 
             if is_const { const_fields.push(member) }
             else { fields.push(member) }
         }
         
-        var tpe = (make_struct_type(fields.to_array(), const_fields.to_array())
+        var tpe = (make_struct_type(fields, const_fields)
             if node.kind == parser::NodeKind::STRUCT_T
-            else make_union_type(fields.to_array(), const_fields.to_array()))
+            else make_union_type(fields, const_fields))
 
-        tpe.id = next_type_id()
+        /*tpe.id = next_type_id()
         tpe.type_name = make_unique_name("<anonymous>", state)
         tpe.name = "<anonymous>"
         tpe.defmodule = state.module
 
-        register_internal(tpe.id, tpe)
+        register_internal(tpe.id, tpe)*/
 
-        return make_type_ref(tpe.id)
+        return tpe
     } else if node.kind == parser::NodeKind::ENUM_T {
         var enum_tpe = builtins::int_
         if node.value.t_enum.tpe {
@@ -3338,16 +3445,16 @@ def do_type_lookup(node: &parser::Node, state: &State, is_type: bool = false) ->
         let tpe = static_array(array_tpe, n, node.value.t_arrs.kw)
         return tpe
     } else if node.kind == parser::NodeKind::FUNCTION_T or node.kind == parser::NodeKind::CLOSURE_T {
-        var tpe: &Pattern
+        var tpe: &TypeRef
 
-        let parameter_t = vector::make(NamedParameter)
+        let parameter_t = vector::make(NamedParameterPre)
         for var i in 0..vector::length(node.value.t_func.args) {
             let arg = node.value.t_func.args(i)
             let np = make_parameter(type_lookup(arg, state, is_type))
             parameter_t.push(np)
         }
 
-        let return_t = vector::make(type &Pattern)
+        let return_t = vector::make(type &TypeRef)
         for var i in 0..vector::length(node.value.t_func.ret) {
             let arg = node.value.t_func.ret(i)
             return_t.push(type_lookup(arg, state, is_type))
@@ -3360,25 +3467,25 @@ def do_type_lookup(node: &parser::Node, state: &State, is_type: bool = false) ->
         return tpe
     } else if node.kind == parser::NodeKind::TYPE_T {
         let wrapped = type_lookup(node.value.expr, state, true)
-        let generic = [ kind = TypeKind::TYPE_DEF, generic = wrapped ] !&Pattern
+        let generic = [ kind = TypeKind::TYPE_DEF, tpe = wrapped ] !&Pattern
         if node.value.expr and node.value.expr.kind == parser::NodeKind::IDENTIFIER {
             generic.name = parser::identifier_to_str(node.value.expr)
         }
-        return generic
+        return make_type_ref(generic)
     } else if node.kind == parser::NodeKind::UNSIGNED_T {
         let signed = type_lookup(node.value.expr, state, is_type).tpe
         if not is_arithmetic(signed) or signed.resolve().unsig {
             errors::errorn(node, "Expected arithmetic type, got ", debug::type_to_str(signed))
             return null
         }
-        return [ tpe = _word(true, signed.resolve().size, signed.resolve().align) ] !&Pattern
+        return make_type_ref(_word(true, signed.resolve().size, signed.resolve().align))
     } else if node.kind == parser::NodeKind::WORD_T {
         let n = node.value.i / 8
         let tpe = _word(false, n, n)
         return make_type_ref(tpe)
     } else if node.kind == parser::NodeKind::TYPE_OF_T {
         walk(node, node.value.expr, state)
-        return node.value.expr.tpe
+        return make_type_ref(node.value.expr.tpe)
     } else if node.kind == parser::NodeKind::STRUCTURAL_T {
         let tpe =  [ kind = TypeKind::INTERFACE ] !&Type
         tpe.type_name = make_unique_name("<anonymous>", state)
@@ -3397,8 +3504,8 @@ def do_type_lookup(node: &parser::Node, state: &State, is_type: bool = false) ->
             
             let kw = member.value.structural_member.kw
             if kw == parser::MemberType::DEF {
-                let parameter_t = vector::make(NamedParameter)
-                let return_t = vector::make(TypeId)
+                let parameter_t = vector::make(NamedParameterPre)
+                let return_t = vector::make(type &TypeRef)
 
                 for var i in 0..vector::length(member.value.structural_member.params) {
                     let parameter_node = member.value.structural_member.params(i)
@@ -3408,26 +3515,26 @@ def do_type_lookup(node: &parser::Node, state: &State, is_type: bool = false) ->
 
                 for var i in 0..vector::length(member.value.structural_member.returns) {
                     let return_node = member.value.structural_member.returns(i)
-                    var ntpe = type_lookup(return_node, state, is_type).tpe
+                    var ntpe = type_lookup(return_node, state, is_type)
                     vector::push(return_t, ntpe)
                 }
 
                 let structural_type_member = make_type_member(name, parameter_t, return_t)
                 members.push(structural_type_member)
             } else {
-                let parameter_t = vector::make(NamedParameter)
-                let return_t = vector::make(TypeId)
+                let parameter_t = vector::make(NamedParameterPre)
+                let return_t = vector::make(type &TypeRef)
 
                 let return_node = member.value.structural_member.returns(0)
-                var rtpe = type_lookup(return_node, state, is_type).tpe
+                var rtpe = type_lookup(return_node, state, is_type)
                 return_t.push(rtpe)
 
                 let structural_type_member = make_type_member(name, parameter_t, return_t)
                 members.push(structural_type_member)
 
                 if kw == parser::MemberType::VAR {
-                    let parameter_t = vector::make(NamedParameter)
-                    let return_t = vector::make(TypeId)
+                    let parameter_t = vector::make(NamedParameterPre)
+                    let return_t = vector::make(type &TypeRef)
 
                     parameter_t.push(make_parameter(rtpe, name = "_value"))
 
@@ -3462,7 +3569,7 @@ def do_type_lookup(node: &parser::Node, state: &State, is_type: bool = false) ->
 
         var type_name = type_constructor.type_name + '('
        
-        var tc_args = vector::make(type &Pattern)
+        var tc_args = vector::make(type &TypeRef)
         var is_generic = false
 
         let len = vector::length(node.value.type_constructor.args)
@@ -3481,7 +3588,7 @@ def do_type_lookup(node: &parser::Node, state: &State, is_type: bool = false) ->
 
             let argtpe = type_lookup(arg, state, false)
             if argtpe {
-                if argtpe.is_type() { scope::create_type(inner_scope, parser::make_identifier(np.name), parser::ShareMarker::NONE, argtpe.tpe) }
+                if argtpe.is_type() { scope::create_type(inner_scope, parser::make_identifier(np.name), parser::ShareMarker::NONE, argtpe) }
                 else { is_generic = true }
             }
             tc_args.push(argtpe)
@@ -3496,12 +3603,12 @@ def do_type_lookup(node: &parser::Node, state: &State, is_type: bool = false) ->
 
         if is_generic {
             let generic = [ kind = TypeKind::TYPE_CONSTRUCTOR ] !&Pattern
-            generic.tpe = type_constructor.id
+            generic.tpe = make_type_ref(type_constructor.id)
             generic.name = type_name
             generic.return_t = tc_args
 
             state.scope = scpe
-            return generic
+            return make_type_ref(generic)
         }
 
         let tc_args_tpe = vector::make(TypeId)
@@ -3509,12 +3616,12 @@ def do_type_lookup(node: &parser::Node, state: &State, is_type: bool = false) ->
 
         let type_tuple = [ ctor = type_constructor.id, types = tc_args_tpe ] !TypeTuple
         if type_registry_instance.contains(type_tuple) {
-            return [ tpe = type_registry_instance(type_tuple).id ] !&Pattern
+            return make_type_ref(type_registry_instance(type_tuple).id)
         }
 
         let tc_node = parser::deep_copy_node(type_constructor.tc_node)
         tc_node.scope = state.scope
-        let tpe = resolve(type_lookup(tc_node, state, is_type).tpe)
+        let tpe = type_lookup(tc_node, state, is_type).tpe.resolve()
 
         tpe.tc_tpe = type_constructor.id
         tpe.tc_args = tc_args_tpe
@@ -3533,7 +3640,7 @@ def do_type_lookup(node: &parser::Node, state: &State, is_type: bool = false) ->
             let variant = type_lookup(v, state, is_type)
             if variant.is_type() and variant.tpe.kind == TypeKind::TUNION {
                 for var inner_variant in variant.tpe.resolve().return_t {
-                    variants.push([ tpe = inner_variant.tpe ] !&Pattern)
+                    variants.push(make_type_ref(inner_variant.tpe))
                 }
             } else if variant {
                 variants.push(variant)
@@ -3692,7 +3799,7 @@ def get_value(node: &parser::Node, state: &State, force_compile: bool = true, dr
                         } else {
                             let new_value_ref = scope::create_variable(
                                 parent_function.inner_scope, parser::make_identifier("__ref." + value.name), parser::ShareMarker::NONE,
-                                parser::VarDecl::LET, pointer(value.tpe), null
+                                parser::VarDecl::LET, pointer(value.tpe, parser::VarDecl::VAR), null
                             )
                             parent_function.captures.push(new_value_ref)
                         }
@@ -3705,7 +3812,7 @@ def get_value(node: &parser::Node, state: &State, force_compile: bool = true, dr
                         if modifier == parser::VarDecl::CONST {
                             new_value.value = value.value
                         }
-                        if modifier != parser::VarDecl::CONST or is_closure(value.tpe) {
+                        if modifier != parser::VarDecl::CONST or value.tpe.kind() == TypeKind::CLOSURE {
                             parent_function.captures.push(new_value)   
                         }
 
@@ -3736,7 +3843,7 @@ def walk_Identifier(node: &parser::Node, state: &State) {
     if value.kind == scope::ValueKind::TYPE {
         node.tpe = _type(value.value.value_tpe)
     } else {
-        node.tpe = value.tpe
+        node.tpe = value.tpe.resolve(state.scope)
     }
 
     node.svalue = value
@@ -3785,7 +3892,7 @@ def implicit_conversion(node: &parser::Node, tpe: TypeId, state: &State) {
         node.value.expr and node.value.expr.kind == parser::NodeKind::IDENTIFIER {
         node.tpe = tpe
     } else if not state.block_implicit_conv and node.tpe and not equals(node.tpe, tpe) {
-        if convert_type_score(tpe, node.tpe, state.module) == IMPLICIT {
+        if convert_type_score(tpe, node.tpe, state.scope) == IMPLICIT {
             let child = parser::copy_node(node)
             @node = [ kind = parser::NodeKind::CAST, loc = node.loc ] !parser::Node
             node.value.bin_op = [ left = child ] !parser::NodeBinaryOp
@@ -3974,7 +4081,7 @@ def walk_Assign(node: &parser::Node, state: &State) {
         if l.kind == parser::NodeKind::IDENTIFIER and scope::last_path_element(l) == "_" {
             ltpe = rtpe
             l.tpe = rtpe
-            l.svalue = scope::create_underscore(state.scope, l, rtpe)
+            l.svalue = scope::create_underscore(state.scope, l, make_type_ref(rtpe))
         }
 
         if not ltpe or not rtpe { continue }
@@ -4119,9 +4226,9 @@ export def walk_VarDecl(node: &parser::Node, state: &State, set_constant: bool =
             //}
 
             if is_underscore {
-                ident.svalue = scope::create_underscore(state.scope, ident, ltpe)
+                ident.svalue = scope::create_underscore(state.scope, ident, make_type_ref(ltpe))
             } else {
-                ident.svalue = scope::create_variable(state.scope, ident, share, kw, ltpe, extern, null)
+                ident.svalue = scope::create_variable(state.scope, ident, share, kw, make_type_ref(ltpe), extern, null)
             }
 
             scope::add_reference(ident.svalue, ident)
@@ -4141,7 +4248,7 @@ export def walk_VarDecl(node: &parser::Node, state: &State, set_constant: bool =
             if node.kind == parser::NodeKind::IDENTIFIER and scope::last_path_element(node) == "_" {
                 ltpe = rtpe
                 node.tpe = rtpe
-                node.svalue = scope::create_underscore(state.scope, node, rtpe)
+                node.svalue = scope::create_underscore(state.scope, node, make_type_ref(rtpe))
             }
 
             if not ltpe or not rtpe { continue }
@@ -4544,7 +4651,7 @@ def walk_Cast(node: &parser::Node, state: &State) {
         }
     } else if ltpe.is_ref_or_weak() and 
         ltpe.tpe.is_interface() and 
-        not implements(rtpe, ltpe.tpe, state.module) and
+        not implements(rtpe, ltpe.tpe, state.scope) and
         (rtpe.is_struct() or (rtpe.is_ref() and rtpe.tpe.is_struct())) {
 
         var dst = pointer(rtpe)
@@ -4552,13 +4659,13 @@ def walk_Cast(node: &parser::Node, state: &State) {
             dst = pointer(dst)
         }
 
-        let params = vector::make(NamedParameter)
-        params.push([ name = "src", tpe = ltpe ] !NamedParameter)
-        params.push([ name = "dst", tpe = dst] !NamedParameter)
+        let params = vector::make(NamedParameterPre)
+        params.push([ name = "src", tpe = make_type_ref(ltpe) ] !NamedParameterPre)
+        params.push([ name = "dst", tpe = make_type_ref(dst)] !NamedParameterPre)
         let fun = function_def(
             "__cast", 
             params, 
-            vector::make(TypeId),
+            vector::make(type &TypeRef),
             state.module
         )
         
@@ -4686,14 +4793,14 @@ export def lookup_parameters(node: &parser::Node, state: &State) -> &Type {
     return tpe
 }*/
 
-def check_is_valid_function(ident: &parser::Node, par: &Vector(NamedParameter), state: &State) {
+def check_is_valid_function(ident: &parser::Node, par: &Vector(NamedParameterPre), state: &State) {
     let name = parser::identifier_to_str(ident)
     if name == "destruct" {
         if vector::length(par) != 1 {
             errors::errorn(ident, "Destructor takes exactly one parameter of a pointer type")
             return
         }
-        let first = (par(0)).tpe
+        let first = par(0).tpe.resolve(state.scope)
         if not first or first.kind != TypeKind::POINTER {
             errors::errorn(ident, "Destructor takes exactly one parameter of a pointer type")
             return
@@ -4708,8 +4815,8 @@ def check_is_valid_function(ident: &parser::Node, par: &Vector(NamedParameter), 
             errors::errorn(ident, "Copy constructor takes exactly two parameters of the same pointer type")
             return
         }
-        let first = (par(0)).tpe
-        let second = (par(1)).tpe
+        let first = par(0).tpe.resolve(state.scope)
+        let second = par(1).tpe.resolve(state.scope)
         if first.kind != TypeKind::POINTER or not equals(first, second) {
             errors::errorn(ident, "Copy constructor takes two parameters of the same pointer type")
             return
@@ -4731,7 +4838,7 @@ export def walk_Lambda(node: &parser::Node, state: &State) {
 
     let parameter_t = vector::make(NamedParameter)
     let c_parameter_t = vector::make(NamedParameter)
-    var return_t = vector::make(TypeId)
+    var return_t = vector::make(type &TypeRef)
 
     let name = state.function_stack.peek().unmangled + "#lambda." + lambda_counter
     lambda_counter += 1
@@ -4762,11 +4869,11 @@ export def walk_Lambda(node: &parser::Node, state: &State) {
         c_parameter_t.push(np)
     }
 
-    closure_type = closure(c_parameter_t, return_t)
+    closure_type = closure(c_parameter_t, vector::make(TypeId))
     node.value.lambda.closure_type = closure_type
 
     // Create function type
-    fdef = function_def(name, parameter_t, return_t, state.module)
+    fdef = function_def(name, wrap_ref(parameter_t), vector::make(type &TypeRef), state.module)
 
     let function = [
         fdef = fdef,
@@ -4800,10 +4907,10 @@ def walk_Lambda_body(node: &parser::Node, state: &State) {
     if function.is_typechecked { return }
 
     // State parameter
-    let value = scope::create_variable(inner_scope, parser::make_identifier("__state"), parser::ShareMarker::NONE, parser::VarDecl::VAR, reference(0), null)
+    let value = scope::create_variable(inner_scope, parser::make_identifier("__state"), parser::ShareMarker::NONE, parser::VarDecl::VAR, make_type_ref(reference(0)), null)
 
     // Create parameters
-    let parameter_t = fdef.sig.parameter_t
+    let parameter_t = fdef.parameter_t
     for var i in 0..parameter_t.length - 1 {
         let np = parameter_t(i + 1)
         if not np.node { continue }
@@ -4846,9 +4953,9 @@ def walk_Lambda_body(node: &parser::Node, state: &State) {
     pop_function(state)
     state.scope = outer_scope
 
-    let members = allocate_ref(StructMember, function.captures.length)
+    let members = vector::make(StructMember)
     for var i in 0..function.captures.length {
-        members(i) = [ name = to_string(i), tpe = function.captures(i).tpe ] !StructMember
+        members.push([ name = to_string(i), tpe = function.captures(i).get_type() ] !StructMember)
     }
 
     let function_state = make_struct_type(members)
@@ -4963,9 +5070,9 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
 
         // Unpack tuple
         if node.fdef {
-            let node_return_t = node.fdef.sig.return_t
-            if node_return_t and node_return_t.length == 1 {
-                let tuple = node_return_t(0).resolve()
+            let node_return_t = node.fdef.return_t
+            if node_return_t and node_return_t.length() == 1 {
+                let tuple = node_return_t(0).resolve(state.scope).resolve()
                 if tuple and tuple.kind == TypeKind::TUPLE {
                     return_t = tuple.return_t
                 }
@@ -4973,7 +5080,7 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
         }
         
 
-        fdef = function_def(identifier_to_str(make_identifier(arr)) + "." + lambda_counter, parameter_t, return_t, state.module) !&FunctionDef
+        fdef = function_def(identifier_to_str(make_identifier(arr)) + "." + lambda_counter, wrap_ref(parameter_t), wrap_ref(return_t), state.module) !&FunctionDef
         lambda_counter += 1
 
         closure_type = closure(parameter_t, return_t)
@@ -4982,7 +5089,7 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
     } else {
         if not node.fdef { return }
         fdef = node.fdef
-        check_is_valid_function(name, fdef.sig.parameter_t, state)
+        check_is_valid_function(name, fdef.parameter_t, state)
     } 
 
     if not fun {
@@ -5011,7 +5118,7 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
     var phase = scope::Phase::DECLARED
     if body {
         phase = scope::Phase::COMPILED
-        let parameter_t = fdef.sig.parameter_t
+        let parameter_t = fdef.parameter_t
         for var i in 0..vector::length(parameter_t) {
             let np = parameter_t(i)
             if not np.node { continue }
@@ -5020,12 +5127,12 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
                 if tpe2.kind == TypeKind::TYPE { continue }
                 if tpe2.kind == TypeKind::TYPE_CONSTRUCTOR {
                     errors::errorn(np.node, "Can't use type constructor as function argument")
-                    np.tpe = 0
+                    np.tpe = null
                 }
             }
             if np.varargs {
                 if tpe2 {
-                    let value = scope::create_variable(inner_scope, np.node, parser::ShareMarker::NONE, parser::VarDecl::VAR, array(tpe2), null)
+                    let value = scope::create_variable(inner_scope, np.node, parser::ShareMarker::NONE, parser::VarDecl::VAR, array(tpe2, parser::VarDecl::VAR), null)
                     np.node.svalue = value
                 }
             } else {
@@ -5034,53 +5141,54 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
             }
         }
         if test {
-            scope::create_variable(inner_scope, parser::make_identifier("env"), parser::ShareMarker::NONE, parser::VarDecl::LET, pointer(builtins::TestEnvironment_), null)
+            scope::create_variable(inner_scope, parser::make_identifier("env"), parser::ShareMarker::NONE, parser::VarDecl::LET, make_type_ref(pointer(builtins::TestEnvironment_)), null)
         }
     }
 
     if is_closure {
         //tpe.parameter_t.get(0).node = null // TODO This is ugly, maybe NamedParameter should have a strong reference instead?
-        fun.value = scope::create_variable(outer_scope, name, parser::ShareMarker::NONE, parser::VarDecl::CONST, closure_type, null)
+        fun.value = scope::create_variable(outer_scope, name, parser::ShareMarker::NONE, parser::VarDecl::CONST, make_type_ref(closure_type), null)
     } else {
         errors::current_function = fdef.name
         errors::current_signature = node.signature_hash
         if not fun.value {
             if polymorph and parser::identifier_to_str(name) != "construct" {
-                fun.value = scope::create_polymorph(outer_scope, node.scope, name, @fdef, phase, node, local_type_defs = fun.local_type_defs, impl = impl)
+                fun.value = scope::create_polymorph(outer_scope, node.scope, name, @fdef, phase, node, impl = impl)
             } else {
-                fun.value = scope::create_function(outer_scope, name, share, @fdef, phase, node, local_type_defs = fun.local_type_defs, impl = impl)
+                fun.value = scope::create_function(outer_scope, name, share, @fdef, phase, node, impl = impl)
             }
             if is_closure { state.module.closures.push(fun.value) }
             fun.value.polymorph = polymorph
             fun.value.imported = imported
         }
         if impl {
-            for var i in 0..outer_scope.implicits.length {
+            // FIXME check overload score for implicits
+            /*for var i in 0..outer_scope.implicits.length {
                 let value = outer_scope.implicits(i)
                 if (value !*) == fun.value !* { continue }
 
                 let value_tpe = value.tpe.resolve()
-                if fdef.sig.parameter_t.length == 1 and 
-                    fdef.sig.return_t.length == 1 and
-                    equals(value_tpe.parameter_t(0).tpe, fdef.sig.parameter_t(0).tpe) and
-                    equals(value_tpe.return_t(0), fdef.sig.return_t(0)) {
+                if fdef.parameter_t.length == 1 and 
+                    fdef.return_t.length == 1 and
+                    equals(value_tpe.parameter_t(0).tpe, fdef.parameter_t(0).tpe) and
+                    equals(value_tpe.return_t(0), fdef.return_t(0)) {
                     errors::errorn(name, "Duplicate implicit function")
                 }
-            }
+            }*/
         }
     }
 
-    let parameter_t = fdef.sig.parameter_t
+    let parameter_t = fdef.parameter_t
     for var i in 0..parameter_t.length {
         let param = params(i)
         if i >= parameter_t.length { continue }
         let p = parameter_t.get(i)
 
         if p.tpe {
-            generate_ctor_and_dtor(p.tpe)
+            generate_ctor_and_dtor(p.tpe.resolve(state.scope))
         }
 
-        let value = consteval::evaluate_parameter(node, param, p.tpe, state)
+        let value = consteval::evaluate_parameter(node, param, p.tpe.resolve(state.scope), state)
         p.value = value
     }
     
@@ -5097,18 +5205,18 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
                 args = node.value.def_.returns
             ] !parser::NodeTypeConstructor
 
-            var generator = type_lookup(generator_ctor, state).tpe
-            let return_t = fdef.sig.return_t.copy()
-            return_t(0) = reference(generator)
+            var generator = type_lookup(generator_ctor, state)
+            let return_t = fdef.return_t.copy()
+            return_t(0) = reference(generator, parser::VarDecl::VAR)
 
             fdef = function_def(
-                fdef.unmangled, fdef.sig.parameter_t, return_t, 
+                fdef.unmangled, fdef.parameter_t, return_t, 
                 state.module, extern, test, state.context.module
             ) !&FunctionDef
             fun.fdef = @fdef
 
-            has_destructor(generator)
-            has_copy_constructor(generator)
+            has_destructor(generator.resolve(state.scope))
+            has_copy_constructor(generator.resolve(state.scope))
             fun.generator_ctor = generator_ctor
         }
 
@@ -5137,9 +5245,9 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
     }
 
     if is_closure {
-        let members = allocate_ref(StructMember, fun.captures.length)
+        let members = vector::make(StructMember)
         for var i in 0..fun.captures.length {
-            members(i) = [ name = to_string(i), tpe = fun.captures(i).tpe ] !StructMember
+            members.push([ name = to_string(i), tpe = fun.captures(i).tpe.resolve(state.scope) ] !StructMember)
         }
 
         let function_state = make_struct_type(members)
@@ -5173,7 +5281,7 @@ def check_is_recursive(tpe: &Type, types: &Set(&Type) = null) -> bool {
             if map::contains(types, tpe) { return true }
             types.add(tpe)
         }
-        for var i in 0..tpe.fields.size {
+        for var i in 0..tpe.fields.length() {
             let new_types = set::make(type &Type)
             let keys = map::keys(types)
             for var j in 0..keys.size {
@@ -5217,7 +5325,7 @@ export def walk_TypeDecl(node: &parser::Node, state: &State) {
             tpe = left.tpe
         } else {
             tpe = next_type_id()
-            left.svalue = scope::create_type(state.scope, name, share, tpe, scope::Phase::COMPILED, node)
+            left.svalue = scope::create_type(state.scope, name, share, make_type_ref(tpe), scope::Phase::COMPILED, node)
         }
 
         if value and value.kind != parser::NodeKind::ENUM_T {
@@ -5225,7 +5333,7 @@ export def walk_TypeDecl(node: &parser::Node, state: &State) {
             if left.kind == parser::NodeKind::TYPE_CONSTRUCTOR {
                 type_value = lookup_type_constructor(left, value, state)
             } else {
-                type_value = copy(resolve(type_lookup(value, state).tpe))
+                type_value = copy(resolve(type_lookup(value, state), state.scope))
                 if type_value and not type_value.tc_args {
                     type_value.defmodule = state.module
                 }
@@ -5241,7 +5349,7 @@ export def walk_TypeDecl(node: &parser::Node, state: &State) {
                 type_value.type_name = append_module(type_value.name, node.loc.module)
             }
             
-            type_value.svalue = left.svalue = node.svalue = scope::create_type(state.scope, name, share, tpe, scope::Phase::COMPILED, node)
+            type_value.svalue = left.svalue = node.svalue = scope::create_type(state.scope, name, share, make_type_ref(tpe), scope::Phase::COMPILED, node)
         }
         name.tpe = tpe
 
@@ -5279,26 +5387,29 @@ def walk_Return(node: &parser::Node, state: &State) {
 
     if state.current_lambda {
         let cur_lambda = state.current_lambda.fdef
-        let return_t = cur_lambda.sig.return_t.copy()
+        let ltpe = state.current_lambda.fdef.to_type(state.scope).resolve()
+        let return_t = cur_lambda.return_t.copy()
 
-        let rtypes = collapse_types(node, return_t, body, state)
-        if cur_lambda.sig.return_t.length != 0 {
+        let rtypes = collapse_types(node, ltpe.return_t, body, state)
+        if cur_lambda.return_t.length != 0 {
             // Check if the types match up
             if return_t.length != rtypes.length {
                 errors::errorn(node, "Return types for lambda disagree with previous return statement")
                 return
             }
             for var i in 0..return_t.length {
-                if not equals(return_t(i), rtypes(i)) {
+                if not equals(return_t(i).resolve(state.scope), rtypes(i)) {
                     errors::errorn(node, "Return types for lambda disagree with previous return statement")
                     return
                 }
             }
         } else {
-            return_t.add_all(rtypes)
+            for var tpe in rtypes {
+                return_t.push(make_type_ref(tpe))
+            }
         }
         // FIXME Shouldn't this be a closure type?
-        state.current_lambda.fdef = function_def("", cur_lambda.sig.parameter_t, return_t)
+        state.current_lambda.fdef = function_def("", cur_lambda.parameter_t, return_t)
         return
     }
 
@@ -5311,8 +5422,8 @@ def walk_Return(node: &parser::Node, state: &State) {
     }
     if not current_fun.value { return }
 
-    let fdef = current_fun.fdef
-    let ltypes = fdef.sig.return_t
+    let ftpe = current_fun.value.get_type()
+    let ltypes = ftpe.resolve().return_t
     let rtypes = collapse_types(node, ltypes, body, state)
 
     if not current_fun.has_yield {
@@ -5325,7 +5436,7 @@ def walk_Return(node: &parser::Node, state: &State) {
         }
     }
     
-    node.tpe = fdef.to_type()
+    node.tpe = ftpe
 }
 
 def walk_Yield(node: &parser::Node, state: &State) {
@@ -5335,7 +5446,7 @@ def walk_Yield(node: &parser::Node, state: &State) {
         errors::errorn(node, "Yield outside of a function")
         return
     }
-    let tpe = current_fun.value.tpe
+    let tpe = current_fun.value.get_type()
     let ltypes = tpe.resolve().return_t.copy()
     let rtypes = collapse_types(node, ltypes, body, state)
     if rtypes.length != 1 {
@@ -5355,7 +5466,7 @@ def walk_YieldFrom(node: &parser::Node, state: &State) {
     }
     if not node.value.expr { return }
 
-    let ftpe = current_fun.value.tpe.resolve()
+    let ftpe = current_fun.value.get_type().resolve()
     let generator = ftpe.return_t(0)
 
     walk(node, node.value.expr, state)
@@ -5382,16 +5493,17 @@ def walk_YieldFrom(node: &parser::Node, state: &State) {
     let name = "__yfm." + counter
     let ident = parser::make_identifier(name)
     counter += 1
+    let vtpe = tpe.tpe.resolve().tc_args(0)
     let v = scope::create_variable(
         inner_scope, 
         ident,
         parser::ShareMarker::NONE,
         parser::VarDecl::VAR,
-        tpe.tpe.resolve().tc_args(0), true, null // extern so that we don't change the variable name
+        make_type_ref(vtpe), true, null // extern so that we don't change the variable name
     )
     v.is_internal = true
     v.identifier = ident
-    ident.tpe = v.tpe
+    ident.tpe = vtpe
     ident.svalue = v
     node.svalue = v
     node.inner_scope = inner_scope
@@ -5525,7 +5637,7 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
             let value = get_value(left, state, force_compile = not consteval::is_static, dry_run = true)
             if value {
                 left.svalue = value
-                left.tpe = value.tpe
+                left.tpe = value.tpe.resolve(state.scope)
             }
         }
     }
@@ -5611,7 +5723,7 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
 
             // Access check
             if not access_check(function, node, state) {
-                errors::errorn(left, "Can't access function ", function.tpe.type_name)
+                errors::errorn(left, "Can't access function ", function.name)
                 function = null
             }
             // Try to call a zero arg function to retrieve a value that can be called
@@ -5623,16 +5735,17 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
                 let e, za_fun = scope::get_function_check(state.scope, left, args, true, not consteval::is_static, context = state.context)
                 
                 // make sure we only try this if there's something returned
-                if e and za_fun.fdef.sig.return_t.length == 1 and access_check(za_fun, node, state) {
+                if e and za_fun.fdef.return_t.length == 1 and access_check(za_fun, node, state) {
                     // Build the zero args function
                     let za_args = vector::make(type &parser::Node)
                     if node.value.func_call.is_member_access {
                         za_args.push(node.value.func_call.args(0))
                     }
                     let za_call = make_function_call(left, left, za_args)
-                    za_call.tpe = za_fun.tpe.resolve().return_t(0)
+                    let za_fun_tpe = za_fun.get_type().resolve()
+                    za_call.tpe = za_fun_tpe.return_t(0)
                     za_call.fdef = za_fun.fdef
-                    za_call.call_type = za_fun.tpe
+                    za_call.call_type = za_fun_tpe.id
                     
                     let args = vector::copy(arguments)
                     if node.value.func_call.is_member_access {
@@ -5667,7 +5780,7 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
                     errors::errorn(left, "Function overload not found")
                     return false
                 }
-                if overload_score(function.fdef, arguments, state.module, false, local_type_defs = function.local_type_defs) < 0 {
+                if overload_score(function.fdef, arguments, state.scope, false) < 0 {
                     var msg: StringBuffer = "Incorrect arguments to overloaded function. "
                     msg += append_arguments(arguments)
                     errors::errorn(left, msg)
@@ -5676,7 +5789,7 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
             }
 
             if function {
-                let parameter_t = function.tpe.resolve().parameter_t
+                let parameter_t = function.get_type().resolve().parameter_t
 
                 for var i in 0..arguments.length {
                     let param = arguments(i)
@@ -5711,7 +5824,7 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
                 return false 
             }
 
-            let parameter_t = function.tpe.resolve().parameter_t
+            let parameter_t = function.get_type().resolve().parameter_t
 
             // Check if all arguments were provided
             for var i in 0..vector::length(parameter_t) {
@@ -5942,7 +6055,7 @@ export def for_setup_generator(expr: &parser::Node, node: &parser::Node, scpe: &
     }
 
     let parameter_t2 = vector::make(NamedParameter)
-    parameter_t2.push([ tpe = generator_next.tpe.resolve().return_t(0) ] !NamedParameter)
+    parameter_t2.push([ tpe = generator_next.get_type().resolve().return_t(0) ] !NamedParameter)
     var generator_get = scpe.get_function(
         id = parser::make_identifier("get"),
         dry_run = false,
@@ -6030,7 +6143,7 @@ def walk_For(node: &parser::Node, state: &State) {
             ident, 
             parser::ShareMarker::NONE, 
             (@iddecl).value.for_id_decl.kw, 
-            tpe, null
+            make_type_ref(tpe), null
         )
     } else {
         walk(node, iddecl, state)
@@ -6293,7 +6406,7 @@ def flatten_fields(node: &parser::Node, tpe: &Type, v: &Vector(StructMember) = n
     }
 
     for var field in @tpe.fields {
-        if field.is_embed {
+        if field.properties.is_embed {
             let tpe = field.tpe.tpe if is_box(field.tpe) else field.tpe
             flatten_fields(node, tpe, v)
         } else {
@@ -6412,7 +6525,7 @@ def walk_StructLit(node: &parser::Node, state: &State) {
         }
 
         let len = vector::length(node.value.struct_lit.kwargs) 
-        let fields = allocate_ref(StructMember, len)
+        let fields = vector::make(StructMember)
 
         for var i in 0..len {
             let arg = node.value.struct_lit.kwargs(i)
@@ -6421,14 +6534,14 @@ def walk_StructLit(node: &parser::Node, state: &State) {
             let n = arg.value.named_arg.value
             walk(node, n, state)
 
-            fields(i) = [ name = name, tpe = n.tpe ] !StructMember
+            fields.push([ name = name, tpe = n.tpe ] !StructMember)
         }
 
         let stpe = make_struct_type(fields)
         stpe.is_anon = true
         stpe.id = next_type_id()
         register(stpe.id, stpe)
-        node.tpe = tpe
+        node.tpe = stpe.id
 
         return
     }
@@ -6747,7 +6860,7 @@ export def make_state(module: &toolchain::Module) -> &State {
     ] !&State
 }
 
-def find_dependencies(type_variables: &Vector(&scope::Value), tpe: &Type) {
+/*def find_dependencies(type_variables: &Vector(&scope::Value), tpe: &Type) {
     if not tpe { return }
     if is_box(tpe) {
         find_dependencies(type_variables, tpe.tpe)
@@ -6777,7 +6890,7 @@ def find_dependencies(type_variables: &Vector(&scope::Value), tpe: &Type) {
     if tpe.svalue {
         type_variables.push(tpe.svalue)
     }
-}
+}*/
 
 export def walk_Def_with_type_argument(node: &parser::Node, args: &Vector(NamedParameter), context: &scope::Scope, state: &State) -> &parser::Node {
     let name = node.value.def_.name
@@ -6796,12 +6909,8 @@ export def walk_Def_with_type_argument(node: &parser::Node, args: &Vector(NamedP
     fun.captures = vector::make(type weak &scope::Value)
     fun.inner_scope = node.inner_scope = scope::enter_function_scope(node.scope)
     fun.module = context.module
-    fun.local_type_defs = @fun.local_type_defs // Copy
-    fun.local_type_defs.type_mapping = map::make(TypeId, TypeId)
 
     node.value.def_.function = fun
-
-    let local_type_defs = fun.local_type_defs
 
     //node.tpe = lookup_parameters(node, state)
 
@@ -6836,12 +6945,12 @@ export def walk_Def_with_type_argument(node: &parser::Node, args: &Vector(NamedP
     let test = node.value.def_.test
 
     let fdef = fun.fdef
-    let parameter_t = fdef.sig.parameter_t.copy()
-    let return_t = fdef.sig.return_t.copy()
+    let parameter_t = fdef.parameter_t.copy()
+    let return_t = fdef.return_t.copy()
 
     for var i in 0..vector::length(args) {
         let np = args(i)
-        var left: *NamedParameter = null
+        var left: *NamedParameterPre = null
         if np.name {
             for var j in 0..vector::length(parameter_t) {
                 let l = parameter_t.get(j)
@@ -6854,7 +6963,7 @@ export def walk_Def_with_type_argument(node: &parser::Node, args: &Vector(NamedP
             left = parameter_t.get(i)
         }
 
-        if left and left.generic and left.generic.kind == TypeKind::TYPE {
+        if left and left.tpe and left.tpe.kind() == TypeKind::TYPE {
             if not is_type(np.tpe) { 
                 errors::errorn(np.node, "Passed invalid type, got `", debug::type_to_str(np.tpe), "` instead")
             } else { 
@@ -6866,7 +6975,7 @@ export def walk_Def_with_type_argument(node: &parser::Node, args: &Vector(NamedP
         }
     }
 
-    replace_type_defs(parameter_t, return_t, args, context.module)
+    replace_type_defs(parameter_t, return_t, args, context)
     //tpe.type_name = mangle_function_name(append_module(tpe.name, tpe.module.module), tpe.parameter_t, test, context.module)
 
     // TODO This is quite hacky but we need to copy the nodes
@@ -6878,7 +6987,7 @@ export def walk_Def_with_type_argument(node: &parser::Node, args: &Vector(NamedP
         tpe.parameter_t(i) = np
     }*/
 
-    let type_variables = vector::make(type &scope::Value)
+    /*let type_variables = vector::make(type &scope::Value)
 
     let keys = map::keys(local_type_defs.type_defs)
     for var i in 0..keys.size {
@@ -6886,7 +6995,7 @@ export def walk_Def_with_type_argument(node: &parser::Node, args: &Vector(NamedP
         let tpe2 = local_type_defs.type_mapping(local_type_defs.type_defs(key))
         find_dependencies(type_variables, tpe2)
         let value = scope::create_type(node.inner_scope, parser::make_identifier(key), parser::ShareMarker::NONE, tpe2)
-    }
+    }*/
 
     let old_scope = state.scope
     state.scope = node.inner_scope
@@ -6906,7 +7015,7 @@ export def walk_Def_with_type_argument(node: &parser::Node, args: &Vector(NamedP
 
     fun.fdef = function_def(
         parser::identifier_to_str(name), 
-        fdef.sig.parameter_t, fdef.sig.return_t, state.module, 
+        fdef.parameter_t, fdef.return_t, state.module, 
         extern, test, context.module
     )
     node.fdef = fun.fdef !&FunctionDef
@@ -6918,9 +7027,9 @@ export def walk_Def_with_type_argument(node: &parser::Node, args: &Vector(NamedP
     fun.value.is_internal = true // So that generic functions don't show up in autocomplete
     fun.polymorph = true
     
-    for var tvar in type_variables {
+    /*for var tvar in type_variables {
         scope::create_dependency(fun.value, tvar)
-    }
+    }*/
 
     node.scope = context.module.scope
     // This makes sure that the function is walked by the compiler
@@ -6928,7 +7037,7 @@ export def walk_Def_with_type_argument(node: &parser::Node, args: &Vector(NamedP
 
     // Extra state for the repl
     if toolchain::is_in_repl {
-        compiler::predeclare_function(fun)
+        compiler::predeclare_function(fun, state.scope)
         consteval::const_module.result.functions(node.tpe.type_name) = fun
         consteval::const_module.delayed_compile.push(node)
     }
@@ -6987,7 +7096,7 @@ export def typecheck(state: &State) {
             args_ident, 
             parser::ShareMarker::NONE, 
             parser::VarDecl::VAR, 
-            string_array_tpe, null
+            make_type_ref(string_array_tpe), null
         )
     }
     let args_value = scope::get(node.scope, args_ident)
@@ -7017,14 +7126,14 @@ export def typecheck(state: &State) {
     ident.loc.line = 0
     ident.loc.column = 0
 
-    let args = vector::make(NamedParameter)
+    let args = vector::make(NamedParameterPre)
     args.push([
         name = "args",
-        tpe = string_array_tpe
-    ] !NamedParameter)
+        tpe = make_type_ref(string_array_tpe)
+    ] !NamedParameterPre)
 
-    let main_fdef = function_def("__main__", args, vector::make(TypeId), state.module)
-    let value = scope::create_function(node.scope, ident, parser::ShareMarker::EXPORT, main_fdef, local_type_defs = make_local_type_defs())
+    let main_fdef = function_def("__main__", args, vector::make(type &TypeRef), state.module)
+    let value = scope::create_function(node.scope, ident, parser::ShareMarker::EXPORT, main_fdef)
     value.identifier = ident
 
     node.value.program.function.value = value
