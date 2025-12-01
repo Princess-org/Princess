@@ -257,6 +257,21 @@ export def hash(typeref: &TypeRef) -> uint64 {
     }
     assert
 }
+export def == (this: &TypeRef, other: &TypeRef) -> bool {
+    if not this and not other { return true } // TODO Boilerplate
+    if not this or not other { return false }
+    if this.tpe != 0 and other.tpe != 0 {
+        return this.tpe == other.tpe
+    } else if this.name and other.name {
+        return this.name == other.name
+    } else if this.pattern and other.pattern {
+        return this.pattern == other.pattern
+    }
+    return false
+}
+export def != (this: &TypeRef, other: &TypeRef) -> bool {
+    return not (this == other)
+}
 
 export def kind(typeref: &TypeRef) -> TypeKind {
     if typeref.tpe {
@@ -364,8 +379,62 @@ export type Pattern = struct {
     fields: &Vector(StructMemberPre)
     const_fields: &Vector(StructMemberPre)
 }
+export def == (this: &Pattern, other: &Pattern) -> bool {
+    if this.kind != other.kind {
+        return false
+    }
+    switch this.kind {
+        case TypeKind::ARRAY, TypeKind::POINTER, TypeKind::REFERENCE, TypeKind::WEAK_REF
+            return this.kw == other.kw and this.tpe == other.tpe
+        case TypeKind::STATIC_ARRAY
+            return this.length == other.length and this.kw == other.kw and this.tpe == other.tpe
+        case TypeKind::FUNCTION, TypeKind::CLOSURE
+            if this.parameter_t.length() != other.parameter_t.length() {
+                return false
+            }
+            for var i in 0..this.parameter_t.length() {
+                if this.parameter_t(i) != other.parameter_t(i) {
+                    return false
+                }
+            }
+            if this.return_t.length() != other.return_t.length() {
+                return false
+            }
+            for var i in 0..this.return_t.length() {
+                if this.return_t(i) != other.return_t(i) {
+                    return false
+                }
+            }
+            return true
+        case TypeKind::TUPLE, TypeKind::TUNION
+            if this.return_t.length() != other.return_t.length() {
+                return false
+            }
+            for var i in 0..this.return_t.length() {
+                if this.return_t(i) != other.return_t(i) {
+                    return false
+                }
+            }
+            return true
+        case TypeKind::STRUCT, TypeKind::UNION
+            if this.fields.length() != other.fields.length() {
+                return false
+            }
+            for var i in 0..this.fields.length() {
+                if this.fields(i).name != other.fields(i).name or this.fields(i).tpe != other.fields(i).tpe {
+                    return false
+                }
+            }
+            return true
+        case; assert
+    }
+}
+export def != (this: &Pattern, other: &Pattern) -> bool {
+    return not (this == other)
+}
 
 export def generic_to_string(typeref: &TypeRef) -> Str {
+    if not typeref { return "null" }
     if typeref.tpe {
         return debug::type_to_str(typeref.tpe)
     } else if typeref.name {
@@ -384,6 +453,19 @@ def generic_to_string(generic: &Pattern) -> Str {
         return "[" + generic_to_string(generic.tpe) + "]"
     } else if generic.kind == TypeKind::STATIC_ARRAY {
         return "[" + generic.length + "; " + generic_to_string(generic.tpe) + "]"
+    } else if generic.kind == TypeKind::TYPE_DEF {
+        return "type " + generic.name
+    } else if generic.kind == TypeKind::TYPE_CONSTRUCTOR {
+        var res: StringBuffer = generic.name + "("
+        let len = generic.return_t.length()
+        for var i in 0..len {
+            res += generic_to_string(generic.return_t(i))
+            if i < len - 1 {
+                res += ", "
+            }
+        }
+        res += ')'
+        return res
     } else if generic.kind == TypeKind::TUPLE {
         var res: StringBuffer = "["
         let len = generic.parameter_t.length()
@@ -765,6 +847,15 @@ export type NamedParameterPre = struct {
     varargs: bool
     node: weak &parser::Node
 }
+export def == (this: NamedParameterPre, other: NamedParameterPre) -> bool {
+    return this.name == other.name and this.tpe == other.tpe
+}
+export def != (this: NamedParameterPre, other: NamedParameterPre) -> bool { 
+    return not (this == other)
+}
+export def hash(this: NamedParameterPre) -> uint64 {
+    return combine_hashes(hash(this.name), hash(this.tpe))
+}
 
 def make_parameter(tref: &TypeRef, node: &parser::Node = null, name: String = null) -> NamedParameterPre {
     return [ name = name, tpe = tref, node = node ] !NamedParameterPre
@@ -798,7 +889,9 @@ export type NamedParameter = struct {
 export def == (this: NamedParameter, other: NamedParameter) -> bool {
     return equals(this.tpe, other.tpe)
 }
-export def != (this: NamedParameter, other: NamedParameter) -> bool { return not (this == other) }
+export def != (this: NamedParameter, other: NamedParameter) -> bool { 
+    return not (this == other)
+}
 
 
 export type State = struct {
@@ -1146,7 +1239,7 @@ export def function_def(
     return [
         name = tname,
         unmangled = name,
-        context = context,
+        context = context if context else module,
         parameter_t = parameter_t,
         return_t = return_t
     ] !FunctionDef
@@ -1417,7 +1510,7 @@ export def pointer(tpe: TypeId, kw: parser::VarDecl) -> TypeId {
 }
 
 export def pointer(generic: &TypeRef, kw: parser::VarDecl) -> &TypeRef {
-    if generic == null { make_type_ref(pointer(0, kw)) }
+    if generic == null { return make_type_ref(pointer(0, kw)) }
     if is_type(generic) { return make_type_ref(pointer(generic.tpe, kw)) }
     return make_type_ref([ kind = TypeKind::POINTER, tpe = generic ] !&Pattern)
 }
@@ -2864,6 +2957,8 @@ export def mangle_function_name(name: Str, parameter_t: &Vector(NamedParameterPr
             res += debug::type_to_str(np.tpe.tpe, true)
         } else if np.tpe.pattern {
             res += generic_to_string(np.tpe.pattern)
+        } else if np.tpe.name {
+            res += "type " + np.tpe.name
         } else { assert }
 
         if np.varargs {
@@ -3268,7 +3363,10 @@ def do_type_lookup(node: &parser::Node, state: &State, is_type: bool = false) ->
     if node.kind == parser::NodeKind::IDENTIFIER {
         let name = parser::identifier_to_str(node)
         if is_type {
-            return make_type_ref(name)
+            // Create type in scope
+            let tr = make_type_ref(name)
+            scope::create_type(state.scope, node, parser::ShareMarker::NONE, tr)
+            return tr
         } else /*if not lookup_default*/ {
             let value = scope::get(state.scope, node)
             if not value {
@@ -5635,9 +5733,9 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
             walk(node, left, state)
         } else {
             let value = get_value(left, state, force_compile = not consteval::is_static, dry_run = true)
-            if value {
+            if value and value.kind == scope::ValueKind::FUNCTION {
                 left.svalue = value
-                left.tpe = value.tpe.resolve(state.scope)
+                left.tpe = value.fdef.to_type()
             }
         }
     }
@@ -5789,7 +5887,7 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
             }
 
             if function {
-                let parameter_t = function.get_type().resolve().parameter_t
+                let parameter_t = function.fdef.to_type().resolve().parameter_t
 
                 for var i in 0..arguments.length {
                     let param = arguments(i)
@@ -5824,7 +5922,7 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
                 return false 
             }
 
-            let parameter_t = function.get_type().resolve().parameter_t
+            let parameter_t = function.fdef.to_type().resolve().parameter_t
 
             // Check if all arguments were provided
             for var i in 0..vector::length(parameter_t) {
