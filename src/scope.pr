@@ -226,9 +226,10 @@ export type ReExport = struct {
 export type Scope = struct {
     module: weak &toolchain::Module
     is_function: bool
+    is_global: bool
     // Counter for local scopes (shadowing)
     scope_count: int
-    parent: weak &Scope
+    parents: &Vector(weak &Scope)
     fields: &SMap(&Value)
     implicits: &Vector(&Value)
     // This is a list of imported scopes,
@@ -244,12 +245,11 @@ export type Scope = struct {
     polymorphics: &SMap(&Scope)
 }
 
-def find_containing_module(scope: &Scope) -> &toolchain::Module {
-    if not scope { return null }
-    while scope.parent != builtins::builtins and scope.parent {
-        scope = scope.parent
+export def parent(scope: &Scope) -> &Scope {
+    if scope.parents and scope.parents.length > 0 {
+        return scope.parents(0)
     }
-    return scope.module
+    return null
 }
 
 export def clear_temporaries(scope: &Scope) {
@@ -353,28 +353,29 @@ def get_scope_count(scope: &Scope) -> int {
     return scope.scope_count
 }
 
-export def is_global(scope: &Scope) -> bool {
-    if not scope { return true }
-    // TODO Check against builtins
-    if (@scope).parent == null { return true }
-    scope = (@scope).parent
-    if (@scope).parent == null { return true }
-    return false
-}
-
 export def get_function_parent(scope: &Scope) -> &Scope {
     if scope.is_function { return scope }
     if scope.parent { return get_function_parent(scope.parent) }
     return null
 }
 
-export def enter_scope(scope: &Scope, module: &toolchain::Module) -> &Scope {
+export def enter_scope -> &Scope {
+    return enter_scope(null !&Scope, null)
+}
+
+export def enter_scope(scope: &Scope, module: &toolchain::Module, is_global: bool = false) -> &Scope {
+    let parents = vector::make(type weak &Scope)
+    parents.push(scope)
+    return enter_scope(parents, module, is_global)
+}
+
+export def enter_scope(parents: &Vector(weak &Scope), module: &toolchain::Module, is_global: bool = false) -> &Scope {
     let s = [
         module = module,
-        parent = scope,
+        parents = parents,
         fields = map::make(type &Value),
         implicits = vector::make(type &Value),
-        underscore_count = scope.underscore_count if scope else 0
+        underscore_count = 0
     ] !&Scope
     let function_parent = get_function_parent(s)
     if function_parent {
@@ -389,13 +390,17 @@ export def enter_scope(scope: &Scope) -> &Scope {
     return enter_scope(scope, scope.module)
 }
 
-export def enter_function_scope(scope: &Scope, module: &toolchain::Module) -> &Scope {
+export def enter_function_scope(scope: &Scope, module: &toolchain::Module, is_global: bool = false) -> &Scope {
+    let parents = vector::make(type weak &Scope)
+    parents.push(scope)
+
     return [
         module = module,
-        parent = scope,
+        parents = parents,
         fields = map::make(type &Value),
         implicits = vector::make(type &Value),
         is_function = true,
+        is_global = is_global,
         scope_count = 0
     ] !&Scope
 }
@@ -406,7 +411,7 @@ export def enter_function_scope(scope: &Scope) -> &Scope {
 }
 
 export def exit_scope(scope: &Scope) -> &Scope {
-    let parent = (@scope).parent
+    let parent = scope.parent
     return parent
 }
 
@@ -494,8 +499,10 @@ def find_functions(scope: &Scope, name: Str, ret: &Vector(&Value), params: &Vect
             }
         }
     }
-    if scope.parent {
-        find_functions(scope.parent, name, ret, params, check_export)
+    if scope.parents {
+        for var parent in scope.parents {
+            find_functions(parent, name, ret, params, check_export)
+        }
     }
     if scope.imports and not check_export {
         for var i in 0..scope.imports.length {
@@ -548,8 +555,10 @@ def find_functions(scope: &Scope, tpe: &typechecking::Type, ret: &Vector(&Value)
             }
         }
     }
-    if scope.parent {
-        find_functions(scope.parent, tpe, ret, found, check_export)
+    if scope.parents {
+        for var parent in scope.parents {
+            find_functions(parent, tpe, ret, found, check_export)
+        }
     }
     if scope.imports and not check_export {
         for var i in 0..scope.imports.length {
@@ -603,8 +612,10 @@ def find_all(scope: &Scope, ret: &Vector(&Value), found: &SSet, check_export: bo
             ret.push(value)
         }
     }
-    if scope.parent {
-        find_all(scope.parent, ret, found, check_export)
+    if scope.parents {
+        for var parent in scope.parents {
+            find_all(parent, ret, found, check_export)
+        }
     }
     if scope.imports and not check_export {
         for var i in 0..scope.imports.length {
@@ -811,8 +822,11 @@ export def find_implicit_function(scope: &Scope, parameter_t: &Vector(typechecki
         }
     }
 
-    if not value {
-        value = find_implicit_function(scope.parent, parameter_t, ret, force_compile, context)
+    if not value and scope.parents {
+        for var parent in scope.parents {
+            value = find_implicit_function(parent, parameter_t, ret, force_compile, context)
+            if value { break }
+        }
     }
 
     if value and value.phase == Phase::DEFINED and value.node and force_compile {
@@ -879,9 +893,7 @@ export def remove(scope: &Scope, value: &Value) {
 
 export def generate_function(scope: &Scope, node: &parser::Node, parameter_t: &Vector(typechecking::NamedParameter), dry_run: bool = false) -> &Value {
     let module = scope.module
-    while not is_global(scope) {
-        scope = scope.parent
-    }
+    scope = module.scope
     
     let name = last_path_element(node)
     if vector::length(parameter_t) >= 1 {
@@ -1045,7 +1057,7 @@ export def create_underscore(scope: &Scope, name_node: &parser::Node, tpe: &type
         share = parser::ShareMarker::NONE,
         modifier = parser::VarDecl::VAR,
         tpe = tpe,
-        global = is_global(scope),
+        global = scope.is_global,
         phase = Phase::COMPILED,
         name = "_",
         _assembly_name = "_",
@@ -1180,7 +1192,7 @@ export def get_function_check(
         }
 
         // Check for polymorphic instances
-        if is_global(scope) and (not first_function or typechecking::is_polymorph(first_function.fdef.parameter_t)) {
+        if scope.is_global and (not first_function or typechecking::is_polymorph(first_function.fdef.parameter_t)) {
             var root_scope = context.module.scope
             var new_score = std::MAX_INT32
 
@@ -1242,8 +1254,11 @@ export def get_function_check(
             }
         }
 
-        if not value and (@scope).parent and (not first_value or only_function) {
-            code, value = get_function_check((@scope).parent, id, parameter_t, dry_run, force_compile, only_function, re_exports, context, path)
+        if not value and scope.parents and (not first_value or only_function) {
+            for var parent in scope.parents {
+                code, value = get_function_check(parent, id, parameter_t, dry_run, force_compile, only_function, re_exports, context, path)
+                if value { break }
+            }
         }
         var share: parser::ShareMarker
         if value {
@@ -1446,8 +1461,11 @@ export def get(
             }
         }
        
-        if not value and (@scope).parent {
-            value = get((@scope).parent, id, force_compile, check_export, dry_run, same_module, context = context)
+        if not value and scope.parents {
+            for var parent in scope.parents {
+                value = get(parent, id, force_compile, check_export, dry_run, same_module, context = context)
+                if value { break }
+            }
         }
 
         if not value and id.value.identifier.types {
@@ -1573,7 +1591,7 @@ export def create_function_without_checking(
     if not scope { return null }
     let name = last_path_element(name_node)
 
-    let global = is_global(scope)
+    let global = scope.is_global
 
     let v = [
         kind = ValueKind::FUNCTION,
@@ -1671,7 +1689,7 @@ def create_function_value(
     impl: bool) -> &Value {
         
     let name = last_path_element(name_node)
-    let global = is_global(scope)
+    let global = scope.is_global
 
     let v = [
         kind = ValueKind::FUNCTION,
@@ -1735,7 +1753,7 @@ export def create_polymorph(
     }
     var poly_scope = scope.polymorphics.get_or_default(module_name, null)
     if not poly_scope {
-        poly_scope = enter_scope(null, null)
+        poly_scope = enter_scope()
         scope.polymorphics(module_name) = poly_scope
     }
 
@@ -1752,7 +1770,7 @@ export def create_variable(
     if not scope { return null }
     let name = last_path_element(name_node)
 
-    let global = is_global(scope)
+    let global = scope.is_global
     let v = [
         kind = ValueKind::VALUE,
         name_node = name_node,
@@ -1842,7 +1860,7 @@ export def create_type(
         return value
     }
 
-    let global = is_global(scope)
+    let global = scope.is_global
     let v = [
         kind = ValueKind::TYPE,
         name_node = name_node,
@@ -1890,7 +1908,7 @@ export def enter_namespace(scope: &Scope, scope2: &Scope, node: &parser::Node) -
         _assembly_name = name,
         //tpe = tpe,
         _scope = scope2,
-        global = is_global(scope),
+        global = scope.is_global,
         module = scope.module
     ] !&Value
 
