@@ -287,13 +287,13 @@ export def kind(typeref: &TypeRef) -> TypeKind {
     }
 }
 
-export def resolve(typeref: &TypeRef, scpe: &Scope) -> TypeId {
+export def resolve(typeref: &TypeRef, scpe: &Scope, error_on_fail: bool = true) -> TypeId {
     if not typeref { return 0 }
     if typeref.tpe {
         return typeref.tpe
     }
     if typeref.name {
-        let id = scope::get_type_id(scpe, parser::make_identifier(typeref.name))
+        let id = scope::get_type_id(scpe, parser::make_identifier(typeref.name), error_on_fail = error_on_fail)
         typeref.tpe = id
         return id
     }
@@ -2819,6 +2819,18 @@ export def replace_type_defs(
             rtpe = left.value.tpe
         }
 
+        if left.kw == parser::VarDecl::TYPE and rtpe and rtpe.kind == TypeKind::TYPE {
+            // We have a type parameter, create it in scope and continue
+            left.tpe = make_type_ref(rtpe)
+            scope::create_type(
+                scpe, 
+                parser::make_identifier(left.name), 
+                parser::ShareMarker::NONE, 
+                make_type_ref(rtpe.tpe)
+            )
+            continue
+        }
+
         if not rtpe { return }
         if convert_type_score(left.tpe, rtpe, scpe, impl) < 0 { return }
 
@@ -2851,28 +2863,20 @@ export def replace_type_defs(
     }
 }
 
-export def overload_score(
-    a: FunctionDef, param_b: &Vector(NamedParameterPre), scpe: &scope::Scope, 
-    positional: bool, partial: bool = false, impl: bool = true) -> int {
+export def parameter_equals(
+    a: FunctionDef, param_b: &Vector(NamedParameterPre), scpe: &scope::Scope) -> bool {
         
-    // TODO Factor this out into a function and make sure that its used everywhere
-    let param_b_converted = vector::make(NamedParameter)
-    for var i in 0..vector::length(param_b) {
-        let npb = param_b(i)
-        param_b_converted.push([
-            name = npb.name,
-            tpe = npb.tpe.resolve(scpe),
-            value = npb.value,
-            kw = npb.kw,
-            varargs = npb.varargs,
-            node = npb.node
-        ] !NamedParameter)
+    if a.parameter_t.length != vector::length(param_b) {
+        return false
     }
-
-    return overload_score(
-        a.parameter_t, a.return_t, param_b_converted, scpe, 
-        positional, partial, impl
-    )
+    for var i in 0..vector::length(param_b) {
+        let left = param_b(i)
+        let right = a.parameter_t(i)
+        if left != right {
+            return false
+        }
+    }
+    return true
 }
 
 export def overload_score(
@@ -2948,11 +2952,11 @@ export def overload_score(
             lvalue = array(left.tpe, parser::VarDecl::VAR)
         }
         var score = -1
-        if lvalue and lvalue.kind() == TypeKind::TYPE {
+        if left.kw == parser::VarDecl::TYPE {
             if kind(right.tpe) == TypeKind::TYPE {
                 if left.value and right.value and equals(left.value.value_tpe, right.value.value_tpe) {
                     score = 0
-                } else if not left.value.value_tpe and right.value {
+                } else if not left.value and right.value {
                     // TODO test this
                     score = 4
                 }
@@ -3975,7 +3979,7 @@ def walk_Identifier(node: &parser::Node, state: &State) {
     scope::add_reference(value, node)
 
     if value.kind == scope::ValueKind::TYPE {
-        node.tpe = _type(value.value.value_tpe)
+        node.tpe = _type(value.tpe.resolve(state.scope))
     } else {
         node.tpe = value.get_type()
     }
@@ -4280,7 +4284,12 @@ export def walk_VarDecl(node: &parser::Node, state: &State, set_constant: bool =
             }
 
             if tpe_node {
-                ltypes.push(type_lookup(tpe_node, state).tpe)
+                let tpe = type_lookup(tpe_node, state)
+                if not tpe { 
+                    ltypes.push(0)
+                } else {
+                    ltypes.push(tpe.tpe)
+                }
             } else {
                 ltypes.push(0)
             }
