@@ -46,6 +46,8 @@ export type TypeKind = enum {
     // STUB
     // Placeholder for arguments with polymorphic type parameter in function definition
     TYPE_DEF
+    // Reference to a type
+    TYPE_REF
     BYREF // ref parameter   
     RANGE // TODO Ranges should be a concrete Type defined by the stdlib
     RANGE_INC
@@ -279,7 +281,7 @@ export def kind(typeref: &TypeRef) -> TypeKind {
     if typeref.tpe {
         return typeref.tpe.resolve().kind
     } else if typeref.name {
-        return TypeKind::TYPE
+        return TypeKind::TYPE_REF
     } else if typeref.pattern {
         return typeref.pattern.kind
     }
@@ -458,8 +460,6 @@ def generic_to_string(generic: &Pattern) -> Str {
         return "[" + generic_to_string(generic.tpe) + "]"
     } else if generic.kind == TypeKind::STATIC_ARRAY {
         return "[" + generic.length + "; " + generic_to_string(generic.tpe) + "]"
-    } else if generic.kind == TypeKind::TYPE_DEF {
-        return "type " + generic.name
     } else if generic.kind == TypeKind::TYPE_CONSTRUCTOR {
         var res: StringBuffer = generic.name + "("
         let len = generic.return_t.length()
@@ -1187,6 +1187,25 @@ export type FunctionDef = struct {
     parameter_t: &Vector(NamedParameterPre)
     return_t: &Vector(&TypeRef)
 }
+export def print_fdef(fdef: FunctionDef) {
+    print(fdef.name + "(")
+    for var i in 0..fdef.parameter_t.length() {
+        let p = fdef.parameter_t(i)
+        print(p.name + ": ", generic_to_string(p.tpe))
+        if i < fdef.parameter_t.length() - 1 {
+            print(", ")
+        }
+    }
+    print(" -> ")
+    for var i in 0..fdef.return_t.length() {
+        let r = fdef.return_t(i)
+        print(generic_to_string(r))
+        if i < fdef.return_t.length() - 1 {
+            print(", ")
+        }
+    }
+    print(")\n")
+}
 export def hash(fdef: FunctionDef) -> uint64 {
     var h: uint64
     if fdef.parameter_t {
@@ -1297,7 +1316,7 @@ def callable_generic(kind: TypeKind, parameter_t: &Vector(NamedParameterPre), re
 
     var pars = vector::make(NamedParameter)
     for var par in parameter_t {
-        pars.push([ name = par.name, tpe = par.tpe.tpe, value = par.value, kw = par.kw, varargs = par.varargs, node = par.node ] !NamedParameter)
+        pars.push([ name = par.name, tpe = (par.tpe.tpe if par.tpe else 0), value = par.value, kw = par.kw, varargs = par.varargs, node = par.node ] !NamedParameter)
     }
 
     let rets = vector::make(TypeId)
@@ -1898,6 +1917,7 @@ export def shallow_copy(tpe: &Type) -> &Type {
 */
 
 export def equals(a: &Type, b: &Type) -> bool {
+    if not a or not b { return false }
     return a.id == b.id
 }
 
@@ -2308,9 +2328,8 @@ def infer_interface_types(a: &Type, b: &Type, module: &toolchain::Module) -> &Ty
 
     return tpe
 }*/
-
 export def convert_type_score(a: &TypeRef, b: &Type, scpe: &scope::Scope, impl: bool = true) -> int {
-    print(generic_to_string(a), " <-> ", debug::type_to_str(b), "\n")
+    if not a or not b { return 0 }
     if a.pattern {
         return convert_type_score(a.pattern, b, scpe, impl)
     } else if a.name {
@@ -2822,6 +2841,13 @@ export def replace_type_defs(
         if replace {
             left.tpe = make_type_ref(rtpe)
         }
+    }
+
+    // Resolve return types
+    for var i in 0..vector::length(return_t) {
+        let cpy = @return_t(i) !&TypeRef
+        let rtpe = resolve(cpy, scpe)
+        return_t(i) = make_type_ref(rtpe)
     }
 }
 
@@ -3661,6 +3687,8 @@ def do_type_lookup(node: &parser::Node, state: &State, is_type: bool = false) ->
         let name = node.value.type_constructor.name
 
         var type_constructor = resolve(type_lookup(name, state, is_type).tpe)
+        assert type_constructor
+        
         if type_constructor.kind != TypeKind::TYPE_CONSTRUCTOR {
             errors::errorn(node, "Not a type constructor")
             return null
@@ -6996,7 +7024,7 @@ export def walk_Def_with_type_argument(node: &parser::Node, args: &Vector(NamedP
     let extern = node.value.def_.extern
 
     let old_node = node
-    let fun = @node.value.def_.function // Copy
+    let fun = @node.value.def_.function !&compiler::Function // Copy
 
     node = parser::deep_copy_node(node)
     //node.value.def_.function = null
@@ -7006,7 +7034,7 @@ export def walk_Def_with_type_argument(node: &parser::Node, args: &Vector(NamedP
     fun.locals = map::make(TypeId)
     fun.scope = state.scope
     fun.captures = vector::make(type weak &scope::Value)
-    fun.inner_scope = node.inner_scope = scope::enter_function_scope(node.scope)
+    fun.inner_scope = node.inner_scope = scope::enter_function_scope(context)
     fun.module = context.module
 
     node.value.def_.function = fun
@@ -7014,8 +7042,8 @@ export def walk_Def_with_type_argument(node: &parser::Node, args: &Vector(NamedP
     //node.tpe = lookup_parameters(node, state)
 
     // Unbox
-    let module = context.module
-    context = module.scope
+    //let module = context.module
+    //context = module.scope
 
     /*var in_context = false
     var super_scope = node.scope
@@ -7114,7 +7142,7 @@ export def walk_Def_with_type_argument(node: &parser::Node, args: &Vector(NamedP
 
     fun.fdef = function_def(
         parser::identifier_to_str(name), 
-        fdef.parameter_t, fdef.return_t, state.module, 
+        parameter_t, return_t, state.module, 
         extern, test, context.module
     )
     node.fdef = fun.fdef !&FunctionDef
