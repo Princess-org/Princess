@@ -42,6 +42,8 @@ export type TypeKind = enum {
     OPAQUE
     // This is a type with arguments
     TYPE_CONSTRUCTOR
+    // For patterns that are type instances
+    TYPE_INSTANCE
     // Forward declaration
     // STUB
     // Placeholder for arguments with polymorphic type parameter in function definition
@@ -301,7 +303,7 @@ export def resolve(typeref: &TypeRef, scpe: &Scope, error_on_fail: bool = true) 
         let id = resolve_generic(typeref.pattern, scpe, error_on_fail)
         typeref.tpe = id
         return id
-    }
+    } 
 }
 
 def resolve_generic(generic: &Pattern, scpe: &Scope, error_on_fail: bool = true) -> TypeId {
@@ -337,12 +339,15 @@ def resolve_generic(generic: &Pattern, scpe: &Scope, error_on_fail: bool = true)
             } else {
                 return function(params, return_ids)
             }
-        case TypeKind::TUPLE, TypeKind::TUNION
+        case TypeKind::TUPLE, TypeKind::TUNION, TypeKind::TYPE_INSTANCE
             var param_ids: &Vector(TypeId) = vector::make(TypeId)
-            for var param in generic.parameter_t {
-                vector::push(param_ids, resolve(param.tpe, scpe, error_on_fail))
+            for var tpe in generic.return_t {
+                vector::push(param_ids, resolve(tpe, scpe, error_on_fail))
             }
-            if generic.kind == TypeKind::TUPLE {
+            if generic.kind == TypeKind::TYPE_INSTANCE {
+                let type_constructor = resolve(generic.tpe, scpe, error_on_fail)
+                return type_instance(generic.node, type_constructor, param_ids)
+            } else if generic.kind == TypeKind::TUPLE {
                 return tuple(param_ids)
             } else {
                 return variant(param_ids)
@@ -390,6 +395,8 @@ export type Pattern = struct {
     // Structs and unions
     fields: &Vector(StructMemberPre)
     const_fields: &Vector(StructMemberPre)
+    // Node for type constructor
+    node: weak &parser::Node
 }
 export def == (this: &Pattern, other: &Pattern) -> bool {
     if this.kind != other.kind {
@@ -481,8 +488,8 @@ def generic_to_string(generic: &Pattern) -> Str {
         return "[" + generic_to_string(generic.tpe) + "]"
     } else if generic.kind == TypeKind::STATIC_ARRAY {
         return "[" + generic.length + "; " + generic_to_string(generic.tpe) + "]"
-    } else if generic.kind == TypeKind::TYPE_CONSTRUCTOR {
-        var res: StringBuffer = generic.name + "("
+    } else if generic.kind == TypeKind::TYPE_INSTANCE {
+        var res: StringBuffer = generic_to_string(generic.tpe) + "("
         let len = generic.return_t.length()
         for var i in 0..len {
             res += generic_to_string(generic.return_t(i))
@@ -494,9 +501,9 @@ def generic_to_string(generic: &Pattern) -> Str {
         return res
     } else if generic.kind == TypeKind::TUPLE {
         var res: StringBuffer = "["
-        let len = generic.parameter_t.length()
+        let len = generic.return_t.length()
         for var i in 0..len {
-            res += generic_to_string(generic.parameter_t(i).tpe)
+            res += generic_to_string(generic.return_t(i))
             if i < len - 1 {
                 res += ", "
             }
@@ -1329,6 +1336,72 @@ export def == (this: Signature, other: Signature) -> bool {
 }
 export def != (this: Signature, other: Signature) -> bool {
     return not (this == other)
+}
+
+def type_instance(node: &parser::Node, tc_tpe: TypeId, tc_args: &Vector(TypeId)) -> TypeId {
+    var type_constructor = resolve(tc_tpe)    
+    if not type_constructor or type_constructor.kind != TypeKind::TYPE_CONSTRUCTOR {
+        errors::errorn(node, "Not a type constructor")
+        return 0
+    }
+
+    let len = vector::length(tc_args)
+    if vector::length(type_constructor.parameter_t) != len {
+        errors::errorn(node, "Wrong amount of arguments to type constructor, expected ",
+            to_string(vector::length(type_constructor.parameter_t) !&size_t),
+            " got ",
+            to_string(vector::length(tc_args) !&size_t))
+        return 0
+    }
+
+    var type_name = type_constructor.type_name + '('
+    var is_generic = false
+
+    assert type_constructor.defmodule
+    var scpe = scope::enter_scope(type_constructor.defmodule.scope)
+    let state = make_state(type_constructor.defmodule)
+    state.scope = scpe
+    
+    for var i in 0..len {
+        let argtpe = tc_args(i)
+        var np = type_constructor.parameter_t.get(i)
+
+        scope::create_type(scpe, parser::make_identifier(np.name), parser::ShareMarker::NONE, make_type_ref(argtpe))
+        type_name += debug::type_to_str(argtpe)
+        if i < len - 1 {
+            type_name += ", "
+        }
+    }
+    type_name += ')'
+
+    let type_tuple = [ ctor = type_constructor.id, types = tc_args ] !TypeTuple
+    if type_registry_instance.contains(type_tuple) {
+        return type_registry_instance(type_tuple).id
+    }
+
+    let id = next_type_id()
+    type_registry_instance(type_tuple) = [id = id] !&Type // Prevent infinite recursion
+
+    let tc_node = parser::deep_copy_node(type_constructor.tc_node)
+    tc_node.scope = node.scope
+    let tpe = type_lookup(tc_node, state).resolve(scpe).resolve()
+    assert tpe != null
+
+    // When we create new structs we automatically get a new type so we can mutate it
+    if tpe.kind == TypeKind::STRUCT or tpe.kind == TypeKind::UNION {
+        tpe.id = id
+        tpe.type_name = type_name
+        tpe.tc_tpe = type_constructor.id
+        tpe.tc_args = tc_args
+        tpe.type_name = type_name
+        tpe.name = debug::type_to_str(tpe)
+        tpe.defmodule = type_constructor.defmodule
+
+        register(tpe.id, tpe)
+    }
+
+    type_registry_instance(type_tuple) = tpe
+    return tpe.id
 }
 
 def callable_generic(kind: TypeKind, parameter_t: &Vector(NamedParameterPre), return_t: &Vector(&TypeRef)) -> &TypeRef {
@@ -2436,16 +2509,24 @@ export def convert_type_score(a: &Pattern, b: &Type, scpe: &scope::Scope, impl: 
         } else { return -1 }
     }
 
-    if a.kind == TypeKind::TYPE_CONSTRUCTOR and b.tc_args {
-        if a.tpe != b.tpe { return -1 }
-        for var i in 0..a.return_t.length {
-            let tpe_a = a.return_t(i)
-            let tpe_b = b.tc_args(i)
-            if convert_type_score(tpe_a, tpe_b, scpe, impl) < 0 { 
-                return -1 
+    if a.kind == TypeKind::TYPE_INSTANCE {
+        // Try to resolve a
+        let tpe = a.resolve_generic(scpe).resolve()
+        if tpe {
+            if tpe == b { return 0 }
+            return -1
+        } else if b.tc_args {
+            if a.tpe.resolve(scpe) != b.tc_tpe { return -1 }
+            for var i in 0..a.return_t.length {
+                let tpe_a = a.return_t(i)
+                let tpe_b = b.tc_args(i)
+                if convert_type_score(tpe_a, tpe_b, scpe, impl) < 0 { 
+                    return -1 
+                }
             }
+            return 1
         }
-        return 1
+        
     }
    
     return -1
@@ -3718,87 +3799,34 @@ def do_type_lookup(node: &parser::Node, state: &State, is_type: bool = false) ->
     } else if node.kind == parser::NodeKind::TYPE_CONSTRUCTOR {
         let name = node.value.type_constructor.name
 
-        var type_constructor = resolve(type_lookup(name, state, is_type).tpe)
-        assert type_constructor
-        
-        if type_constructor.kind != TypeKind::TYPE_CONSTRUCTOR {
-            errors::errorn(node, "Not a type constructor")
-            return null
-        }
-        if vector::length(type_constructor.parameter_t) != vector::length(node.value.type_constructor.args) {
-            errors::errorn(node, "Wrong amount of arguments to type constructor, expected ",
-                to_string(vector::length(type_constructor.parameter_t) !&size_t),
-                " got ",
-                to_string(vector::length(node.value.type_constructor.args) !&size_t))
-            return null
-        }
-
-        var type_name = type_constructor.type_name + '('
+        var type_constructor = type_lookup(name, state, false)
+        var is_generic = type_constructor.resolve(state.scope, error_on_fail = false).resolve() == null
        
-        var tc_args = vector::make(type &TypeRef)
-        var is_generic = false
+        let args = vector::make(type &TypeRef)
+        let tc_args = vector::make(TypeId)
 
         let len = vector::length(node.value.type_constructor.args)
-        let scpe = state.scope
-        var inner_scope: &scope::Scope = null
-        if type_constructor.defmodule { 
-            inner_scope = scope::enter_scope(type_constructor.defmodule.scope)
-        } else {
-            // TODO is this ever reached?
-            inner_scope = scope::enter_scope(state.scope)
-        }
-
         for var i in 0..len {
             let arg = node.value.type_constructor.args(i)
-            var np = type_constructor.parameter_t.get(i)
-
             let argtpe = type_lookup(arg, state, false)
             if argtpe {
-                if argtpe.is_type() { scope::create_type(inner_scope, parser::make_identifier(np.name), parser::ShareMarker::NONE, argtpe) }
+                if argtpe.is_type() { tc_args.push(argtpe.tpe) }
                 else { is_generic = true }
             }
-            tc_args.push(argtpe)
-
-            type_name += generic_to_string(argtpe)
-            if i < len - 1 {
-                type_name += ", "
-            }
+            args.push(argtpe)
         }
-        type_name += ')'
-        state.scope = inner_scope
 
         if is_generic {
-            let generic = [ kind = TypeKind::TYPE_CONSTRUCTOR ] !&Pattern
-            generic.tpe = make_type_ref(type_constructor.id)
-            generic.name = type_name
-            generic.return_t = tc_args
-
-            state.scope = scpe
-            return make_type_ref(generic)
+            return make_type_ref([ 
+                kind = TypeKind::TYPE_INSTANCE, 
+                tpe = type_constructor,
+                return_t = args,
+                node = node
+            ] !&Pattern)
+        } else {
+            return make_type_ref(type_instance(node, type_constructor.tpe, tc_args))
         }
 
-        let tc_args_tpe = vector::make(TypeId)
-        for var arg in tc_args { tc_args_tpe.push(arg.tpe) }
-
-        let type_tuple = [ ctor = type_constructor.id, types = tc_args_tpe ] !TypeTuple
-        if type_registry_instance.contains(type_tuple) {
-            return make_type_ref(type_registry_instance(type_tuple).id)
-        }
-
-        let tc_node = parser::deep_copy_node(type_constructor.tc_node)
-        tc_node.scope = state.scope
-        let tpe = type_lookup(tc_node, state, is_type).tpe.resolve()
-
-        tpe.tc_tpe = type_constructor.id
-        tpe.tc_args = tc_args_tpe
-        tpe.type_name = type_name
-        tpe.name = debug::type_to_str(tpe)
-        tpe.defmodule = type_constructor.defmodule
-
-        type_registry_instance(type_tuple) = tpe
- 
-        state.scope = scpe
-        return make_type_ref(tpe.id)
     } else if node.kind == parser::NodeKind::VARIANT_T {
         var variants = vector::make(type &TypeRef)
         for var i in 0..node.value.t_variant.variants.length {
