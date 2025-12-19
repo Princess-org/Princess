@@ -464,29 +464,59 @@ export def copy(pattern: &Pattern) -> &Pattern {
     return res
 }
 
+type EqEnv = struct {
+    scope: &scope::Scope
+    typedefs_a: &SMap(int)
+    typedefs_b: &SMap(int)
+    counter: int
+}
+
+def make_eq_env(scpe: &scope::Scope) -> &EqEnv {
+    return [
+        scope = scpe,
+        typedefs_a = map::make(int),
+        typedefs_b = map::make(int),
+        counter = 0
+    ] !&EqEnv
+}
+
 export def == (this: &Pattern, other: &Pattern) -> bool {
+    return equals(this, other)
+}
+
+export def equals(this: &Pattern, other: &Pattern, env: &EqEnv = null) -> bool {
     if this.kind != other.kind {
         return false
     }
     switch this.kind {
         case TypeKind::TYPE_DEF
-            if this.tpe and other.tpe {
+            if env {
+                env.typedefs_a(this.name) = env.counter
+                env.typedefs_b(other.name) = env.counter
+                env.counter += 1
+                if this.tpe and other.tpe {
+                    return parameter_equals_single(this.tpe, other.tpe, env)
+                }
+                return true
+            } else if this.tpe and other.tpe {
                 return this.tpe == other.tpe
             } else if this.name and other.name {
-                return true
+                return this.name == other.name
             } else {
-                assert
+                return false
             }
         case TypeKind::ARRAY, TypeKind::POINTER, TypeKind::REFERENCE, TypeKind::WEAK_REF
-            return this.kw == other.kw and this.tpe == other.tpe
+            return this.kw == other.kw and parameter_equals_single(this.tpe, other.tpe, env)
         case TypeKind::STATIC_ARRAY
-            return this.length == other.length and this.kw == other.kw and this.tpe == other.tpe
+            return this.length == other.length and this.kw == other.kw and parameter_equals_single(this.tpe, other.tpe, env)
         case TypeKind::FUNCTION, TypeKind::CLOSURE
             if this.parameter_t.length() != other.parameter_t.length() {
                 return false
             }
             for var i in 0..this.parameter_t.length() {
-                if this.parameter_t(i) != other.parameter_t(i) {
+                let param_a = this.parameter_t(i)
+                let param_b = other.parameter_t(i)
+                if param_a.name != param_b.name or not parameter_equals_single(param_a.tpe, param_b.tpe, env) {
                     return false
                 }
             }
@@ -494,7 +524,7 @@ export def == (this: &Pattern, other: &Pattern) -> bool {
                 return false
             }
             for var i in 0..this.return_t.length() {
-                if this.return_t(i) != other.return_t(i) {
+                if not parameter_equals_single(this.return_t(i), other.return_t(i), env) {
                     return false
                 }
             }
@@ -504,7 +534,7 @@ export def == (this: &Pattern, other: &Pattern) -> bool {
                 return false
             }
             for var i in 0..this.return_t.length() {
-                if this.return_t(i) != other.return_t(i) {
+                if not parameter_equals_single(this.return_t(i), other.return_t(i), env) {
                     return false
                 }
             }
@@ -514,7 +544,7 @@ export def == (this: &Pattern, other: &Pattern) -> bool {
                 return false
             }
             for var i in 0..this.fields.length() {
-                if this.fields(i).name != other.fields(i).name or this.fields(i).tpe != other.fields(i).tpe {
+                if this.fields(i).name != other.fields(i).name or not parameter_equals_single(this.fields(i).tpe, other.fields(i).tpe, env) {
                     return false
                 }
             }
@@ -3048,14 +3078,52 @@ export def parameter_equals(
     if a.parameter_t.length != vector::length(param_b) {
         return false
     }
+    let env = make_eq_env(scpe)
     for var i in 0..vector::length(param_b) {
         let left = param_b(i)
         let right = a.parameter_t(i)
-        if left != right {
+        let e = parameter_equals_single(left.tpe, right.tpe, env)
+        //print(generic_to_string(left.tpe), " == ", generic_to_string(right.tpe), " = ", e, "\n")
+        if not e {
             return false
         }
     }
     return true
+}
+
+def parameter_equals_single(a: &TypeRef, b: &TypeRef, env: &EqEnv) -> bool {
+    if not env { return a == b }
+    if is_type(a) and is_type(b) {
+        return a == b
+    } else if is_type(a) {
+        let tb = b.copy().resolve(env.scope, error_on_fail = false)
+        return tb == a.tpe
+    } else if is_type(b) {
+        let ta = a.copy().resolve(env.scope, error_on_fail = false)
+        return ta == b.tpe
+    } else if a.name and b.name {
+        if env.typedefs_a.contains(a.name) and env.typedefs_b.contains(b.name) {
+            return env.typedefs_a(a.name) == env.typedefs_b(b.name)
+        } else if env.typedefs_a.contains(a.name) or env.typedefs_b.contains(b.name) {
+            return false
+        } else {
+            return a.name == b.name
+        }
+    } else if a.name {
+        let ta_r = a.copy().resolve(env.scope, error_on_fail = false)
+        if ta_r { return ta_r == b.copy().resolve(env.scope, error_on_fail = false) } 
+        return false
+    } else if b.name {
+        let tb_r = b.copy().resolve(env.scope, error_on_fail = false)
+        if tb_r { return tb_r == a.copy().resolve(env.scope, error_on_fail = false) } 
+        return false
+    } else {
+        let pa = a.pattern
+        let pb = b.pattern
+        if not pa and not pb { return true }
+        if not pa or not pb { return false }
+        return equals(pa, pb, env)
+    }
 }
 
 export def overload_score(
