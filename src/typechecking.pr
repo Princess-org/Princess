@@ -439,6 +439,15 @@ def resolve_generic(generic: &Pattern, scpe: &Scope, error_on_fail: bool = true)
             tpe.id = next_type_id()
             register_internal(tpe.id, tpe)
             return tpe.id
+        case TypeKind::INTERFACE
+            let members = vector::make(StructuralTypeMember)
+            for var member in generic.members {
+                members.push(resolve(member, scpe))
+            }
+            let tpe = [ kind = TypeKind::INTERFACE, members = members ] !&Type
+            tpe.id = next_type_id()
+            register_internal(tpe.id, tpe)
+            return tpe.id
         case; assert
     }
 }
@@ -1051,11 +1060,29 @@ export type NamedParameter = struct {
     varargs: bool
     node: weak &parser::Node
 }
+export def to_pre(this: NamedParameter) -> NamedParameterPre {
+    return [ 
+        name = this.name, 
+        tpe = make_type_ref(this.tpe), 
+        value = this.value, 
+        kw = this.kw, 
+        varargs = this.varargs, 
+        node = this.node 
+    ] !NamedParameterPre
+}
 export def == (this: NamedParameter, other: NamedParameter) -> bool {
     return equals(this.tpe, other.tpe)
 }
 export def != (this: NamedParameter, other: NamedParameter) -> bool { 
     return not (this == other)
+}
+
+export def to_pre(vec: &Vector(NamedParameter)) -> &Vector(NamedParameterPre) {
+    let res = vector::make(NamedParameterPre)
+    for var param in vec {
+        res.push(to_pre(param))
+    }
+    return res
 }
 
 
@@ -2371,80 +2398,27 @@ def has_function(entry: &TypeEntry, intf: &Type, mb: StructuralTypeMember, modul
 
 // Returns true if a implements b
 // b needs to be a structural type
-export def implements(a: &Type, b: &Type, scope: &scope::Scope, visited: &Set(TypeId) = null, check_embed: bool = true) -> bool {
-    return false
-    /*if not a or not b { return false }
-    assert b.kind == TypeKind::STRUCTURAL
-    if a.kind == TypeKind::REFERENCE and equals(b, a.tpe) {
-        return true
-    }
-
-    var type_entry = create_type_entry(a)
-    if not type_entry { return false }
-    let nameb = debug::type_to_str(b, full_name = true)
-    if type_entry.cached.contains(nameb) and check_embed {
-        return type_entry.cached(nameb) == CacheEntry::CONTAINS
-    }
-
-    if a.kind == TypeKind::STRUCTURAL {
-        for var i in 0..vector::length(b.members) {
-            let mb = b.members(i)
-
-            var found = false
-            for var j in 0..vector::length(a.members) {
-                let ma = a.members(j)
-                if ma.name != mb.name { continue }
-                if vector::length(ma.parameter_t) != vector::length(mb.parameter_t) { continue }
-
-                var mismatch = false
-                for var k in 0..vector::length(ma.parameter_t) {
-                    let npa = ma.parameter_t(k).tpe
-                    let npb = mb.parameter_t(k).tpe
-                    if not equals(npa, npb) {
-                        mismatch = true
-                        break
-                    }
-                }
-                if mismatch { continue }
-
-                if vector::length(ma.return_t) != vector::length(mb.return_t) { continue }
-                
-                for var k in 0..vector::length(ma.return_t) {
-                    var ta = ma.return_t(k)
-                    if ta.kind == TypeKind::BOX { ta = ta.wk }
-                    var tb = mb.return_t(k)
-                    if tb.kind == TypeKind::BOX { ta = tb.wk }
-                    if not equals(ta, tb) {
-                        mismatch = true
-                        break
-                    }
-                }
-                if mismatch { continue }
-            
-                found = true
-            }
-            if not found {
-                found = has_function(type_entry, b, mb, module, visited.copy(), check_embed)
-            }
-            if not found {
-                type_entry.cached(nameb) = CacheEntry::NOT_CONTAINS
+export def implements(a: &Type, b: &Type, scpe: &scope::Scope, check_embed: bool = true) -> bool {
+    if not a or not b { return false }
+    assert b.kind == TypeKind::INTERFACE
+    
+    for var member in b.members {
+        let params = vector::make(NamedParameter)
+        params.push([ tpe = a.id ] !NamedParameter)
+        for var param in member.parameter_t {
+            params.push(param)
+        }
+        let fun = scope::get_function(scpe, parser::make_identifier(member.name), params, dry_run = true)
+        if not fun { return false }
+        if fun.fdef.return_t.length() != member.return_t.length() { return false }
+        for var i in 0..fun.fdef.return_t.length() {
+            if not equals(fun.fdef.return_t(i).resolve(scpe), member.return_t(i)) { 
                 return false 
             }
         }
-        type_entry.cached(nameb) = CacheEntry::CONTAINS
-        return true
-    } else {
-        for var i in 0..vector::length(b.members) {
-            let mb = b.members(i)
+    }
 
-            if not has_function(type_entry, b, mb, module, visited.copy(), check_embed) {
-                type_entry.cached(nameb) = CacheEntry::NOT_CONTAINS
-                return false
-            }
-        }
-        type_entry.cached(nameb) = CacheEntry::CONTAINS
-        return true
-    }*/
+    return true
 }
 
 // Returns true if b is assignable to a
@@ -2558,9 +2532,9 @@ export def convert_type_score(a: &TypeRef, b: &Type, scpe: &scope::Scope, impl: 
     if not a or not b { return 0 }
     if a.pattern {
         return convert_type_score(a.pattern, b, scpe, impl)
-    } else if a.name {
+    } /*else if a.name {
         if scope::get_type(scpe, parser::identifier_from_str(a.name)) { return 1 }
-    } else {
+    }*/ else {
         return convert_type_score(a.resolve(scpe), b, scpe, impl)
     }
 }
@@ -2983,8 +2957,33 @@ export def get_generic(tpe: &Type) -> &Type {
 
 export def is_polymorph(tpe: &TypeRef) -> bool {
     if not tpe { return false }
-    if tpe.pattern { return true }
-    if tpe.name { return true }
+    if tpe.tpe {
+        let res = tpe.tpe.resolve()
+        if not res { return false } // Do we return false here?
+        if res.kind == TypeKind::INTERFACE {
+            return true
+        }
+        return false
+    } else if tpe.pattern {
+        let pattern = tpe.pattern
+        if pattern.kind == TypeKind::TYPE_DEF {
+            return true
+        } else if pattern.kind == TypeKind::POINTER or
+            pattern.kind == TypeKind::STATIC_ARRAY or pattern.kind == TypeKind::ARRAY {
+            return is_polymorph(pattern.tpe)
+        } else if pattern.kind == TypeKind::REFERENCE {
+            if pattern.tpe and pattern.tpe.kind == TypeKind::INTERFACE {
+                return false
+            } else {
+                return is_polymorph(pattern.tpe)
+            }
+        } else if pattern.kind == TypeKind::TUPLE or pattern.kind == TypeKind::TUNION {
+            for var tpe in pattern.return_t {
+                if is_polymorph(tpe) { return true }
+            }
+            return false
+        }
+    }
     return false
 }
 
@@ -3901,16 +3900,11 @@ def do_type_lookup(node: &parser::Node, state: &State, is_type: bool = false) ->
         walk(node, node.value.expr, state)
         return make_type_ref(node.value.expr.tpe)
     } else if node.kind == parser::NodeKind::STRUCTURAL_T {
-        let tpe =  [ kind = TypeKind::INTERFACE ] !&Type
-        tpe.type_name = make_unique_name("<anonymous>", state)
-        tpe.name = "<anonymous>"
-
-        let members = vector::make(StructuralTypeMember)
+        let members = vector::make(StructuralTypeMemberPre)
 
         for var i in 0..vector::length(node.value.body) {
             let member = node.value.body(i)
             if not member { continue }
-            var current_member: *StructuralTypeMember = null
 
             let name_node = member.value.structural_member.name
             if not name_node { continue }
@@ -3958,13 +3952,9 @@ def do_type_lookup(node: &parser::Node, state: &State, is_type: bool = false) ->
                 }
             }
         }
-        tpe.members = members
-        tpe.id = next_type_id()
-        tpe.defmodule = state.module
-
-        register_internal(tpe.id, tpe)
-
-        return make_type_ref(tpe.id)
+        let pattern = [ kind = TypeKind::INTERFACE, members = members ] !&Pattern
+        return make_type_ref(pattern)
+        
     } else if node.kind == parser::NodeKind::TYPE_CONSTRUCTOR {
         let name = node.value.type_constructor.name
 
@@ -5706,6 +5696,7 @@ export def walk_TypeDecl(node: &parser::Node, state: &State) {
             type_value.defmodule = state.module
 
             type_value.name = parser::identifier_to_str(name)
+            print("Registered type ", type_value.name, " with id ", tpe, "\n")
             if value.kind != parser::NodeKind::TYPE_CONSTRUCTOR {
                 type_value.type_name = append_module(type_value.name, node.loc.module)
             }
@@ -5996,7 +5987,7 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
         if left.kind != parser::NodeKind::IDENTIFIER {
             walk(node, left, state)
         } else {
-            let value = get_value(left, state, force_compile = not consteval::is_static, dry_run = true)
+            let value = get_value(left, state, force_compile = false, dry_run = true)
             if value {
                 left.svalue = value
                 if value.kind == scope::ValueKind::FUNCTION and not is_polymorph(value.fdef.parameter_t) {
@@ -7506,6 +7497,17 @@ export def typecheck(state: &State) {
     node.value.program.function.value = value
 
     //lookup_stub_types(state)
+
+    // Typcheck Type decls
+    for var i in 0..vector::length(node.body) {
+        let n = node.body(i)
+        switch n.kind !int {
+            case parser::NodeKind::TYPE_DECL
+                n.parent = node
+                walk_TypeDecl(n, state)
+        }
+    }
+
     typecheck(node, state)
 
     let keys = map::keys(node.scope.fields)
