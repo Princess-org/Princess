@@ -248,6 +248,9 @@ export type Type = struct {
     // Members for structural Types
     functions: &Vector(TypeEntryMember)
     //cached: &Map(TypeId, CacheEntry)
+
+    implements: &Set(TypeId)
+    implementors: &Set(TypeId)
 }
 
 export def has_variant(this: &Type, tpe: &Type) -> bool {
@@ -296,6 +299,7 @@ export def is_type(typeref: &TypeRef) -> bool {
     return typeref.tpe != 0
 }
 
+// This is potentially hazardous because TypeRefs are mutable
 export def hash(typeref: &TypeRef) -> uint64 {
     if typeref.tpe != 0 {
         return hash(typeref.tpe)
@@ -414,7 +418,7 @@ def resolve_generic(generic: &Pattern, scpe: &Scope, error_on_fail: bool = true)
             }
             if generic.kind == TypeKind::TYPE_INSTANCE {
                 let type_constructor = resolve(generic.tpe, scpe, error_on_fail)
-                return type_instance(generic.node, type_constructor, param_ids)
+                return type_instance(generic.node, type_constructor, param_ids, scpe)
             } else if generic.kind == TypeKind::TUPLE {
                 return tuple(param_ids)
             } else {
@@ -1313,7 +1317,7 @@ export def is_tunion(tpe: &Type) -> bool {
     return tpe.kind == TypeKind::TUNION
 }
 
-export def get_interface(tpe: &Type) -> &Type {
+/*export def get_interface(tpe: &Type) -> &Type {
     if not tpe { return null }
     if is_array(tpe) or is_ref(tpe) or is_pointer(tpe) {
         return get_interface(tpe.tpe)
@@ -1322,7 +1326,7 @@ export def get_interface(tpe: &Type) -> &Type {
         return tpe
     }
     return null
-}
+}*/
 
 export def append_module(name: Str, module: Str) -> Str {
     var res: StringBuffer = ""
@@ -1504,7 +1508,7 @@ export def != (this: Signature, other: Signature) -> bool {
     return not (this == other)
 }
 
-def type_instance(node: &parser::Node, tc_tpe: TypeId, tc_args: &Vector(TypeId)) -> TypeId {
+def type_instance(node: &parser::Node, tc_tpe: TypeId, tc_args: &Vector(TypeId), cnt_scpe: &scope::Scope) -> TypeId {
     var type_constructor = resolve(tc_tpe)    
     if not type_constructor or type_constructor.kind != TypeKind::TYPE_CONSTRUCTOR {
         errors::errorn(node, "Not a type constructor")
@@ -1567,6 +1571,9 @@ def type_instance(node: &parser::Node, tc_tpe: TypeId, tc_args: &Vector(TypeId))
     }
 
     type_registry_instance(type_tuple) = tpe
+    // Trigger impl instances when creating new type constructors
+    scope::trigger_impl(cnt_scpe, tpe)
+
     return tpe.id
 }
 
@@ -2407,25 +2414,31 @@ def has_function(entry: &TypeEntry, intf: &Type, mb: StructuralTypeMember, modul
 // b needs to be a structural type
 export def implements(a: &Type, b: &Type, scpe: &scope::Scope, check_embed: bool = true) -> bool {
     if not a or not b { return false }
-    assert b.kind == TypeKind::INTERFACE
+
+    if b.kind == TypeKind::REFERENCE and b.tpe and b.tpe.kind == TypeKind::INTERFACE {
+        let implementors = b.implementors
+        return implementors and implementors.contains(a.id)
+    } else {
+        assert b.kind == TypeKind::INTERFACE
     
-    for var member in b.members {
-        let params = vector::make(NamedParameter)
-        params.push([ tpe = a.id ] !NamedParameter)
-        for var param in member.parameter_t {
-            params.push(param)
-        }
-        let fun = scope::get_function(scpe, parser::make_identifier(member.name), params, dry_run = true)
-        if not fun { return false }
-        if fun.fdef.return_t.length() != member.return_t.length() { return false }
-        for var i in 0..fun.fdef.return_t.length() {
-            if not equals(fun.fdef.return_t(i).resolve(scpe), member.return_t(i)) { 
-                return false 
+        for var member in b.members {
+            let params = vector::make(NamedParameter)
+            params.push([ tpe = a.id ] !NamedParameter)
+            for var param in member.parameter_t {
+                params.push(param)
+            }
+            let fun = scope::get_function(scpe, parser::make_identifier(member.name), params, dry_run = true)
+            if not fun { return false }
+            if fun.fdef.return_t.length() != member.return_t.length() { return false }
+            for var i in 0..fun.fdef.return_t.length() {
+                if not equals(fun.fdef.return_t(i).resolve(scpe), member.return_t(i)) { 
+                    return false 
+                }
             }
         }
-    }
 
-    return true
+        return true
+    }
 }
 
 // Returns true if b is assignable to a
@@ -2656,6 +2669,13 @@ export def convert_type_score(a: &Type, b: &Type, scpe: &scope::Scope, impl: boo
     if not a or not b { return 0 }
     if a.id == b.id {
         return 0
+    }
+
+    // Force impls when converting to an interface reference
+    if a and a.kind == TypeKind::REFERENCE and a.tpe and a.tpe.kind == TypeKind::INTERFACE {
+        if not (b.implements and b.implements.contains(a.id)) {
+            scope::trigger_impl(scpe, b)
+        }
     }
 
     // If both are either refs or pointers
@@ -2908,16 +2928,15 @@ export def convert_type_score(a: &Type, b: &Type, scpe: &scope::Scope, impl: boo
         }
     }
 
-    let intfp = get_interface(a)
-    if intfp {
+    if a.kind == TypeKind::INTERFACE or (a.kind == TypeKind::REFERENCE and a.tpe and a.tpe.kind == TypeKind::INTERFACE) {
         if a.kind == TypeKind::REFERENCE and b.kind == TypeKind::REFERENCE {
-            if b.tpe and b.tpe.kind == TypeKind::NULL or implements(b.tpe, intfp, scpe) {
+            if b.tpe and b.tpe.kind == TypeKind::NULL or implements(b.tpe, a, scpe) {
                 return 6
             }
         }
-        if a.kind == TypeKind::REFERENCE and implements(reference(b.tpe), intfp, scpe) { return 6 }
-        if a.kind == TypeKind::REFERENCE and implements(b, intfp, scpe) { return 6 }
-        if implements(b, intfp, scpe) { return 0 } // This is so that new specializations always win
+        if a.kind == TypeKind::REFERENCE and implements(reference(b.tpe), a, scpe) { return 6 }
+        if a.kind == TypeKind::REFERENCE and implements(b, a, scpe) { return 6 }
+        if implements(b, a, scpe) { return 0 } // This is so that new specializations always win
     }
 
     /*if is_type { 
@@ -3995,7 +4014,7 @@ def do_type_lookup(node: &parser::Node, state: &State, is_type: bool = false) ->
                 node = node
             ] !&Pattern)
         } else {
-            return make_type_ref(type_instance(node, type_constructor.tpe, tc_args))
+            return make_type_ref(type_instance(node, type_constructor.tpe, tc_args, state.scope))
         }
 
     } else if node.kind == parser::NodeKind::VARIANT_T {
@@ -7202,6 +7221,8 @@ export def walk(parent: &parser::Node, node: &parser::Node, state: &State) {
         case parser::NodeKind::LAMBDA
             walk_Lambda(node, state)
             walk_Lambda_body(node, state)
+        case parser::NodeKind::IMPLEMENTS
+            // Do nothing
         case
             error(node.kind, "\n")
             assert
@@ -7510,15 +7531,18 @@ export def typecheck(state: &State) {
 
     //lookup_stub_types(state)
 
-    // Typcheck Type decls
-    /*for var i in 0..vector::length(node.body) {
+    // Typecheck Type decls
+    for var i in 0..vector::length(node.body) {
         let n = node.body(i)
         switch n.kind !int {
             case parser::NodeKind::TYPE_DECL
                 n.parent = node
                 walk_TypeDecl(n, state)
+                for var left in node.value.type_decl.left {
+                    if left.tpe { scope::trigger_impl(n.scope, left.tpe)}
+                }
         }
-    }*/
+    }
 
     typecheck(node, state)
 

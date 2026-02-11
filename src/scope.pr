@@ -219,6 +219,14 @@ export def find_references_to(value: &Value) -> &Vector(parser::SourceLoc) {
     return res
 }
 
+export type Impl = struct {
+    share: parser::ShareMarker
+    module: weak &toolchain::Module
+    left: &typechecking::TypeRef
+    right: &typechecking::TypeRef
+    node: weak &parser::Node
+}
+
 export type ReExport = struct {
     module: weak &toolchain::Module
     pattern: &parser::Node
@@ -244,6 +252,7 @@ export type Scope = struct {
     re_exports: &Vector(ReExport)
     // Polymorphic instances
     polymorphics: &SMap(&Scope)
+    impls: &Vector(&Impl)
 }
 
 export def print_scope(scope: &Scope) {
@@ -398,7 +407,8 @@ export def enter_scope(parents: &Vector(weak &Scope), module: &toolchain::Module
         fields = map::make(type &Value),
         implicits = vector::make(type &Value),
         underscore_count = 0,
-        is_global = is_global
+        is_global = is_global,
+        impls = vector::make(type &Impl)
     ] !&Scope
     let function_parent = get_function_parent(s)
     if function_parent {
@@ -424,7 +434,8 @@ export def enter_function_scope(scope: &Scope, module: &toolchain::Module, is_gl
         implicits = vector::make(type &Value),
         is_function = true,
         is_global = is_global,
-        scope_count = 0
+        scope_count = 0,
+        impls = vector::make(type &Impl)
     ] !&Scope
 }
 
@@ -1940,6 +1951,153 @@ export def create_type(
     share: parser::ShareMarker, tpe: &typechecking::TypeRef) -> &Value {
     return create_type(scope, name_node, share, tpe, Phase::COMPILED, null)
 }
+
+export def create_impl(
+    scope: &Scope, share: parser::ShareMarker, left: &typechecking::TypeRef, right: &typechecking::TypeRef, node: &parser::Node) {
+
+    let impl = [
+        share = share,
+        module = scope.module,
+        left = left,
+        right = right,
+        node = node
+    ] !&Impl
+
+    // We resolve all types conditionally here to make sure
+    // that the equality check doesn't fail. If one of the types
+    // is a forward declared type, it will be resolved later
+    // and the equality check looks at the patterns
+
+    if left.resolve(scope, error_on_fail = false) { 
+        right.resolve(scope, error_on_fail = false)
+    }
+
+    for var impl in scope.impls {
+        if impl.left.resolve(scope, error_on_fail = false) { 
+            impl.right.resolve(scope, error_on_fail = false) 
+        }
+        if impl.left == left and impl.right == right {
+            errors::errorn(node, "Duplicate impl for `", typechecking::generic_to_string(left), "`")
+            return
+        }
+    }
+
+    scope.impls.push(impl)
+}
+
+def all_impl(scope: &Scope) -> &Vector(&Impl) {
+    let vec = vector::make(&Impl)
+    all_impl(scope, scope.module, vec)
+    return vec
+}
+
+def all_impl(scope: &Scope, module: &toolchain::Module, all: &Vector(&Impl)) {
+    if not scope { return}
+    if scope.imports  {
+        for var imp in scope.imports {
+            all_impl(imp.module.scope, module, all)
+        }
+    }
+    for var parent in scope.parents {
+        all_impl(parent, module, all)
+    }
+    for var impl in scope.impls {
+        // Don't include impls from other modules, unless they are exported
+        if module != scope.module and not (impl.share !int & parser::ShareMarker::EXPORT !int) {
+            continue
+        }
+        all.push(impl)
+    }
+}
+
+
+// This gets called whenever we create new types to
+// generate concrete implementations for polymorphic functions so that
+// the interface call is able to find them.
+export def trigger_impl(scope: &Scope, tpe: &typechecking::Type) {
+    let impls = all_impl(scope)
+    for var impl in impls {
+        let temp_scope = enter_scope(scope)
+        // TODO score of 1 is hardcoded, we need to check if the resulting type is actually the same
+        if typechecking::convert_type_score(impl.left, tpe, temp_scope) <= 1 {
+            // The type matches, now get the right hand side
+            let right = impl.right.copy().resolve(temp_scope).resolve()
+            // We don't give errors in static context
+            if not right {
+                if not consteval::is_static { 
+                    errors::errorn(impl.node, "Couldn't resolve implemented type `", typechecking::generic_to_string(impl.right), "`")
+                }
+                continue
+            }
+            if right.implementors and right.implementors.contains(tpe.id) {
+                continue
+            }
+            // Check if we have an interface on the right hand side
+            if not (right.kind == typechecking::TypeKind::INTERFACE or
+                (right.kind == typechecking::TypeKind::REFERENCE and
+                right.tpe and right.tpe.resolve().kind == typechecking::TypeKind::INTERFACE)) {
+                    
+                errors::errorn(impl.node, "Right hand side of impl must be an interface, got `", debug::type_to_str(right), "`")
+                continue
+            }
+
+            // Lookup all functions in interface
+            var intf = right
+            if right.kind == typechecking::TypeKind::REFERENCE {
+                intf = right.tpe.resolve()
+            }
+
+            var cnt = true
+            for var member in intf.members {
+                let parameter_t = vector::make(typechecking::NamedParameter)
+                parameter_t.push([tpe = tpe.id] !typechecking::NamedParameter)
+                for var param in member.parameter_t {
+                    parameter_t.push(param)
+                }
+                let name_node = parser::make_identifier(member.name)
+                let fun = get_function(impl.module.scope, name_node, parameter_t, dry_run = true)
+                var res = fun != null
+
+                if res {
+                    if fun.fdef.return_t.length != member.return_t.length {
+                        res = false
+                    } else {
+                        let ftpe = fun.fdef.to_type().resolve()
+                        for var i in 0..fun.fdef.return_t.length {
+                            if not typechecking::equals(ftpe.return_t(i), member.return_t(i)){
+                                res = false
+                                break
+                            }
+                        }
+                    }
+                }
+
+                if not res {
+                    if not consteval::is_static {
+                        errors::errorn(impl.node, "Type `", typechecking::type_to_str(tpe), "` doesn't implement member `", member.name, "` of interface `", debug::type_to_str(right), "`")
+                    }
+                    cnt = false
+                    break
+                }
+            }
+
+            if not cnt {
+                continue
+            }
+
+            if not right.implementors {
+                right.implementors = set::make(typechecking::TypeId)
+            }
+            right.implementors.add(tpe.id)
+            
+            if not tpe.implements {
+                tpe.implements = set::make(typechecking::TypeId)
+            }
+            tpe.implements.add(right.id)
+        }
+    }
+}
+
 
 export def enter_namespace(scope: &Scope, scope2: &Scope, node: &parser::Node) -> &Value {
     
