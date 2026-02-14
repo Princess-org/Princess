@@ -551,7 +551,7 @@ export def equals(this: &Pattern, other: &Pattern, env: &EqEnv = null) -> bool {
                 if this.tpe and other.tpe {
                     return parameter_equals_single(this.tpe, other.tpe, env)
                 }
-                return true
+                return this.tpe == other.tpe
             } else if this.tpe and other.tpe {
                 return this.tpe == other.tpe
             } else if this.name and other.name {
@@ -615,7 +615,7 @@ export def generic_to_string(typeref: &TypeRef) -> Str {
     if typeref.tpe {
         return debug::type_to_str(typeref.tpe)
     } else if typeref.name {
-        return "type " + typeref.name
+        return typeref.name
     } else if typeref.pattern {
         return generic_to_string(typeref.pattern)
     }
@@ -1580,8 +1580,8 @@ def type_instance(node: &parser::Node, tc_tpe: TypeId, tc_args: &Vector(TypeId),
     return tpe.id
 }
 
-def callable_generic(kind: TypeKind, parameter_t: &Vector(NamedParameterPre), return_t: &Vector(&TypeRef)) -> &TypeRef {
-    if is_polymorph(parameter_t) {
+def callable_generic(kind: TypeKind, parameter_t: &Vector(NamedParameterPre), return_t: &Vector(&TypeRef), scpe: &scope::Scope) -> &TypeRef {
+    if is_polymorph(parameter_t, scpe) {
         return make_type_ref([ kind = kind, parameter_t = parameter_t, return_t = return_t ] !&Pattern)
     }
 
@@ -1601,8 +1601,8 @@ def callable_generic(kind: TypeKind, parameter_t: &Vector(NamedParameterPre), re
     }
 }
 
-export def closure(parameter_t: &Vector(NamedParameterPre), return_t: &Vector(&TypeRef)) -> &TypeRef {
-    return callable_generic(TypeKind::CLOSURE, parameter_t, return_t)
+export def closure(parameter_t: &Vector(NamedParameterPre), return_t: &Vector(&TypeRef), scpe: &scope::Scope) -> &TypeRef {
+    return callable_generic(TypeKind::CLOSURE, parameter_t, return_t, scpe)
 }
 
 def closure(parameter_t: &Vector(NamedParameter), return_t: &Vector(TypeId)) -> TypeId {
@@ -1627,8 +1627,8 @@ def closure(parameter_t: &Vector(NamedParameter), return_t: &Vector(TypeId)) -> 
     return tpe.id
 }
 
-export def function(parameter_t: &Vector(NamedParameterPre), return_t: &Vector(&TypeRef)) -> &TypeRef {
-    return callable_generic(TypeKind::FUNCTION, parameter_t, return_t)
+export def function(parameter_t: &Vector(NamedParameterPre), return_t: &Vector(&TypeRef), scpe: &scope::Scope) -> &TypeRef {
+    return callable_generic(TypeKind::FUNCTION, parameter_t, return_t, scpe)
 }
 
 export def function(
@@ -2552,11 +2552,19 @@ def infer_interface_types(a: &Type, b: &Type, module: &toolchain::Module) -> &Ty
     return tpe
 }*/
 export def convert_type_score(a: &TypeRef, b: &Type, scpe: &scope::Scope, impl: bool = true) -> int {
-    if not a or not b { return 0 }
-    if a.pattern {
+    if not a and not b { return 0 }
+    if not a or not b { return -1 }
+    if a.tpe {
+        return convert_type_score(a.tpe, b, scpe, impl)
+    } else if a.pattern {
         return convert_type_score(a.pattern, b, scpe, impl)
     } else if a.name {
-        if scope::get_type(scpe, parser::identifier_from_str(a.name)) { return 1 }
+        let tpe = scope::get_type(scpe, parser::identifier_from_str(a.name))
+        if tpe {
+            return convert_type_score(tpe, b, scpe, impl)
+        } else {
+            return -1
+        }
     } else {
         return convert_type_score(a.resolve(scpe), b, scpe, impl)
     }
@@ -2591,6 +2599,12 @@ export def convert_type_score(a: &Pattern, b: &Type, scpe: &scope::Scope, impl: 
         return convert_type_score(a.tpe, b.tpe, scpe, impl)
     }
     if a.kind == b.kind and is_box(b) {
+        // Special case for interface implementation, because in the case of
+        // &T implements &I where I is an interface, we can't simply unwrap the left hand side
+        let intf = a.tpe.resolve(scpe, error_on_fail = false)
+        if intf and intf.kind == TypeKind::INTERFACE {
+            return convert_type_score(reference(intf), b, scpe, impl)
+        }
         return convert_type_score(a.tpe, b.tpe, scpe, impl)
     }
     if a.kind == b.kind == TypeKind::TUPLE {
@@ -2672,13 +2686,14 @@ const IMPLICIT = 15
 // if the types are equal, 0 is returned.
 // Otherwise a positive integer is returned.
 export def convert_type_score(a: &Type, b: &Type, scpe: &scope::Scope, impl: bool = true) -> int {
-    if not a or not b { return 0 }
+    if not a and not b { return 0 }
+    if not a or not b { return -1 }
     if a.id == b.id {
         return 0
     }
 
     // Force impls when converting to an interface reference
-    if a and a.kind == TypeKind::REFERENCE and a.tpe and a.tpe.kind == TypeKind::INTERFACE {
+    if impl and a and a.kind == TypeKind::REFERENCE and a.tpe and a.tpe.kind == TypeKind::INTERFACE {
         if not (b.implements and b.implements.contains(a.id)) {
             scope::trigger_impl(scpe, b)
         }
@@ -2940,9 +2955,9 @@ export def convert_type_score(a: &Type, b: &Type, scpe: &scope::Scope, impl: boo
                 return 6
             }
         }
-        if a.kind == TypeKind::REFERENCE and implements(reference(b.tpe), a, scpe) { return 6 }
+        if a.kind == TypeKind::REFERENCE and implements(reference(b.id), a, scpe) { return 6 }
         if a.kind == TypeKind::REFERENCE and implements(b, a, scpe) { return 6 }
-        if implements(b, a, scpe) { return 0 } // This is so that new specializations always win
+        if implements(b, a, scpe) { return 1 } // This is so that new specializations always win
     }
 
     /*if is_type { 
@@ -2987,7 +3002,12 @@ export def get_generic(tpe: &Type) -> &Type {
     return null
 }
 
-export def is_polymorph(tpe: &TypeRef) -> bool {
+export def is_polymorph(fdef: FunctionDef) -> bool {
+    assert fdef.context
+    return is_polymorph(fdef.parameter_t, fdef.context.scope)
+}
+
+export def is_polymorph(tpe: &TypeRef, scpe: &scope::Scope) -> bool {
     if not tpe { return false }
     if tpe.tpe {
         let res = tpe.tpe.resolve()
@@ -3002,24 +3022,28 @@ export def is_polymorph(tpe: &TypeRef) -> bool {
             return true
         } else if pattern.kind == TypeKind::POINTER or
             pattern.kind == TypeKind::STATIC_ARRAY or pattern.kind == TypeKind::ARRAY {
-            return is_polymorph(pattern.tpe)
+            return is_polymorph(pattern.tpe, scpe)
         } else if pattern.kind == TypeKind::REFERENCE {
             if pattern.tpe and pattern.tpe.kind == TypeKind::INTERFACE {
                 return false
             } else {
-                return is_polymorph(pattern.tpe)
+                return is_polymorph(pattern.tpe, scpe)
             }
         } else if pattern.kind == TypeKind::TUPLE or 
             pattern.kind == TypeKind::TUNION or 
             pattern.kind == TypeKind::TYPE_INSTANCE {
                 
             for var tpe in pattern.return_t {
-                if is_polymorph(tpe) { return true }
+                if is_polymorph(tpe, scpe) { return true }
             }
             return false
         }
     } else if tpe.name {
-        return true
+        let tpe = scope::get_type(scpe, parser::identifier_from_str(tpe.name), error_on_fail = false)
+        if tpe {
+            return is_polymorph(tpe, scpe)
+        }
+        return false
     }
     return false
 }
@@ -3054,10 +3078,10 @@ export def is_polymorph(tpe: &TypeRef) -> bool {
     return false
 }*/
 
-export def is_polymorph(args: &Vector(NamedParameterPre)) -> bool {
+export def is_polymorph(args: &Vector(NamedParameterPre), scpe: &scope::Scope) -> bool {
     for var i in 0..vector::length(args) {
         let np = args(i)
-        if is_polymorph(np.tpe) {
+        if is_polymorph(np.tpe, scpe) {
             return true
         }
     }
@@ -3781,7 +3805,11 @@ def do_type_lookup(node: &parser::Node, state: &State, is_type: bool = false) ->
         if not tpe or tpe.kind != TypeKind::REFERENCE {
             errors::errorn(node, "Weak reference must point at a reference!")
         }
-        return weak_reference(tpe, parser::VarDecl::VAR) // FIXME proper kw
+        if tpe.pattern {
+            return weak_reference(tpe.pattern.tpe, parser::VarDecl::VAR) // FIXME proper kw
+        } else {
+            return make_type_ref(weak_reference(tpe.tpe.tpe, parser::VarDecl::VAR)) // FIXME proper kw
+        }
     } else if node.kind == parser::NodeKind::STRUCT_T or node.kind == parser::NodeKind::UNION_T {
         
         let length = vector::length(node.value.body)
@@ -3910,9 +3938,9 @@ def do_type_lookup(node: &parser::Node, state: &State, is_type: bool = false) ->
             return_t.push(type_lookup(arg, state, is_type))
         }
         if node.kind == parser::NodeKind::FUNCTION_T {
-            tpe = pointer(callable_generic(TypeKind::FUNCTION, parameter_t, return_t), parser::VarDecl::VAR)
+            tpe = pointer(callable_generic(TypeKind::FUNCTION, parameter_t, return_t, state.scope), parser::VarDecl::VAR)
         } else {
-            tpe = callable_generic(TypeKind::CLOSURE, parameter_t, return_t)
+            tpe = callable_generic(TypeKind::CLOSURE, parameter_t, return_t, state.scope)
         }
         return tpe
     } else if node.kind == parser::NodeKind::TYPE_T {
@@ -4751,6 +4779,7 @@ def make_function_call(node: &parser::Node, ident: &parser::Node, args: &Vector(
 
 def convert_to_call(node: &parser::Node, name: Str, args: &Vector(NamedParameter), state: &State) {
     let ident = parser::make_identifier(name)
+    ident.loc = node.loc
     let fun = scope::get_function(state.scope, ident, args, false, true, force_compile = not consteval::is_static, context = state.context)
     if fun {
         compile_function(*fun, state.scope, args)
@@ -4827,8 +4856,7 @@ def walk_ArithmeticOp(node: &parser::Node, state: &State) {
     }
 
     if not node.tpe {
-        // TODO better error message
-        errors::errorn(node, "Invalid operation")
+        errors::errorn(node, "Invalid operation on types " + debug::type_to_str((@left).tpe) + " and " + debug::type_to_str((@right).tpe))
     }
 }
     
@@ -5847,8 +5875,9 @@ def walk_Yield(node: &parser::Node, state: &State) {
         errors::errorn(node, "Yield outside of a function")
         return
     }
-    let tpe = current_fun.value.get_type()
-    let ltypes = tpe.resolve().return_t.copy()
+    let tpe = current_fun.value.get_type().resolve()
+    if not tpe { return }
+    let ltypes = tpe.return_t.copy()
     let rtypes = collapse_types(node, ltypes, body, state)
     if rtypes.length != 1 {
         errors::errorn(node, "Yield needs a single argument")
@@ -5856,7 +5885,7 @@ def walk_Yield(node: &parser::Node, state: &State) {
     ltypes(0) = ltypes(0).tpe.resolve().tc_args(0)
     check_return_arguments(true, node, ltypes, rtypes, state)
     
-    node.tpe = tpe
+    node.tpe = tpe.id
 }
 
 def walk_YieldFrom(node: &parser::Node, state: &State) {
@@ -6038,7 +6067,7 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
             let value = get_value(left, state, force_compile = false, dry_run = true)
             if value {
                 left.svalue = value
-                if value.kind == scope::ValueKind::FUNCTION and not is_polymorph(value.fdef.parameter_t) {
+                if value.kind == scope::ValueKind::FUNCTION and not is_polymorph(value.fdef) {
                     // TODO is this really correct?
                     left.tpe = value.fdef.to_type()
                 } else {
