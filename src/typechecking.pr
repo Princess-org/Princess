@@ -2333,15 +2333,15 @@ export def contains(a: &Type) -> &Set(TypeId) {
     return res
 }
 
-/*
-def is_setter(mb: StructuralTypeMember) -> bool {
+export def is_setter(mb: StructuralTypeMember) -> bool {
     return mb.name.starts_with("__set_") and mb.name.ends_with("__")
 }
 
-def is_getter(mb: StructuralTypeMember) -> bool {
+export def is_getter(mb: StructuralTypeMember) -> bool {
     return mb.parameter_t.length == 0
 }
 
+/*
 def has_function(entry: &TypeEntry, intf: &Type, mb: StructuralTypeMember, module: &toolchain::Module, visited: &Set(&Type) = null, check_embed: bool = true) -> bool {
     var tpe = entry.tpe
 
@@ -4056,7 +4056,7 @@ def do_type_lookup(node: &parser::Node, state: &State, is_type: bool = false) ->
             let arg = node.value.type_constructor.args(i)
             let argtpe = type_lookup(arg, state, false)
             if argtpe {
-                if argtpe.is_type() { tc_args.push(argtpe.tpe) }
+                if argtpe.is_type() { tc_args.push(argtpe.resolve(state.scope)) }
                 else { is_generic = true }
             }
             args.push(argtpe)
@@ -4167,7 +4167,7 @@ def walk_ArrayStaticT(node: &parser::Node, state: &State) {
         size = value.i
     }
 
-    let tpe2 = _type(type_lookup(node, state).tpe)
+    let tpe2 = _type(type_lookup(node, state).resolve(state.scope))
     node.tpe = tpe2
 }
 
@@ -4222,7 +4222,7 @@ export def lookup_identifier_types(node: &parser::Node, state: &State) {
         node.value.identifier.types = vector::make(NamedParameter)
         for var i in 0..vector::length(node.value.identifier.args) {
             let arg = node.value.identifier.args(i)
-            let tpe = type_lookup(arg, state).tpe
+            let tpe = type_lookup(arg, state).resolve(state.scope)
             node.value.identifier.types.push([
                 tpe = tpe
             ] !NamedParameter)
@@ -5035,7 +5035,7 @@ def walk_Cast(node: &parser::Node, state: &State) {
     if not left or not right { return }
     
     right.parent = node
-    var rtpe = type_lookup(right, state).tpe
+    var rtpe = type_lookup(right, state).resolve(state.scope)
 
     if not rtpe { return }
     if rtpe.kind == TypeKind::TYPE_CONSTRUCTOR {
@@ -5307,7 +5307,7 @@ export def walk_Lambda(node: &parser::Node, state: &State) {
         let name = param.value.param.name
         var tpe: TypeId
         if param.value.param.tpe {
-            tpe = type_lookup(param.value.param.tpe, state).tpe
+            tpe = type_lookup(param.value.param.tpe, state).resolve(state.scope)
         } else {
             // Place type placeholder for inference
             tpe = to_infer.id
@@ -5496,7 +5496,7 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
             // TODO : type T is also not allowed
 
             let name = param.value.param.name
-            let tpe = type_lookup(param.value.param.tpe, state).tpe
+            let tpe = type_lookup(param.value.param.tpe, state).resolve(state.scope)
             let np = [
                 name = last_ident_to_str(name),
                 node = name,
@@ -5507,7 +5507,7 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
         }
 
         for var i in 0..returns.length {
-            let tpe = type_lookup(returns(i), state).tpe
+            let tpe = type_lookup(returns(i), state).resolve(state.scope)
             return_t.push(tpe)
             c_return_t.push(tpe)
         }
@@ -5740,6 +5740,19 @@ def check_is_recursive(tpe: &Type, types: &Set(&Type) = null) -> bool {
     return false
 }
 
+def set_defmodule(tpe: &Type, module: &toolchain::Module) {
+    if tpe { 
+        if (tpe.kind == TypeKind::STRUCT or 
+            tpe.kind == TypeKind::UNION or 
+            tpe.kind == TypeKind::INTERFACE) and not tpe.defmodule {
+
+            tpe.defmodule = module
+        } else if is_box(tpe) {
+            set_defmodule(tpe.tpe, module)
+        }
+    }
+}
+
 export def walk_TypeDecl(node: &parser::Node, state: &State) {
     let share = node.value.type_decl.share
     let left = node.value.type_decl.left
@@ -5789,7 +5802,7 @@ export def walk_TypeDecl(node: &parser::Node, state: &State) {
             register(tpe, type_value)
 
             if not tpe { continue }
-            type_value.defmodule = state.module
+            set_defmodule(tpe, state.module)
 
             type_value.name = parser::identifier_to_str(name)
             //print("Registered type ", type_value.name, " with id ", tpe, "\n")
@@ -5992,7 +6005,9 @@ def check_for_apply_and_update(node: &parser::Node, left: &parser::Node, argumen
     
     if not left or not right { return false }
     let tpe = left.tpe
-    if not tpe { return false }
+    if not tpe { 
+        return false
+    }
     if is_function(tpe) { return false }
 
     let parent = node.parent
@@ -6084,14 +6099,14 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
         if left.kind != parser::NodeKind::IDENTIFIER {
             walk(node, left, state)
         } else {
-            let value = get_value(left, state, force_compile = false, dry_run = true)
+            let value = get_value(left, state, dry_run = true)
             if value {
                 left.svalue = value
                 if value.kind == scope::ValueKind::FUNCTION and not is_polymorph(value.fdef) {
                     // TODO is this really correct?
                     left.tpe = value.fdef.to_type()
                 } else {
-                    left.tpe = value.get_type()
+                    left.tpe = value.tpe.resolve(state.scope)
                 }
             }
         }
@@ -6852,7 +6867,7 @@ def walk_MemberAccess_aggregate(node: &parser::Node, ucs: bool, state: &State) -
 }
 
 // TODO Make this a generator, doesn't work for some reason
-def flatten_fields(node: &parser::Node, tpe: &Type, v: &Vector(StructMember) = null) -> &Vector(StructMember) {
+export def flatten_fields(node: &parser::Node, tpe: &Type, v: &Vector(StructMember) = null) -> &Vector(StructMember) {
     if not v { v = vector::make(StructMember) }
     if not tpe { return v }
     if not is_struct(tpe) { 
@@ -7145,6 +7160,10 @@ def walk_Assert(node: &parser::Node, state: &State) {
 
     // Compile stderr function
     let std_module = toolchain::find_module("std")
+    if not std_module {
+        errors::errorn(node, "Can't use assert without the standard library!")
+        return
+    }
     scope::get(std_module.scope, parser::make_identifier("stderr"))
 }
 
@@ -7275,7 +7294,7 @@ export def walk(parent: &parser::Node, node: &parser::Node, state: &State) {
             parser::NodeKind::ARRAY_T, parser::NodeKind::WEAK_REF_T,
             parser::NodeKind::TYPE_CONSTRUCTOR, parser::NodeKind::FUNCTION_T,
             parser::NodeKind::CLOSURE_T, parser::NodeKind::TUPLE_T
-            node.tpe = _type(type_lookup(node, state).tpe)
+            node.tpe = _type(type_lookup(node, state).resolve(state.scope))
         case parser::NodeKind::ARRAY_STATIC_T
             walk_ArrayStaticT(node, state)
         case parser::NodeKind::TYPE_OF_T
