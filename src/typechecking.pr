@@ -290,6 +290,7 @@ export def make_type_ref(pattern: &Pattern) -> &TypeRef {
 }
 
 export def copy(tref: &TypeRef) -> &TypeRef {
+    if not tref { return null }
     return [ 
         tpe = tref.tpe,
         name = tref.name,
@@ -1876,7 +1877,7 @@ export def weak_reference(tpe: TypeId, kw: parser::VarDecl) -> TypeId {
         size = (size_of type &),
         align = (align_of type &)
     ] !&Type
-    type_registry_reference(rid) = reftpe
+    type_registry_weak_reference(rid) = reftpe
     register(reftpe.id, reftpe)
     return reftpe.id
 }
@@ -2557,6 +2558,10 @@ export def convert_type_score(a: &TypeRef, b: &Type, scpe: &scope::Scope, impl: 
     if a.tpe {
         return convert_type_score(a.tpe, b, scpe, impl)
     } else if a.pattern {
+        let r = resolve_generic(a.pattern, scpe, error_on_fail = false)
+        if r {
+            return convert_type_score(r, b, scpe, impl)
+        }
         return convert_type_score(a.pattern, b, scpe, impl)
     } else if a.name {
         let tpe = scope::get_type(scpe, parser::identifier_from_str(a.name))
@@ -2601,10 +2606,10 @@ export def convert_type_score(a: &Pattern, b: &Type, scpe: &scope::Scope, impl: 
     if a.kind == b.kind and is_box(b) {
         // Special case for interface implementation, because in the case of
         // &T implements &I where I is an interface, we can't simply unwrap the left hand side
-        let intf = a.tpe.resolve(scpe, error_on_fail = false)
+        /*let intf = a.tpe.resolve(scpe, error_on_fail = false)
         if intf and intf.kind == TypeKind::INTERFACE {
             return convert_type_score(reference(intf), b, scpe, impl)
-        }
+        }*/
         return convert_type_score(a.tpe, b.tpe, scpe, impl)
     }
     if a.kind == b.kind == TypeKind::TUPLE {
@@ -3007,12 +3012,13 @@ export def is_polymorph(fdef: FunctionDef) -> bool {
     return is_polymorph(fdef.parameter_t, fdef.context.scope)
 }
 
-export def is_polymorph(tpe: &TypeRef, scpe: &scope::Scope) -> bool {
+export def is_polymorph(tpe: &TypeRef, scpe: &scope::Scope, or_name: bool = false) -> bool {
+    tpe = tpe.copy() // Don't mutate type
     if not tpe { return false }
     if tpe.tpe {
         let res = tpe.tpe.resolve()
         if not res { return false } // Do we return false here?
-        if res.kind == TypeKind::INTERFACE {
+        if res.kind == TypeKind::INTERFACE or res.kind == TypeKind::TYPE_DEF {
             return true
         }
         return false
@@ -3022,28 +3028,28 @@ export def is_polymorph(tpe: &TypeRef, scpe: &scope::Scope) -> bool {
             return true
         } else if pattern.kind == TypeKind::POINTER or
             pattern.kind == TypeKind::STATIC_ARRAY or pattern.kind == TypeKind::ARRAY {
-            return is_polymorph(pattern.tpe, scpe)
+            return is_polymorph(pattern.tpe, scpe, or_name)
         } else if pattern.kind == TypeKind::REFERENCE {
             if pattern.tpe and pattern.tpe.kind == TypeKind::INTERFACE {
                 return false
             } else {
-                return is_polymorph(pattern.tpe, scpe)
+                return is_polymorph(pattern.tpe, scpe, or_name)
             }
         } else if pattern.kind == TypeKind::TUPLE or 
             pattern.kind == TypeKind::TUNION or 
             pattern.kind == TypeKind::TYPE_INSTANCE {
                 
             for var tpe in pattern.return_t {
-                if is_polymorph(tpe, scpe) { return true }
+                if is_polymorph(tpe, scpe, or_name) { return true }
             }
             return false
         }
     } else if tpe.name {
-        let tpe = scope::get_type(scpe, parser::identifier_from_str(tpe.name), error_on_fail = false)
-        if tpe {
-            return is_polymorph(tpe, scpe)
-        }
-        return false
+        //let tpe = scope::get_type(scpe, parser::identifier_from_str(tpe.name), error_on_fail = false)
+        //if tpe {
+        //    return is_polymorph(tpe, scpe, or_name)
+        //}
+        return or_name
     }
     return false
 }
@@ -3120,6 +3126,13 @@ export def replace_type_defs(
         }
 
         if left.kw == parser::VarDecl::TYPE and rtpe and rtpe.kind == TypeKind::TYPE {
+            // Don't equate types that aren't the same
+            if left.tpe and left.tpe.tpe {
+                let left_tpe = left.tpe.tpe.resolve().tpe
+                let right_tpe = rtpe.tpe
+                if not equals(left_tpe, right_tpe) { return }
+            }
+
             // We have a type parameter, create it in scope and continue
             left.tpe = make_type_ref(rtpe)
             scope::create_type(
@@ -3151,7 +3164,9 @@ export def replace_type_defs(
         }*/
 
         if replace {
-            left.tpe = make_type_ref(rtpe)
+            if is_polymorph(left.tpe, scpe, or_name = true)  {
+                left.tpe = make_type_ref(rtpe)
+            }
         }
     }
 
@@ -3292,15 +3307,20 @@ export def overload_score(
         var score = -1
         if left.kw == parser::VarDecl::TYPE {
             if kind(right.tpe) == TypeKind::TYPE {
-                if left.value and right.value and equals(left.value.value_tpe, right.value.value_tpe) {
-                    score = 0
-                } else if not left.value and right.value {
-                    // TODO test this
-                    score = 4
+                if not left.tpe.tpe { score = 4 }
+                else {
+                    let left_tpe = left.tpe.tpe.resolve().tpe
+                    let right_tpe = right.tpe.tpe
+
+                    if not equals(left_tpe, right_tpe) { score = -1 }
+                    else { score = 0 }
                 }
             }
         } else {
-            score = convert_type_score(lvalue, right.tpe, scpe, impl = impl)
+            if left.varargs and not lvalue { score = 0 }
+            else {
+                score = convert_type_score(lvalue, right.tpe, scpe, impl = impl)
+            }
         }
         if score < 0 { return -1 }
         sum += score
@@ -3803,7 +3823,7 @@ def do_type_lookup(node: &parser::Node, state: &State, is_type: bool = false) ->
         if node.value.t_parr.tpe { node.value.t_parr.tpe.parent = node }
         var tpe = type_lookup(node.value.t_parr.tpe, state, is_type)
         if not tpe or tpe.kind != TypeKind::REFERENCE {
-            errors::errorn(node, "Weak reference must point at a reference!")
+            errors::errorn(node, "Weak reference must point at a reference, was `" + generic_to_string(tpe) + "`")
         }
         if tpe.pattern {
             return weak_reference(tpe.pattern.tpe, parser::VarDecl::VAR) // FIXME proper kw
@@ -6053,7 +6073,7 @@ def check_for_apply_and_update(node: &parser::Node, left: &parser::Node, argumen
 }
 
 def access_check(function: &scope::Value, node: &parser::Node, state: &State) -> bool {
-    return not (function and (function.share !int & parser::ShareMarker::EXPORT !int == 0) and function.module != node.scope.module and function.module != state.get_context())
+    return not (function and (function.share !int & parser::ShareMarker::EXPORT !int == 0) and function.module != state.module and function.module != state.get_context())
 }
 
 export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool {
@@ -6153,7 +6173,7 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
         if check_for_apply_and_update(node, left, arguments, index, state) { return true }
         if (@left).kind == parser::NodeKind::IDENTIFIER {
             let only_function = node.value.func_call.is_member_access
-            var exists, function = scope::get_function_check(state.scope, left, arguments, dry_run, not consteval::is_static, only_function = only_function, context = state.context)
+            var exists, function = scope::get_function_check(state.scope, left, arguments, dry_run, not consteval::is_static, only_function = only_function, context = state.get_context().scope)
             left.svalue = function
 
             // Access check
@@ -6167,7 +6187,7 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
                 if node.value.func_call.is_member_access {
                     args.push(arguments(0))
                 }
-                let e, za_fun = scope::get_function_check(state.scope, left, args, true, not consteval::is_static, context = state.context)
+                let e, za_fun = scope::get_function_check(state.scope, left, args, true, not consteval::is_static, context = state.get_context().scope)
                 
                 // make sure we only try this if there's something returned
                 if e and za_fun.fdef.return_t.length == 1 and access_check(za_fun, node, state) {
@@ -6247,7 +6267,7 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
                 for var i in 0..vector::length(arguments) {
                     // Suppress error message if we got invalid parameters
                     let np = arguments(i)
-                    if not np.tpe { return false }
+                    //if not np.tpe { return false }
                 }
 
                 var msg: StringBuffer = "Function `" + parser::identifier_to_str(left) + "` not found. "
@@ -7025,14 +7045,14 @@ def walk_StructLit(node: &parser::Node, state: &State) {
 def walk_SizeOf(node: &parser::Node, state: &State) {
     let expr = node.value.expr
     if not expr { return }
-    expr.tpe = type_lookup(expr, state).tpe
+    expr.tpe = type_lookup(expr, state).resolve(state.scope)
     node.tpe = builtins::size_t_
 }
 
 def walk_AlignOf(node: &parser::Node, state: &State) {
     let expr = node.value.expr
     if not expr { return }
-    expr.tpe = type_lookup(expr, state).tpe
+    expr.tpe = type_lookup(expr, state).resolve(state.scope)
     node.tpe = builtins::size_t_
 }
 
@@ -7344,10 +7364,14 @@ export def walk_Def_with_type_argument(node: &parser::Node, args: &Vector(NamedP
     fun.locals = map::make(TypeId)
     fun.scope = state.scope
     fun.captures = vector::make(type weak &scope::Value)
-    fun.inner_scope = node.inner_scope = scope::enter_function_scope(context)
+
+    let new_scope = scope::enter_function_scope(context)
+    new_scope.parents.push(state.module.scope)
+    fun.inner_scope = node.inner_scope = new_scope
     fun.module = context.module
 
     node.value.def_.function = fun
+    
 
     //node.tpe = lookup_parameters(node, state)
 
@@ -7468,7 +7492,7 @@ export def walk_Def_with_type_argument(node: &parser::Node, args: &Vector(NamedP
         scope::create_dependency(fun.value, tvar)
     }*/
 
-    node.scope = context.module.scope
+    //node.scope = context.module.scope
     // This makes sure that the function is walked by the compiler
     context.module.node.body.push(node)
 
