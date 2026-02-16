@@ -188,7 +188,7 @@ export type Type = struct {
     // Type both used for array/pointer and enum
     // This is also used for type arguments to specify the actual type
     // And tagged unions carry the underlying union type
-    tpe: TypeId
+    _tpe: TypeId
     packed: bool
     // Fields for struct, array of StructMember
     fields: &Vector(StructMember)
@@ -253,6 +253,13 @@ export type Type = struct {
     // Used by typechecking to avoid multiple errors for the same type when it fails to implement an interface
     not_implements: &Set(TypeId)
     implementors: &Map(TypeId, &Vector(&scope::Value))
+}
+
+export def tpe(tpe: &Type) -> TypeId {
+    if tpe.kind == TypeKind::WEAK_REF {
+        return tpe._tpe.tpe
+    }
+    return tpe._tpe
 }
 
 export def has_variant(this: &Type, tpe: &Type) -> bool {
@@ -339,16 +346,28 @@ export def kind(typeref: &TypeRef) -> TypeKind {
     }
 }
 
+def resolve_stub_types(tpe: &Type, error_on_fail: bool = true) {
+    if not tpe { return }
+    if is_box(tpe) {
+        resolve_stub_types(tpe.tpe, error_on_fail)
+    } else if tpe.kind == TypeKind::STUB {
+        assert tpe.defmodule != null
+        // Lookup stub types on demand
+        let id = scope::get_type_id(tpe.defmodule.scope, parser::identifier_from_str(tpe.type_name), error_on_fail)
+        if id == 0 { return }
+        assert id == tpe.id
+    } else if tpe.kind == TypeKind::TUPLE or tpe.kind == TypeKind::TUNION {
+        for var r in tpe.return_t {
+            resolve_stub_types(r, error_on_fail)
+        }
+    }
+}
+
 export def resolve(typeref: &TypeRef, scpe: &Scope, error_on_fail: bool = true) -> TypeId {
     if not typeref { return 0 }
     if typeref.tpe {
         let actual = typeref.tpe.resolve()
-        if actual and actual.kind == TypeKind::STUB {
-            // Lookup stub types on demand
-            let id = scope::get_type_id(actual.defmodule.scope, parser::identifier_from_str(actual.type_name), error_on_fail)
-            assert id == typeref.tpe           
-            return id
-        }
+        resolve_stub_types(actual, error_on_fail)
         return typeref.tpe
     }
     if typeref.name {
@@ -1732,7 +1751,7 @@ export def variant(types: &Vector(TypeId)) -> TypeId {
     let union_tpe = make_union_type(fields)
     union_tpe.id = next_type_id()
     register_internal(union_tpe.id, union_tpe)
-    variant.tpe = union_tpe.id
+    variant._tpe = union_tpe.id
     
     type_registry_variant(signature) = variant
     register(variant.id, variant)
@@ -1779,7 +1798,7 @@ export def _type(tpe: TypeId) -> TypeId {
     let tpetpe = [
         kind = TypeKind::TYPE,
         id = next_type_id(),
-        tpe = tpe
+        _tpe = tpe
     ] !&Type
     type_registry_type(tid) = tpetpe
     register(tpetpe.id, tpetpe)
@@ -1795,7 +1814,7 @@ export def pointer(tpe: TypeId, kw: parser::VarDecl) -> TypeId {
     let ptrtpe = [
         kind = TypeKind::POINTER,
         id = next_type_id(),
-        tpe = tpe,
+        _tpe = tpe,
         kw = kw,
         size = (size_of type *),
         align = (align_of type *)
@@ -1823,7 +1842,7 @@ export def byref(tpe: TypeId) -> TypeId {
     let reftpe = [
         kind = TypeKind::BYREF,
         id = next_type_id(),
-        tpe = tpe,
+        _tpe = tpe,
         size = (size_of type *),
         align = (align_of type *)
     ] !&Type
@@ -1845,7 +1864,7 @@ export def reference(tpe: TypeId, kw: parser::VarDecl) -> TypeId {
     let reftpe = [
         kind = TypeKind::REFERENCE,
         id = next_type_id(),
-        tpe = tpe,
+        _tpe = tpe,
         kw = kw,
         size = (size_of type &),
         align = (align_of type &)
@@ -1872,7 +1891,7 @@ export def weak_reference(tpe: TypeId, kw: parser::VarDecl) -> TypeId {
     let reftpe = [
         kind = TypeKind::WEAK_REF,
         id = next_type_id(),
-        tpe = tpe,
+        _tpe = tpe,
         kw = kw,
         size = (size_of type &),
         align = (align_of type &)
@@ -1899,7 +1918,7 @@ export def array(tpe: TypeId, kw: parser::VarDecl) -> TypeId {
     let arrtpe = [
         kind = TypeKind::ARRAY,
         id = next_type_id(),
-        tpe = tpe,
+        _tpe = tpe,
         kw = kw,
         size = (size_of type [*]),
         align = (align_of type [*])
@@ -1927,7 +1946,7 @@ export def static_array(array_tpe: TypeId, size: size_t, kw: parser::VarDecl) ->
     let arrtpe = [
         kind = TypeKind::STATIC_ARRAY,
         id = next_type_id(),
-        tpe = array_tpe,
+        _tpe = array_tpe,
         kw = kw,
         length = size,
         size = size * tpe.size,
@@ -3012,7 +3031,7 @@ export def is_polymorph(fdef: FunctionDef) -> bool {
     return is_polymorph(fdef.parameter_t, fdef.context.scope)
 }
 
-export def is_polymorph(tpe: &TypeRef, scpe: &scope::Scope, or_name: bool = false) -> bool {
+export def is_polymorph(tpe: &TypeRef, scpe: &scope::Scope) -> bool {
     tpe = tpe.copy() // Don't mutate type
     if not tpe { return false }
     if tpe.tpe {
@@ -3028,19 +3047,19 @@ export def is_polymorph(tpe: &TypeRef, scpe: &scope::Scope, or_name: bool = fals
             return true
         } else if pattern.kind == TypeKind::POINTER or
             pattern.kind == TypeKind::STATIC_ARRAY or pattern.kind == TypeKind::ARRAY {
-            return is_polymorph(pattern.tpe, scpe, or_name)
+            return is_polymorph(pattern.tpe, scpe)
         } else if pattern.kind == TypeKind::REFERENCE {
             if pattern.tpe and pattern.tpe.kind == TypeKind::INTERFACE {
                 return false
             } else {
-                return is_polymorph(pattern.tpe, scpe, or_name)
+                return is_polymorph(pattern.tpe, scpe)
             }
         } else if pattern.kind == TypeKind::TUPLE or 
             pattern.kind == TypeKind::TUNION or 
             pattern.kind == TypeKind::TYPE_INSTANCE {
                 
             for var tpe in pattern.return_t {
-                if is_polymorph(tpe, scpe, or_name) { return true }
+                if is_polymorph(tpe, scpe) { return true }
             }
             return false
         }
@@ -3049,7 +3068,7 @@ export def is_polymorph(tpe: &TypeRef, scpe: &scope::Scope, or_name: bool = fals
         //if tpe {
         //    return is_polymorph(tpe, scpe, or_name)
         //}
-        return or_name
+        return false
     }
     return false
 }
@@ -3164,8 +3183,10 @@ export def replace_type_defs(
         }*/
 
         if replace {
-            if is_polymorph(left.tpe, scpe, or_name = true)  {
+            if is_polymorph(left.tpe, scpe)  {
                 left.tpe = make_type_ref(rtpe)
+            } else {
+                left.tpe.resolve(scpe)
             }
         }
     }
@@ -3822,14 +3843,7 @@ def do_type_lookup(node: &parser::Node, state: &State, is_type: bool = false) ->
         node.scope = state.scope
         if node.value.t_parr.tpe { node.value.t_parr.tpe.parent = node }
         var tpe = type_lookup(node.value.t_parr.tpe, state, is_type)
-        if not tpe or tpe.kind != TypeKind::REFERENCE {
-            errors::errorn(node, "Weak reference must point at a reference, was `" + generic_to_string(tpe) + "`")
-        }
-        if tpe.pattern {
-            return weak_reference(tpe.pattern.tpe, parser::VarDecl::VAR) // FIXME proper kw
-        } else {
-            return make_type_ref(weak_reference(tpe.tpe.tpe, parser::VarDecl::VAR)) // FIXME proper kw
-        }
+        return weak_reference(tpe, node.value.t_parr.kw)
     } else if node.kind == parser::NodeKind::STRUCT_T or node.kind == parser::NodeKind::UNION_T {
         
         let length = vector::length(node.value.body)
@@ -3908,7 +3922,7 @@ def do_type_lookup(node: &parser::Node, state: &State, is_type: bool = false) ->
         }
         let tpe = [ kind = TypeKind::ENUM ] !&Type
         tpe.id = next_type_id()
-        tpe.tpe = enum_tpe
+        tpe._tpe = enum_tpe
         tpe.size = enum_tpe.resolve().size
         tpe.align = enum_tpe.resolve().align
         tpe.defmodule = state.module
@@ -4596,11 +4610,7 @@ export def walk_VarDecl(node: &parser::Node, state: &State, set_constant: bool =
 
             if tpe_node {
                 let tpe = type_lookup(tpe_node, state)
-                if not tpe { 
-                    ltypes.push(0)
-                } else {
-                    ltypes.push(tpe.tpe)
-                }
+                ltypes.push(tpe.resolve(state.scope))
             } else {
                 ltypes.push(0)
             }
