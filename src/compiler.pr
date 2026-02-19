@@ -1089,7 +1089,7 @@ def make_return_type(rtpe: &typechecking::Type) -> typechecking::TypeId {
         return type_registry_return_types(rtpe.id).id
     }
 
-    if not typechecking::is_tuple(rtpe) {
+    if not typechecking::is_function(rtpe) {
         return 0
     }
     let length = vector::length(rtpe.return_t)
@@ -4274,11 +4274,11 @@ def walk_MemberAccess(node: &parser::Node, state: &State) -> Value {
 
         res = state.load(builtins::type_t(), res, loc)
         res = state.extract_value(builtins::int64_, res, [0], loc)
-        let fun = declare_reflection_type_id_fun(state)
+        let fun = declare_reflection_type_t_fun(state)
         if not fun { return NO_VALUE }
         
-        let tmp = state.alloca(builtins::type_t(), loc)
-        res = state.call(fun.fdef.name, builtins::TypeT_, [res], loc)
+        let tmp = state.alloca(builtins::reflection_type_t(), loc)
+        res = state.call(fun.fdef.name, builtins::reflection_type_t(), [res], loc)
         state.store(tmp, res, loc)
         create_temporary(tmp, res, loc, state)
 
@@ -8239,6 +8239,8 @@ def create_dyn_cast_function(function: &Function, cast: toolchain::Cast, state: 
     let previous_block = state.current_block
     state.current_block = function.block
 
+    state.function_stack.push(function)
+
     var dst_arg = pointer(cast.dst)
     if not is_ref(cast.dst) {
         dst_arg = pointer(dst_arg)
@@ -8306,8 +8308,11 @@ def create_dyn_cast_function(function: &Function, cast: toolchain::Cast, state: 
     state.module.imported.add(function.name)
     push_insn(make_insn(InsnKind::UNREACHABLE), state)
 
+    vector::insert(function.block.insn, 0, state.current_function.allocas)
+
     // Reset state
     state.current_block = previous_block
+    state.function_stack.pop()
 }
 
 export let constructors = set::make(typechecking::FunctionDef)
@@ -9054,7 +9059,7 @@ export def create_type(tpe: &typechecking::Type, module: &toolchain::Module, res
 
 var fun_type_id: &scope::Value
 
-def declare_reflection_type_id_fun(state: &State) -> &scope::Value {
+def declare_reflection_type_t_fun(state: &State) -> &scope::Value {
 
     let reflection = toolchain::find_module("reflection")
     if not reflection { return null }
@@ -9075,10 +9080,10 @@ def change_value_to_type(tpe: &typechecking::Type, loc: &Value, state: &State) -
     //add_type_meta(tpe, state)
     if not create_type(tpe, state.module) { return NO_VALUE }
 
-    let fun = declare_reflection_type_id_fun(state)
+    let fun = declare_reflection_type_t_fun(state)
     if not fun { return NO_VALUE }
-    let tmp = state.alloca(builtins::type_t(), loc)
-    let res = state.call(fun.fdef.name, builtins::type_t(), [[ tpe = builtins::uint64_, kind = ValueKind::INT, i = tpe.id ] !Value], loc)
+    let tmp = state.alloca(builtins::reflection_type_t(), loc)
+    let res = state.call(fun.fdef.name, builtins::reflection_type_t(), [[ tpe = builtins::uint64_, kind = ValueKind::INT, i = tpe.id ] !Value], loc)
     state.store(tmp, res, loc)
     create_temporary(tmp, res, loc, state)
     return res
@@ -9174,6 +9179,7 @@ export def generate_reflection_data_queued -> &io::ByteStream, &UniquedStrings{
             let type_members = vector::make(typechecking::TypeEntryMember)
             all_type_members(tpe) = type_members
             queued_types.remove(name)
+            if tpe.kind == typechecking::TypeKind::TYPE_CONSTRUCTOR { continue }
             all_types(name) = tpe
 
             /*for var member in typechecking::iterate_member_functions(tpe) {
@@ -9299,19 +9305,25 @@ def generate_reflection_data_2(tpe: &typechecking::Type, data: &ByteStream, stri
         }
     case typechecking::TypeKind::INTERFACE
         for var member in tpe.members {
+            print("\tmember: ", member.name, " args: ")
             for var np in member.parameter_t {
                 assert np.tpe
+                print(np.tpe)
                 data.write(np.tpe !uint64)
             }
+            print(" returns: ")
             for var t in member.return_t {
                 assert t
+                print(t)
                 data.write(t !uint64)
             }
+            print("\n")
         }
     case typechecking::TypeKind::POINTER, typechecking::TypeKind::REFERENCE,
         typechecking::TypeKind::WEAK_REF, typechecking::TypeKind::ARRAY,
         typechecking::TypeKind::STATIC_ARRAY, typechecking::TypeKind::ENUM
 
+        print("\ttpe: ", tpe.tpe, "\n")
         //if is_stub(tpe.tpe) {
         //    data.write(0 !uint64) // Probably an opaque type
         //} else {
@@ -9362,7 +9374,7 @@ def generate_reflection_data_1(tpe: &typechecking::Type, data: &ByteStream, stri
             let member = tpe.field_types(field.index)
             data.write(strings.write_zt(field.name))
             data.write(member.offset !int)
-            print("\tname: ", field.name, " offset: ", member.offset, "\n")
+            print("\tname: ", field.name, " offset: ", member.offset, " tpe: ", member.tpe, "\n")
         }
     case typechecking::TypeKind::STATIC_ARRAY
         data.write(tpe.size)
