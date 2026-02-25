@@ -3577,6 +3577,9 @@ def insert_destructors(scpe: &scope::Scope, loc: &Value, state: &State) {
         let value = scpe.fields(key)
 
         let name = value.assembly_name(state)
+
+        //print("Destroyed: ", name + " in scope: ", scpe !*, "\n")
+
         var kind = ValueKind::LOCAL
         if value.global {
             kind = ValueKind::GLOBAL
@@ -3832,6 +3835,8 @@ def create_temporary(addr: Value, ret: Value, loc: &Value, state: &State) {
         name = state.module.module + ".__tmp." + state.global_counter
         state.global_counter += 1
     }
+
+    //print("Created: ", name, " in scope: ", state.scope !*, "\n")
 
     let ident = parser::make_identifier(name)
     if not scope::get(state.scope, ident) {
@@ -4844,6 +4849,9 @@ export def walk_expression(node: &parser::Node, state: &State) -> Value {
     let scpe = state.scope
     
     if node.scope {
+        if node.scope != state.scope {
+            node.scope.clear_temporaries()
+        }
         state.scope = node.scope
     }
 
@@ -5129,8 +5137,10 @@ def walk_Switch(node: &parser::Node, state: &State) {
                 
                 push_scope(cse, state)
                 var last_node = cse
+                //print("Inner scope: ", cse.inner_scope !*, "\n")
                 for var j in 0..vector::length((@cse).value.case_.body) {
                     let stmt = (@cse).value.case_.body(j)
+                    //print("\tStmt scope: ", stmt.scope !*, "\n")
                     walk(stmt, state)
                     last_node = stmt
                 }
@@ -6479,12 +6489,13 @@ def walk_Assert(node: &parser::Node, state: &State) {
 }
 
 export def walk(node: &parser::Node, state: &State) {
-    let scpe = state.scope
-    if node.scope {
-        state.scope = node.scope
-    }
-
     if not node { return }
+
+    let scpe = state.scope
+    assert node.scope
+    node.scope.clear_temporaries() // Clear temporaries from the last pass
+    state.scope = node.scope
+
     switch node.kind !int {
         case parser::NodeKind::DEF
             walk_Def(node, state)
@@ -6815,7 +6826,8 @@ def di_ref_type(value: &Value, tpe: &typechecking::Type, is_weak: bool, state: &
 
 def di_type(tpe: &typechecking::Type, state: &State) -> &Value {
     if not tpe or tpe.kind == typechecking::TypeKind::INTERFACE or 
-        tpe.kind == typechecking::TypeKind::TYPE_CONSTRUCTOR { 
+        tpe.kind == typechecking::TypeKind::TYPE_CONSTRUCTOR or
+        tpe.kind == typechecking::TypeKind::OPAQUE { 
         return null 
     }
 
@@ -7454,6 +7466,7 @@ export def create_function(
 ) {
     let function = state.module.result.functions.get_or_default(fdef.name, null)
     if not function { return }
+    function.name = fdef.name
     // TODO Return multiple values via tuple
     if function.has_yield and (not function.ret or typechecking::is_tuple(function.ret)) { return }
     if not block {
@@ -8134,7 +8147,7 @@ def walk_top_VarDecl(node: &parser::Node, body: &Vector(&parser::Node), state: &
     }
 }
 
-def insert_module_main(module: &toolchain::Module, name: &parser::Node, scpe: &scope::Scope, body: &Vector(&parser::Node), state: &State) {
+def insert_module_main(module: &toolchain::Module, name: &parser::Node, scpe: &scope::Scope, state: &State) {
     if not module { return }
 
     // Build dependency graph
@@ -8155,45 +8168,25 @@ def insert_module_main(module: &toolchain::Module, name: &parser::Node, scpe: &s
         state.current_block = previous_block
     }
 
-    let args = vector::make(type &parser::Node)
-    let arg = parser::make_identifier("args")
-    (@arg).scope = scpe
-    (@arg).tpe = typechecking::array(builtins::string_)
-    (@arg).svalue = scope::get((@arg).scope, arg)
-    args.push(arg)
-
-    let name_size = vector::length(name.value.identifier.path)
-    let array = zero_allocate(type String, name_size + 1)
-    defer delete(array)
-    for var j in 0..name_size {
-        array(j) = name.value.identifier.path(j)
-    }
-    array(array.size - 1) = "__main__"
-    let ident = parser::make_identifier(array)
-    (@ident).scope = scpe
+    let previous_block = state.current_block
+    state.current_block = state.module.code
 
     let main_value = module.scope.fields.get_or_default("__main__", null) // TODO This is a bit ugly, use scope::get instead
     if not main_value { return }
 
-    let call = [
-        kind = parser::NodeKind::FUNC_CALL,
-    	scope = scpe,
-        fdef = main_value.fdef
-    ] !&parser::Node
-    
-    call.value.func_call = [
-        left = ident,
-        args = args,
-        kwargs = vector::make(type &parser::Node)
-    ] !parser::NodeFuncCall
+    state.call(main_value.fdef.name, 0, [[
+        kind = ValueKind::LOCAL, 
+        name = "args.value", 
+        tpe = typechecking::array(builtins::string_)
+    ] !Value] ![Value])
 
-    let fun = module.result.functions.get_or_default(main_value.fdef.name, null)
-    insert_function(state.module, fun)
+    predeclare_function(main_value.fdef, state.module)
+    state.module.imported.add(main_value.fdef.name)
 
-    body.push(call)
+    state.current_block = previous_block
 }
 
-def walk_top_Import(node: &parser::Node, body: &Vector(&parser::Node), state: &State) {
+def walk_top_Import(node: &parser::Node, state: &State) {
     let imports = node.value.body
     for var i in 0..vector::length(imports) {
         let imprt = imports(i)
@@ -8202,7 +8195,7 @@ def walk_top_Import(node: &parser::Node, body: &Vector(&parser::Node), state: &S
 
         let module = toolchain::compile_module(name, state.module)
         toolchain::progress_update(state.module, toolchain::ProgressUpdate::CONTINUE)
-        insert_module_main(module, name, node.scope, body, state)
+        insert_module_main(module, name, node.scope, state)
     }
 }
 
@@ -8542,6 +8535,16 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
     //if typechecking::is_polymorph(tpe) { return }
     assert is_pointer(tpe)
 
+    let ptr_value = state.ptr_to_int(value)
+    let is_null_cond = state.icmp(CompareInt::eq, ptr_value, [ kind = ValueKind::INT, tpe = builtins::int64_, i = 0 ] !Value)
+    let null_br_start = make_insn(InsnKind::BR)
+    null_br_start.value.br = [ cond = is_null_cond ] !InsnBr
+    push_insn(null_br_start, state)
+
+    let if_not_null = make_label(state)
+    null_br_start.value.br.if_false = if_not_null
+    push_label(if_not_null, state)
+
     if tpe.tpe and is_tunion(tpe.tpe) {
         let stpe = tpe.tpe.resolve()
         let tpeptrptr = state.gep(pointer(pointer(builtins::type_t())), stpe.id, value, [make_int_value(0), make_int_value(0)])
@@ -8872,6 +8875,13 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
 
         push_label(end_label, state)
     }
+    let br_exit = make_insn(InsnKind::BR_UNC)
+    push_insn(br_exit, state)
+
+    let exit_label = make_label(state)
+    push_label(exit_label, state)
+    null_br_start.value.br.if_true = exit_label
+    br_exit.value.br_unc.label_ = exit_label
 }
 
 def do_create_type(tpe: &typechecking::Type, svalue: &scope::Value, module: &toolchain::Module) -> &Value {
@@ -9126,7 +9136,7 @@ export def generate_reflection_data {
     for var entry in all_types {
         queued_types(debug::type_to_str(entry.tpe, full_name = true)) = entry.tpe
     }
-    let data, strings = generate_reflection_data_queued()
+    let data, strings, count = generate_reflection_data_queued()
 
     // Need to 0 terminate the whole thing so that it can be converted to a Str
     data.write(0 !uint8) 
@@ -9135,7 +9145,7 @@ export def generate_reflection_data {
     make_global_data("__reflection_data", data, toolchain::types_state)
     make_global_data("__reflection_data_size", data.data().size, toolchain::types_state)
     make_global_data("__reflection_strings", strings.strings, toolchain::types_state)
-    make_global_data("__reflection_num_types", queued_types.size, toolchain::types_state)
+    make_global_data("__reflection_num_types", count, toolchain::types_state)
 }
 
 var fun_load_types: &scope::Value
@@ -9143,12 +9153,12 @@ var fun_load_types_rec_lock: bool
 var fun_load_types_count: size_t = 0
 var queued_types = map::make(type &typechecking::Type)
 
-export def generate_reflection_data_queued -> &io::ByteStream, &UniquedStrings{
+export def generate_reflection_data_queued -> &io::ByteStream, &UniquedStrings, size_t {
     let data = io::make_stream()
     let strings = [ strings = io::make_stream(), map = map::make(size_t) ] !&UniquedStrings
 
     if queued_types.size == 0 {
-        return data, strings
+        return data, strings, 0
     }
 
     let state = consteval::compiler_state
@@ -9166,7 +9176,7 @@ export def generate_reflection_data_queued -> &io::ByteStream, &UniquedStrings{
     }
 
     if not fun_load_types or fun_load_types_rec_lock {
-        return data, strings
+        return data, strings, 0
     }
 
     let all_type_members = map::make(type &typechecking::Type, type &Vector(typechecking::TypeEntryMember))
@@ -9255,7 +9265,7 @@ export def generate_reflection_data_queued -> &io::ByteStream, &UniquedStrings{
         state.globals.remove("__reflection_data")
     }
 
-    return data, strings
+    return data, strings, all_types.size
 }
 
 type UniquedStrings = struct {
@@ -9627,7 +9637,7 @@ def generate_vtable_function(function: &Function, fdef: typechecking::FunctionDe
                     let res = convert_to(null !&Value, @const_field.properties.value, ret_tpe, state)
                     state.ret(res)
                 } else {
-                    var stpe = implementor.id
+                    var stpe = implementor.tpe
                     // Resolve member
                     var deref = state.extract_value(pointer(stpe), reference, [1])
                     var value = state.load(stpe, deref)
@@ -9646,6 +9656,7 @@ def generate_vtable_function(function: &Function, fdef: typechecking::FunctionDe
                         stpe = member.tpe
                     }
                     let val = load_value(value, null, state)
+
                     increase_ref_count_of_value(val, null, state)
                     state.ret(val)
                 }
@@ -9744,6 +9755,20 @@ export def compile(state: &State, is_main: bool, no_cleanup: bool = false) {
     state.finalizer.block = finalizer_start_block
     state.finalizer.dllexport = true
 
+    let ident = parser::make_identifier("__main__")
+    ident.loc.module = state.module.module
+    ident.loc.filename = state.module.filename
+    ident.loc.line = 0
+    ident.loc.column = 0
+
+    let main_def = scope::get(state.module.scope, ident).fdef
+    let main_function = predeclare_function(main_def, state.module)
+    main_function.dllexport = true
+
+    state.scope = state.module.scope
+    state.current_block = state.module.code
+    state.function_stack.push(main_function)
+
     if builtins::builtins.fields.contains("DEBUG_REF_CYCLES") {
         state.file_name_value = make_global_string(state.module.module, state)
     }
@@ -9758,7 +9783,7 @@ export def compile(state: &State, is_main: bool, no_cleanup: bool = false) {
         let cstd = toolchain::compile_module(cstd_ident, state.module)
         toolchain::progress_update(state.module, toolchain::ProgressUpdate::CONTINUE) 
 
-        insert_module_main(cstd, cstd_ident, node.scope, body, state)
+        insert_module_main(cstd, cstd_ident, node.scope, state)
 
         if not toolchain::no_stdlib {
             let std_ident = parser::make_identifier("std")
@@ -9774,25 +9799,25 @@ export def compile(state: &State, is_main: bool, no_cleanup: bool = false) {
             let optional = toolchain::compile_module(optional_ident, state.module)
             toolchain::progress_update(state.module, toolchain::ProgressUpdate::CONTINUE) 
 
-            insert_module_main(std, std_ident, node.scope, body, state)
-            insert_module_main(runtime, runtime_ident, node.scope, body, state)
-            insert_module_main(optional, optional_ident, node.scope, body, state)
+            insert_module_main(std, std_ident, node.scope, state)
+            insert_module_main(runtime, runtime_ident, node.scope, state)
+            insert_module_main(optional, optional_ident, node.scope, state)
         }
     }
 
     if is_main {
         // Import types
         let type_indent = parser::make_identifier("type")
-        insert_module_main(toolchain::types , type_indent, node.scope, body, state)
+        insert_module_main(toolchain::types , type_indent, node.scope, state)
 
         // Import runtime
         let runtime_ident = parser::make_identifier("runtime")
-        insert_module_main(toolchain::runtime_ , runtime_ident, node.scope, body, state)
+        insert_module_main(toolchain::runtime_ , runtime_ident, node.scope, state)
 
         /*// Import preload
         let preload_ident = parser::make_identifier("preload")
         let preload = toolchain::compile_module(preload_ident) 
-        insert_module_main(preload, preload_ident, node.scope, body, state)*/
+        insert_module_main(preload, preload_ident, node.scope, state)*/
     }
 
     var globals: &Value = null
@@ -9939,16 +9964,6 @@ export def compile(state: &State, is_main: bool, no_cleanup: bool = false) {
     create_dyn_dispatch(state.module.dyn_dispatch, state)
     create_dyn_casts(state)
 
-    let ident = parser::make_identifier("__main__")
-    ident.loc.module = state.module.module
-    ident.loc.filename = state.module.filename
-    ident.loc.line = 0
-    ident.loc.column = 0
-
-    let main_def = scope::get(state.module.scope, ident).fdef
-    let main_function = predeclare_function(main_def, state.module)
-    main_function.dllexport = true
-
     for var i in 0..vector::length(node.body) {
         let n = node.body(i)
         if n.kind == parser::NodeKind::DEF and not typechecking::is_polymorph(@n.fdef) {
@@ -9958,10 +9973,6 @@ export def compile(state: &State, is_main: bool, no_cleanup: bool = false) {
             }
         }
     }
-
-    state.scope = state.module.scope
-    state.current_block = state.module.code
-    state.function_stack.push(main_function)
     
     for var i in 0..vector::length(node.body) {
         let n = node.body(i)
@@ -9978,7 +9989,7 @@ export def compile(state: &State, is_main: bool, no_cleanup: bool = false) {
             case parser::NodeKind::VAR_DECL
                 walk_top_VarDecl(n, body, state)
             case parser::NodeKind::IMPORT
-                walk_top_Import(n, body, state)
+                walk_top_Import(n, state)
             case
                 body.push(n)
         }
@@ -10113,7 +10124,7 @@ export def compile(node: &parser::Node, state: &State) {
             case parser::NodeKind::TYPE_DECL, 
                 parser::NodeKind::VAR_DECL
             case parser::NodeKind::IMPORT
-                walk_top_Import(n, body, state)
+                walk_top_Import(n, state)
             case
                 body.push(n)
         }
