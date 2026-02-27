@@ -2104,7 +2104,7 @@ def convert_anon_to_struct(tpe: typechecking::TypeId, value: Value, loc: &Value,
     if fast_path { return value }
 
     var res = [ kind = ValueKind::UNDEF, tpe = tpe ] !Value
-    for var fielda in @src_tpe.fields {
+    for var fielda in src_tpe.fields {
         let member = state.extract_value(src_tpe.field_types(fielda.index).tpe, value, [fielda.index !int], loc)
         
         var index = fielda.index
@@ -2154,7 +2154,7 @@ def get_embed_field(left: &typechecking::Type, right: &typechecking::Type, state
             return res 
         }
 
-        for var field in @right.fields {
+        for var field in right.fields {
             if field.properties.is_embed {
                 if is_struct(left) and typechecking::equals(left, field.tpe) or
                     is_interface(left) and typechecking::implements(field.tpe, left, state.scope, check_embed = false) {
@@ -6493,7 +6493,9 @@ export def walk(node: &parser::Node, state: &State) {
 
     let scpe = state.scope
     assert node.scope
-    node.scope.clear_temporaries() // Clear temporaries from the last pass
+    if node.scope != state.scope {
+        node.scope.clear_temporaries()
+    }
     state.scope = node.scope
 
     switch node.kind !int {
@@ -6513,7 +6515,6 @@ export def walk(node: &parser::Node, state: &State) {
             walk_Continue(node, state)
         case parser::NodeKind::IF
             state.scope = node.inner_scope
-            state.scope.clear_temporaries()
             walk_If(node, state)
             state.scope = node.scope
         case parser::NodeKind::SWITCH
@@ -8917,7 +8918,7 @@ def do_create_type(tpe: &typechecking::Type, svalue: &scope::Value, module: &too
     if is_ref(tpe) and typechecking::has_destructor(tpe) {
         let fp = type_.field_types(1).tpe
         // Add destructor reference
-        let dtor = typechecking::get_builtin_destructor(tpe, lookup = false)
+        let dtor = typechecking::get_builtin_destructor(tpe)
         let fdef = dtor.fdef.to_type()
         value.values(1) = [ kind = ValueKind::GLOBAL, tpe = pointer(fdef), name = dtor.fdef.name] !Value
     }
@@ -8925,7 +8926,7 @@ def do_create_type(tpe: &typechecking::Type, svalue: &scope::Value, module: &too
     if is_ref(tpe) and typechecking::has_copy_constructor(tpe) {
         let fp = type_.field_types(2).tpe
         // Add constructor reference
-        let ctor = typechecking::get_constructor(tpe, lookup = false)
+        let ctor = typechecking::get_constructor(tpe)
         let fdef = ctor.fdef.to_type()
         value.values(2) = [ kind = ValueKind::GLOBAL, tpe = pointer(fdef), name = ctor.fdef.name ] !Value
     }
@@ -9038,6 +9039,17 @@ export def create_type(tpe: &typechecking::Type, module: &toolchain::Module, res
             }
             for var rtpe in tpe.return_t {
                 create_type(rtpe, module, res)
+            }
+        }
+
+        if tpe.implementors {
+            for var t in @tpe.implementors.keys() {
+                create_type(t, module, res)
+            }
+        }
+        if tpe.implements {
+            for var t in @tpe.implements.keys() {
+                create_type(t, module, res)
             }
         }
     }
@@ -9153,16 +9165,8 @@ var fun_load_types_rec_lock: bool
 var fun_load_types_count: size_t = 0
 var queued_types = map::make(type &typechecking::Type)
 
-export def generate_reflection_data_queued -> &io::ByteStream, &UniquedStrings, size_t {
-    let data = io::make_stream()
-    let strings = [ strings = io::make_stream(), map = map::make(size_t) ] !&UniquedStrings
-
-    if queued_types.size == 0 {
-        return data, strings, 0
-    }
-
+export def load_fun_load_types_function {
     let state = consteval::compiler_state
-
     if not fun_load_types {
         let reflection = toolchain::find_module("reflection")
         fun_load_types = scope::get(reflection.scope, parser::make_identifier("load_types"), force_compile = not consteval::is_static)
@@ -9174,24 +9178,44 @@ export def generate_reflection_data_queued -> &io::ByteStream, &UniquedStrings, 
             fun_load_types_rec_lock = lock
         }
     }
+}
+
+export def generate_reflection_data_queued -> &io::ByteStream, &UniquedStrings, size_t {
+    let data = io::make_stream()
+    let strings = [ strings = io::make_stream(), map = map::make(size_t) ] !&UniquedStrings
+
+    if queued_types.size == 0 {
+        return data, strings, 0
+    }
+
+    let state = consteval::compiler_state
+
+    load_fun_load_types_function()
 
     if not fun_load_types or fun_load_types_rec_lock {
         return data, strings, 0
     }
 
-    let all_type_members = map::make(type &typechecking::Type, type &Vector(typechecking::TypeEntryMember))
-
-    let all_types = map::make(type &typechecking::Type)
+    let all_types = set::make(type &typechecking::Type)
     let res = vector::make(TypeEntry)
     while queued_types.size > 0 {
         for var name in @queued_types.keys() {
             let tpe = queued_types(name)
-            let type_members = vector::make(typechecking::TypeEntryMember)
-            all_type_members(tpe) = type_members
             queued_types.remove(name)
             if tpe.kind == typechecking::TypeKind::TYPE_CONSTRUCTOR { continue }
-            all_types(name) = tpe
+            all_types.add(tpe)
 
+            if tpe.implementors {
+                for var t in @tpe.implementors.keys() {
+                    create_type(t, state.module, res)
+                }
+            }
+            if tpe.implements {
+                for var t in @tpe.implements.keys() {
+                    create_type(t, state.module, res)
+                }
+            }
+            
             /*for var member in typechecking::iterate_member_functions(tpe) {
                 let function = member.function.resolve()
 
@@ -9218,13 +9242,11 @@ export def generate_reflection_data_queued -> &io::ByteStream, &UniquedStrings, 
     
     resolve_types(res)
 
-    for var name in @all_types.keys() {
-        let tpe = all_types(name)
+    for var tpe in @all_types.keys() {
         generate_reflection_data_1(tpe, data, strings)
     }
-    for var name in @all_types.keys() {
-        let tpe = all_types(name)
-        generate_reflection_data_2(tpe, data, strings, all_type_members(tpe))
+    for var tpe in @all_types.keys() {
+        generate_reflection_data_2(tpe, data, strings)
     }
 
     if consteval::is_static {
@@ -9282,10 +9304,20 @@ def write_zt(uniqued: &UniquedStrings, s: Str) -> int {
     return val !int
 }
 
-def generate_reflection_data_2(tpe: &typechecking::Type, data: &ByteStream, strings: &UniquedStrings, type_members: &Vector(TypeEntryMember)) {
+def generate_reflection_data_2(tpe: &typechecking::Type, data: &ByteStream, strings: &UniquedStrings) {
+
+    // Write implements
+    if tpe.implements {
+        data.write(tpe.implements.size !int)
+        for var intf in @tpe.implements.keys() {
+            data.write(intf !uint64)
+        }
+    } else {
+        data.write(0 !int)
+    }
 
     // Write type members
-    data.write(type_members.length !int)
+    /*data.write(type_members.length !int)
 
     print(debug::type_to_str(tpe), " members: ", type_members.length, "\n")
 
@@ -9306,7 +9338,7 @@ def generate_reflection_data_2(tpe: &typechecking::Type, data: &ByteStream, stri
         for var t in function.return_t {
             data.write(t.hash)
         }
-    }
+    }*/
 
     switch tpe.kind {
     case typechecking::TypeKind::STRUCT, typechecking::TypeKind::UNION
@@ -9333,12 +9365,25 @@ def generate_reflection_data_2(tpe: &typechecking::Type, data: &ByteStream, stri
         typechecking::TypeKind::WEAK_REF, typechecking::TypeKind::ARRAY,
         typechecking::TypeKind::STATIC_ARRAY, typechecking::TypeKind::ENUM
 
+        print(tpe.kind, "\n")
         print("\ttpe: ", tpe.tpe, "\n")
         //if is_stub(tpe.tpe) {
         //    data.write(0 !uint64) // Probably an opaque type
         //} else {
             data.write(tpe.tpe.hash if tpe.tpe else 0)
         //}
+
+        if tpe.kind == typechecking::TypeKind::REFERENCE {
+            if tpe.tpe and tpe.tpe.kind == typechecking::TypeKind::INTERFACE and tpe.implementors {
+                data.write(tpe.implementors.size !int)
+                for var impl in @tpe.implementors.keys() {
+                    print("\timpl: ", debug::type_to_str(impl), " (", impl, ")\n")
+                    data.write(impl !uint64)
+                }
+            } else {
+                data.write(0 !int)
+            }
+        }
     case typechecking::TypeKind::TUPLE
         for var t in tpe.return_t {
             data.write(t.hash)
@@ -9384,7 +9429,7 @@ def generate_reflection_data_1(tpe: &typechecking::Type, data: &ByteStream, stri
             let member = tpe.field_types(field.index)
             data.write(strings.write_zt(field.name))
             data.write(member.offset !int)
-            print("\tname: ", field.name, " offset: ", member.offset, " tpe: ", member.tpe, "\n")
+            print("\tname: ", field.name, " offset: ", member.offset, " tpe: ", debug::type_to_str(member.tpe), " (", member.tpe, ")\n")
         }
     case typechecking::TypeKind::STATIC_ARRAY
         data.write(tpe.size)
@@ -9655,7 +9700,7 @@ def generate_vtable_function(function: &Function, fdef: typechecking::FunctionDe
                         value = walk_MemberAccess_struct(null, stpe, member, value, state)
                         stpe = member.tpe
                     }
-                    let val = load_value(value, null, state)
+                    let val = convert_to(null !&Value, load_value(value, null, state), ret_tpe, state)
 
                     increase_ref_count_of_value(val, null, state)
                     state.ret(val)
