@@ -1657,6 +1657,8 @@ def closure(parameter_t: &Vector(NamedParameter), return_t: &Vector(TypeId)) -> 
     let tpe = make_struct_type(types)
     tpe.id = next_type_id()
     tpe.kind = TypeKind::CLOSURE
+    tpe.parameter_t = parameter_t
+    tpe.return_t = return_t
 
     type_registry_closure(signature) = tpe
     register(tpe.id, tpe)
@@ -5545,12 +5547,12 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
     let current_function = errors::current_function
     let current_signature = errors::current_signature
 
+    var orig_parameter_t: &Vector(NamedParameterPre)
+
     if is_closure {
         let parameter_t = vector::make(NamedParameter)
         var return_t = vector::make(TypeId)
-
         let c_parameter_t = vector::make(NamedParameter)
-        let c_return_t = vector::make(TypeId)
 
         if dllimport or extern or share != parser::ShareMarker::NONE {
             errors::errorn(name, "Invalid modifier to closure")
@@ -5591,7 +5593,6 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
         for var i in 0..returns.length {
             let tpe = type_lookup(returns(i), state).resolve(state.scope)
             return_t.push(tpe)
-            c_return_t.push(tpe)
         }
 
         let arr = zero_allocate(String, state.function_stack.length)
@@ -5615,34 +5616,32 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
         fdef = function_def(identifier_to_str(make_identifier(arr)) + "." + lambda_counter, wrap_ref(parameter_t), wrap_ref(return_t), state.module) !&FunctionDef
         lambda_counter += 1
 
-        closure_type = closure(parameter_t, return_t)
+        closure_type = closure(c_parameter_t, return_t)
+        orig_parameter_t = wrap_ref(c_parameter_t)
 
         delete(arr)
     } else {
         if not node.fdef { return }
         fdef = node.fdef
-        check_is_valid_function(name, fdef.parameter_t, state)
+        orig_parameter_t = fdef.parameter_t
+        check_is_valid_function(name, orig_parameter_t, state)
     } 
 
     if not fun {
-        assert
-        /*fun = [
-            tpe = tpe,
+        assert is_closure
+        fun = [
+            fdef = @fdef,
             module = outer_scope.module,
-            locals = map::make(type &Type),
+            locals = map::make(TypeId),
             unmangled = parser::identifier_to_str(name),
-            is_closure = node.parent.kind != parser::NodeKind::PROGRAM,
+            is_closure = is_closure,
             scope = state.scope,
             inner_scope = inner_scope,
             captures = vector::make(type weak &scope::Value),
-            dllimport = dllimport,
-            dllexport = dllexport,
-            test = test,
-            imported = imported,
             has_yield = node.value.def_.has_yield,
             is_typechecked = true
         ] !&compiler::Function
-        node.value.def_.function = fun*/
+        node.value.def_.function = fun
     } else {
         fun.fdef = @fdef
     }
@@ -5650,9 +5649,8 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
     var phase = scope::Phase::DECLARED
     if body {
         phase = scope::Phase::COMPILED
-        let parameter_t = fdef.parameter_t
-        for var i in 0..vector::length(parameter_t) {
-            let np = parameter_t(i)
+        for var i in 0..vector::length(orig_parameter_t) {
+            let np = orig_parameter_t(i)
             if not np.node { continue }
             var tpe2 = np.tpe
             if tpe2 {
@@ -5680,6 +5678,7 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
     if is_closure {
         //tpe.parameter_t.get(0).node = null // TODO This is ugly, maybe NamedParameter should have a strong reference instead?
         fun.value = scope::create_variable(outer_scope, name, parser::ShareMarker::NONE, parser::VarDecl::CONST, make_type_ref(closure_type), null)
+        fun.value.fdef = @fdef
     } else {
         errors::current_function = fdef.name
         errors::current_signature = node.signature_hash
@@ -5710,11 +5709,10 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
         }
     }
 
-    let parameter_t = fdef.parameter_t
-    for var i in 0..parameter_t.length {
+    for var i in 0..orig_parameter_t.length {
         let param = params(i)
-        if i >= parameter_t.length { continue }
-        let p = parameter_t.get(i)
+        if i >= orig_parameter_t.length { continue }
+        let p = orig_parameter_t.get(i)
 
         if p.tpe {
             generate_ctor_and_dtor(p.tpe.resolve(state.scope))
@@ -5756,6 +5754,8 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
     }
 
     if is_closure {
+        fun.state = next_type_id()
+
         let members = vector::make(StructMember)
         for var i in 0..fun.captures.length {
             members.push([ name = to_string(i), tpe = fun.captures(i).tpe.resolve(state.scope) ] !StructMember)
