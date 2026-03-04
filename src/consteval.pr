@@ -67,11 +67,13 @@ def set_current_function -> &compiler::Function {
     ] !&compiler::Function
     compiler_state.function_stack.push(function)
     compiler_state.current_block = block
-
     return function
 }
 
 export def expr(node: &parser::Node, state: &typechecking::State) -> compiler::Value {
+    let prev_queue = function_queue
+    function_queue = map::make(typechecking::FunctionDef, QueueEntry)
+    
     if not node { return compiler::NO_VALUE }
     walk(node.parent, node, state)
     let previous_block = compiler_state.current_block
@@ -80,7 +82,10 @@ export def expr(node: &parser::Node, state: &typechecking::State) -> compiler::V
     walk(node.parent, node, state)
     var result = compiler::walk_expression(node, compiler_state)
     vector::insert(function.block.insn, 0, function.allocas)
-    let estate = eval::eval(compiler_state)
+    let estate = compile_and_eval()
+
+    function_queue = prev_queue
+
     result = eval::get_value(result, estate)
     compiler_state.function_stack.pop()
     compiler_state.current_block = previous_block
@@ -89,6 +94,10 @@ export def expr(node: &parser::Node, state: &typechecking::State) -> compiler::V
 
 export def boolean_expr(node: &parser::Node, state: &typechecking::State) -> compiler::Value {
     if not node { return compiler::NO_VALUE }
+    
+    let prev_queue = function_queue
+    function_queue = map::make(typechecking::FunctionDef, QueueEntry)
+
     walk(node.parent, node, state)
     let previous_block = compiler_state.current_block
     let function = set_current_function()
@@ -97,7 +106,10 @@ export def boolean_expr(node: &parser::Node, state: &typechecking::State) -> com
     var result = compiler::walk_expression(node, compiler_state)
     result = compiler::convert_to(node, result, builtins::bool_, compiler_state)
     vector::insert(function.block.insn, 0, function.allocas)
-    let estate = eval::eval(compiler_state)
+    let estate = compile_and_eval()
+
+    function_queue = prev_queue
+
     result = eval::get_value(result, estate)
     compiler_state.function_stack.pop()
     compiler_state.current_block = previous_block
@@ -205,6 +217,9 @@ export def evaluate_parameter(node: &parser::Node, param: &parser::Node, tpe: ty
         // Set up temporary scope
         let prev_scope = compiler_state.module.scope
         let temp_scope = scope::enter_scope(state.module.scope)
+        
+        let prev_queue = function_queue
+        function_queue = map::make(typechecking::FunctionDef, QueueEntry)
 
         compiler_state.scope = temp_scope
         let previous_block = compiler_state.current_block
@@ -213,11 +228,14 @@ export def evaluate_parameter(node: &parser::Node, param: &parser::Node, tpe: ty
         var result = compiler::walk_expression(param.value.param.value, compiler_state)
         vector::insert(function.block.insn, 0, function.allocas)
         let gvalue = compiler::make_global_value(result.tpe, "default_param", null, compiler_state)
-        let estate = eval::eval(compiler_state)
+        
+        let estate = compile_and_eval()
+        function_queue = prev_queue
+
         result = eval::get_value(result, estate)
         
         compiler_state.scope = prev_scope
-
+        
         if result.kind != compiler::ValueKind::NULL {
             eval::set_value(gvalue, result, estate)
 
@@ -435,6 +453,7 @@ export def walk_Def(node: &parser::Node, state: &typechecking::State) {
             test = test,
             imported = imported
         ] !&compiler::Function
+        //print("Consteval: ", fdef.name, " ", function !*, "\n")
         node.value.def_.function = function
     }
     function.has_yield = has_yield
@@ -646,13 +665,18 @@ export def walk_top_VarDecl(node: &parser::Node, state: &typechecking::State) {
             walk(node, right(i), state)
         }
 
+        let previous_queue = function_queue
+        function_queue = map::make(typechecking::FunctionDef, QueueEntry)
+
         let previous_block = compiler_state.current_block
         let function = set_current_function()
         typechecking::walk_VarDecl(node, state, true)
         let assign = compiler::walk_top_VarDecl(node, compiler_state, true)
         compiler::walk_expression(assign, compiler_state)
         vector::insert(function.block.insn, 0, function.allocas)
-        eval::eval(compiler_state)
+        compile_and_eval()
+
+        function_queue = previous_queue
 
         for var i in 0..vector::length(left) {
             let n = left(i)
@@ -720,6 +744,9 @@ def walk_VarDecl(node: &parser::Node, state: &typechecking::State) {
             walk(node, right(i), state)
         }
 
+        let previous_queue = function_queue
+        function_queue = map::make(typechecking::FunctionDef, QueueEntry)
+
         let previous_block = compiler_state.current_block
         let function = set_current_function()
         typechecking::walk_VarDecl(node, state, true)
@@ -730,7 +757,10 @@ def walk_VarDecl(node: &parser::Node, state: &typechecking::State) {
 
         compiler::walk_VarDecl(node, compiler_state, true)
         vector::insert(function.block.insn, 0, function.allocas)
-        let estate = eval::eval(compiler_state)
+        let estate = compile_and_eval()
+
+        function_queue = previous_queue
+
         let locals = eval::get_stack_frame(estate).locals
 
         for var i in 0..vector::length(left) {
@@ -820,6 +850,54 @@ export def load_function(value: &scope::Value) {
     }
 }
 
+type QueueEntry = struct {
+    node: &parser::Node
+}
+
+var function_queue: &Map(typechecking::FunctionDef, QueueEntry) 
+
+def queue_function(node: &parser::Node, fdef: typechecking::FunctionDef) {
+    if not function_queue { 
+        function_queue = map::make(typechecking::FunctionDef, QueueEntry)
+    }
+
+    let entry = [
+        node = node
+    ] !QueueEntry
+    function_queue(fdef) = entry
+}
+
+var recursion_guard = false
+export def compile_queued_functions {
+    if recursion_guard { return }
+    if not function_queue { return }
+
+    recursion_guard = true
+    let debug = toolchain::debug_sym
+    toolchain::debug_sym = false
+    
+    for var fdef in @function_queue.keys() {
+        let entry = function_queue(fdef)
+        let function = compiler::create_function(entry.node, fdef, entry.node.value.def_.body, entry.node.inner_scope, null, compiler_state, params = entry.node.value.def_.params) 
+        
+        if function and function.defer_functions {
+            for var i in 0..vector::length(function.defer_functions) {
+                let deferf = function.defer_functions(i)
+                const_module.result.functions(deferf.name) = deferf
+            }
+        }
+    }
+
+    toolchain::debug_sym = debug
+    function_queue.clear()
+    recursion_guard = false
+}
+
+def compile_and_eval -> &eval::State {
+    compile_queued_functions()
+    return eval::eval(compiler_state)
+}
+
 // This function compiles a function that is called in constant evaluation
 export def compile_function(value: &scope::Value, context: &scope::Scope, arguments: &Vector(typechecking::NamedParameter) = null) -> &scope::Value {
     load_function(value)
@@ -880,7 +958,8 @@ export def compile_function(value: &scope::Value, context: &scope::Scope, argume
     let state = typechecking::make_state(module)
     if not function.is_typechecked {
         if arguments and is_polymorph {
-            node = typechecking::walk_Def_with_type_argument(node, arguments, context, state)
+            let scope2 = scope::enter_scope(context)
+            node = typechecking::walk_Def_with_type_argument(node, arguments, scope2, state)
             function = node.value.def_.function
             compiler::predeclare_function(function, context, overwrite = true)
             const_module.result.functions(function.name) = function 
@@ -900,17 +979,7 @@ export def compile_function(value: &scope::Value, context: &scope::Scope, argume
     //print("Creating function ", function.name, "\n")
 
     // This is a bit ugly but what can we do
-    let debug = toolchain::debug_sym
-    toolchain::debug_sym = false
-    compiler::create_function(node, function.fdef, node.value.def_.body, node.inner_scope, null, compiler_state, params = node.value.def_.params)
-    toolchain::debug_sym = debug
-    
-    if function.defer_functions {
-        for var i in 0..vector::length(function.defer_functions) {
-            let deferf = function.defer_functions(i)
-            const_module.result.functions(deferf.name) = deferf
-        }
-    }
+    queue_function(node, function.fdef)
     
     compiler::create_dyn_dispatch(state.module.dyn_dispatch_consteval, state.module.compiler_state)
 
@@ -1080,6 +1149,10 @@ def walk_Error(node: &parser::Node, state: &typechecking::State) {
     is_static = true
     walk(node, expr, state)
 
+
+    let prev_queue = function_queue
+    function_queue = map::make(typechecking::FunctionDef, QueueEntry)
+
     let previous_block = compiler_state.current_block
     let function = set_current_function()
     typechecking::walk(node, expr, state)
@@ -1089,7 +1162,9 @@ def walk_Error(node: &parser::Node, state: &typechecking::State) {
 
     var result = compiler::walk_expression(expr, compiler_state)
     vector::insert(function.block.insn, 0, function.allocas)
-    let estate = eval::eval(compiler_state)
+    let estate = compile_and_eval()
+    function_queue = prev_queue
+
     result = eval::get_value(result, estate)
     if not typechecking::equals(result.tpe, builtins::string_) {
         errors::errorn(node, "Error pragma expects string, got ", debug::type_to_str(result.tpe))

@@ -707,7 +707,12 @@ export def find_functions(scope: &Scope, node: &parser::Node, template: &typeche
     return result, resolved
 }
 
-def find_function(scope: &Scope, node: &parser::Node, v: &Value, parameter_t: &Vector(typechecking::NamedParameter), score: *int, dry_run: bool, context: &Scope) -> bool, &Value {
+type ValueAndScope = struct {
+    value: &Value
+    scope: &Scope
+}
+
+def find_function(scope: &Scope, node: &parser::Node, v: &Value, parameter_t: &Vector(typechecking::NamedParameter), score: *int, dry_run: bool, context: &Scope) -> bool, &ValueAndScope {
     for var i in 0..vector::length(parameter_t) {
         let np = parameter_t(i)
         if not np.tpe { return false, null }
@@ -719,7 +724,10 @@ def find_function(scope: &Scope, node: &parser::Node, v: &Value, parameter_t: &V
         // The calling function must check the overload score manually
         if not v {
             let generated = generate_function(scope, node, node.value.identifier.types, true)
-            return generated != null, generated
+            if generated != null {
+                return true, [ value = generated, scope = scope ] !&ValueAndScope
+            }
+            return false, null
         }
 
         if v.kind != ValueKind::FUNCTION { return false, null }
@@ -727,21 +735,19 @@ def find_function(scope: &Scope, node: &parser::Node, v: &Value, parameter_t: &V
         loop {
             if not v { break }
             
-            var new_scope = scope
-            if typechecking::is_polymorph(v.fdef) {
-                // Create temporary scope for type lookup
-                // TODO Maybe cache it somewhere instead of creating a new one when creating a polymorphic instance
-                let parents = vector::make(type weak &Scope)
-                parents.push(scope)
-                if context.module != scope.module {
-                    parents.push(context)
-                }
-                new_scope = enter_scope(parents, scope.module)
+
+            // Create temporary scope for type lookup
+            // TODO Maybe cache it somewhere instead of creating a new one when creating a polymorphic instance
+            let parents = vector::make(type weak &Scope)
+            parents.push(scope)
+            if context.module != scope.module {
+                parents.push(context)
             }
+            let new_scope = enter_scope(parents, scope.module)
             let s = typechecking::overload_score(v.fdef, node.value.identifier.types, new_scope, true)
             if s == 0 {
                 @score = 0
-                return true, v
+                return true, [ value = v, scope = new_scope ] !&ValueAndScope
             }
             v = v.next
             if not v {
@@ -760,7 +766,10 @@ def find_function(scope: &Scope, node: &parser::Node, v: &Value, parameter_t: &V
 
     if not v {
         let generated = generate_function(scope, node, parameter_t, dry_run)
-        return generated != null, generated
+        if generated != null {
+            return true, [ value = generated, scope = context ] !&ValueAndScope
+        }
+        return false, null
     }
 
     if v.kind != ValueKind::FUNCTION { return false, null }
@@ -774,17 +783,14 @@ def find_function(scope: &Scope, node: &parser::Node, v: &Value, parameter_t: &V
             v.tpe = typechecking::lookup_parameters(v.node, v.state)
         }*/
 
-        var new_scope = context
-        if typechecking::is_polymorph(v.fdef) {
-            // Create temporary scope for type lookup
-            // TODO Maybe cache it somewhere instead of creating a new one when creating a polymorphic instance
-            let parents = vector::make(type weak &Scope)
-            parents.push(scope)
-            if context.module != scope.module {
-                parents.push(context)
-            }
-            new_scope = enter_scope(parents, context.module)
+        // Create temporary scope for type lookup
+        // TODO Maybe cache it somewhere instead of creating a new one when creating a polymorphic instance
+        let parents = vector::make(type weak &Scope)
+        parents.push(scope)
+        if context.module != scope.module {
+            parents.push(context)
         }
+        var new_scope = enter_scope(parents, context.module)
         let s = typechecking::overload_score(v.fdef, parameter_t, new_scope, false)
         /*print("Parameters: ")
         for var i in 0..parameter_t.length {
@@ -823,10 +829,7 @@ def find_function(scope: &Scope, node: &parser::Node, v: &Value, parameter_t: &V
     }
 
     if found != null {
-        if found.phase == Phase::DEFINED {
-            found = typecheck_function(found, parameter_t, found_scope)
-        }
-        return true, found
+        return true, [ value = found, scope = found_scope ] !&ValueAndScope
     }
     return false, null
 }
@@ -1143,7 +1146,8 @@ export def typecheck_function(value: &Value, parameter_t: &Vector(typechecking::
     assert value.kind == ValueKind::FUNCTION
     //let tpe = typechecking::lookup_parameters(value.node, value.state)
     if typechecking::is_polymorph(value.fdef) {
-        let node = typechecking::walk_Def_with_type_argument(value.node, parameter_t, context, typechecking::make_state(value.module))
+        let scope = enter_scope(context)
+        let node = typechecking::walk_Def_with_type_argument(value.node, parameter_t, scope, typechecking::make_state(value.module))
         let value = node.value.def_.function.value
         return value
     } else {
@@ -1175,7 +1179,6 @@ export def typecheck(value: &Value) {
     }
 }
 
-// This function does not perform access checks anymore, this needs to be done by the caller.
 export def get_function_check(
     scope: &Scope, 
     id: &parser::Node, 
@@ -1185,8 +1188,32 @@ export def get_function_check(
     only_function: bool = false,
     re_exports: bool = true,
     context: &Scope = null,
-    path: &Vector(String) = null // This is the path we took to get here
+    path: &Vector(String) = null
 ) -> bool, &Value {
+
+    let code, value_and_scope = get_function_check_impl(scope, id, parameter_t, dry_run, force_compile, only_function, re_exports, context, path)
+    if value_and_scope {
+        let value = value_and_scope.value
+        if value and value.phase == Phase::DEFINED {
+            return code, typecheck_function(value, parameter_t, value_and_scope.scope)
+        }
+        return code, value
+    }
+    return code, null
+}
+
+// This function does not perform access checks anymore, this needs to be done by the caller.
+export def get_function_check_impl(
+    scope: &Scope, 
+    id: &parser::Node, 
+    parameter_t: &Vector(typechecking::NamedParameter), 
+    dry_run: bool = false, 
+    force_compile: bool = true, 
+    only_function: bool = false,
+    re_exports: bool = true,
+    context: &Scope = null,
+    path: &Vector(String) = null
+) -> bool, &ValueAndScope {
 
     if not path {
         path = vector::make(String)
@@ -1195,15 +1222,15 @@ export def get_function_check(
         context = scope
     }
 
-    def check_for_re_exports(scope: &Scope, value: &Value) -> &Value {
+    def check_for_re_exports(scope: &Scope, value: &ValueAndScope) -> &ValueAndScope {
         if not scope.re_exports { return value }
         for var i in 0..scope.re_exports.length {
             let re_export = scope.re_exports(i)
             if pattern_matches(scope, id, re_export.pattern) {
-                var _, value2 = get_function_check(re_export.module.scope, id, parameter_t, dry_run, force_compile, only_function, false, context, path)
-                if value2 and not pattern_matches(scope, id, re_export.pattern, value2.fdef.parameter_t) { continue }
-                if value2 and value2.share !int & parser::ShareMarker::EXPORT !int {
-                    if value and value !* != value2 !* {
+                var _, value2 = get_function_check_impl(re_export.module.scope, id, parameter_t, dry_run, force_compile, only_function, false, context, path)
+                if value2 and not pattern_matches(scope, id, re_export.pattern, value2.value.fdef.parameter_t) { continue }
+                if value2 and value2.value.share !int & parser::ShareMarker::EXPORT !int {
+                    if value and value2 and (value.value !*) != (value2.value !*) {
                         if not dry_run {
                             ambigous_reference(id)
                         }
@@ -1230,7 +1257,7 @@ export def get_function_check(
         let (code), first_function = find_function(scope, id, first_value, parameter_t, *score, dry_run, context)
         let first_score = score
         var value = first_function
-
+ 
         var d = false
         if (@scope).imports {
             for var i in 0..vector::length((@scope).imports) {
@@ -1239,7 +1266,7 @@ export def get_function_check(
                 var new_score = std::MAX_INT32 !int
                 let code2, new_value = find_function(scope, id, scope2.fields.get_or_default(name, null), parameter_t, *new_score, dry_run, context)
                 if code2 { code = true }
-                if new_value and (@new_value).share !int & parser::ShareMarker::EXPORT !int {
+                if new_value and new_value.value.share !int & parser::ShareMarker::EXPORT !int {
                     if score == new_score {
                         d = true 
                     } else if new_score < score {
@@ -1260,7 +1287,7 @@ export def get_function_check(
         }
 
         // Check for polymorphic instances
-        if scope.is_global and (not first_function or typechecking::is_polymorph(first_function.fdef)) {
+        if scope.is_global and (not first_function or typechecking::is_polymorph(first_function.value.fdef)) {
             var root_scope = context.module.scope
             var new_score = std::MAX_INT32
 
@@ -1281,10 +1308,10 @@ export def get_function_check(
                             }
                         }
                     }
-                } else if first_function and typechecking::is_polymorph(first_function.fdef) {
-                    if root_scope.polymorphics.contains(first_function.module.filename) {
+                } else if first_function and typechecking::is_polymorph(first_function.value.fdef) {
+                    if root_scope.polymorphics.contains(first_function.value.module.filename) {
                         // We found the function and we should only look into the polymorphs from this module
-                        let poly_scope = root_scope.polymorphics(first_function.module.filename)
+                        let poly_scope = root_scope.polymorphics(first_function.value.module.filename)
                         if poly_scope {
                             let val = poly_scope.fields.get_or_default(name, null)
                             let new_code, new_value = find_function(poly_scope, id, val, parameter_t, *new_score, dry_run, context)
@@ -1324,13 +1351,13 @@ export def get_function_check(
 
         if not value and scope.parents and (not first_value or only_function) {
             for var parent in scope.parents {
-                code, value = get_function_check(parent, id, parameter_t, dry_run, force_compile, only_function, re_exports, context, path)
+                code, value = get_function_check_impl(parent, id, parameter_t, dry_run, force_compile, only_function, re_exports, context, path)
                 if value { break }
             }
         }
         var share: parser::ShareMarker
         if value {
-            share = value.share
+            share = value.value.share
         }
 
         // Try to find function based on the first parameter. This is needed for using functions
@@ -1391,7 +1418,7 @@ export def get_function_check(
             if root_scope.polymorphics {
                 let poly_scope = root_scope.polymorphics.get_or_default(module.filename, null)
                 if poly_scope {
-                    let code, value = get_function_check(poly_scope, id_tail, parameter_t, dry_run, force_compile, only_function, context = context, path = path)
+                    let code, value = get_function_check_impl(poly_scope, id_tail, parameter_t, dry_run, force_compile, only_function, context = context, path = path)
                     if value {
                         return code, value
                     }
@@ -1399,7 +1426,7 @@ export def get_function_check(
             }
 
             // TODO this should be able to go on one line
-            let code, value = get_function_check(s.get_scope(), id_tail, parameter_t, dry_run, force_compile, only_function, context = context, path = path)
+            let code, value = get_function_check_impl(s.get_scope(), id_tail, parameter_t, dry_run, force_compile, only_function, context = context, path = path)
             return code, value
         }
 
@@ -1416,8 +1443,9 @@ export def get_function(
     only_function: bool = false,
     context: &Scope = null) -> &Value {
 
-    let _, value = get_function_check(scope, id, parameter_t, dry_run, force_compile, only_function, context = context)
-    return value
+    let _, value = get_function_check_impl(scope, id, parameter_t, dry_run, force_compile, only_function, context = context)
+    if value { return value.value }
+    return null
 }
 
 export def get_function(scope: &Scope, id: &parser::Node, parameter_t: &Vector(typechecking::NamedParameter)) -> &Value {
@@ -1472,12 +1500,12 @@ export def get(
         if value { 
             if id.value.identifier.types {
                 var score = 0
-                let _, (value) = find_function(scope, id, value, id.value.identifier.types, *score, true, context)
+                let _, value_and_scope = find_function(scope, id, value, id.value.identifier.types, *score, true, context)
 
                 //if value and force_compile and value.phase == Phase::DEFINED {
                 //    value = typecheck_function(value, id.value.identifier.types, context)
                 //}
-                return value
+                return value_and_scope.value if value_and_scope else null
             } else if value.kind == ValueKind::FUNCTION and id.parent and id.parent.kind == parser::NodeKind::PTR and value.next {
                 if not dry_run { ambigous_reference(id) }
                 return null
@@ -1503,10 +1531,11 @@ export def get(
 
                     if id.value.identifier.types {
                         var score = 0
-                        let _, (value2) = find_function(scope, id, value2, id.value.identifier.types, *score, true, context)
+                        let _, value_and_scope = find_function(scope, id, value2, id.value.identifier.types, *score, true, context)
                         //if value2 and force_compile and value2.phase == Phase::DEFINED {
                         //    value2 = typecheck_function(value2, id.value.identifier.types, context)
                         //}
+                        value2 = value_and_scope.value if value_and_scope else null
                     } else {
                         if force_compile and value2.phase == Phase::DEFINED {
                             typecheck(value2)
@@ -1943,6 +1972,10 @@ export def create_type(
     scope = create_path(scope, name_node)
     if not scope { return null }
     let name = last_path_element(name_node)
+
+    if name == "K" and scope.is_global {
+        print_scope(scope)
+    }
 
     let value = scope.fields.get_or_default(name, null)
     if value {
