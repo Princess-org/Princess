@@ -504,7 +504,7 @@ export type Function = struct {
 
     // Generators
     context: typechecking::TypeId
-    optional: typechecking::TypeId
+    optional: &typechecking::TypeRef
     all_locals: &SMap(typechecking::TypeId)
     // This is the current scope that needs to be freed by the jump index
     current_snapshot: Snapshot
@@ -1104,6 +1104,7 @@ def make_return_type(rtpe: &typechecking::Type, module: &toolchain::Module) -> t
 
     let struct_type = typechecking::make_struct_type(fields)
     struct_type.id = typechecking::next_type_id()
+    struct_type.is_literal = true
     typechecking::register_internal(struct_type.id, struct_type)
 
     type_registry_return_types(rtpe.id) = struct_type
@@ -1170,7 +1171,7 @@ def import_cstd_function(name: Str, state: &State) {
     if not func { return }
     predeclare_function(func.fdef, state.module)
     if consteval::is_static {
-        consteval::compile_function(func, state.scope)
+        consteval::compile_function_no_queue(func, state.scope)
     }
     state.module.imported.add(name)
 }
@@ -2197,7 +2198,7 @@ def convert_to(loc: &Value, value: Value, tpe: typechecking::TypeId, state: &Sta
         let conv = scope::find_implicit_function(state.scope, parameter_t, tpe)
         if conv {
             if consteval::is_static {
-                consteval::compile_function(conv, state.scope)
+                consteval::compile_function_no_queue(conv, state.scope)
             }
 
             let ftpe = conv.fdef.to_type().resolve()
@@ -3100,6 +3101,10 @@ def walk_Call(node: &parser::Node, state: &State) -> Value {
         }
     }
     if not tpe { 
+        debug::trace("Error: Could not determine type of function call `" + (
+                parser::identifier_to_str(left) if left.kind == parser::NodeKind::IDENTIFIER else to_str("unknown")
+            ) + "` " + node.module.module + "@" + node.loc.line
+        )
         return NO_VALUE
     }
 
@@ -3116,7 +3121,12 @@ def walk_Call(node: &parser::Node, state: &State) -> Value {
     let call_args = vector::make(type &parser::Node)
     let call_kwargs = vector::make(type &parser::Node)
 
-    let tpe_parameter_t = tpe.resolve().parameter_t
+    var tpe_parameter_t: &Vector(typechecking::NamedParameter) 
+    if node.fdef {
+        tpe_parameter_t = typechecking::resolve(node.fdef.parameter_t, state.scope)
+    } else {
+        tpe_parameter_t = tpe.resolve().parameter_t
+    }
     for var i in 0..tpe_parameter_t.length {
         let np = tpe_parameter_t(i)
         if not np.tpe or np.tpe.kind != typechecking::TypeKind::TYPE {
@@ -3477,8 +3487,9 @@ def walk_Identifier(node: &parser::Node, state: &State) -> Value {
     if (@val).value {
         // TODO This should already have the right type
         // But for enums we create integer literals
-        val.value.tpe = tpe
-        return @val.value
+        let res = @val.value
+        res.tpe = tpe
+        return res
     }
 
     let name = (@val).assembly_name(state)
@@ -3497,6 +3508,9 @@ def walk_Identifier(node: &parser::Node, state: &State) -> Value {
         let value = make_address_value(tpe, locv, state)
         return value
     } else {
+        predeclare_function(val.fdef, state.module)
+        state.module.imported.add(val.fdef.name)
+        
         locv.name = val.fdef.name
         let value = [ 
             kind = ValueKind::LOCAL, 
@@ -3563,7 +3577,7 @@ def insert_copy_constructor(addr: Value, value: Value, loc: &Value, state: &Stat
         var ctor = typechecking::get_constructor(addr_tpe.tpe)
         if not ctor { return NO_VALUE }
         if consteval::is_static {
-            consteval::compile_function(ctor, state.scope)
+            consteval::compile_function_no_queue(ctor, state.scope)
         }
         let ctor_name = ctor.fdef.name
         predeclare_function(ctor.fdef, state.module)
@@ -3716,7 +3730,7 @@ def insert_destructor(value: Value, loc: &Value, state: &State) {
         if consteval::is_static {
             let udtor = get_user_defined_destructor(value_tpe.tpe)
             if udtor {
-                consteval::compile_function(udtor, state.scope)
+                consteval::compile_function_no_queue(udtor, state.scope)
             }
         }
 
@@ -4576,7 +4590,7 @@ def compare(node: &parser::Node, left: Value, right: Value, state: &State) -> Va
         } else if builtins::type_t() and typechecking::equals(left.tpe, typechecking::pointer(builtins::type_t())) {
             let svalue = scope::get(toolchain::runtime_.scope, parser::make_identifier("equals"), not consteval::is_static)
             if consteval::is_static {
-                consteval::compile_function(svalue, state.scope)
+                consteval::compile_function_no_queue(svalue, state.scope)
             }
             predeclare_function(svalue.fdef, state.module)
             state.module.imported.add(svalue.fdef.name)
@@ -5367,13 +5381,13 @@ def walk_Return(node: &parser::Node, state: &State) {
 
         let tpe = (@current_function).ret
         if tpe and vector::length(node.value.body) > 0 {
-            var ret_value = [ kind = ValueKind::ZEROINITIALIZER, tpe = current_function.optional ] !Value
-            ret_value = state.insert_value(current_function.optional, ret_value, [ kind = ValueKind::BOOL, tpe = builtins::bool_, i = 1 ] !Value, [0])
-            ret_value = state.insert_value(current_function.optional, ret_value, @value, [1])
+            var ret_value = [ kind = ValueKind::ZEROINITIALIZER, tpe = current_function.optional.tpe ] !Value
+            ret_value = state.insert_value(current_function.optional.tpe, ret_value, [ kind = ValueKind::BOOL, tpe = builtins::bool_, i = 1 ] !Value, [0])
+            ret_value = state.insert_value(current_function.optional.tpe, ret_value, @value, [1])
 
             state.ret(ret_value)
         } else {
-            state.ret([ kind = ValueKind::ZEROINITIALIZER, tpe = current_function.optional ] !Value)
+            state.ret([ kind = ValueKind::ZEROINITIALIZER, tpe = current_function.optional.tpe ] !Value)
         }
     } else {
         if state.is_inline() {
@@ -5447,9 +5461,9 @@ def walk_Yield(node: &parser::Node, state: &State) {
         loc
     )
 
-    var ret_value = [ kind = ValueKind::ZEROINITIALIZER, tpe = current_function.optional ] !Value
-    ret_value = state.insert_value(current_function.optional, ret_value, [ kind = ValueKind::BOOL, tpe = builtins::bool_, i = 1 ] !Value, [0], loc)
-    ret_value = state.insert_value(current_function.optional, ret_value, value, [1], loc)
+    var ret_value = [ kind = ValueKind::ZEROINITIALIZER, tpe = current_function.optional.tpe ] !Value
+    ret_value = state.insert_value(current_function.optional.tpe, ret_value, [ kind = ValueKind::BOOL, tpe = builtins::bool_, i = 1 ] !Value, [0], loc)
+    ret_value = state.insert_value(current_function.optional.tpe, ret_value, value, [1], loc)
 
     state.ret(ret_value, loc)
     let label_ = make_label(state)
@@ -7170,6 +7184,10 @@ export def insert_function(module: &toolchain::Module, function: &Function, over
 
 export def predeclare_function(fdef: typechecking::FunctionDef, module: &toolchain::Module) -> &Function {
     let fun_name = fdef.name
+    if typechecking::is_polymorph(fdef) {
+        error("Cannot predeclare polymorphic function ", fun_name, "\n")
+        return null
+    }
     var function = module.result.functions.get_or_default(fun_name, null)
     if function {
         return function 
@@ -7178,6 +7196,7 @@ export def predeclare_function(fdef: typechecking::FunctionDef, module: &toolcha
             fdef = fdef,
             module = module
         ] !&Function
+        //print("Predeclaring function ", fun_name, " in module ", module.module, " ", function !*, "\n")
     }
     predeclare_function(function, module.scope)
     return function
@@ -7481,12 +7500,12 @@ export def create_function(
     no_cleanup: bool = false,
     is_closure: bool = false,
     params: &Vector(&Node) = null
-) {
+) -> &Function {
     let function = state.module.result.functions.get_or_default(fdef.name, null)
-    if not function { return }
+    if not function { return null }
     function.name = fdef.name
     // TODO Return multiple values via tuple
-    if function.has_yield and (not function.ret or typechecking::is_tuple(function.ret)) { return }
+    if function.has_yield and (not function.ret or typechecking::is_tuple(function.ret)) { return null }
     if not block {
         block = make_block()
     }
@@ -7530,18 +7549,7 @@ export def create_function(
 
         if function.has_yield {
             assert node != null
-            generator = fdef.to_type().resolve().return_t(0).tpe
-
-            let option_ctor = [
-                kind = parser::NodeKind::TYPE_CONSTRUCTOR
-            ] !&parser::Node
-            option_ctor.value.type_constructor = [
-                name = parser::make_identifier("optional", "Optional"),
-                args = node.value.def_.returns
-            ] !parser::NodeTypeConstructor
-
             state.module.state.scope = node.inner_scope
-            function.optional = typechecking::type_lookup(option_ctor, state.module.state).resolve(node.inner_scope)
 
             function.context = typechecking::next_type_id()
             function.yield_index = 1
@@ -7587,15 +7595,9 @@ export def create_function(
 
         var generator_type: typechecking::TypeId
         if function.has_yield {
-            let generator_ctor = [
-                kind = parser::NodeKind::TYPE_CONSTRUCTOR
-            ] !&parser::Node
-            generator_ctor.value.type_constructor = [
-                name = parser::make_identifier("runtime", "Generator"),
-                args = node.value.def_.returns
-            ] !parser::NodeTypeConstructor
-
-            generator_type = reference(typechecking::type_lookup(generator_ctor, state.module.state).tpe)
+            generator_type = fdef.to_type().resolve().return_t(0)
+            generator = generator_type.tpe
+            import_structure(generator, state.module)
 
             let generator_ptr = [ kind = ValueKind::LOCAL, name = "__generator", tpe = pointer(generator_type.tpe) ] !Value
             let deref = make_insn(InsnKind::EXTRACTVALUE)
@@ -7830,12 +7832,14 @@ export def create_function(
         }
 
         if function.has_yield {
+            import_structure(function.optional.tpe, state.module)
+
             // Implementation
             // TODO We don't want to do this twice, create a function that can convert
             let parameter_t = vector::make(typechecking::NamedParameter)
             parameter_t.push([ name = "__context", tpe = generator_type ] !typechecking::NamedParameter)
             let return_t = vector::make(&typechecking::TypeRef)
-            return_t.push(typechecking::make_type_ref(function.optional))
+            return_t.push(typechecking::make_type_ref(function.optional.tpe))
 
             let impl_def = typechecking::function_def(function.fdef.name + ".impl",
                 typechecking::wrap_ref(parameter_t), return_t, state.module, context = state.module
@@ -7845,7 +7849,7 @@ export def create_function(
                 [ kind = ValueKind::LOCAL, tpe = pointer(builtins::int_), name = "__block" ] !Value,
                 [ kind = ValueKind::INT, tpe = builtins::int_, i = -1 ] !Value
             )
-            state.ret([ kind = ValueKind::ZEROINITIALIZER, tpe = function.optional ] !Value)
+            state.ret([ kind = ValueKind::ZEROINITIALIZER, tpe = function.optional.tpe ] !Value)
             // Insert default value for switch
             function.yield_switch.value.switch_.otherwise = [ name = state.current_block.label_ ] !Label
                 
@@ -7930,6 +7934,8 @@ export def create_function(
     state.inline_start_block = previous_inline_start_block
     errors::current_function = current_fun
     errors::current_signature = current_signature
+
+    return function
 }
 
 def make_string(str: Str, state: &State) -> Value {
@@ -8279,9 +8285,7 @@ def create_dyn_cast_function(function: &Function, cast: toolchain::Cast, state: 
     ] !InsnSwitch
     push_insn(swtch, state)
 
-    for var id in @typechecking::type_registry.keys() {
-        let type_entry = typechecking::type_registry(id)
-
+    for var type_entry in typechecking::iterate_types() {
         if not is_ref(type_entry) { continue }
         let contains = typechecking::contains(type_entry)
 
@@ -9029,8 +9033,8 @@ export def create_type(tpe: &typechecking::Type, module: &toolchain::Module, res
 
         let entry = [ tpe = tpe, value = svalue, module = module ] !TypeEntry
         res.push(entry)
-        all_types.push(entry)
-        queued_types(name) = tpe
+        //all_types.push(entry)
+        queued_types(tpe.id) = tpe
 
         /*svalue = scope::create_variable(
             toolchain::types.scope, 
@@ -9108,7 +9112,7 @@ def declare_reflection_type_t_fun(state: &State) -> &scope::Value {
     if not fun_type_id {
         fun_type_id = reflection.scope.get(parser::make_identifier("type_id"), force_compile = not consteval::is_static)
         if consteval::is_static {
-            consteval::compile_function(fun_type_id, state.scope)
+            consteval::compile_function_no_queue(fun_type_id, state.scope)
         }
     }
 
@@ -9158,16 +9162,21 @@ def make_global_data(name: Str, value: size_t, state: &State) {
     state.module.imported.add(name)
 }
 
-export let all_types = vector::make(TypeEntry)
-
 // This gets called once
 export def generate_reflection_data {
     let reflection = toolchain::find_module("reflection")
     if not reflection { return }
 
-    for var entry in all_types {
-        queued_types(debug::type_to_str(entry.tpe, full_name = true)) = entry.tpe
+    // TODO it is internal for a reason we should really keep out some types...
+    for var id in @typechecking::type_registry_internal.keys() {
+        queued_types(id) = typechecking::type_registry_internal(id)
     }
+    for var id in 0..typechecking::type_registry.length {
+        let tpe = typechecking::type_registry(id)
+        if not tpe { continue }
+        queued_types(id !typechecking::TypeId) = tpe
+    }
+
     let data, strings, count = generate_reflection_data_queued()
 
     // Need to 0 terminate the whole thing so that it can be converted to a Str
@@ -9183,7 +9192,7 @@ export def generate_reflection_data {
 var fun_load_types: &scope::Value
 var fun_load_types_rec_lock: bool
 var fun_load_types_count: size_t = 0
-var queued_types = map::make(type &typechecking::Type)
+var queued_types = map::make(typechecking::TypeId, type &typechecking::Type)
 
 export def load_fun_load_types_function {
     let state = consteval::compiler_state
@@ -9193,7 +9202,7 @@ export def load_fun_load_types_function {
         if consteval::is_static and fun_load_types {
             var lock = fun_load_types_rec_lock
             fun_load_types_rec_lock = true
-            consteval::compile_function(fun_load_types, state.scope)
+            consteval::compile_function_no_queue(fun_load_types, state.scope)
             create_builtin_functions()
             fun_load_types_rec_lock = lock
         }
@@ -9216,15 +9225,15 @@ export def generate_reflection_data_queued -> &io::ByteStream, &UniquedStrings, 
         return data, strings, 0
     }
 
-    let all_types = set::make(type &typechecking::Type)
+    let all_types = map::make(typechecking::TypeId, type &typechecking::Type)
     let res = vector::make(TypeEntry)
     while queued_types.size > 0 {
-        for var name in @queued_types.keys() {
-            let tpe = queued_types(name)
-            queued_types.remove(name)
-            if tpe.kind == typechecking::TypeKind::TYPE_CONSTRUCTOR { continue }
-            all_types.add(tpe)
+        for var id in @queued_types.keys() {
+            let tpe = queued_types(id)
+            queued_types.remove(id)
+            all_types(id) = tpe
 
+            // TODO This might be unnecessary
             if tpe.implementors {
                 for var t in @tpe.implementors.keys() {
                     create_type(t, state.module, res)
@@ -9262,11 +9271,11 @@ export def generate_reflection_data_queued -> &io::ByteStream, &UniquedStrings, 
     
     resolve_types(res)
 
-    for var tpe in @all_types.keys() {
-        generate_reflection_data_1(tpe, data, strings)
+    for var id in @all_types.keys() {
+        generate_reflection_data_1(id, all_types(id), data, strings)
     }
-    for var tpe in @all_types.keys() {
-        generate_reflection_data_2(tpe, data, strings)
+    for var id in @all_types.keys() {
+        generate_reflection_data_2(id, all_types(id), data, strings)
     }
 
     if consteval::is_static {
@@ -9324,7 +9333,7 @@ def write_zt(uniqued: &UniquedStrings, s: Str) -> int {
     return val !int
 }
 
-def generate_reflection_data_2(tpe: &typechecking::Type, data: &ByteStream, strings: &UniquedStrings) {
+def generate_reflection_data_2(id: typechecking::TypeId, tpe: &typechecking::Type, data: &ByteStream, strings: &UniquedStrings) {
 
     // Write implements
     if tpe.implements {
@@ -9422,11 +9431,11 @@ def generate_reflection_data_2(tpe: &typechecking::Type, data: &ByteStream, stri
     }
 }
 
-def generate_reflection_data_1(tpe: &typechecking::Type, data: &ByteStream, strings: &UniquedStrings) {
+def generate_reflection_data_1(id: typechecking::TypeId, tpe: &typechecking::Type, data: &ByteStream, strings: &UniquedStrings) {
     data.write(tpe.kind) // This does rely on the values being the same
     data.write(strings.write_zt(debug::type_to_str(tpe, full_name = true)))
     data.write(strings.write_zt(tpe.defmodule.module if tpe.defmodule else to_str("")))
-    data.write(tpe.hash)
+    data.write(id)
 
     //print(tpe.kind, " ", tpe.name, " ", (tpe.defmodule.module if tpe.defmodule else to_str("")), " ", tpe.hash, "\n")
     
@@ -9477,8 +9486,10 @@ def generate_reflection_data_1(tpe: &typechecking::Type, data: &ByteStream, stri
             data.write(member.parameter_t.length !int)
             data.write(member.return_t.length !int)
         }
-    case typechecking::TypeKind::TUPLE
-        data.write(tpe.parameter_t.length)
+    case typechecking::TypeKind::TUPLE, typechecking::TypeKind::TUNION
+        data.write(tpe.size !int)
+        data.write(tpe.align !int)
+        data.write(tpe.return_t.length !int)
     }
 }
 
@@ -9549,9 +9560,11 @@ export def predeclare_functions(module: &toolchain::Module) {
     }
 }
 
-def generate_vtable_function(function: &Function, fdef: typechecking::FunctionDef, state: &State) {
+export def generate_vtable_function(function: &Function, fdef: typechecking::FunctionDef, state: &State) {
     let ftpe = fdef.to_type().resolve()
     let first_param = ftpe.parameter_t(0).tpe
+
+    debug::trace("Generating vtable function for ", fdef.name)
 
     function.block = make_block()
     function.forward_declare = false
@@ -9630,7 +9643,7 @@ def generate_vtable_function(function: &Function, fdef: typechecking::FunctionDe
 
                 if consteval::is_static {
                     let fun = scope::get_function(module.scope, parser::make_identifier(fun.unmangled), parameter_t, false, false, false)
-                    let val = consteval::compile_function(fun, state.scope)
+                    let val = consteval::compile_function_no_queue(fun, state.scope)
                     import_structures(val.get_type(), state.module)
                 }
             }
