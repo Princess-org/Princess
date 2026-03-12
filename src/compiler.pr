@@ -1104,6 +1104,7 @@ def make_return_type(rtpe: &typechecking::Type, module: &toolchain::Module) -> t
 
     let struct_type = typechecking::make_struct_type(fields)
     struct_type.id = typechecking::next_type_id()
+    struct_type.is_literal = true
     typechecking::register_internal(struct_type.id, struct_type)
 
     type_registry_return_types(rtpe.id) = struct_type
@@ -3120,7 +3121,12 @@ def walk_Call(node: &parser::Node, state: &State) -> Value {
     let call_args = vector::make(type &parser::Node)
     let call_kwargs = vector::make(type &parser::Node)
 
-    let tpe_parameter_t = tpe.resolve().parameter_t
+    var tpe_parameter_t: &Vector(typechecking::NamedParameter) 
+    if node.fdef {
+        tpe_parameter_t = typechecking::resolve(node.fdef.parameter_t, state.scope)
+    } else {
+        tpe_parameter_t = tpe.resolve().parameter_t
+    }
     for var i in 0..tpe_parameter_t.length {
         let np = tpe_parameter_t(i)
         if not np.tpe or np.tpe.kind != typechecking::TypeKind::TYPE {
@@ -3502,6 +3508,9 @@ def walk_Identifier(node: &parser::Node, state: &State) -> Value {
         let value = make_address_value(tpe, locv, state)
         return value
     } else {
+        predeclare_function(val.fdef, state.module)
+        state.module.imported.add(val.fdef.name)
+        
         locv.name = val.fdef.name
         let value = [ 
             kind = ValueKind::LOCAL, 
@@ -7588,6 +7597,7 @@ export def create_function(
         if function.has_yield {
             generator_type = fdef.to_type().resolve().return_t(0)
             generator = generator_type.tpe
+            import_structure(generator, state.module)
 
             let generator_ptr = [ kind = ValueKind::LOCAL, name = "__generator", tpe = pointer(generator_type.tpe) ] !Value
             let deref = make_insn(InsnKind::EXTRACTVALUE)
@@ -7822,6 +7832,8 @@ export def create_function(
         }
 
         if function.has_yield {
+            import_structure(function.optional.tpe, state.module)
+
             // Implementation
             // TODO We don't want to do this twice, create a function that can convert
             let parameter_t = vector::make(typechecking::NamedParameter)
@@ -9021,8 +9033,8 @@ export def create_type(tpe: &typechecking::Type, module: &toolchain::Module, res
 
         let entry = [ tpe = tpe, value = svalue, module = module ] !TypeEntry
         res.push(entry)
-        all_types.push(entry)
-        queued_types(name) = tpe
+        //all_types.push(entry)
+        queued_types(tpe.id) = tpe
 
         /*svalue = scope::create_variable(
             toolchain::types.scope, 
@@ -9150,16 +9162,21 @@ def make_global_data(name: Str, value: size_t, state: &State) {
     state.module.imported.add(name)
 }
 
-export let all_types = vector::make(TypeEntry)
-
 // This gets called once
 export def generate_reflection_data {
     let reflection = toolchain::find_module("reflection")
     if not reflection { return }
 
-    for var entry in all_types {
-        queued_types(debug::type_to_str(entry.tpe, full_name = true)) = entry.tpe
+    // TODO it is internal for a reason we should really keep out some types...
+    for var id in @typechecking::type_registry_internal.keys() {
+        queued_types(id) = typechecking::type_registry_internal(id)
     }
+    for var id in 0..typechecking::type_registry.length {
+        let tpe = typechecking::type_registry(id)
+        if not tpe { continue }
+        queued_types(id !typechecking::TypeId) = tpe
+    }
+
     let data, strings, count = generate_reflection_data_queued()
 
     // Need to 0 terminate the whole thing so that it can be converted to a Str
@@ -9175,7 +9192,7 @@ export def generate_reflection_data {
 var fun_load_types: &scope::Value
 var fun_load_types_rec_lock: bool
 var fun_load_types_count: size_t = 0
-var queued_types = map::make(type &typechecking::Type)
+var queued_types = map::make(typechecking::TypeId, type &typechecking::Type)
 
 export def load_fun_load_types_function {
     let state = consteval::compiler_state
@@ -9208,15 +9225,15 @@ export def generate_reflection_data_queued -> &io::ByteStream, &UniquedStrings, 
         return data, strings, 0
     }
 
-    let all_types = set::make(type &typechecking::Type)
+    let all_types = map::make(typechecking::TypeId, type &typechecking::Type)
     let res = vector::make(TypeEntry)
     while queued_types.size > 0 {
-        for var name in @queued_types.keys() {
-            let tpe = queued_types(name)
-            queued_types.remove(name)
-            if tpe.kind == typechecking::TypeKind::TYPE_CONSTRUCTOR { continue }
-            all_types.add(tpe)
+        for var id in @queued_types.keys() {
+            let tpe = queued_types(id)
+            queued_types.remove(id)
+            all_types(id) = tpe
 
+            // TODO This might be unnecessary
             if tpe.implementors {
                 for var t in @tpe.implementors.keys() {
                     create_type(t, state.module, res)
@@ -9254,11 +9271,11 @@ export def generate_reflection_data_queued -> &io::ByteStream, &UniquedStrings, 
     
     resolve_types(res)
 
-    for var tpe in @all_types.keys() {
-        generate_reflection_data_1(tpe, data, strings)
+    for var id in @all_types.keys() {
+        generate_reflection_data_1(id, all_types(id), data, strings)
     }
-    for var tpe in @all_types.keys() {
-        generate_reflection_data_2(tpe, data, strings)
+    for var id in @all_types.keys() {
+        generate_reflection_data_2(id, all_types(id), data, strings)
     }
 
     if consteval::is_static {
@@ -9316,7 +9333,7 @@ def write_zt(uniqued: &UniquedStrings, s: Str) -> int {
     return val !int
 }
 
-def generate_reflection_data_2(tpe: &typechecking::Type, data: &ByteStream, strings: &UniquedStrings) {
+def generate_reflection_data_2(id: typechecking::TypeId, tpe: &typechecking::Type, data: &ByteStream, strings: &UniquedStrings) {
 
     // Write implements
     if tpe.implements {
@@ -9414,11 +9431,11 @@ def generate_reflection_data_2(tpe: &typechecking::Type, data: &ByteStream, stri
     }
 }
 
-def generate_reflection_data_1(tpe: &typechecking::Type, data: &ByteStream, strings: &UniquedStrings) {
+def generate_reflection_data_1(id: typechecking::TypeId, tpe: &typechecking::Type, data: &ByteStream, strings: &UniquedStrings) {
     data.write(tpe.kind) // This does rely on the values being the same
     data.write(strings.write_zt(debug::type_to_str(tpe, full_name = true)))
     data.write(strings.write_zt(tpe.defmodule.module if tpe.defmodule else to_str("")))
-    data.write(tpe.hash)
+    data.write(id)
 
     //print(tpe.kind, " ", tpe.name, " ", (tpe.defmodule.module if tpe.defmodule else to_str("")), " ", tpe.hash, "\n")
     
@@ -9469,8 +9486,10 @@ def generate_reflection_data_1(tpe: &typechecking::Type, data: &ByteStream, stri
             data.write(member.parameter_t.length !int)
             data.write(member.return_t.length !int)
         }
-    case typechecking::TypeKind::TUPLE
-        data.write(tpe.parameter_t.length)
+    case typechecking::TypeKind::TUPLE, typechecking::TypeKind::TUNION
+        data.write(tpe.size !int)
+        data.write(tpe.align !int)
+        data.write(tpe.return_t.length !int)
     }
 }
 
