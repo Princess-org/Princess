@@ -4,6 +4,8 @@ import std
 import vector
 import runtime
 import optional
+import reflection
+import strings
 
 const TRUE_VALUE = "true"
 const FALSE_VALUE = "false"
@@ -59,6 +61,8 @@ export type Json = struct {
     status: Status
     root: JsonTreeNode
 }
+
+export type &Json implements &ToString
 
 def == (this: *JsonTreeNode, other: *JsonTreeNode) -> bool {
     if not this or not other { return false }
@@ -261,7 +265,7 @@ export def is_array(tree: &Json) -> bool {
 }
 
 // TODO Serialize references
-def serialize(tpe: *runtime::Type, data: *) -> JsonTreeNode {
+def serialize(tpe: reflection::Type, data: *) -> JsonTreeNode {
     if not data { return [ tpe = Type::NIL ] !JsonTreeNode }
 
     if tpe == type &Json { return (@(data !*&Json)).root }
@@ -294,36 +298,43 @@ def serialize(tpe: *runtime::Type, data: *) -> JsonTreeNode {
         }
         return { tpe = Type::ARRAY, children = vec } !JsonTreeNode
     }*/
-    if tpe.kind == runtime::TypeKind::STATIC_ARRAY {
+    if tpe.type == reflection::StaticArrayT {
+        let atpe = tpe !reflection::StaticArrayT
         let vec = vector::make(JsonTreeNode)
-        for var i in 0..tpe.length {
-            var node = serialize(tpe.tpe, data ++ i * tpe.tpe.size)
+        for var i in 0..atpe.length {
+            var node = serialize(atpe.tpe, data ++ i * atpe.tpe.size)
             vec.push(node)
         }
         return [ tpe = Type::ARRAY, children = vec ] !JsonTreeNode
     }
-    if tpe.kind == runtime::TypeKind::STRUCT {
+    if tpe.type == reflection::StructT {
+        let stpe = tpe !reflection::StructT
         let vec = vector::make(JsonTreeNode)
-        for var i in 0..tpe.fields.size {
-            let field = tpe.fields(i)
+        for var i in 0..stpe.members.size {
+            let field = stpe.members(i)
             let children = vector::make(JsonTreeNode)
             children.push(serialize(field.tpe, data ++ field.offset))
             vec.push([ tpe = Type::KEY, data = [ str = field.name ] !Data, children = children ] !JsonTreeNode)
         }
         return [ tpe = Type::OBJECT, children = vec ] !JsonTreeNode
     }
-    if tpe.kind == runtime::TypeKind::REFERENCE and tpe.tpe and tpe.tpe.kind == runtime::TypeKind::ARRAY {
-        let array_tpe = tpe.tpe.tpe
-        let vec = vector::make(JsonTreeNode)
-        let array = @(data !*&[*])
-        if not array { return [ tpe = Type::NIL ] !JsonTreeNode }
+    if tpe.type == reflection::ReferenceT {
+        let rtpe = tpe !reflection::ReferenceT 
 
-        let data = array.value !*int8
-        for var i in 0..array.size {
-            let node = serialize(array_tpe, (data ++ (array_tpe.size * i)))
-            vec.push(node)
+        if rtpe.tpe and rtpe.tpe.type == reflection::ArrayT {
+            let atpe = rtpe.tpe !reflection::ArrayT
+            let array_tpe = atpe.tpe
+            let vec = vector::make(JsonTreeNode)
+            let array = @(data !*&[*])
+            if not array { return [ tpe = Type::NIL ] !JsonTreeNode }
+
+            let data = array.value !*int8
+            for var i in 0..array.size {
+                let node = serialize(array_tpe, (data ++ (array_tpe.size * i)))
+                vec.push(node)
+            }
+            return [ tpe = Type::ARRAY, children = vec ] !JsonTreeNode
         }
-        return [ tpe = Type::ARRAY, children = vec ] !JsonTreeNode
     }
 
     assert false, @("Can't serialize type " + tpe.name).to_array()
@@ -333,7 +344,7 @@ export def serialize(obj: type *T) -> &Json {
     return [ status = Status::JSON_OK, root = serialize(T, obj) ] !&Json
 }
 
-def deserialize(tpe: *runtime::Type, data: *, json: *JsonTreeNode) -> bool {
+def deserialize(tpe: reflection::Type, data: *, json: *JsonTreeNode) -> bool {
     if tpe == type &Json {
         @(data !*&Json) = [ status = Status::JSON_OK, root = @json ] !Json
     } else if tpe == bool {
@@ -378,10 +389,11 @@ def deserialize(tpe: *runtime::Type, data: *, json: *JsonTreeNode) -> bool {
     } else if tpe == String {
         if json.tpe != Type::STRING { return false }  
         @(data !*String) = json.data.str 
-    } else if tpe.kind == runtime::TypeKind::STRUCT {
+    } else if tpe.type == reflection::StructT {
+        let stpe = tpe !reflection::StructT
         if json.tpe != Type::OBJECT { return false }
-        for var i in 0..tpe.fields.size {
-            let field = tpe.fields(i)
+        for var i in 0..stpe.members.size {
+            let field = stpe.members(i)
             var name: String = field.name
             if field.name.starts_with("_") {
                 // TODO This is no longer necessary once we can escape keywords
@@ -397,26 +409,34 @@ def deserialize(tpe: *runtime::Type, data: *, json: *JsonTreeNode) -> bool {
                 }
             }
         }
-    } else if tpe.kind == runtime::TypeKind::STATIC_ARRAY {
+    } else if tpe.type == reflection::StaticArrayT {
+        let atpe = tpe !reflection::StaticArrayT
         if json.tpe != Type::ARRAY { return false }
-        if json.children.length != tpe.length { return false }
-        for var i in 0..tpe.length {
-            if not deserialize(tpe.tpe, data ++ i * tpe.tpe.size, json.children.get(i)) { 
+        if json.children.length != atpe.length { return false }
+        for var i in 0..atpe.length {
+            if not deserialize(atpe.tpe, data ++ i * atpe.tpe.size, json.children.get(i)) { 
                 return false 
             }
         }
-    } else if tpe.kind == runtime::TypeKind::REFERENCE and tpe.tpe and tpe.tpe.kind == runtime::TypeKind::ARRAY {
-        if json.tpe != Type::ARRAY { return false }
-        let array_tpe = tpe.tpe.tpe
-        let array: [int8] = zero_allocate(type int8, json.children.length * array_tpe.size)
-        for var i in 0..json.children.length {
-            deserialize(array_tpe, (array.value ++ (i * array_tpe.size)) !*, *json.children(i))
-        }
+    } else if tpe.type == reflection::ReferenceT {
+        let rtpe = tpe !reflection::ReferenceT 
+        if rtpe.tpe and rtpe.tpe.type == reflection::ArrayT {
+            let atpe = rtpe.tpe !reflection::ArrayT
 
-        let d = data !*&[int8]
-        @d = array
-        (@d).size = json.children.length
-        delete(array)
+            if json.tpe != Type::ARRAY { return false }
+            let array_tpe = atpe.tpe
+            let array: [int8] = zero_allocate(type int8, json.children.length * array_tpe.size)
+            for var i in 0..json.children.length {
+                deserialize(array_tpe, (array.value ++ (i * array_tpe.size)) !*, *json.children(i))
+            }
+
+            let d = data !*&[int8]
+            @d = array
+            (@d).size = json.children.length
+            delete(array)
+        } else {
+            return false
+        }
     } else {
         return false
     }
