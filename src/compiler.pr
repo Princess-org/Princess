@@ -546,7 +546,13 @@ export type Result = struct {
     finalizer: &typechecking::FunctionDef
 }
 
+export def add_function(result: &Result, name: Str, function: &Function) {
+    assert name
+    result.functions(name) = function
+}
+
 export def add_global(result: &Result, name: Str, global: &Global) {
+    assert name
     result.globals(name) = global
 }
 
@@ -1169,7 +1175,7 @@ def import_cstd_function(name: Str, state: &State) {
     let cstd_module = toolchain::find_module("cstd")
     var func = scope::get(cstd_module.scope, parser::make_identifier(name))
     if not func { return }
-    predeclare_function(func.fdef, state.module)
+    predeclare_function(func.fdef, state.module, true)
     if consteval::is_static {
         consteval::compile_function_no_queue(func, state.scope)
     }
@@ -1364,7 +1370,7 @@ export def create_type(tpe: &typechecking::Type, module: &toolchain::Module) -> 
     resolve_types(res)
 
     let reflection = toolchain::find_module("reflection")
-    if reflection {
+    if reflection and not toolchain::is_in_repl {
         generate_reflection_data_queued()
     }
     
@@ -3336,7 +3342,13 @@ def walk_Call(node: &parser::Node, state: &State) -> Value {
             return NO_VALUE 
         }
         var name = fdef.name
-        let function = predeclare_function(@fdef, state.module)
+
+        var imported = false
+        if node.value.func_call.left.svalue {
+            imported = node.value.func_call.left.svalue.imported
+        }
+
+        let function = predeclare_function(@fdef, state.module, imported)
         if not function { 
             return NO_VALUE 
         }
@@ -5416,7 +5428,7 @@ def walk_YieldFrom(node: &parser::Node, state: &State) {
     if not node.svalue { return }
 
     let ident = node.svalue.identifier
-    let iddecl = [ kind = parser::NodeKind::FOR_ID_DECL, loc = node.loc ] !&parser::Node
+    let iddecl = [ kind = parser::NodeKind::FOR_ID_DECL, loc = node.loc, scope = node.scope ] !&parser::Node
     iddecl.value.for_id_decl = [
         kw = parser::VarDecl::VAR,
         ident = ident
@@ -5425,13 +5437,17 @@ def walk_YieldFrom(node: &parser::Node, state: &State) {
 
     let yield_body = vector::make(type &parser::Node)
     yield_body.push(ident)
-    let yield_ = [ kind = parser::NodeKind::YIELD, loc = node.loc ] !&parser::Node
+    let yield_ = [ kind = parser::NodeKind::YIELD, loc = node.loc, scope = node.scope ] !&parser::Node
     yield_.value.body = yield_body
 
     let body = vector::make(type &parser::Node)
     body.push(yield_)
 
-    let for_ = [ kind = parser::NodeKind::FOR, loc = node.loc, inner_scope = node.inner_scope ] !&parser::Node
+    let for_ = [ 
+        kind = parser::NodeKind::FOR, loc = node.loc, 
+        inner_scope = node.inner_scope, scope = node.scope 
+    ] !&parser::Node
+    
     for_.value.for_loop = [
         iddecl = iddecl,
         expr = node.value.expr,
@@ -6032,7 +6048,7 @@ def walk_Lambda(node: &parser::Node, state: &State) -> Value {
     //typechecking::create_type_entry(typechecking::reference(context_tpe))
     let context_ptr = create_closure_context(function, ret, loc, state, insert_temporary = true)
 
-    predeclare_function(function.fdef, state.module)
+    predeclare_function(function, state.scope)
     create_function(node, function.fdef, node.value.lambda.body, node.inner_scope, null, state, is_closure = true, params = node.value.lambda.parameters)
     state.module.imported.add(function.fdef.name)
 
@@ -7176,13 +7192,19 @@ export def insert_function(module: &toolchain::Module, function: &Function, over
     if not function or not function.name { return }
     if module.result.functions.contains(function.name) and not overwrite { return }
 
-    module.result.functions(function.name) = function
+    module.result.add_function(function.name, function)
+
+    let existing = consteval::const_module.result.functions.get_or_default(function.name, null)
+    if existing and not function.block {
+        function.block = existing.block
+    }
+    
     if not consteval::const_module.result.functions.contains(function.name) {
-        consteval::const_module.result.functions(function.name) = function
+        consteval::const_module.result.add_function(function.name, function)
     }
 } 
 
-export def predeclare_function(fdef: typechecking::FunctionDef, module: &toolchain::Module) -> &Function {
+export def predeclare_function(fdef: typechecking::FunctionDef, module: &toolchain::Module, imported: bool = false) -> &Function {
     let fun_name = fdef.name
     if typechecking::is_polymorph(fdef) {
         error("Cannot predeclare polymorphic function ", fun_name, "\n")
@@ -7194,7 +7216,8 @@ export def predeclare_function(fdef: typechecking::FunctionDef, module: &toolcha
     } else {
         function = [ 
             fdef = fdef,
-            module = module
+            module = module,
+            imported = imported
         ] !&Function
         //print("Predeclaring function ", fun_name, " in module ", module.module, " ", function !*, "\n")
     }
@@ -7350,13 +7373,13 @@ def create_generator(
     ])
     let context_ptr = state.bitcast(pointer(context), context_ptr_i8)
 
-    let parameter_t = fdef.to_type().resolve().parameter_t
+    let parameter_t = fdef.parameter_t
     for var i in 0..parameter_t.length {
         let par = parameter_t(i)
-        let local_ptr = state.gep(pointer(par.tpe), context, context_ptr, [make_int_value(0), make_int_value(i + 1)])
-        state.store(local_ptr, [ kind = ValueKind::LOCAL, name = par.name + ".value", tpe = par.tpe ] !Value)
+        let local_ptr = state.gep(pointer(par.tpe.tpe), context, context_ptr, [make_int_value(0), make_int_value(i + 1)])
+        state.store(local_ptr, [ kind = ValueKind::LOCAL, name = par.name + ".value", tpe = par.tpe.tpe ] !Value)
         
-        if typechecking::is_ref_or_weak(par.tpe) {
+        if typechecking::is_ref_or_weak(par.tpe.tpe) {
             increase_ref_count(local_ptr, null, state)
         }
     }
@@ -7511,6 +7534,7 @@ export def create_function(
     }
 
     debug::trace("Compiling function " + function.name)
+    //print(function !*, "\n")
 
     function.forward_declare = false
     function.allocas = vector::make(type &Insn)
@@ -8068,7 +8092,7 @@ export def walk_TypeDecl(node: &parser::Node, state: &State) {
             
             import_structures(svalue.fdef.to_type(), state.module)
             state.module.imported.add(function.name)
-            state.module.result.functions(function.name) = function
+            state.module.result.add_function(function.name, function)
             state.function_stack.pop()
         }
 
@@ -8174,6 +8198,7 @@ def walk_top_VarDecl(node: &parser::Node, body: &Vector(&parser::Node), state: &
 
 def insert_module_main(module: &toolchain::Module, name: &parser::Node, scpe: &scope::Scope, state: &State) {
     if not module { return }
+    if toolchain::is_in_repl and module.module == "reflection" { return}
 
     // Build dependency graph
     if module.filename {
@@ -8235,7 +8260,7 @@ export def create_dyn_dispatch(dyn_dispatch: &Vector(typechecking::FunctionDef),
         dyn_dispatch.remove(0)
         let function = predeclare_function(fdef, state.module)
         generate_vtable_function(function, fdef, state)
-        consteval::const_module.result.functions(function.name) = function
+        consteval::const_module.result.add_function(function.name, function)
     }
 }
 
@@ -8246,7 +8271,7 @@ export def create_dyn_casts(state: &State) {
         if state.module.result.functions.contains(fdef.name) { continue }
         let function = predeclare_function(fdef, state.module)
         create_dyn_cast_function(function, cast, state)
-        consteval::const_module.result.functions(function.name) = function
+        consteval::const_module.result.add_function(function.name, function)
     }
 }
 
@@ -8356,7 +8381,7 @@ export def create_constructor(fdef: typechecking::FunctionDef) {
     //if typechecking::is_polymorph(tpe) { return }
             
     let function = predeclare_function(fdef, state.module)
-    consteval::const_module.result.functions(function.name) = function
+    consteval::const_module.result.add_function(function.name, function)
     function.forward_declare = false
     state.module.imported.add(fdef.name)
     let ftpe = fdef.to_type().resolve()
@@ -8525,7 +8550,7 @@ export def create_destructor(fdef: typechecking::FunctionDef) {
     //if typechecking::is_polymorph(tpe) { return }
             
     let function = predeclare_function(fdef, state.module)
-    consteval::const_module.result.functions(function.name) = function
+    consteval::const_module.result.add_function(function.name, function)
     function.forward_declare = false
     state.module.imported.add(fdef.name)
     let ftpe = fdef.to_type().resolve()
@@ -8621,7 +8646,9 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
     var br1: &Insn
     
     let content_type = tpe.tpe.tpe
-    if typechecking::is_ref(tpe.tpe) and content_type and not is_interface(content_type) {
+    if typechecking::is_weak_ref(tpe.tpe) {
+        insert_destructor(value, null, state)
+    } else if typechecking::is_ref(tpe.tpe) and content_type and not is_interface(content_type) {
         // Decrease ref count
         _ref = state.load(tpe.tpe, value)
         ref_count = state.extract_value(pointer(ref_meta()), _ref, [0])
@@ -9413,14 +9440,10 @@ def generate_reflection_data_2(id: typechecking::TypeId, tpe: &typechecking::Typ
                 data.write(0 !int)
             }
         }
-    case typechecking::TypeKind::TUPLE
+    case typechecking::TypeKind::TUPLE, typechecking::TypeKind::TUNION
         for var t in tpe.return_t {
             data.write(t.hash)
         }
-    //case typechecking::TypeKind::VARIANT
-    //    for var t in @tpe.variants.keys() {
-    //        data.write(t.hash)
-    //    }
     case typechecking::TypeKind::CLOSURE, typechecking::TypeKind::FUNCTION
         for var np in tpe.parameter_t {
             data.write(np.tpe.hash)
@@ -9535,8 +9558,7 @@ export def predeclare_functions(module: &toolchain::Module) {
                                 if value.node {
                                     fun = value.node.value.def_.function
                                 } else {
-                                    fun = predeclare_function(value.fdef, imprt.module)
-                                    fun.imported = value.imported
+                                    fun = predeclare_function(value.fdef, imprt.module, value.imported)
                                 }
                                 insert_function(module, fun)
                             }
@@ -9884,11 +9906,11 @@ export def compile(state: &State, is_main: bool, no_cleanup: bool = false) {
     if is_main {
         // Import types
         let type_indent = parser::make_identifier("type")
-        insert_module_main(toolchain::types , type_indent, node.scope, state)
+        insert_module_main(toolchain::types, type_indent, node.scope, state)
 
         // Import runtime
         let runtime_ident = parser::make_identifier("runtime")
-        insert_module_main(toolchain::runtime_ , runtime_ident, node.scope, state)
+        insert_module_main(toolchain::runtime_, runtime_ident, node.scope, state)
 
         /*// Import preload
         let preload_ident = parser::make_identifier("preload")

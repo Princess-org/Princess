@@ -296,7 +296,7 @@ export def evaluate_parameter(node: &parser::Node, param: &parser::Node, tpe: ty
 
 def walk_Lambda(node: &parser::Node, state: &typechecking::State) {
     let body = node.value.lambda.body
-    node.inner_scope = scope::enter_function_scope(state.module.scope)
+    node.inner_scope = scope::enter_function_scope(state.scope)
 
     // Add return for single value
     if body.length == 1 {
@@ -308,7 +308,7 @@ def walk_Lambda(node: &parser::Node, state: &typechecking::State) {
             parser::NodeKind::RANGE..=parser::NodeKind::SHR_EQ,
             parser::NodeKind::ASSIGN, parser::NodeKind::FUNC_CALL, parser::NodeKind::LAMBDA
 
-    	    let n = [ kind = parser::NodeKind::RETURN] !&Node
+    	    let n = [ kind = parser::NodeKind::RETURN, loc = node.loc ] !&Node
             n.value.body = vector::make(type &Node)
             n.value.body.push(body(0))
             body(0) = n
@@ -345,7 +345,7 @@ export def walk_Def(node: &parser::Node, state: &typechecking::State) {
         parameter_t.push([
             kw = parser::VarDecl::LET,
             name = "env",
-            tpe = typechecking::make_type_ref(pointer(builtins::TestEnvironment_))
+            tpe = typechecking::make_type_ref(pointer(builtins::test_environment_t()))
         ] !NamedParameterPre)
     }
 
@@ -374,6 +374,9 @@ export def walk_Def(node: &parser::Node, state: &typechecking::State) {
             tpe = make_type_ref([ kind = typechecking::TypeKind::TYPE_DEF, name = name ] !&Pattern)
             scope::create_type(state.scope, param.value.param.name, parser::ShareMarker::NONE, make_type_ref(name))
         } else {
+            if not param.value.param.tpe and not param.value.param.varargs {
+                errors::errorn(param, "No type defined for parameter")
+            }
             tpe = typechecking::type_lookup(param.value.param.tpe, state)
             if param.value.param.is_ref {
                 tpe = typechecking::byref(tpe)
@@ -390,7 +393,7 @@ export def walk_Def(node: &parser::Node, state: &typechecking::State) {
             kw = param.value.param.kw,
             name = last_ident_to_str(name),
             tpe = tpe,
-            varargs = (@param).value.param.varargs,
+            varargs = param.value.param.varargs,
             node = name,
             value = value
         ] !typechecking::NamedParameterPre)
@@ -602,6 +605,7 @@ export def walk_TypeDecl(node: &parser::Node, state: &typechecking::State) {
                 value.scope = state.scope
                 enum_tpe.scope = state.scope
                 state.scope = scope::exit_scope(state.scope)
+                typechecking::register(tpe, enum_tpe)
 
                 // Create to_string function
                 let parameter_t = vector::make(typechecking::NamedParameterPre)
@@ -614,7 +618,6 @@ export def walk_TypeDecl(node: &parser::Node, state: &typechecking::State) {
                 let v = scope::create_function(state.scope, ident, parser::ShareMarker::EXPORT, fdef)
                 v.identifier = ident
                 left.svalue = scope::create_type(state.scope, name, share, typechecking::make_type_ref(tpe), scope::Phase::DEFINED, null)
-                typechecking::register(tpe, enum_tpe)
             } else {
                 var resolved: &typechecking::TypeRef
                 if value.kind != parser::NodeKind::STRUCT_T and value.kind != parser::NodeKind::UNION_T and value.kind != parser::NodeKind::STRUCTURAL_T {
@@ -901,7 +904,7 @@ export def compile_queued_functions {
             // Create dyn dispatch
             let function = compiler::predeclare_function(fdef, const_module)
             compiler::generate_vtable_function(function, fdef, compiler_state)
-            const_module.result.functions(function.name) = function
+            const_module.result.add_function(function.name, function)
             continue
         }
 
@@ -911,7 +914,7 @@ export def compile_queued_functions {
         if function and function.defer_functions {
             for var i in 0..vector::length(function.defer_functions) {
                 let deferf = function.defer_functions(i)
-                const_module.result.functions(deferf.name) = deferf
+                const_module.result.add_function(deferf.name, deferf)
             }
         }
     }
@@ -973,13 +976,13 @@ export def compile_function(value: &scope::Value, context: &scope::Scope, argume
     let is_polymorph = typechecking::is_polymorph(function.fdef)
     if not is_polymorph { 
         compiler::predeclare_function(function, context, overwrite = true)
-        const_module.result.functions(function.name) = function 
+        const_module.result.add_function(function.name, function) 
     }
 
     if not module { 
         return value
     }
-    if not is_polymorph { module.result.functions(function.name) = function }
+    if not is_polymorph { module.result.add_function(function.name, function) }
 
     if function.is_compiled {
         return value
@@ -998,7 +1001,7 @@ export def compile_function(value: &scope::Value, context: &scope::Scope, argume
             node = typechecking::walk_Def_with_type_argument(node, arguments, scope2, state)
             function = node.value.def_.function
             compiler::predeclare_function(function, context, overwrite = true)
-            const_module.result.functions(function.name) = function 
+            const_module.result.add_function(function.name, function) 
         } else {
             walk_Def(node, state)
             let prev_context = state.context
@@ -1220,6 +1223,7 @@ def walk_Error(node: &parser::Node, state: &typechecking::State) {
         parent = node.parent,
         loc = node.loc
     ] !parser::Node
+    node.scope = state.scope
     compiler_state.current_block = previous_block
     compiler_state.function_stack.pop()
 }

@@ -843,7 +843,7 @@ export def has_destructor(tpe: &Type) -> bool {
         return tpe.has_destructor == Ternary::TRUE
     }
     var res = false
-    if is_ref(tpe) {
+    if is_ref_or_weak(tpe) {
         res = true
     } else if tpe.kind == TypeKind::STATIC_ARRAY { 
         res = has_destructor(tpe.tpe) 
@@ -1029,7 +1029,7 @@ export def has_copy_constructor(tpe: &Type) -> bool {
     if tpe.kind == TypeKind::STRUCT {
         for var i in 0..tpe.fields.length() {
             let field = tpe.fields(i)
-            if has_copy_constructor(field.tpe) or is_ref(field.tpe) {  
+            if has_copy_constructor(field.tpe) or is_ref_or_weak(field.tpe) {  
                 res = true
                 break
             }
@@ -1040,12 +1040,12 @@ export def has_copy_constructor(tpe: &Type) -> bool {
         while tpe != null and tpe.kind == TypeKind::STATIC_ARRAY {
             tpe = tpe.tpe
         }
-        if has_copy_constructor(tpe) or is_ref(tpe) { 
+        if has_copy_constructor(tpe) or is_ref_or_weak(tpe) { 
             res = true
         }
     } else if tpe.kind == TypeKind::TUNION {
         for var variant in tpe.return_t {
-            if has_copy_constructor(variant) or is_ref(variant) {  
+            if has_copy_constructor(variant) or is_ref_or_weak(variant) {  
                 res = true
                 break
             }
@@ -1544,11 +1544,26 @@ export type Signature = struct {
     parameter_t: &Vector(NamedParameter)
     return_t: &Vector(TypeId)
 }
+export def make_signature(parameter_t: &Vector(NamedParameter), return_t: &Vector(TypeId)) -> Signature {
+    var pars: &Vector(NamedParameter) = null
+    if parameter_t {
+        pars = vector::make(NamedParameter)
+        for var par in parameter_t {
+            pars.push([ 
+                tpe = par.tpe, 
+                varargs = par.varargs
+            ] !NamedParameter)
+        }
+    }
+
+    return [ parameter_t = pars, return_t = return_t.copy() ] !Signature
+}
+
 export def hash(signature: Signature) -> uint64 {
     var hash: uint64
     if signature.parameter_t {
         for var par in signature.parameter_t { // TODO hash for vectors
-            hash = combine_hashes(hash, par.tpe !uint64, hash(par.name))  
+            hash = combine_hashes(hash, par.tpe !uint64, par.varargs !uint64)  
         }
     }
     for var r in signature.return_t {
@@ -1560,7 +1575,9 @@ export def == (this: Signature, other: Signature) -> bool {
     if this.parameter_t and other.parameter_t {
         if this.parameter_t.length != other.parameter_t.length { return false }
         for var i in 0..this.parameter_t.length {
-            if this.parameter_t(i) != other.parameter_t(i) { return false }
+            let a = this.parameter_t(i)
+            let b = other.parameter_t(i)
+            if a.tpe != b.tpe or a.varargs != b.varargs { return false }
         }
     }
     if this.return_t.length != other.return_t.length { return false }
@@ -1694,7 +1711,7 @@ export def closure(parameter_t: &Vector(NamedParameterPre), return_t: &Vector(&T
 }
 
 def closure(parameter_t: &Vector(NamedParameter), return_t: &Vector(TypeId)) -> TypeId {
-    let signature = [ parameter_t = parameter_t, return_t = return_t ] !Signature
+    let signature = make_signature(parameter_t, return_t)
     if type_registry_closure.contains(signature) {
         return type_registry_closure(signature).id
     }
@@ -1726,10 +1743,7 @@ export def function(
     return_t: &Vector(TypeId)
 ) -> TypeId {
 
-    let signature = [ 
-        parameter_t = parameter_t, 
-        return_t = return_t
-    ] !Signature
+    let signature = make_signature(parameter_t, return_t)
 
     if type_registry_function.contains(signature) {
         return type_registry_function(signature).id
@@ -1748,26 +1762,11 @@ export def function(
 
 
 export def tuple(generics: &Vector(&TypeRef)) -> &TypeRef {
-    let types = vector::make(TypeId)
-    var is_generic = false
-    for var generic in generics {
-        if is_type(generic) { 
-            types.push(generic.tpe)
-        } else {
-            is_generic = true
-            break
-        }
-    }
-    
-    if not is_generic {
-        return make_type_ref(tuple(types))
-    }
-
     return make_type_ref([ kind = TypeKind::TUPLE, return_t = generics ] !&Pattern)
 }
 
 export def tuple(types: &Vector(TypeId)) -> TypeId {
-    let signature = [ return_t = types ] !Signature
+    let signature = make_signature(null, types)
     if type_registry_tuple.contains(signature) {
         return type_registry_tuple(signature).id
     }
@@ -1791,7 +1790,9 @@ export def tuple(types: &Vector(TypeId)) -> TypeId {
 }
 
 export def variant(types: &Vector(TypeId)) -> TypeId {
-    let signature = [ return_t = types ] !Signature
+    assert types.length > 0
+
+    let signature = make_signature(null, types)
     if type_registry_variant.contains(signature) {
         return type_registry_variant(signature).id
     }
@@ -1820,6 +1821,7 @@ export def variant(types: &Vector(TypeId)) -> TypeId {
 
     let union_tpe = make_union_type(fields)
     union_tpe.id = next_type_id()
+    union_tpe.is_literal = true
     register_internal(union_tpe.id, union_tpe)
     variant._tpe = union_tpe.id
     
@@ -1831,22 +1833,6 @@ export def variant(types: &Vector(TypeId)) -> TypeId {
 
 export def variant(generics: &Vector(&TypeRef)) -> &TypeRef {
     sort_by_typeid(generics)
-
-    let types = vector::make(TypeId)
-    var is_generic = false
-    for var tpe in types {
-        if is_type(tpe) { 
-            types.push(tpe.tpe)
-        } else {
-            is_generic = true
-            break
-        }
-    }
-
-    if not is_generic {
-        return make_type_ref(variant(types))
-    }
-
     return make_type_ref([ kind = TypeKind::TUNION, return_t = generics ] !&Pattern)
 }
 
@@ -3336,6 +3322,7 @@ export def parameter_equals(
 }
 
 def parameter_equals_single(a: &TypeRef, b: &TypeRef, env: &EqEnv) -> bool {
+    if not a or not b { return false }
     if not env { return a == b }
     if is_type(a) and is_type(b) {
         return a == b
@@ -3502,13 +3489,17 @@ export def mangle_function_name(name: Str, parameter_t: &Vector(NamedParameterPr
         if np.varargs {
             res += '['
         }
-        if np.tpe.tpe {
-            res += debug::type_to_str(np.tpe.tpe, true)
-        } else if np.tpe.pattern {
-            res += generic_to_string(np.tpe.pattern)
-        } else if np.tpe.name {
-            res += "type " + np.tpe.name
-        } else { assert }
+        if np.tpe {
+            if np.tpe.tpe {
+                res += debug::type_to_str(np.tpe.tpe, true)
+            } else if np.tpe.pattern {
+                res += generic_to_string(np.tpe.pattern)
+            } else if np.tpe.name {
+                res += "type " + np.tpe.name
+            } else { assert }
+        } else {
+            res += "(none)"
+        }
 
         if np.varargs {
             res += ']'
@@ -3941,17 +3932,17 @@ def do_type_lookup(node: &parser::Node, state: &State, is_type: bool = false, lo
             
         }
     } else if node.kind == parser::NodeKind::PTR_T {
-        node.scope = state.scope
+        //node.scope = state.scope
         if node.value.t_parr.tpe { node.value.t_parr.tpe.parent = node }
         var tpe = type_lookup(node.value.t_parr.tpe, state, is_type, lookup_default)
         return pointer(tpe, node.value.t_parr.kw)
     } else if node.kind == parser::NodeKind::REF_T {
-        node.scope = state.scope
+        //node.scope = state.scope
         if node.value.t_parr.tpe { node.value.t_parr.tpe.parent = node }
         var tpe = type_lookup(node.value.t_parr.tpe, state, is_type, lookup_default)
         return reference(tpe, node.value.t_parr.kw)
     } else if node.kind == parser::NodeKind::WEAK_REF_T {
-        node.scope = state.scope
+        //node.scope = state.scope
         if node.value.t_parr.tpe { node.value.t_parr.tpe.parent = node }
         var tpe = type_lookup(node.value.t_parr.tpe, state, is_type, lookup_default)
         return weak_reference(tpe, node.value.t_parr.kw)
@@ -4050,13 +4041,13 @@ def do_type_lookup(node: &parser::Node, state: &State, is_type: bool = false, lo
 
         return make_type_ref(tpe.id)
     } else if node.kind == parser::NodeKind::ARRAY_T {
-        node.scope = state.scope
+        //node.scope = state.scope
         if node.value.t_parr.tpe { node.value.t_parr.tpe.parent = node }
         let array_tpe = type_lookup(node.value.t_parr.tpe, state, is_type, lookup_default)
         let tpe = array(array_tpe, node.value.t_parr.kw)
         return tpe
     } else if node.kind == parser::NodeKind::ARRAY_STATIC_T {
-        node.scope = state.scope
+        //node.scope = state.scope
         if node.value.t_arrs.tpe { node.value.t_arrs.tpe.parent = node }
         let array_tpe = type_lookup(node.value.t_arrs.tpe, state, is_type, lookup_default = true)
 
@@ -4356,44 +4347,39 @@ export def lookup_identifier_types(node: &parser::Node, state: &State) {
 
 def get_value(node: &parser::Node, state: &State, force_compile: bool = true, dry_run: bool = false) -> &scope::Value {
     var value = scope::get(state.scope, node, force_compile = force_compile, dry_run = dry_run) !&scope::Value
-    if not value and state.current_function().is_closure {
+    let current_function = state.current_function()
+    if current_function.is_closure and value and not value.global and value.current_function != current_function {
         let len = state.function_stack.length
         for var i in 0..len {
-            var current_fun = state.function_stack(len - i - 1)
-            value = scope::get(current_fun.inner_scope, node, force_compile = force_compile, dry_run = dry_run)
-            if value {
-                for var j in (len - i - 1)..len {
-                    node.svalue = null
-                    let parent_function = state.function_stack(j)
-                    if parent_function.captures and scope::get(parent_function.inner_scope, node, force_compile = force_compile, dry_run = dry_run) == null {
-                        var modifier = parser::VarDecl::LET
-                        if value.modifier == parser::VarDecl::CONST {
-                            modifier = parser::VarDecl::CONST
-                        } else {
-                            let new_value_ref = scope::create_variable(
-                                parent_function.inner_scope, parser::make_identifier("__ref." + value.name), parser::ShareMarker::NONE,
-                                parser::VarDecl::LET, pointer(value.tpe, parser::VarDecl::VAR), null
-                            )
-                            parent_function.captures.push(new_value_ref)
-                        }
-
-                        let new_value = scope::create_variable(
-                            parent_function.inner_scope, node, parser::ShareMarker::NONE,
-                            modifier, value.tpe, null
-                        )
-
-                        if modifier == parser::VarDecl::CONST {
-                            new_value.value = value.value
-                        }
-                        if modifier != parser::VarDecl::CONST or value.tpe.kind() == TypeKind::CLOSURE {
-                            parent_function.captures.push(new_value)   
-                        }
-
-                        new_value.is_capture = true
-                        value = new_value
-                    }
+            node.svalue = null
+            let parent_function = state.function_stack(len - i - 1)
+            let existing = scope::get(parent_function.inner_scope, node, force_compile = force_compile, dry_run = dry_run)
+            if parent_function.captures and existing and not existing.global and existing.current_function != parent_function {
+                var modifier = parser::VarDecl::LET
+                if value.modifier == parser::VarDecl::CONST {
+                    modifier = parser::VarDecl::CONST
+                } else {
+                    let new_value_ref = scope::create_variable(
+                        parent_function.inner_scope, parser::make_identifier("__ref." + value.name), parser::ShareMarker::NONE,
+                        parser::VarDecl::LET, pointer(value.tpe, parser::VarDecl::VAR), null, parent_function
+                    )
+                    parent_function.captures.push(new_value_ref)
                 }
-                break
+
+                let new_value = scope::create_variable(
+                    parent_function.inner_scope, node, parser::ShareMarker::NONE,
+                    modifier, value.tpe, null, parent_function
+                )
+
+                if modifier == parser::VarDecl::CONST {
+                    new_value.value = value.value
+                }
+                if modifier != parser::VarDecl::CONST or value.tpe.kind() == TypeKind::CLOSURE {
+                    parent_function.captures.push(new_value)   
+                }
+
+                new_value.is_capture = true
+                value = new_value
             }
         }
     }
@@ -4500,29 +4486,37 @@ def infer_struct_type(node: &parser::Node, tpe: TypeId) {
 }
 
 def infer_lambda_parameter_types(node: &parser::Node, context_tpe: TypeId, state: &State) -> bool {
-    let ftpe = node.value.lambda.closure_type.resolve()
+    let fdef = node.value.lambda.function.fdef
+    let parameter_t = fdef.parameter_t.copy()
+    let return_t = fdef.return_t.copy()
     let tpe = context_tpe.resolve()
-    let parameter_t = ftpe.parameter_t.copy()
-    let return_t = vector::make(TypeId)
 
-    if tpe.parameter_t.length != ftpe.parameter_t.length {
+    if tpe.parameter_t.length != fdef.parameter_t.length - 1 {
         errors::errorn(node, "Can't assign lambda, parameter length mismatch, got ", 
-            to_string(ftpe.parameter_t.length), " parameters, expected ", to_string(tpe.parameter_t.length))
+            to_string(fdef.parameter_t.length - 1), " parameters, expected ", to_string(tpe.parameter_t.length))
         return false
     }
 
     // Replace to_infer types
-    for var i in 0..ftpe.parameter_t.length {
-        let ftpe_n = parameter_t(i).tpe
+    for var i in 0..tpe.parameter_t.length {
+        let ftpe_n = parameter_t(i + 1).tpe.resolve(state.scope)
         let expected = tpe.parameter_t(i).tpe
 
         if ftpe_n and ftpe_n.kind == TypeKind::TO_INFER {
-            parameter_t(i).tpe = expected
+            parameter_t.get(i + 1).tpe = make_type_ref(expected)
         }
     }
 
-    return_t.add_all(tpe.return_t)
-    node.value.lambda.closure_type = closure(parameter_t, return_t)
+    for var r in tpe.return_t {
+        return_t.push(make_type_ref(r))
+    }
+    
+    let closure_params = parameter_t.copy()
+    closure_params.remove(0) // The first parameter is the state
+    node.value.lambda.closure_type = node.tpe = closure(resolve(closure_params, state.scope), tpe.return_t)
+
+    let function = node.value.lambda.function
+    function.fdef = function_def(function.fdef.unmangled, parameter_t, return_t, state.module)
 
     return true
 }
@@ -4813,7 +4807,7 @@ export def walk_VarDecl(node: &parser::Node, state: &State, set_constant: bool =
             if is_underscore {
                 ident.svalue = scope::create_underscore(state.scope, ident, make_type_ref(ltpe))
             } else {
-                ident.svalue = scope::create_variable(state.scope, ident, share, kw, make_type_ref(ltpe), extern, null)
+                ident.svalue = scope::create_variable(state.scope, ident, share, kw, make_type_ref(ltpe), extern, null, state.current_function)
             }
 
             scope::add_reference(ident.svalue, ident)
@@ -5512,7 +5506,7 @@ def walk_Lambda_body(node: &parser::Node, state: &State) {
             return
         }
 
-        let value = scope::create_variable(inner_scope, np.node, parser::ShareMarker::NONE, parser::VarDecl::VAR, tpe2, null)
+        let value = scope::create_variable(inner_scope, np.node, parser::ShareMarker::NONE, parser::VarDecl::VAR, tpe2, null, function)
         np.node.svalue = value
     }
 
@@ -5521,7 +5515,7 @@ def walk_Lambda_body(node: &parser::Node, state: &State) {
     let prev_lambda = state.current_lambda
     state.current_lambda = function
 
-    var global_scope = state.scope.module.scope
+    //var global_scope = state.scope.module.scope
     let body_copy = vector::copy(body)
     for var i in 0..vector::length(body_copy) {
         // Eval constant expressions
@@ -5532,7 +5526,7 @@ def walk_Lambda_body(node: &parser::Node, state: &State) {
         // Create scopes for inner functions
         if inner.kind == parser::NodeKind::DEF {
             inner.scope = state.scope
-            inner.inner_scope = scope::enter_function_scope(global_scope)
+            inner.inner_scope = scope::enter_function_scope(state.scope)
         }
         walk(node, inner, state)
     }
@@ -5721,22 +5715,22 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
             }
             if np.varargs {
                 if tpe2 {
-                    let value = scope::create_variable(inner_scope, np.node, parser::ShareMarker::NONE, parser::VarDecl::VAR, array(tpe2, parser::VarDecl::VAR), null)
+                    let value = scope::create_variable(inner_scope, np.node, parser::ShareMarker::NONE, parser::VarDecl::VAR, array(tpe2, parser::VarDecl::VAR), null, fun)
                     np.node.svalue = value
                 }
             } else {
-                let value = scope::create_variable(inner_scope, np.node, parser::ShareMarker::NONE, parser::VarDecl::VAR, tpe2, null)
+                let value = scope::create_variable(inner_scope, np.node, parser::ShareMarker::NONE, parser::VarDecl::VAR, tpe2, null, fun)
                 np.node.svalue = value
             }
         }
         if test {
-            scope::create_variable(inner_scope, parser::make_identifier("env"), parser::ShareMarker::NONE, parser::VarDecl::LET, make_type_ref(pointer(builtins::TestEnvironment_)), null)
+            scope::create_variable(inner_scope, parser::make_identifier("env"), parser::ShareMarker::NONE, parser::VarDecl::LET, make_type_ref(pointer(builtins::test_environment_t())), null, fun)
         }
     }
 
     if is_closure {
         //tpe.parameter_t.get(0).node = null // TODO This is ugly, maybe NamedParameter should have a strong reference instead?
-        fun.value = scope::create_variable(outer_scope, name, parser::ShareMarker::NONE, parser::VarDecl::CONST, make_type_ref(closure_type), null)
+        fun.value = scope::create_variable(outer_scope, name, parser::ShareMarker::NONE, parser::VarDecl::CONST, make_type_ref(closure_type), null, fun)
         fun.value.fdef = @fdef
     } else {
         errors::current_function = fdef.name
@@ -5768,7 +5762,7 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
         }
     }
 
-    for var i in 0..orig_parameter_t.length {
+    for var i in 0..params.length {
         let param = params(i)
         if i >= orig_parameter_t.length { continue }
         let p = orig_parameter_t.get(i)
@@ -5792,8 +5786,6 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
             has_copy_constructor(generator)
         }
 
-        var global_scope = state.scope.module.scope
-
         let body_copy = vector::copy(body)
         for var i in 0..vector::length(body_copy) {
             // Eval constant expressions
@@ -5804,7 +5796,7 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
             // Create scopes for inner functions
             if inner.kind == parser::NodeKind::DEF {
                 inner.scope = state.scope
-                inner.inner_scope = scope::enter_function_scope(global_scope)
+                inner.inner_scope = scope::enter_function_scope(state.scope)
             }
             walk(node, inner, state)
         }
@@ -6023,7 +6015,9 @@ def walk_Return(node: &parser::Node, state: &State) {
                 return
             }
             for var i in 0..return_t.length {
-                if not equals(return_t(i).resolve(state.scope), rtypes(i)) {
+                let a = return_t(i).resolve(state.scope)
+                let b = rtypes(i)
+                if not equals(a, b) {
                     errors::errorn(node, "Return types for lambda disagree with previous return statement")
                     return
                 }
@@ -6034,7 +6028,7 @@ def walk_Return(node: &parser::Node, state: &State) {
             }
         }
         // FIXME Shouldn't this be a closure type?
-        state.current_lambda.fdef = function_def("", cur_lambda.parameter_t, return_t)
+        //state.current_lambda.fdef = function_def("", cur_lambda.parameter_t, return_t)
         return
     }
 
@@ -6093,7 +6087,7 @@ def walk_YieldFrom(node: &parser::Node, state: &State) {
     }
     if not node.value.expr { return }
 
-    let ftpe = current_fun.value.get_type().resolve()
+    let ftpe = current_fun.value.fdef.to_type().resolve()
     let generator = ftpe.return_t(0)
 
     walk(node, node.value.expr, state)
@@ -6126,7 +6120,8 @@ def walk_YieldFrom(node: &parser::Node, state: &State) {
         ident,
         parser::ShareMarker::NONE,
         parser::VarDecl::VAR,
-        make_type_ref(vtpe), true, null // extern so that we don't change the variable name
+        make_type_ref(vtpe), true, null,
+        state.current_function // extern so that we don't change the variable name
     )
     v.is_internal = true
     v.identifier = ident
@@ -6777,7 +6772,8 @@ def walk_For(node: &parser::Node, state: &State) {
             ident, 
             parser::ShareMarker::NONE, 
             (@iddecl).value.for_id_decl.kw, 
-            make_type_ref(tpe), null
+            make_type_ref(tpe), null,
+            state.current_function
         )
     } else {
         walk(node, iddecl, state)
@@ -7687,7 +7683,7 @@ export def walk_Def_with_type_argument(node: &parser::Node, args: &Vector(NamedP
     // Extra state for the repl
     if toolchain::is_in_repl {
         compiler::predeclare_function(fun, state.scope)
-        consteval::const_module.result.functions(node.tpe.type_name) = fun
+        consteval::const_module.result.add_function(fun.fdef.name, fun)
         consteval::const_module.delayed_compile.push(node)
     }
     
