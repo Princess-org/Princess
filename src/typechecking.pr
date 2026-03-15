@@ -4347,44 +4347,39 @@ export def lookup_identifier_types(node: &parser::Node, state: &State) {
 
 def get_value(node: &parser::Node, state: &State, force_compile: bool = true, dry_run: bool = false) -> &scope::Value {
     var value = scope::get(state.scope, node, force_compile = force_compile, dry_run = dry_run) !&scope::Value
-    if not value and state.current_function().is_closure {
+    let current_function = state.current_function()
+    if current_function.is_closure and value and not value.global and value.current_function != current_function {
         let len = state.function_stack.length
         for var i in 0..len {
-            var current_fun = state.function_stack(len - i - 1)
-            value = scope::get(current_fun.inner_scope, node, force_compile = force_compile, dry_run = dry_run)
-            if value {
-                for var j in (len - i - 1)..len {
-                    node.svalue = null
-                    let parent_function = state.function_stack(j)
-                    if parent_function.captures and scope::get(parent_function.inner_scope, node, force_compile = force_compile, dry_run = dry_run) == null {
-                        var modifier = parser::VarDecl::LET
-                        if value.modifier == parser::VarDecl::CONST {
-                            modifier = parser::VarDecl::CONST
-                        } else {
-                            let new_value_ref = scope::create_variable(
-                                parent_function.inner_scope, parser::make_identifier("__ref." + value.name), parser::ShareMarker::NONE,
-                                parser::VarDecl::LET, pointer(value.tpe, parser::VarDecl::VAR), null
-                            )
-                            parent_function.captures.push(new_value_ref)
-                        }
-
-                        let new_value = scope::create_variable(
-                            parent_function.inner_scope, node, parser::ShareMarker::NONE,
-                            modifier, value.tpe, null
-                        )
-
-                        if modifier == parser::VarDecl::CONST {
-                            new_value.value = value.value
-                        }
-                        if modifier != parser::VarDecl::CONST or value.tpe.kind() == TypeKind::CLOSURE {
-                            parent_function.captures.push(new_value)   
-                        }
-
-                        new_value.is_capture = true
-                        value = new_value
-                    }
+            node.svalue = null
+            let parent_function = state.function_stack(len - i - 1)
+            let existing = scope::get(parent_function.inner_scope, node, force_compile = force_compile, dry_run = dry_run)
+            if parent_function.captures and existing and not existing.global and existing.current_function != parent_function {
+                var modifier = parser::VarDecl::LET
+                if value.modifier == parser::VarDecl::CONST {
+                    modifier = parser::VarDecl::CONST
+                } else {
+                    let new_value_ref = scope::create_variable(
+                        parent_function.inner_scope, parser::make_identifier("__ref." + value.name), parser::ShareMarker::NONE,
+                        parser::VarDecl::LET, pointer(value.tpe, parser::VarDecl::VAR), null, parent_function
+                    )
+                    parent_function.captures.push(new_value_ref)
                 }
-                break
+
+                let new_value = scope::create_variable(
+                    parent_function.inner_scope, node, parser::ShareMarker::NONE,
+                    modifier, value.tpe, null, parent_function
+                )
+
+                if modifier == parser::VarDecl::CONST {
+                    new_value.value = value.value
+                }
+                if modifier != parser::VarDecl::CONST or value.tpe.kind() == TypeKind::CLOSURE {
+                    parent_function.captures.push(new_value)   
+                }
+
+                new_value.is_capture = true
+                value = new_value
             }
         }
     }
@@ -4491,29 +4486,37 @@ def infer_struct_type(node: &parser::Node, tpe: TypeId) {
 }
 
 def infer_lambda_parameter_types(node: &parser::Node, context_tpe: TypeId, state: &State) -> bool {
-    let ftpe = node.value.lambda.closure_type.resolve()
+    let fdef = node.value.lambda.function.fdef
+    let parameter_t = fdef.parameter_t.copy()
+    let return_t = fdef.return_t.copy()
     let tpe = context_tpe.resolve()
-    let parameter_t = ftpe.parameter_t.copy()
-    let return_t = vector::make(TypeId)
 
-    if tpe.parameter_t.length != ftpe.parameter_t.length {
+    if tpe.parameter_t.length != fdef.parameter_t.length - 1 {
         errors::errorn(node, "Can't assign lambda, parameter length mismatch, got ", 
-            to_string(ftpe.parameter_t.length), " parameters, expected ", to_string(tpe.parameter_t.length))
+            to_string(fdef.parameter_t.length - 1), " parameters, expected ", to_string(tpe.parameter_t.length))
         return false
     }
 
     // Replace to_infer types
-    for var i in 0..ftpe.parameter_t.length {
-        let ftpe_n = parameter_t(i).tpe
+    for var i in 0..tpe.parameter_t.length {
+        let ftpe_n = parameter_t(i + 1).tpe.resolve(state.scope)
         let expected = tpe.parameter_t(i).tpe
 
         if ftpe_n and ftpe_n.kind == TypeKind::TO_INFER {
-            parameter_t(i).tpe = expected
+            parameter_t.get(i + 1).tpe = make_type_ref(expected)
         }
     }
 
-    return_t.add_all(tpe.return_t)
-    node.value.lambda.closure_type = closure(parameter_t, return_t)
+    for var r in tpe.return_t {
+        return_t.push(make_type_ref(r))
+    }
+    
+    let closure_params = parameter_t.copy()
+    closure_params.remove(0) // The first parameter is the state
+    node.value.lambda.closure_type = node.tpe = closure(resolve(closure_params, state.scope), tpe.return_t)
+
+    let function = node.value.lambda.function
+    function.fdef = function_def(function.fdef.unmangled, parameter_t, return_t, state.module)
 
     return true
 }
@@ -4804,7 +4807,7 @@ export def walk_VarDecl(node: &parser::Node, state: &State, set_constant: bool =
             if is_underscore {
                 ident.svalue = scope::create_underscore(state.scope, ident, make_type_ref(ltpe))
             } else {
-                ident.svalue = scope::create_variable(state.scope, ident, share, kw, make_type_ref(ltpe), extern, null)
+                ident.svalue = scope::create_variable(state.scope, ident, share, kw, make_type_ref(ltpe), extern, null, state.current_function)
             }
 
             scope::add_reference(ident.svalue, ident)
@@ -5503,7 +5506,7 @@ def walk_Lambda_body(node: &parser::Node, state: &State) {
             return
         }
 
-        let value = scope::create_variable(inner_scope, np.node, parser::ShareMarker::NONE, parser::VarDecl::VAR, tpe2, null)
+        let value = scope::create_variable(inner_scope, np.node, parser::ShareMarker::NONE, parser::VarDecl::VAR, tpe2, null, function)
         np.node.svalue = value
     }
 
@@ -5512,7 +5515,7 @@ def walk_Lambda_body(node: &parser::Node, state: &State) {
     let prev_lambda = state.current_lambda
     state.current_lambda = function
 
-    var global_scope = state.scope.module.scope
+    //var global_scope = state.scope.module.scope
     let body_copy = vector::copy(body)
     for var i in 0..vector::length(body_copy) {
         // Eval constant expressions
@@ -5523,7 +5526,7 @@ def walk_Lambda_body(node: &parser::Node, state: &State) {
         // Create scopes for inner functions
         if inner.kind == parser::NodeKind::DEF {
             inner.scope = state.scope
-            inner.inner_scope = scope::enter_function_scope(global_scope)
+            inner.inner_scope = scope::enter_function_scope(state.scope)
         }
         walk(node, inner, state)
     }
@@ -5712,22 +5715,22 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
             }
             if np.varargs {
                 if tpe2 {
-                    let value = scope::create_variable(inner_scope, np.node, parser::ShareMarker::NONE, parser::VarDecl::VAR, array(tpe2, parser::VarDecl::VAR), null)
+                    let value = scope::create_variable(inner_scope, np.node, parser::ShareMarker::NONE, parser::VarDecl::VAR, array(tpe2, parser::VarDecl::VAR), null, fun)
                     np.node.svalue = value
                 }
             } else {
-                let value = scope::create_variable(inner_scope, np.node, parser::ShareMarker::NONE, parser::VarDecl::VAR, tpe2, null)
+                let value = scope::create_variable(inner_scope, np.node, parser::ShareMarker::NONE, parser::VarDecl::VAR, tpe2, null, fun)
                 np.node.svalue = value
             }
         }
         if test {
-            scope::create_variable(inner_scope, parser::make_identifier("env"), parser::ShareMarker::NONE, parser::VarDecl::LET, make_type_ref(pointer(builtins::test_environment_t())), null)
+            scope::create_variable(inner_scope, parser::make_identifier("env"), parser::ShareMarker::NONE, parser::VarDecl::LET, make_type_ref(pointer(builtins::test_environment_t())), null, fun)
         }
     }
 
     if is_closure {
         //tpe.parameter_t.get(0).node = null // TODO This is ugly, maybe NamedParameter should have a strong reference instead?
-        fun.value = scope::create_variable(outer_scope, name, parser::ShareMarker::NONE, parser::VarDecl::CONST, make_type_ref(closure_type), null)
+        fun.value = scope::create_variable(outer_scope, name, parser::ShareMarker::NONE, parser::VarDecl::CONST, make_type_ref(closure_type), null, fun)
         fun.value.fdef = @fdef
     } else {
         errors::current_function = fdef.name
@@ -5783,8 +5786,6 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
             has_copy_constructor(generator)
         }
 
-        var global_scope = state.scope.module.scope
-
         let body_copy = vector::copy(body)
         for var i in 0..vector::length(body_copy) {
             // Eval constant expressions
@@ -5795,7 +5796,7 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
             // Create scopes for inner functions
             if inner.kind == parser::NodeKind::DEF {
                 inner.scope = state.scope
-                inner.inner_scope = scope::enter_function_scope(global_scope)
+                inner.inner_scope = scope::enter_function_scope(state.scope)
             }
             walk(node, inner, state)
         }
@@ -6014,7 +6015,9 @@ def walk_Return(node: &parser::Node, state: &State) {
                 return
             }
             for var i in 0..return_t.length {
-                if not equals(return_t(i).resolve(state.scope), rtypes(i)) {
+                let a = return_t(i).resolve(state.scope)
+                let b = rtypes(i)
+                if not equals(a, b) {
                     errors::errorn(node, "Return types for lambda disagree with previous return statement")
                     return
                 }
@@ -6025,7 +6028,7 @@ def walk_Return(node: &parser::Node, state: &State) {
             }
         }
         // FIXME Shouldn't this be a closure type?
-        state.current_lambda.fdef = function_def("", cur_lambda.parameter_t, return_t)
+        //state.current_lambda.fdef = function_def("", cur_lambda.parameter_t, return_t)
         return
     }
 
@@ -6117,7 +6120,8 @@ def walk_YieldFrom(node: &parser::Node, state: &State) {
         ident,
         parser::ShareMarker::NONE,
         parser::VarDecl::VAR,
-        make_type_ref(vtpe), true, null // extern so that we don't change the variable name
+        make_type_ref(vtpe), true, null,
+        state.current_function // extern so that we don't change the variable name
     )
     v.is_internal = true
     v.identifier = ident
@@ -6768,7 +6772,8 @@ def walk_For(node: &parser::Node, state: &State) {
             ident, 
             parser::ShareMarker::NONE, 
             (@iddecl).value.for_id_decl.kw, 
-            make_type_ref(tpe), null
+            make_type_ref(tpe), null,
+            state.current_function
         )
     } else {
         walk(node, iddecl, state)
