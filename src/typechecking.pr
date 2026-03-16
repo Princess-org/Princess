@@ -819,7 +819,6 @@ export def register(id: TypeId, tpe: &Type) {
 }
 
 export def register_internal(id: TypeId, tpe: &Type) {
-    assert id == tpe.id
     type_registry_internal(id) = tpe
 }
 
@@ -2515,26 +2514,100 @@ export def implements(a: &Type, b: &Type, scpe: &scope::Scope, check_embed: bool
         let implements = a.implements
         return implements and implements.contains(b.id)
     } else {
-        assert b.kind == TypeKind::INTERFACE
+        return implements_interface(a, b, scpe, scpe.module)
+    }
+}
+
+export def implements_interface(
+    tpe: &Type, right: &Type, scpe: &scope::Scope, 
+    module: &toolchain::Module, functions: &Vector(&Value) = null, 
+    error_on_fail: bool = false, node: &parser::Node = null
+) -> bool {
+
+    var intf = right
+    if right.kind == TypeKind::REFERENCE {
+        intf = right.tpe.resolve()
+    }
+
+    assert intf.kind == TypeKind::INTERFACE
     
-        for var member in b.members {
-            let params = vector::make(NamedParameter)
-            params.push([ tpe = a.id ] !NamedParameter)
-            for var param in member.parameter_t {
-                params.push(param)
-            }
-            let fun = scope::get_function(scpe, parser::make_identifier(member.name), params, dry_run = true)
-            if not fun { return false }
-            if fun.fdef.return_t.length() != member.return_t.length() { return false }
-            for var i in 0..fun.fdef.return_t.length() {
-                if not equals(fun.fdef.return_t(i).resolve(scpe), member.return_t(i)) { 
-                    return false 
+    for var member in intf.members {
+        let parameter_t = vector::make(NamedParameter)
+        parameter_t.push([tpe = tpe.id] !NamedParameter)
+        for var param in member.parameter_t {
+            parameter_t.push(param)
+        }
+
+        var struct_tpe = tpe
+        if tpe and tpe.kind == TypeKind::REFERENCE {
+            struct_tpe = tpe.tpe.resolve()
+        }
+        if struct_tpe and (struct_tpe.kind == TypeKind::STRUCT or 
+            struct_tpe.kind == TypeKind::UNION) {
+            // Check for fields
+
+            let fields = flatten_fields(null, struct_tpe)
+
+            var found = false
+            if is_getter(member) {
+                for var field in fields {
+                    if field.name == member.name and equals(member.return_t(0), field.tpe) { 
+                        found = true
+                        break
+                    }
                 }
+            } else if is_setter(member) {
+                let name = member.name.slice(6, member.name.length() - 2)
+                for var field in fields {
+                    if field.name == name and equals(member.parameter_t(0).tpe, field.tpe) { 
+                        found = true
+                        break
+                    }
+                }
+            }
+            
+            if found {
+                continue
             }
         }
 
-        return true
+        let name_node = parser::make_identifier(member.name)
+        let fun = get_function(module.scope, name_node, parameter_t, dry_run = true)
+        var res = fun != null
+
+        if res {
+            if fun.fdef.return_t.length != member.return_t.length {
+                res = false
+            } else {
+                if consteval::is_static {
+                    consteval::compile_function(fun, scpe)
+                }
+
+                let ftpe = fun.fdef.to_type().resolve()
+                if not ftpe {
+                    print_fdef(fun.fdef)
+                    assert
+                }
+                for var i in 0..fun.fdef.return_t.length {
+                    if not equals(ftpe.return_t(i), member.return_t(i)){
+                        res = false
+                        break
+                    }
+                }
+            }
+        }
+        if not res {
+            if error_on_fail {
+                errors::errorn(node, "Type `", type_to_str(tpe), "` doesn't implement member `", member.name, "` of interface `", debug::type_to_str(right), "`")
+            }
+            return false
+        }
+
+        if functions {
+            functions.push(fun)
+        }
     }
+    return true
 }
 
 // Returns true if b is assignable to a
@@ -3076,7 +3149,9 @@ export def convert_type_score(a: &Type, b: &Type, scpe: &scope::Scope, impl: boo
         }
     }
 
-    if a.kind == TypeKind::INTERFACE or (a.kind == TypeKind::REFERENCE and a.tpe and a.tpe.kind == TypeKind::INTERFACE) {
+    if b.kind != TypeKind::TYPE and (a.kind == TypeKind::INTERFACE or 
+        (a.kind == TypeKind::REFERENCE and a.tpe and a.tpe.kind == TypeKind::INTERFACE)) {
+
         if a.kind == TypeKind::REFERENCE and b.kind == TypeKind::REFERENCE {
             if b.tpe and b.tpe.kind == TypeKind::NULL or implements(b.tpe, a, scpe) {
                 return 6
@@ -5924,7 +5999,11 @@ export def walk_TypeDecl(node: &parser::Node, state: &State) {
                 let typeref = type_lookup(value, state)
                 type_value = resolve(typeref, state.scope)
 
-                if value.kind == parser::NodeKind::STRUCT_T or value.kind == parser::NodeKind::UNION_T {
+                if value.kind == parser::NodeKind::TYPE_OF_T {
+                    // type_of needs to be registered because
+                    // we created a new type id for it
+                    register_internal(tpe, type_value)
+                } else if value.kind == parser::NodeKind::STRUCT_T or value.kind == parser::NodeKind::UNION_T {
                     type_value.id = tpe
                     register(tpe, type_value)
                     // We need to look up the struct again to resolve recursive types
@@ -7262,12 +7341,13 @@ def walk_ComparisionOp(node: &parser::Node, state: &State) {
     }
 
     if node.kind != parser::NodeKind::FUNC_CALL {
-        if left.tpe and left.tpe.kind == TypeKind::TYPE {
+        /*if left.tpe and left.tpe.kind == TypeKind::TYPE {
             let equals = scope::get(toolchain::runtime_.scope, parser::make_identifier("equals"), not consteval::is_static)
             consteval::compile_function(equals, toolchain::runtime_.scope)
-        }
+        }*/
 
-        // TODO We can compare almost everything
+        // FIXME We can compare almost everything, and we definitely shouldn't,
+        // This ends up generating invalid llvm ir
         node.tpe = builtins::bool_
     }
 }
