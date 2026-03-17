@@ -355,6 +355,7 @@ class FunctionDecl(Declaration):
 PRIMITIVES = {
     clang.TypeKind.VOID: void,
     clang.TypeKind.CHAR_S: Integer("char"),
+    clang.TypeKind.CHAR_U: Integer("char"),
     clang.TypeKind.SCHAR: Integer("char"),
     clang.TypeKind.UCHAR: Integer("uint8"),
     clang.TypeKind.SHORT: Integer("short"),
@@ -632,7 +633,8 @@ def process_module(name: str, *libs):
                                     file.GLOBALS[node.spelling] = ConstDecl(node.spelling, PRIMITIVES[clang.TypeKind.DOUBLE], token.spelling)
                                 except ValueError: pass
             except InvalidType as e:
-                print("Warning: Invalid type!")       
+                print(node.location)
+                print(e)     
 
         index = clang.Index.create()
         tu = index.parse(folder / f"{name}.h", args = ARGS, options = 

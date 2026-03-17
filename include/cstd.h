@@ -47,6 +47,16 @@ MACOS specific
 %EXCLUDE OSReadSwapInt16 OSReadSwapInt32 OSReadSwapInt64 OSWriteSwapInt16 OSWriteSwapInt32 OSWriteSwapInt64
 %EXCLUDE _OSSwapInt16 _OSSwapInt32 _OSSwapInt64 __darwin_check_fd_set __darwin_fd_clr __darwin_fd_isset
 %EXCLUDE __darwin_fd_set __sigbits __sputc
+
+ARM specific
+%EXCLUDE _ZGVnN4vv_atan2f _ZGVnN4v_acosf _ZGVnN4v_asinf _ZGVnN4v_atanf _ZGVnN4v_cosf _ZGVnN4v_expf _ZGVnN4v_exp10f _ZGVnN4v_exp2f 
+%EXCLUDE _ZGVnN4v_expm1f _ZGVnN4v_logf _ZGVnN4v_log10f _ZGVnN4v_log1pf _ZGVnN4v_log2f _ZGVnN4v_sinf _ZGVnN4v_tanf _ZGVnN2vv_atan2
+%EXCLUDE _ZGVnN2v_acos _ZGVnN2v_asin _ZGVnN2v_atan _ZGVnN2v_cos _ZGVnN2v_exp _ZGVnN2v_exp10 _ZGVnN2v_exp2 _ZGVnN2v_expm1 _ZGVnN2v_log
+%EXCLUDE _ZGVnN2v_log10 _ZGVnN2v_log1p _ZGVnN2v_log2 _ZGVnN2v_sin _ZGVnN2v_tan _ZGVsMxvv_atan2f _ZGVsMxv_acosf _ZGVsMxv_asinf
+%EXCLUDE _ZGVsMxv_atanf _ZGVsMxv_cosf _ZGVsMxv_expf _ZGVsMxv_exp10f _ZGVsMxv_exp2f _ZGVsMxv_expm1f _ZGVsMxv_logf _ZGVsMxv_log10f 
+%EXCLUDE _ZGVsMxv_log1pf _ZGVsMxv_log2f _ZGVsMxv_sinf _ZGVsMxv_tanf _ZGVsMxvv_atan2 _ZGVsMxv_acos _ZGVsMxv_asin _ZGVsMxv_atan 
+%EXCLUDE _ZGVsMxv_cos _ZGVsMxv_exp _ZGVsMxv_exp10 _ZGVsMxv_exp2 _ZGVsMxv_expm1 _ZGVsMxv_log _ZGVsMxv_log10 _ZGVsMxv_log1p 
+%EXCLUDE _ZGVsMxv_log2 _ZGVsMxv_sin _ZGVsMxv_tan
 */
 
 #include <stdlib.h>
