@@ -48,10 +48,14 @@ def write_type(fp: File, tpe: typechecking::TypeId, state: &Serialize) {
         fp.write(*zero)
         return
     }
-    let hash = md5::high(md5::md5(debug::type_to_str(tpe, full_name = true)))
+    let hash = get_hash(tpe)
     fp.write(*hash)
 
     state.types(tpe) = hash
+}
+
+def get_hash(tpe: typechecking::TypeId) -> uint64 {
+    return md5::high(md5::md5(debug::type_to_str(tpe, full_name = true)))
 }
 
 def serialize_type(fp: File, tpe: &typechecking::Type, state: &Serialize) {
@@ -330,7 +334,7 @@ def read_type(fp: File) -> typechecking::TypeId {
     return id !typechecking::TypeId
 }
 
-def deserialize_type(fp: File) -> &typechecking::Type {
+def deserialize_type(fp: File, state: &Deserialize) -> &typechecking::Type {
     var kind: byte
     fp.read(*kind)
     if kind == NO_TYPE { return null }
@@ -342,6 +346,8 @@ def deserialize_type(fp: File) -> &typechecking::Type {
     var _hash: int64
     fp.read(*_hash)
 
+    //print("Deserializing type ", type_name, " (", _hash, ")\n")
+
     var has_builtin_destructor: bool
     fp.read(*has_builtin_destructor)
     var has_constructor: bool
@@ -349,7 +355,8 @@ def deserialize_type(fp: File) -> &typechecking::Type {
 
     var defmodule: &toolchain::Module
     if defmodule_str {
-        defmodule = toolchain::find_module(defmodule_str)
+        let path = toolchain::find_module_file(defmodule_str, state.module)
+        defmodule = toolchain::create_module_if_absent(path, defmodule_str)
     }
 
     var tc_tpe: typechecking::TypeId
@@ -895,9 +902,10 @@ export def serialize(module: &toolchain::Module) {
         let key = keys(i)
         let value = module.scope.fields(key)
         if value.is_internal { continue }
+
+        state.dependencies.add_all(value.dependencies)
         if value.modifier == parser::VarDecl::TYPE {
             types.push(value)
-            state.dependencies.add_all(value.dependencies)
         } else {
             if value.modifier == parser::VarDecl::CONST {
                 if value.kind != scope::ValueKind::FUNCTION and value.kind != scope::ValueKind::NAMESPACE {
@@ -949,6 +957,20 @@ export def serialize(module: &toolchain::Module) {
         fp.write_str(ident.name)
         fp.write_str(ident.signature)
         fp.write_str(ident.module.module !String if ident.module else null)
+    }
+
+    // Add types with generated copy constructor and destructor
+    fp.write(*module.used_destructors.size)
+    for var tpe in @module.used_destructors.keys() {
+        let hash = get_hash(tpe)
+        fp.write(*hash)
+        state.types(tpe) = hash
+    }
+    fp.write(*module.used_copy_constructors.size)
+    for var tpe in @module.used_copy_constructors.keys() {
+        let hash = get_hash(tpe)
+        fp.write(*hash)
+        state.types(tpe) = hash
     }
 
     // Serialize types for this module
@@ -1026,6 +1048,8 @@ export type Deserialize = struct {
     functions: &Vector(FunctionEntry) // Things get written before the type information so we must delay processing
     variables: &Vector(VariableEntry)
     rtypes: &Vector(TypeEntry)
+    used_destructors: &Set(uint64)
+    used_copy_constructors: &Set(uint64)
 }
 
 // This is a mapping from the hash to the actual type which has been deserialized.
@@ -1051,7 +1075,9 @@ export def resolver_pass(module: &toolchain::Module) {
         scopes = vector::make(type &scope::Scope),
         functions = vector::make(FunctionEntry),
         variables = vector::make(VariableEntry),
-        rtypes = vector::make(TypeEntry)
+        rtypes = vector::make(TypeEntry),
+        used_destructors = set::make(uint64),
+        used_copy_constructors = set::make(uint64)
     ] !&Deserialize
 
     module.deserialize = deserialize
@@ -1153,12 +1179,25 @@ export def resolver_pass(module: &toolchain::Module) {
         deserialize.dependencies(i) = scope::make_ident(name, dep_module, hash, signature)
     }
 
+    fp.read(*size)
+    for var i in 0..size {
+        var hash: uint64
+        fp.read(*hash)
+        deserialize.used_destructors.add(hash)
+    }
+    fp.read(*size)
+    for var i in 0..size {
+        var hash: uint64
+        fp.read(*hash)
+        deserialize.used_copy_constructors.add(hash)
+    }
+
     // Deserialize types
     fp.read(*size)
     for var i in 0..size {
         var hash: int64
         fp.read(*hash)
-        let tpe = deserialize_type(fp)
+        let tpe = deserialize_type(fp, deserialize)
         //print("Deserialized type ", hash, "\n")
         deserialized_types(hash) = tpe
     }
@@ -1201,7 +1240,7 @@ export def define_members(module: &toolchain::Module) {
         value.polymorph = entry.polymorph
 
         debug::trace("Defined function " + entry.name + " (" + entry.hash + ")")
-        typechecking::print_fdef(entry.fdef)
+        //typechecking::print_fdef(entry.fdef)
     }
 
     for var i in 0..deserialize.variables.length {
@@ -1465,6 +1504,8 @@ export def resolve_types_and_members {
             tpe.type_name = type_name
             tpe.defmodule = defmodule
 
+            //print("Resolving type ", type_name, " hash: ", tpe._hash, " id: ", tpe.id, "\n")
+
             if tpe.tc_tpe {
                 //print("After: ", tpe.tc_tpe, "\n")
                 typechecking::register_type_instance(tpe)
@@ -1524,6 +1565,15 @@ export def resolve_types_and_members {
         if module.deserialize {
             let deserialize = module.deserialize
 
+            for var hash in @deserialize.used_destructors.keys() {
+                let tpe = deserialized_types(hash)
+                module.used_destructors.add(tpe.id)
+            }
+            for var hash in @deserialize.used_copy_constructors.keys() {
+                let tpe = deserialized_types(hash)
+                module.used_copy_constructors.add(tpe.id)
+            }
+
             for var i in 0..deserialize.rtypes.length {
                 let entry = deserialize.rtypes.get(i)
                 entry.tpe = deserialized_types(entry.tpe).id
@@ -1564,11 +1614,11 @@ export def resolve_types_and_members {
         for var i in 0..deserialize.dependencies.size {
             let dep = deserialize.dependencies(i)
             let value = scope::find(dep)
-            print("Checking dependency ", dep.name, " (", dep.hash, ")\n")
-            print("    Found value: ", "yes" if value else "no", "\n")
-            if value {
-                print("    Value hash: ", value.ident.hash, "\n")
-            }
+            //print("Checking dependency ", dep.name, " (", dep.hash, ")\n")
+            //print("    Found value: ", "yes" if value else "no", "\n")
+            //if value {
+                //print("    Value hash: ", value.ident.hash, "\n")
+            //}
             if not value or value.ident.hash != dep.hash {
                 module.is_dirty = true
                 break
@@ -1625,6 +1675,8 @@ export def generate_ctor_and_dtor() {
 
     def create_type(tpe: &typechecking::Type) {
         if not tpe { return }
+        //print("create_type: ", tpe.id, ": ", tpe.type_name, "\n")
+
         if tpe.kind == typechecking::TypeKind::TYPE_CONSTRUCTOR { return }
 
         // TODO These functions are weird, we want to generate both
