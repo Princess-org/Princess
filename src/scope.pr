@@ -16,6 +16,7 @@ export type Ident = struct {
     name: Str
     signature: Str
     _hash: uint64
+    _contents_hash: uint64
     module: weak &toolchain::Module
 }
 
@@ -24,13 +25,18 @@ export type ImportedModule = struct {
     alias: &parser::Node
 }
 
-export def make_ident(name: Str, module: &toolchain::Module = null, hash: uint64 = 0, signature: String = null) -> Ident {
+export def make_ident(
+    name: Str, module: &toolchain::Module = null, 
+    hash: uint64 = 0, contents_hash: uint64 = 0, signature: String = null
+) -> Ident {
+    
     if not signature { signature = name }
     return [
         name = name,
         signature = signature,
         module = module,
-        _hash = hash
+        _hash = hash,
+        _contents_hash = contents_hash
     ] !Ident
 }
 
@@ -128,6 +134,8 @@ export type Value = struct {
     is_internal: bool
     // This is true if we have a polymorphic instance
     polymorph: bool
+    // Keep a reference to the original function for dependency tracking
+    polymorph_original: weak &Value
 
     // References to this value
     references: &Vector(parser::SourceLoc)
@@ -299,9 +307,9 @@ export type Phase = enum {
     DECLARED; DEFINED; COMPILED; INDETERMINATE
 }
 
-export def create_dependency(this: &Value, other: &parser::Node) {
+export def create_dependency(this: &Value, other: &parser::Node, contents: bool = false) {
     if other.svalue {
-        create_dependency(this, other.svalue)        
+        create_dependency(this, other.svalue, contents)
     } else {
         var ident = other
         if other.kind == parser::NodeKind::TYPE_CONSTRUCTOR {
@@ -359,13 +367,19 @@ export def create_dependency_on_type(this: &Value, node: &parser::Node) {
     // TODO Structural types
 }
 
-export def create_dependency(this: &Value, other: &Value) {
+export def create_dependency(this: &Value, other: &Value, contents: bool = false) {
     if toolchain::no_dependency_tracking { return }
     if not this or not other { return }
     if this.ident == other.ident { return }
 
+    var oi = other.ident
+    if not contents {
+        // We ignore the contents
+        oi._contents_hash = 0
+    }
+
     if this.dependencies {
-        this.dependencies.add(other.ident)
+        this.dependencies.add(oi)
     }
     if other.dependants {
         other.dependants.add(this.ident)
@@ -1152,8 +1166,9 @@ export def typecheck_function(value: &Value, parameter_t: &Vector(typechecking::
     if typechecking::is_polymorph(value.fdef) {
         let scope = enter_scope(context)
         let node = typechecking::walk_Def_with_type_argument(value.node, parameter_t, scope, typechecking::make_state(value.module))
-        let value = node.value.def_.function.value
-        return value
+        let new_value = node.value.def_.function.value
+        if new_value { new_value.polymorph_original = value }
+        return new_value
     } else {
         value.phase = Phase::INDETERMINATE
         let state = typechecking::make_state(value.module)
@@ -1713,7 +1728,7 @@ export def create_function_without_checking(
         fdef = fdef,
         phase = Phase::COMPILED,
         global = global,
-        ident = make_ident(name, scope.module, 0, fdef.name),
+        ident = make_ident(name, scope.module, 0, 0, fdef.name),
         polymorph = typechecking::is_polymorph(fdef),
         module = scope.module
     ] !&Value
@@ -1811,7 +1826,9 @@ def create_function_value(
         phase = phase,
         global = global,
         node = node,
-        ident = make_ident(name, scope.module, node.signature_hash if node else 0, fdef.name),
+        ident = make_ident(name, scope.module, 
+            node.signature_hash if node else 0, node.hash if node else 0, fdef.name),
+            
         polymorph = typechecking::is_polymorph(fdef),
         references = vector::make(parser::SourceLoc),
         module = scope.module
