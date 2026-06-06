@@ -269,11 +269,16 @@ export type Scope = struct {
 }
 
 export def print_scope(scope: &Scope) {
-    print_scope(scope, "")
+    print_scope(scope, "", set::make(uint64))
 }
 
-def print_scope(scope: &Scope, indent: Str) {
+def print_scope(scope: &Scope, indent: Str, visited: &Set(uint64)) {
     if not scope { return }
+    if visited.contains(scope !* !uint64) {
+        return
+    }
+    visited.add(scope !* !uint64)
+
     print(indent, "Scope (module=", scope.module.module if scope.module else to_str("<null>"), "):\n")
     let keys = scope.fields.keys()
     for var i in 0..keys.size {
@@ -284,7 +289,14 @@ def print_scope(scope: &Scope, indent: Str) {
     if scope.parents {
         for var parent in scope.parents {
             print(indent, "Parent:\n")
-            print_scope(parent, indent + "  ")
+            print_scope(parent, indent + "  ", visited)
+        }
+    }
+    if scope.imports {
+        print(indent, "Imports:\n")
+        for var imprt in scope.imports {
+            print(indent, "  ", imprt.module.module, ": \n")
+            print_scope(imprt.module.scope, indent + "    ", visited)
         }
     }
 }
@@ -304,7 +316,8 @@ export def clear_temporaries(scope: &Scope) {
 
 export type Phase = enum {
     // INDETERMIANTE means there's currently a value set (to prevent infinite recursion)
-    DECLARED; DEFINED; COMPILED; INDETERMINATE
+    // CACHED means the value has been read from a cache file
+    DECLARED; DEFINED; COMPILED; CACHED; INDETERMINATE
 }
 
 export def create_dependency(this: &Value, other: &parser::Node, contents: bool = false) {
@@ -928,7 +941,7 @@ export def find_implicit_function(scope: &Scope, parameter_t: &Vector(typechecki
         print("Found implicit for type ", debug::type_to_str(first_param), ": ", value.fdef.name, "\n")
         print_fdef(value.fdef)
     }*/
-    if value and value.phase == Phase::DEFINED and value.node and force_compile {
+    if value and (value.phase == Phase::DEFINED or (consteval::is_static and value.phase == Phase::CACHED)) and value.node and force_compile {
         return typecheck_function(value, parameter_t, context)
     }
     return value
@@ -1210,10 +1223,23 @@ export def get_function_check(
     path: &Vector(String) = null
 ) -> bool, &Value {
 
-    let code, value_and_scope = get_function_check_impl(scope, id, parameter_t, dry_run, force_compile, only_function, re_exports, context, path)
+    var code, value_and_scope = get_function_check_impl(scope, id, parameter_t, dry_run, force_compile, only_function, re_exports, context, path)
     if value_and_scope {
-        let value = value_and_scope.value
-        if value and value.phase == Phase::DEFINED {
+        var value = value_and_scope.value
+        
+        if value and consteval::is_static and scope and scope.is_global and scope.module.stage !int < toolchain::Stage::PREPROCESS !int {
+            scope.module.is_dirty = true
+            toolchain::reset_and_consteval(scope.module)
+            code, value_and_scope = get_function_check_impl(scope.module.scope, id, parameter_t, dry_run, force_compile, only_function, re_exports, context, path)
+
+            if value_and_scope {
+                value = value_and_scope.value
+            } else {
+                return code, null
+            }
+        }
+
+        if value and (value.phase == Phase::DEFINED or (consteval::is_static and value.phase == Phase::CACHED)) {
             return code, typecheck_function(value, parameter_t, value_and_scope.scope)
         }
         return code, value
@@ -1222,7 +1248,7 @@ export def get_function_check(
 }
 
 // This function does not perform access checks anymore, this needs to be done by the caller.
-export def get_function_check_impl(
+def get_function_check_impl(
     scope: &Scope, 
     id: &parser::Node, 
     parameter_t: &Vector(typechecking::NamedParameter), 
@@ -1480,8 +1506,40 @@ export def get(
     check_export: bool = false, 
     dry_run: bool = false, 
     same_module: bool = false, 
+    re_exports: bool = true, 
+    context: &Scope = null,
+    no_function: bool = false
+) -> &Value {
+
+    var value = get_impl(scope, id, force_compile, check_export, dry_run, same_module, re_exports, context, no_function)
+    
+    if value and consteval::is_static and scope.is_global and scope.module.stage !int < toolchain::Stage::PREPROCESS !int {
+        scope.module.is_dirty = true
+        toolchain::reset_and_consteval(scope.module)
+        value = get(scope.module.scope, id, force_compile, check_export, dry_run, same_module, re_exports, context, no_function)
+    }
+
+    if value and no_function and value.kind == ValueKind::FUNCTION {
+        return null
+    }
+
+    if value and force_compile and (value.phase == Phase::DEFINED or (consteval::is_static and value.phase == Phase::CACHED)) {
+        typecheck(value)
+    }
+
+    return value
+}
+
+def get_impl(
+    scope: &Scope, 
+    id: &parser::Node, 
+    force_compile: bool = true, 
+    check_export: bool = false, 
+    dry_run: bool = false, 
+    same_module: bool = false, 
     re_exports: bool = true,
-    context: &Scope = null
+    context: &Scope = null,
+    no_function: bool = false
 ) -> &Value {
     
     if not scope { return null }
@@ -1496,7 +1554,7 @@ export def get(
             for var i in 0..scope.re_exports.length {
                 let re_export = scope.re_exports(i)
                 if pattern_matches(scope, id, re_export.pattern) {
-                    var value2 = get(re_export.module.scope, id, force_compile = force_compile, check_export = true, re_exports = false)
+                    var value2 = get(re_export.module.scope, id, force_compile = force_compile, check_export = true, re_exports = false, no_function = no_function)
                     if value2 and value2.share !int & parser::ShareMarker::EXPORT !int {
                         if value and value !* != value2 !* {
                             if not dry_run {
@@ -1531,10 +1589,6 @@ export def get(
                 if not dry_run { ambigous_reference(id) }
                 return null
             }
-
-            if value and force_compile and value.phase == Phase::DEFINED {
-                typecheck(value)
-            }
         } else if scope.imports and not same_module and not check_export and not value {
             for var i in 0..vector::length((@scope).imports) {
                 let imprt = (@scope).imports(i)
@@ -1557,10 +1611,6 @@ export def get(
                         //    value2 = typecheck_function(value2, id.value.identifier.types, context)
                         //}
                         value2 = value_and_scope.value if value_and_scope else null
-                    } else {
-                        if force_compile and value2.phase == Phase::DEFINED {
-                            typecheck(value2)
-                        }
                     }
                     value = value2
                 }
@@ -1581,7 +1631,7 @@ export def get(
        
         if not value and scope.parents {
             for var parent in scope.parents {
-                value = get(parent, id, force_compile, check_export, dry_run, same_module, context = context)
+                value = get(parent, id, force_compile, check_export, dry_run, same_module, context = context, no_function = no_function)
                 if value { break }
             }
         }
@@ -1599,13 +1649,13 @@ export def get(
         let id_tail = parser::copy_node(id)
         (@id_tail).value.identifier.path = tail
 
-        let s = get(scope, id_head, force_compile, false, dry_run, context = context)
+        let s = get(scope, id_head, force_compile, false, dry_run, context = context, no_function = no_function)
         if s {
             if not s.get_scope() {
                 if not dry_run { errors::errorn(id, "Use of :: on non namespace") }
                 return null
             }
-            let value = get(s.get_scope(), id_tail, force_compile, s.imported, dry_run, context = context)
+            let value = get(s.get_scope(), id_tail, force_compile, s.imported, dry_run, context = context, no_function = no_function)
             return value
         }
         return null

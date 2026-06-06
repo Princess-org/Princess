@@ -451,7 +451,7 @@ export def walk_Def(node: &parser::Node, state: &typechecking::State) {
             module = state.module,
             locals = map::make(typechecking::TypeId),
             unmangled = parser::identifier_to_str(name),
-            is_closure = node.parent.kind != parser::NodeKind::PROGRAM,
+            is_closure = node.parent != null and node.parent.kind != parser::NodeKind::PROGRAM,
             scope = state.scope,
             inner_scope = node.inner_scope,
             captures = vector::make(type weak &scope::Value),
@@ -460,10 +460,11 @@ export def walk_Def(node: &parser::Node, state: &typechecking::State) {
             test = test,
             imported = imported
         ] !&compiler::Function
-        //print("Consteval: ", fdef.name, " ", function !*, "\n")
         node.value.def_.function = function
     }
     function.has_yield = has_yield
+    
+    print("Consteval: ", fdef.name, "\n")
 
     if has_yield {
         let generator_ctor = [
@@ -561,82 +562,88 @@ export def walk_TypeDecl(node: &parser::Node, state: &typechecking::State) {
         node.value.type_decl.children.push(typedef)
 
         var tpe: TypeId
+        var exists = false
         let svalue = state.module.scope.fields.get_or_default(parser::identifier_to_str(name), null)
         if svalue and svalue.kind == scope::ValueKind::TYPE {
             tpe = svalue.tpe.resolve(state.module.scope)
+            if tpe != 0 and svalue.phase == scope::Phase::COMPILED { 
+                exists = true
+            }
         } else {
             tpe = typechecking::next_type_id()
         }
 
         if value {
-            if value.kind == parser::NodeKind::ENUM_T {
-                var inner = builtins::int_
-                if value.value.t_enum.tpe {
-                    inner = typechecking::type_lookup(value.value.t_enum.tpe, state).tpe
-                }
-                let enum_tpe = [ 
-                    kind = typechecking::TypeKind::ENUM,
-                    id = tpe,
-                    _tpe = inner
-                ] !&typechecking::Type
+            if not exists {
+                if value.kind == parser::NodeKind::ENUM_T {
+                    var inner = builtins::int_
+                    if value.value.t_enum.tpe {
+                        inner = typechecking::type_lookup(value.value.t_enum.tpe, state).tpe
+                    }
+                    let enum_tpe = [ 
+                        kind = typechecking::TypeKind::ENUM,
+                        id = tpe,
+                        _tpe = inner
+                    ] !&typechecking::Type
 
-                enum_tpe.name = parser::identifier_to_str(name)
-                enum_tpe.type_name = typechecking::append_module(enum_tpe.name, value.loc.module)
-                enum_tpe.defmodule = state.module
-                enum_tpe.size = inner.resolve().size
-                enum_tpe.align = inner.resolve().align
+                    enum_tpe.name = parser::identifier_to_str(name)
+                    enum_tpe.type_name = typechecking::append_module(enum_tpe.name, value.loc.module)
+                    enum_tpe.defmodule = state.module
+                    enum_tpe.size = inner.resolve().size
+                    enum_tpe.align = inner.resolve().align
 
-                var constant: int64 = 0
-                // Create all the constants
-                state.scope = scope::enter_scope(state.scope)
-                for var i in 0..vector::length(value.value.t_enum.body) {
-                    let iddecl = value.value.t_enum.body(i)
-                    if iddecl.value.id_decl_enum.value {
-                        constant = expr(iddecl.value.id_decl_enum.value, state).i
+                    var constant: int64 = 0
+                    // Create all the constants
+                    state.scope = scope::enter_scope(state.scope)
+                    for var i in 0..vector::length(value.value.t_enum.body) {
+                        let iddecl = value.value.t_enum.body(i)
+                        if iddecl.value.id_decl_enum.value {
+                            constant = expr(iddecl.value.id_decl_enum.value, state).i
+                        }
+
+                        let c = [ kind = compiler::ValueKind::INT, tpe = enum_tpe.tpe, i = constant ] !&compiler::Value
+                        scope::create_variable(state.scope, iddecl.value.id_decl_enum.ident, 
+                            share, parser::VarDecl::CONST, typechecking::make_type_ref(tpe), c)
+
+                        constant += 1
                     }
 
-                    let c = [ kind = compiler::ValueKind::INT, tpe = enum_tpe.tpe, i = constant ] !&compiler::Value
-                    scope::create_variable(state.scope, iddecl.value.id_decl_enum.ident, 
-                        share, parser::VarDecl::CONST, typechecking::make_type_ref(tpe), c)
+                    value.scope = state.scope
+                    enum_tpe.scope = state.scope
+                    state.scope = scope::exit_scope(state.scope)
+                    typechecking::register(tpe, enum_tpe)
 
-                    constant += 1
-                }
+                    // Create to_string function
+                    let parameter_t = vector::make(typechecking::NamedParameterPre)
+                    let return_t = vector::make(type &typechecking::TypeRef)
+                    parameter_t.push([ name = "enum", tpe = typechecking::make_type_ref(tpe)] !typechecking::NamedParameterPre)
+                    return_t.push(typechecking::make_type_ref(builtins::string_))
 
-                value.scope = state.scope
-                enum_tpe.scope = state.scope
-                state.scope = scope::exit_scope(state.scope)
-                typechecking::register(tpe, enum_tpe)
-
-                // Create to_string function
-                let parameter_t = vector::make(typechecking::NamedParameterPre)
-                let return_t = vector::make(type &typechecking::TypeRef)
-                parameter_t.push([ name = "enum", tpe = typechecking::make_type_ref(tpe)] !typechecking::NamedParameterPre)
-                return_t.push(typechecking::make_type_ref(builtins::string_))
-
-                let ident = parser::make_identifier("to_string")
-                let fdef = typechecking::function_def("to_string", parameter_t, return_t, state.module)
-                let v = scope::create_function(state.scope, ident, parser::ShareMarker::EXPORT, fdef)
-                v.identifier = ident
-                left.svalue = scope::create_type(state.scope, name, share, typechecking::make_type_ref(tpe), scope::Phase::DEFINED, null)
-            } else {
-                var resolved: &typechecking::TypeRef
-                if value.kind != parser::NodeKind::STRUCT_T and value.kind != parser::NodeKind::UNION_T and value.kind != parser::NodeKind::STRUCTURAL_T {
-                    // Try lookup up the type right there and then, and if it already exists we can use it
-                    resolved = typechecking::type_lookup(value, state)
-                }
-                if typechecking::is_type(resolved) {
-                    tpe = resolved.tpe
-                    left.svalue = scope::create_type(state.scope, name, share, resolved, scope::Phase::DEFINED, typedef)
+                    let ident = parser::make_identifier("to_string")
+                    let fdef = typechecking::function_def("to_string", parameter_t, return_t, state.module)
+                    let v = scope::create_function(state.scope, ident, parser::ShareMarker::EXPORT, fdef)
+                    v.identifier = ident
+                    left.svalue = scope::create_type(state.scope, name, share, typechecking::make_type_ref(tpe), scope::Phase::DEFINED, null)
                 } else {
-                    left.svalue = scope::create_type(state.scope, name, share, typechecking::make_type_ref(tpe), scope::Phase::DEFINED, typedef)
-                    // Register stub type that can be replaced later on demand
-                    let stub = [ 
-                        kind = typechecking::TypeKind::STUB, 
-                        id = tpe,
-                        defmodule = state.module, 
-                        type_name = parser::identifier_to_str(name) 
-                    ] !&typechecking::Type
-                    register(tpe, stub)
+                    var resolved: &typechecking::TypeRef
+                    if value.kind != parser::NodeKind::STRUCT_T and value.kind != parser::NodeKind::UNION_T and value.kind != parser::NodeKind::STRUCTURAL_T {
+                        // Try lookup up the type right there and then, and if it already exists we can use it
+                        resolved = typechecking::type_lookup(value, state)
+                    }
+                    if typechecking::is_type(resolved) {
+                        tpe = resolved.tpe
+                        left.svalue = scope::create_type(state.scope, name, share, resolved, scope::Phase::DEFINED, typedef)
+                    } else {
+                        left.svalue = scope::create_type(state.scope, name, share, typechecking::make_type_ref(tpe), scope::Phase::DEFINED, typedef)
+                        // Register stub type that can be replaced later on demand
+                        let stub = [ 
+                            kind = typechecking::TypeKind::STUB, 
+                            id = tpe,
+                            defmodule = state.module, 
+                            type_name = parser::identifier_to_str(name) 
+                        ] !&typechecking::Type
+                        register(tpe, stub)
+                    }
                 }
             }
             value.tpe = tpe
@@ -1391,7 +1398,7 @@ export def consteval(module: &toolchain::Module) {
     consteval(state)
 
     if module.module == "reflection" {
-        compiler::load_fun_load_types_function()
+        //compiler::load_fun_load_types_function()
         builtins::TypeT_ = module.scope.get_type_id(parser::make_identifier("Type"))
     }
 }

@@ -211,7 +211,9 @@ def serialize_function(fp: File, value: &scope::Value, state: &Serialize) {
     fp.write(*fdef.parameter_t.length)
     for var i in 0..fdef.parameter_t.length {
         let np = fdef.parameter_t(i)
+        var kw = np.kw !byte
         fp.write_str(np.name)
+        fp.write(*kw)
         fp.write(*np.varargs)
         serialize_typeref(fp, np.tpe, state)
         let has_value = np.value !bool
@@ -603,7 +605,7 @@ def deserialize_typeref(fp: File) -> &typechecking::TypeRef {
     return typechecking::make_type_ref(pattern)
 }
 
-def deserialize_function(deserialize: &Deserialize, fp: File) {
+def deserialize_function(deserialize: &Deserialize, fp: File, poly_instance: bool = false, context: &toolchain::Module = null) {
     var hash: uint64
     var contents_hash: uint64
     var share: bool
@@ -630,6 +632,11 @@ def deserialize_function(deserialize: &Deserialize, fp: File) {
     let parameter_t = vector::make(typechecking::NamedParameterPre)
     for var i in 0..size {
         var name = fp.read_str()
+        let name_node = parser::make_identifier(name)
+        deserialize.nodes.push(name_node) // keep a strong reference
+
+        var kw: byte
+        fp.read(*kw)
         var varargs: bool
         fp.read(*varargs)
 
@@ -641,7 +648,13 @@ def deserialize_function(deserialize: &Deserialize, fp: File) {
         if has_value {
             value = deserialize_value(deserialize, fp)
         }
-        parameter_t.push([ name = name, tpe = tpe, varargs = varargs, value = value ] !typechecking::NamedParameterPre)
+        parameter_t.push([ 
+            name = name, tpe = tpe, 
+            varargs = varargs, 
+            kw = kw !parser::VarDecl,
+            node = name_node,
+            value = value 
+        ] !typechecking::NamedParameterPre)
     }
 
     let return_t = vector::make(&typechecking::TypeRef)
@@ -668,16 +681,22 @@ def deserialize_function(deserialize: &Deserialize, fp: File) {
         if not deserialize.module.is_dirty {
             node = deserialize_node(deserialize, loc)
             deserialize.nodes.push(node)
+            var inner_scope = scope::enter_function_scope(deserialize.module.scope)
+            node.scope = deserialize.module.scope
+            node.inner_scope = inner_scope
 
             node.value.def_.function = [
                 module = deserialize.module,
                 name = to_string(type_name),
-                unmangled = name
+                unmangled = name,
+                fdef = fdef,
+                scope = deserialize.module.scope,
+                inner_scope = inner_scope
             ] !&compiler::Function
         }
     }
 
-    debug::trace("    Function " + name + " (" + hash + ")")
+    debug::trace("    Function " + type_name + " (" + hash + ")")
     deserialize.functions.push([
         name = name,
         hash = hash,
@@ -687,6 +706,8 @@ def deserialize_function(deserialize: &Deserialize, fp: File) {
         fdef = fdef,
         imported = imported,
         polymorph = polymorph,
+        poly_instance = poly_instance,
+        context = context,
         impl = impl
     ] !FunctionEntry)
 }
@@ -893,6 +914,7 @@ export def serialize(module: &toolchain::Module) {
         fp.write(*zero)
     }
 
+    // Write functions
     let functions = scope::all_functions(module.scope)
     let exported_functions = vector::make(type &scope::Value)
     for var value in functions {
@@ -908,6 +930,30 @@ export def serialize(module: &toolchain::Module) {
     for var i in 0..exported_functions.length {
         let value = exported_functions(i)
         serialize_function(fp, value, state)
+    }
+
+    // Write polymorphic instances
+    if module.scope.polymorphics {
+        fp.write(*module.scope.polymorphics.size)
+        for var filename in @module.scope.polymorphics.keys() {
+            let context = toolchain::find_module_by_path(filename)
+            fp.write_str(context.module)
+            fp.write_str(filename)
+
+            let polymorhs = vector::make(type &scope::Value)
+            let scpe = module.scope.polymorphics(filename)
+            for var instance in scope::all_functions(scpe) {
+                polymorhs.push(instance)
+            }
+
+            fp.write(*polymorhs.length)
+            for var i in 0..polymorhs.length {
+                let value = polymorhs(i)
+                serialize_function(fp, value, state)
+            }
+        }
+    } else {
+        fp.write(*zero)
     }
 
     let variables = vector::make(type &scope::Value)
@@ -1034,7 +1080,9 @@ type FunctionEntry = struct {
     fdef: typechecking::FunctionDef
     imported: bool
     polymorph: bool
+    poly_instance: bool
     impl: bool
+    context: &toolchain::Module
 }
 
 type VariableEntry = struct {
@@ -1116,7 +1164,7 @@ export def resolver_pass(module: &toolchain::Module) {
     let filename = fp.read_str()
     if filename != module.filename { module.is_dirty = true; return }
 
-    debug::trace("Loading cache for module " + module.module)
+    debug::trace("Loading cache for module " + module.module + " (" + module.filename + ")")
 
     var size: size_t
     fp.read(*size)
@@ -1156,6 +1204,20 @@ export def resolver_pass(module: &toolchain::Module) {
     debug::trace("Loading " + size + " functions")
     for var i in 0..size {
         deserialize_function(deserialize, fp)
+    }
+
+    fp.read(*size)
+    for var i in 0..size {
+        let module_name = fp.read_str()
+        let path = fp.read_str()
+        let context = toolchain::create_module_if_absent(path, module_name)
+
+        var size_2: size_t
+        fp.read(*size_2)
+        debug::trace("Loading " + size_2 + " polymorphic instances")
+        for var i in 0..size_2 {
+            deserialize_function(deserialize, fp, poly_instance = true, context = context)
+        }
     }
 
     fp.read(*size)
@@ -1245,10 +1307,19 @@ export def define_members(module: &toolchain::Module) {
         name_node.loc.module = module.module
 
         let fdef = entry.fdef
-        let phase = scope::Phase::DEFINED if typechecking::is_polymorph(fdef) else scope::Phase::COMPILED
-        let value = scope::create_function_without_checking(
-            module.scope, name_node, entry.share, fdef, entry.impl
-        )
+        let phase = scope::Phase::DEFINED if typechecking::is_polymorph(fdef) else scope::Phase::CACHED
+
+        var value: &scope::Value
+        if entry.poly_instance {
+            value = scope::create_polymorph(
+                module.scope, entry.context.scope, name_node, fdef, scope::Phase::COMPILED, null, entry.impl
+            )
+        } else {
+            value = scope::create_function_without_checking(
+                module.scope, name_node, entry.share, fdef, entry.impl
+            )
+        }
+
         value.phase = phase
         value.node = entry.node
 
@@ -1522,7 +1593,7 @@ export def resolve_types_and_members {
             tpe.type_name = type_name
             tpe.defmodule = defmodule
 
-            //print("Resolving type ", type_name, " hash: ", tpe._hash, " id: ", tpe.id, "\n")
+            //print("Resolving type ", type_name, " hash: ", tpe._hash, " id: ", tpe.id, " tc_node: ", tpe.tc_node !*, "\n")
 
             if tpe.tc_tpe {
                 //print("After: ", tpe.tc_tpe, "\n")

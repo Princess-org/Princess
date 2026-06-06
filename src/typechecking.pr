@@ -761,10 +761,7 @@ export def iterate_types -> &Type {
 }
 
 // This is used for types that get synthesized during compilation. 
-// Without this, new types would fill up the type registry slowly when using incremental compilation
 export var type_registry_internal: &Map(TypeId, &Type)
-// This is needed to filter out types that aren't used and don't need to be serialized
-export var used_types: &Set(TypeId)
 
 export var type_registry_word: &Map(Primitive, &Type)
 export var type_registry_closure: &Map(Signature, &Type)
@@ -785,7 +782,6 @@ export def load_type_registries {
     type_registry = vector::make(&Type)
     type_registry.resize(1000) // Make room for 1000 types without resizing, this is just an optimization
     type_registry_internal = map::make(TypeId, type &Type)
-    used_types = set::make(TypeId)
 
     type_registry_word = map::make(Primitive, type &Type)
     type_registry_closure = map::make(Signature, type &Type)
@@ -893,6 +889,7 @@ export def has_destructor(tpe: &Type) -> bool {
 
 export def get_builtin_destructor(tpe: &Type) -> &scope::Value {
     if not tpe { return null }
+    resolve_stub_types(tpe)
     //if is_polymorph(tpe) { return null }
 
     if tpe.has_builtin_destructor != Ternary::UNDEFINED and tpe.builtin_destructor {
@@ -990,6 +987,7 @@ export def has_user_defined_copy_constructor(tpe: &Type) -> bool {
 
 export def get_builtin_constructor(tpe: &Type) -> &scope::Value {
     if not tpe { return null }
+    resolve_stub_types(tpe)
     //if is_polymorph(tpe) { return null }
 
     if tpe.has_constructor != Ternary::UNDEFINED and tpe.constructor {
@@ -3333,9 +3331,9 @@ export def replace_type_defs(
         if right {
             rtpe = right.tpe
         }
-        if not right and left.value {
+        /*if not right and left.value {
             rtpe = left.value.tpe
-        }
+        }*/
 
         if left.kw == parser::VarDecl::TYPE and rtpe and rtpe.kind == TypeKind::TYPE {
             // Don't equate types that aren't the same
@@ -4441,8 +4439,8 @@ export def lookup_identifier_types(node: &parser::Node, state: &State) {
     }
 }
 
-def get_value(node: &parser::Node, state: &State, force_compile: bool = true, dry_run: bool = false) -> &scope::Value {
-    var value = scope::get(state.scope, node, force_compile = force_compile, dry_run = dry_run) !&scope::Value
+def get_value(node: &parser::Node, state: &State, force_compile: bool = true, dry_run: bool = false, no_function: bool = false) -> &scope::Value {
+    var value = scope::get(state.scope, node, force_compile = force_compile, dry_run = dry_run, no_function = no_function) !&scope::Value
     let current_function = state.current_function()
     if current_function.is_closure and value and
         value.kind == scope::ValueKind::VALUE and 
@@ -4453,7 +4451,7 @@ def get_value(node: &parser::Node, state: &State, force_compile: bool = true, dr
         for var i in 0..len {
             node.svalue = null
             let parent_function = state.function_stack(len - i - 1)
-            let existing = scope::get(parent_function.inner_scope, node, force_compile = force_compile, dry_run = dry_run)
+            let existing = scope::get(parent_function.inner_scope, node, force_compile = force_compile, dry_run = dry_run, no_function = no_function)
             if parent_function.captures and existing and not existing.global and existing.current_function != parent_function {
                 var modifier = parser::VarDecl::LET
                 if value.modifier == parser::VarDecl::CONST {
@@ -4906,6 +4904,8 @@ export def walk_VarDecl(node: &parser::Node, state: &State, set_constant: bool =
             //if ltpe and ltpe.kind == TypeKind::STUB {
             //    errors::errorn(node, "Can't resolve type of expression")
             //}
+
+            print("Creating variable ", parser::identifier_to_str(ident), " with type ", debug::type_to_str(ltpe), "\n")
 
             if is_underscore {
                 ident.svalue = scope::create_underscore(state.scope, ident, make_type_ref(ltpe))
@@ -6365,7 +6365,7 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
         if left.kind != parser::NodeKind::IDENTIFIER {
             walk(node, left, state)
         } else {
-            let value = get_value(left, state, dry_run = true)
+            let value = get_value(left, state, dry_run = true, no_function = true)
             if value {
                 left.svalue = value
                 if value.kind == scope::ValueKind::FUNCTION and not is_polymorph(value.fdef) {
@@ -6392,7 +6392,7 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
         } else {
             walk(node, n, state)
         }
-        
+
         let np = [
             tpe = (@n).tpe,
             varargs = false,
@@ -6578,7 +6578,7 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
             if function.polymorph {
                 // Pull in dependencies of generic function
                 let cvar = state.current_value()
-                if cvar.dependencies and function.dependencies {
+                if cvar and cvar.dependencies and function.dependencies {
                     cvar.dependencies.add_all(function.dependencies)
                 }
             }
@@ -7730,7 +7730,7 @@ export def walk_Def_with_type_argument(node: &parser::Node, args: &Vector(NamedP
             left = parameter_t.get(i)
         }
 
-        if left and left.tpe and left.tpe.kind() == TypeKind::TYPE {
+        /*if left and left.tpe and left.tpe.kind() == TypeKind::TYPE {
             if not is_type(np.tpe) { 
                 errors::errorn(np.node, "Passed invalid type, got `", debug::type_to_str(np.tpe), "` instead")
             } else { 
@@ -7739,7 +7739,7 @@ export def walk_Def_with_type_argument(node: &parser::Node, args: &Vector(NamedP
                     value_tpe = np.tpe.tpe 
                 ] !&compiler::Value
             }
-        }
+        }*/
     }
 
     replace_type_defs(parameter_t, return_t, args, context)
@@ -7786,6 +7786,8 @@ export def walk_Def_with_type_argument(node: &parser::Node, args: &Vector(NamedP
         extern, test, context.module
     )
     node.fdef = fun.fdef !&FunctionDef
+
+    print_fdef(fun.fdef)
 
     walk_Def(node, state, polymorph = true)
     state.context = prev_context
