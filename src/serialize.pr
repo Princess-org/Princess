@@ -15,10 +15,15 @@ import builtins
 import md5
 import strings
 
+type TypeHash = struct {
+    is_alias: bool
+    hash: int64
+}
+
 type Serialize = struct {
     module: weak &toolchain::Module
     dependencies: &Map(Str, scope::Ident)
-    types: &Map(typechecking::TypeId, int64)
+    types: &Map(typechecking::TypeId, TypeHash)
 }
 
 const MAGIC = "PRNCSVI"
@@ -35,10 +40,10 @@ let K_NONE: byte = 3
 
 // We write hashes so that the type ids are consistent across compilations and across modules.
 // This is needed for incremental compilation to work correctly.
-def write_type(fp: File, tpe: typechecking::TypeId, state: &Serialize) {
+def write_type(fp: File, tpe: typechecking::TypeId, state: &Serialize, is_alias: bool = false) {
     if state.types.contains(tpe) {
         let t = state.types(tpe)
-        fp.write(*t)
+        fp.write(*t.hash)
         return
     }
 
@@ -51,12 +56,16 @@ def write_type(fp: File, tpe: typechecking::TypeId, state: &Serialize) {
     let hash = tpe.stable_hash()
     fp.write(*hash)
 
-    state.types(tpe) = hash
+    state.types(tpe) = [ is_alias = is_alias, hash = hash ] !TypeHash
 }
 
-def serialize_type(fp: File, tpe: &typechecking::Type, state: &Serialize) {
+def serialize_type(fp: File, tpe: &typechecking::Type, state: &Serialize, is_alias: bool = false) {
     if not tpe {
         fp.write(*NO_TYPE)
+        return
+    } else if is_alias {
+        fp.write(*TYPE_REF)
+        fp.write(*tpe.stable_hash())
         return
     }
 
@@ -200,6 +209,7 @@ def serialize_function(fp: File, value: &scope::Value, state: &Serialize) {
     fp.write(*value.imported)
     fp.write(*value.polymorph)
     fp.write(*value.impl)
+    fp.write(*value.is_dyn_dispatch)
     // TODO Get Function object with dllexport and dllimport
     fp.write_str(value.name)
     fp.write_str(fdef.name)
@@ -338,6 +348,12 @@ def deserialize_type(fp: File, state: &Deserialize) -> &typechecking::Type {
     var kind: byte
     fp.read(*kind)
     if kind == NO_TYPE { return null }
+    else if kind == TYPE_REF {
+        var _hash: int64
+        fp.read(*_hash)
+        // We abuse UNSET as a type reference, these get looked up later
+        return [ kind = typechecking::TypeKind::UNSET, _hash = _hash ] !&typechecking::Type
+    }
 
     var tpekind = kind !typechecking::TypeKind
     var name = fp.read_str()
@@ -547,10 +563,10 @@ def deserialize_type(fp: File, state: &Deserialize) -> &typechecking::Type {
         assert
     }
 
-    tpe.has_builtin_destructor = typechecking::Ternary::TRUE if has_builtin_destructor else
-        typechecking::Ternary::UNDEFINED
-    tpe.has_constructor = typechecking::Ternary::TRUE if has_constructor else
-        typechecking::Ternary::UNDEFINED
+    tpe.has_builtin_destructor = (typechecking::Ternary::TRUE if has_builtin_destructor else
+        typechecking::Ternary::UNDEFINED)
+    tpe.has_constructor = (typechecking::Ternary::TRUE if has_constructor else
+        typechecking::Ternary::UNDEFINED)
 
     return tpe
 }
@@ -613,6 +629,7 @@ def deserialize_function(deserialize: &Deserialize, fp: File, poly_instance: boo
     var imported: bool
     var impl: bool
     var polymorph: bool
+    var is_dyn_dispatch: bool
     var name: Str
     var type_name: Str
 
@@ -623,6 +640,7 @@ def deserialize_function(deserialize: &Deserialize, fp: File, poly_instance: boo
     fp.read(*imported)
     fp.read(*polymorph)
     fp.read(*impl)
+    fp.read(*is_dyn_dispatch)
     name = fp.read_str()
     type_name = fp.read_str()
 
@@ -708,7 +726,8 @@ def deserialize_function(deserialize: &Deserialize, fp: File, poly_instance: boo
         polymorph = polymorph,
         poly_instance = poly_instance,
         context = context,
-        impl = impl
+        impl = impl,
+        is_dyn_dispatch = is_dyn_dispatch
     ] !FunctionEntry)
 }
 
@@ -861,7 +880,7 @@ export def serialize(module: &toolchain::Module) {
     fp.write_str(module.filename)
 
     let state = [
-        types = map::make(typechecking::TypeId, int64),
+        types = map::make(typechecking::TypeId, TypeHash),
         module = module,
         dependencies = map::make(Str, scope::Ident)
     ] !&Serialize
@@ -903,7 +922,7 @@ export def serialize(module: &toolchain::Module) {
                 let types = re_export.pattern.value.identifier.types
                 fp.write(*types.length)
                 for var j in 0..types.length {
-                    let tpe = types(i).tpe
+                    let tpe = types(j).tpe
                     write_type(fp, tpe, state)
                 }
             } else {
@@ -918,7 +937,7 @@ export def serialize(module: &toolchain::Module) {
     let functions = scope::all_functions(module.scope)
     let exported_functions = vector::make(type &scope::Value)
     for var value in functions {
-        if not value.is_generated {
+        if not value.is_generated or value.is_dyn_dispatch {
             exported_functions.push(value)
         }
     }
@@ -990,7 +1009,7 @@ export def serialize(module: &toolchain::Module) {
         let share: byte = value.share !byte
         fp.write(*share)
         fp.write(*value.ident._hash)
-        write_type(fp, value.tpe.tpe, state)
+        write_type(fp, value.tpe.tpe, state, value.is_alias)
     }
 
     // Add dependencies from main function
@@ -1025,13 +1044,13 @@ export def serialize(module: &toolchain::Module) {
     for var tpe in @module.used_destructors.keys() {
         let hash = tpe.stable_hash()
         fp.write(*hash)
-        state.types(tpe) = hash
+        state.types(tpe) = [ hash = hash ] !TypeHash
     }
     fp.write(*module.used_copy_constructors.size)
     for var tpe in @module.used_copy_constructors.keys() {
         let hash = tpe.stable_hash()
         fp.write(*hash)
-        state.types(tpe) = hash
+        state.types(tpe) = [ hash = hash ] !TypeHash
     }
 
     // Serialize types for this module
@@ -1048,13 +1067,15 @@ export def serialize(module: &toolchain::Module) {
     var all_types = set::make(typechecking::TypeId)
     while new_types.size > 0 {
         var old_types = state.types
-        state.types = map::make(typechecking::TypeId, int64)
+        state.types = map::make(typechecking::TypeId, TypeHash)
         for var tpe in @old_types.keys() {
-            if all_types.contains(tpe) { continue }
+            if all_types.contains(tpe) or 
+                tpe.kind == typechecking::TypeKind::STUB { continue }
+
             all_types.add(tpe)
-            let hash = old_types(tpe)
-            tmp.write(*hash)
-            serialize_type(tmp, tpe, state)
+            let thash = old_types(tpe)
+            tmp.write(*thash.hash)
+            serialize_type(tmp, tpe, state, is_alias = false) // TODO alias
             writen += 1
         }
         new_types = state.types
@@ -1083,6 +1104,7 @@ type FunctionEntry = struct {
     poly_instance: bool
     impl: bool
     context: &toolchain::Module
+    is_dyn_dispatch: bool
 }
 
 type VariableEntry = struct {
@@ -1297,8 +1319,11 @@ export def define_members(module: &toolchain::Module) {
             deserialize.module.scope, name_node, entry.share,
             typechecking::make_type_ref(entry.tpe), scope::Phase::COMPILED, null
         )
+        val.is_cached = true
         val.ident = scope::make_ident(entry.name, module, entry.hash)
         val.identifier = name_node
+
+        print("Defined type ", entry.name, ": ", debug::type_to_str(entry.tpe), "\n")
     }
 
     for var i in 0..deserialize.functions.length {
@@ -1320,6 +1345,9 @@ export def define_members(module: &toolchain::Module) {
             )
         }
 
+        value.is_cached = true
+        value.is_dyn_dispatch = entry.is_dyn_dispatch
+        value.is_generated = entry.is_dyn_dispatch
         value.phase = phase
         value.node = entry.node
 
@@ -1327,6 +1355,10 @@ export def define_members(module: &toolchain::Module) {
         value.ident = scope::make_ident(entry.name, module, entry.hash, entry.contents_hash, fdef.name)
         value.identifier = name_node
         value.polymorph = entry.polymorph
+
+        if value.is_dyn_dispatch {
+            module.dyn_dispatch.push(fdef)
+        }
 
         debug::trace("Defined function " + entry.name + " (" + entry.hash + ")")
         //typechecking::print_fdef(entry.fdef)
@@ -1344,6 +1376,7 @@ export def define_members(module: &toolchain::Module) {
         )
         val.ident._hash = entry.hash
         val.identifier = id
+        val.is_cached = true
     }
 }
 
@@ -1380,6 +1413,28 @@ def resolve_typeref(tr: &typechecking::TypeRef) {
 }
 
 export def resolve_types_and_members {
+
+    // We need to loop until there is no alias anymore, this is because
+    // there might be an alias pointing to another alias and then it doesn't
+    // get resolved in one pass
+    /*var found_alias = true
+    loop {
+        found_alias = false
+        for var hash in @deserialized_types.keys() {
+            let tpe = deserialized_types(hash)
+            if tpe.kind == typechecking::TypeKind::UNSET {
+                if deserialized_types.contains(tpe._hash) {
+                    deserialized_types(hash) = deserialized_types(tpe._hash)
+                    found_alias = true
+                }
+            }
+        }
+
+        // If we didn't find any new alias we need to break, this might indicate 
+        // a problem with the deserialization if there are still aliases left
+        // but an infinite loop is bad regardless
+        if not found_alias { break }
+    }*/
 
     let types = map::make(int64, type &typechecking::Type)
     for var hash in @deserialized_types.keys() {
