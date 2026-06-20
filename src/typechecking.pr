@@ -831,6 +831,13 @@ export implicit def resolve(id: TypeId) -> &Type {
     return res
 }
 
+def move_meta(src: &Type, dst: &Type) {
+    if src == dst { return }
+    dst._meta = src._meta
+    dst.has_constructor_cached |= src.has_constructor_cached
+    dst.has_builtin_destructor_cached |= src.has_builtin_destructor_cached
+}
+
 export def register(id: TypeId, tpe: &Type) {
     assert id == tpe.id
     if id >= type_registry.length() {
@@ -838,13 +845,13 @@ export def register(id: TypeId, tpe: &Type) {
     }
     let prev = type_registry(id)
     // FIXME doing this assignment when both are equal can free the memory! Don't do that
-    if prev and prev != tpe { tpe._meta = prev._meta }
+    if prev and prev != tpe { move_meta(prev, tpe) }
     type_registry(id) = tpe
 }
 
 export def register_internal(id: TypeId, tpe: &Type) {
     let prev = type_registry_internal.get_or_default(id, null)
-    if prev and prev != tpe { tpe._meta = prev._meta }
+    if prev and prev != tpe { move_meta(prev, tpe) }
     type_registry_internal(id) = tpe
 }
 
@@ -1550,7 +1557,7 @@ export def function_def(
         tname = type_name
     } else {
         let name = append_module(name, module.module) if module else name
-        tname = mangle_function_name(name, parameter_t, test, context)
+        tname = mangle_function_name(name, parameter_t, test, context, module)
     }
     
     return [
@@ -3411,7 +3418,7 @@ export def replace_type_defs(
 
 export def parameter_equals(
     a: FunctionDef, param_b: &Vector(NamedParameterPre), scpe: &scope::Scope) -> bool {
-        
+
     if a.parameter_t.length != vector::length(param_b) {
         return false
     }
@@ -3432,15 +3439,15 @@ def parameter_equals_single(a: &TypeRef, b: &TypeRef, env: &EqEnv) -> bool {
     if a == b { return true }
     if not a or not b { return false }
     if not env { return a == b }
-    if is_type(a) and is_type(b) {
-        return a == b
-    } else if is_type(a) {
-        let tb = b.copy().resolve(env.scope, error_on_fail = false, force_compile = true)
-        return tb == a.tpe
-    } else if is_type(b) {
-        let ta = a.copy().resolve(env.scope, error_on_fail = false, force_compile = true)
-        return ta == b.tpe
-    } else if a.name and b.name {
+
+    let ta = a.copy().resolve(env.scope, error_on_fail = false, force_compile = true)
+    let tb = b.copy().resolve(env.scope, error_on_fail = false, force_compile = true)
+
+    if ta and tb {
+        return ta == tb
+    }
+
+    if a.name and b.name {
         if env.typedefs_a.contains(a.name) and env.typedefs_b.contains(b.name) {
             return env.typedefs_a(a.name) == env.typedefs_b(b.name)
         } else if env.typedefs_a.contains(a.name) or env.typedefs_b.contains(b.name) {
@@ -3449,12 +3456,10 @@ def parameter_equals_single(a: &TypeRef, b: &TypeRef, env: &EqEnv) -> bool {
             return a.name == b.name
         }
     } else if a.name {
-        let ta_r = a.copy().resolve(env.scope, error_on_fail = false, force_compile = true)
-        if ta_r { return ta_r == b.copy().resolve(env.scope, error_on_fail = false, force_compile = true) } 
+        if ta { return ta == tb } 
         return false
     } else if b.name {
-        let tb_r = b.copy().resolve(env.scope, error_on_fail = false, force_compile = true)
-        if tb_r { return tb_r == a.copy().resolve(env.scope, error_on_fail = false, force_compile = true) } 
+        if tb { return tb == ta } 
         return false
     } else {
         let pa = a.pattern
@@ -3580,9 +3585,10 @@ export def overload_score(
     return sum
 }
 
-export def mangle_function_name(name: Str, parameter_t: &Vector(NamedParameterPre), test: bool = false, context: &toolchain::Module = null) -> Str {
+export def mangle_function_name(name: Str, parameter_t: &Vector(NamedParameterPre), test: bool, context: &toolchain::Module, module: &toolchain::Module) -> Str {
     var res = name
     if context {
+        module = context
         res = context.module + "#" + name
     }
     res += "::("
@@ -3598,7 +3604,10 @@ export def mangle_function_name(name: Str, parameter_t: &Vector(NamedParameterPr
             res += '['
         }
         if np.tpe {
-            if np.tpe.tpe {
+            let r = np.tpe.copy().resolve(module.scope, error_on_fail = false, force_compile = true)
+            if r and r.kind != TypeKind::STUB {
+                res += debug::type_to_str(r, true)
+            } else if np.tpe.tpe {
                 res += debug::type_to_str(np.tpe.tpe, true)
             } else if np.tpe.pattern {
                 res += generic_to_string(np.tpe.pattern)
@@ -4766,7 +4775,7 @@ def walk_Assign(node: &parser::Node, state: &State) {
             args.push([ tpe = rtpe ] !NamedParameter)
 
             let ident = parser::make_identifier("__set_" + parser::identifier_to_str(name) + "__")
-            let fun = scope::get_function(state.scope, ident, args, false, true, force_compile = not consteval::is_static, context = state.context)
+            let fun = scope::get_function(state.scope, ident, args, false, true, force_compile = true, context = state.context)
             if fun {
                 compile_function(*fun, state.scope, args)
             }
@@ -4925,7 +4934,7 @@ export def walk_VarDecl(node: &parser::Node, state: &State, set_constant: bool =
             //    errors::errorn(node, "Can't resolve type of expression")
             //}
 
-            print("Creating variable ", parser::identifier_to_str(ident), " with type ", debug::type_to_str(ltpe), "\n")
+            //print("Creating variable ", parser::identifier_to_str(ident), " with type ", debug::type_to_str(ltpe), "\n")
 
             if is_underscore {
                 ident.svalue = scope::create_underscore(state.scope, ident, make_type_ref(ltpe))
@@ -5048,7 +5057,7 @@ def make_function_call(node: &parser::Node, ident: &parser::Node, args: &Vector(
 def convert_to_call(node: &parser::Node, name: Str, args: &Vector(NamedParameter), state: &State) {
     let ident = parser::make_identifier(name)
     ident.loc = node.loc
-    let fun = scope::get_function(state.scope, ident, args, false, true, force_compile = not consteval::is_static, context = state.context)
+    let fun = scope::get_function(state.scope, ident, args, false, true, force_compile = true, context = state.context)
     if fun {
         compile_function(*fun, state.scope, args)
         let parent = node.parent
@@ -5063,7 +5072,7 @@ def convert_to_call(node: &parser::Node, name: Str, args: &Vector(NamedParameter
 
 def convert_to_icall(node: &parser::Node, name: Str, args: &Vector(NamedParameter), state: &State) {
     let ident = parser::make_identifier(name)
-    let fun = scope::get_function(state.scope, ident, args, false, true, force_compile = not consteval::is_static, context = state.context)
+    let fun = scope::get_function(state.scope, ident, args, false, true, force_compile = true, context = state.context)
     if fun { 
         compile_function(*fun, state.scope, args)
 
@@ -6052,7 +6061,10 @@ export def walk_TypeDecl(node: &parser::Node, state: &State) {
                     // type_of needs to be registered because
                     // we created a new type id for it
                     register_internal(tpe, type_value)
-                } else if value.kind == parser::NodeKind::STRUCT_T or value.kind == parser::NodeKind::UNION_T {
+                } else if value.kind == parser::NodeKind::STRUCT_T or 
+                    value.kind == parser::NodeKind::UNION_T or 
+                    value.kind == parser::NodeKind::STRUCTURAL_T {
+
                     type_value.id = tpe
                     register(tpe, type_value)
                     // We need to look up the struct again to resolve recursive types
@@ -6304,7 +6316,7 @@ def check_for_apply_and_update(node: &parser::Node, left: &parser::Node, argumen
         vector::insert(args, 0, [ tpe = tpe ] !NamedParameter)
 
         let ident = parser::make_identifier("apply")
-        let fun = scope::get_function(state.scope, ident, args, false, true, force_compile = not consteval::is_static, context = state.context)
+        let fun = scope::get_function(state.scope, ident, args, false, true, force_compile = true, context = state.context)
         if fun {
             vector::insert(node.value.func_call.args, 0, left)
             @node = @make_function_call(node, ident, node.value.func_call.args) 
@@ -6321,7 +6333,7 @@ def check_for_apply_and_update(node: &parser::Node, left: &parser::Node, argumen
         args.push([ tpe = value.tpe ] !NamedParameter)
 
         let ident = parser::make_identifier("update")
-        let fun = scope::get_function(state.scope, ident, args, false, true, force_compile = not consteval::is_static, context = state.context)
+        let fun = scope::get_function(state.scope, ident, args, false, true, force_compile = true, context = state.context)
         if fun {
             let args = vector::copy(node.value.func_call.args)
             vector::insert(args, 0, left)
@@ -6476,7 +6488,7 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
         if check_for_apply_and_update(node, left, arguments, index, state) { return true }
         if (@left).kind == parser::NodeKind::IDENTIFIER {
             let only_function = node.value.func_call.is_member_access
-            var exists, function = scope::get_function_check(state.scope, left, arguments, dry_run, not consteval::is_static, only_function = only_function, context = state.get_context().scope)
+            var exists, function = scope::get_function_check(state.scope, left, arguments, dry_run, force_compile = true, only_function = only_function, context = state.get_context().scope)
             left.svalue = function
 
             // Access check
@@ -6490,7 +6502,7 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
                 if node.value.func_call.is_member_access {
                     args.push(arguments(0))
                 }
-                let e, za_fun = scope::get_function_check(state.scope, left, args, true, not consteval::is_static, context = state.get_context().scope)
+                let e, za_fun = scope::get_function_check(state.scope, left, args, true, force_compile = true, context = state.get_context().scope)
                 
                 // make sure we only try this if there's something returned
                 if e and za_fun.fdef.return_t.length == 1 and access_check(za_fun, node, state) {
@@ -6845,7 +6857,7 @@ def wrap_iterable(expr: &parser::Node, state: &State) -> &parser::Node {
     let args = vector::make(NamedParameter)
     args.push([ tpe = expr.tpe ] !NamedParameter)
     let ident = parser::make_identifier("iterate")
-    let fun = scope::get_function(state.scope, ident, args, true, context = state.context, force_compile = not consteval::is_static)
+    let fun = scope::get_function(state.scope, ident, args, true, context = state.context, force_compile = true)
     if fun {
         if consteval::is_static {
             consteval::compile_function(fun, state.context, args)
@@ -7092,6 +7104,7 @@ def walk_MemberAccess(node: &parser::Node, state: &State) {
     if is_type(left.tpe) {
         // Swap out type
         left.tpe = builtins::reflection_type_t()
+        compiler::load_fun_load_types_function()
     }
     let tpe = (@left).tpe
 
@@ -7101,6 +7114,7 @@ def walk_MemberAccess(node: &parser::Node, state: &State) {
             errors::errorn(node, "Can't get type from `" + debug::type_to_str(tpe) + "`, only references or variants allowed")
         } else {
             node.tpe = builtins::reflection_type_t()
+            compiler::load_fun_load_types_function()
         }
         return
     }
@@ -7809,7 +7823,7 @@ export def walk_Def_with_type_argument(node: &parser::Node, args: &Vector(NamedP
     )
     node.fdef = fun.fdef !&FunctionDef
 
-    print_fdef(fun.fdef)
+    //print_fdef(fun.fdef)
 
     walk_Def(node, state, polymorph = true)
     state.context = prev_context

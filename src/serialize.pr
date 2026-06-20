@@ -870,6 +870,8 @@ def add_dependencies(dependencies: &Set(scope::Ident), state: &Serialize) {
 }
 
 export def serialize(module: &toolchain::Module) {
+    if not module.is_dirty and not toolchain::no_incremental { return }
+
     let cache_file = toolchain::outfolder + "/" + module.file + ".prc"
 
     let fp = open(cache_file, "wb")
@@ -1060,26 +1062,26 @@ export def serialize(module: &toolchain::Module) {
         abort("Failed to create temporary file for serialization\n")
     }
 
-    var writen: size_t = 0
+    var written: size_t = 0
     var new_types = state.types
-    var all_types = set::make(typechecking::TypeId)
+    var all_types = set::make(uint64)
     while new_types.size > 0 {
         var old_types = state.types
         state.types = map::make(typechecking::TypeId, TypeHash)
         for var tpe in @old_types.keys() {
-            if all_types.contains(tpe) or 
+            if all_types.contains(tpe.stable_hash()) or 
                 tpe.kind == typechecking::TypeKind::STUB { continue }
 
-            all_types.add(tpe)
+            all_types.add(tpe.stable_hash())
             let thash = old_types(tpe)
             tmp.write(*thash.hash)
             serialize_type(tmp, tpe, state, is_alias = false) // TODO alias
-            writen += 1
+            written += 1
         }
         new_types = state.types
     }
 
-    fp.write(*writen)
+    fp.write(*written)
     cstd::rewind(tmp)
     let types_data = std::read_all(tmp)
     std::close(tmp)
@@ -1150,7 +1152,7 @@ export def resolver_pass(module: &toolchain::Module) {
     let cache_file = toolchain::outfolder + "/" + module.file + ".prc"
 
     if not util::exists(toolchain::outfolder + "/" + module.file + ".o") {
-        module.is_dirty = true
+        toolchain::set_dirty(module)
     }
 
     let deserialize = [
@@ -1167,22 +1169,22 @@ export def resolver_pass(module: &toolchain::Module) {
     module.deserialize = deserialize
 
     let fp = open(cache_file, "rb")
-    if not fp { module.is_dirty = true; return }
+    if not fp { toolchain::set_dirty(module); return }
     defer close(fp)
 
     let source_fp = open(module.filename, "rb")
     defer close(source_fp)
 
     if modified_time(source_fp) > modified_time(fp) {
-        module.is_dirty = true
+        toolchain::set_dirty(module)
     }
 
     var magic: [8; char] // TODO use MAGIC.size here 
     cstd::fread(magic.value, (size_of char), magic.size, fp) 
 
-    if magic != MAGIC { module.is_dirty = true; return }
+    if magic != MAGIC { toolchain::set_dirty(module); return }
     let filename = fp.read_str()
-    if filename != module.filename { module.is_dirty = true; return }
+    if filename != module.filename { toolchain::set_dirty(module); return }
 
     debug::trace("Loading cache for module " + module.module + " (" + module.filename + ")")
 
@@ -1321,7 +1323,7 @@ export def define_members(module: &toolchain::Module) {
         val.ident = scope::make_ident(entry.name, module, entry.hash)
         val.identifier = name_node
 
-        print("Defined type ", entry.name, ": ", debug::type_to_str(entry.tpe), "\n")
+        debug::trace("Defined type ", entry.name, ": ", debug::type_to_str(entry.tpe), "\n")
     }
 
     for var i in 0..deserialize.functions.length {
@@ -1456,8 +1458,6 @@ export def resolve_types_and_members {
             let type_name = tpe.type_name
             let defmodule = tpe.defmodule
 
-            print(tpe.type_name, ": ", tpe.has_builtin_destructor_cached, "\n")
-
             if tpe.tc_tpe != 0 {
                 //print("Before: ", tpe.tc_tpe, "\n")
                 let wrapped = deserialized_types(tpe.tc_tpe)
@@ -1563,9 +1563,9 @@ export def resolve_types_and_members {
                 }
 
             case typechecking::TypeKind::INTERFACE
-
-                let id = typechecking::next_type_id()
-                tpe.id = id
+                if not tpe.id {
+                    tpe.id = typechecking::next_type_id()
+                }
                 typechecking::register(tpe.id, tpe)
 
                 var new_members = vector::make(typechecking::StructuralTypeMember)
@@ -1761,17 +1761,17 @@ export def check_dependencies {
         for var i in 0..deserialize.dependencies.size {
             let dep = deserialize.dependencies(i)
             let value = scope::find(dep)
-            print("Checking dependency ", dep.name, " (", dep._hash, " & ", dep._contents_hash, ")\n")
+            /*print("Checking dependency ", dep.name, " (", dep._hash, " & ", dep._contents_hash, ")\n")
             print("\tFound value: ", "yes" if value else "no", "\n")
             if value {
                 print("\tValue hash: ", value.ident._hash, "\n")
                 print("\tContents hash: ", value.ident._contents_hash, "\n")
-            }
+            }*/
             // contents_hash gets set to a nonzero value when the value depends on the actual structure of the value,
             // for example if it is used in consteval or if the function is polymorphic
             if not value or value.ident._hash != dep._hash or (
                 dep._contents_hash != 0 and value.ident._contents_hash != dep._contents_hash) {
-                module.is_dirty = true
+                toolchain::set_dirty(module)
                 break
             }
         }
@@ -1795,7 +1795,6 @@ export def generate_ctor_and_dtor() {
 
         // TODO These functions are weird, we want to generate both
         if tpe.has_builtin_destructor_cached {
-            //debug::trace("    Type ", debug::type_to_str(tpe, full_name = true), " has builtin destructor")
             tpe.meta.has_destructor = typechecking::Ternary::TRUE
             typechecking::get_builtin_destructor(tpe)
         }
