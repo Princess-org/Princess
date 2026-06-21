@@ -1539,6 +1539,85 @@ export def != (this: FunctionDef, other: FunctionDef) -> bool {
     return not (this == other)
 }
 
+def find_type_defs(tpe: &TypeRef, typedefs: &SSet) -> bool {
+    if not tpe { return false }
+    if is_type(tpe) { return false }
+    if tpe.name { return false }
+    if not tpe.pattern { return false }
+    let pattern = tpe.pattern
+
+    if pattern.kind == TypeKind::TYPE_DEF and pattern.name {
+        typedefs.add(pattern.name)
+        return true
+    }
+    
+    var has_type_def = false
+    if pattern.return_t {
+        for var ret in pattern.return_t {
+            has_type_def |= find_type_defs(ret, typedefs)
+        }
+    }
+    if pattern.parameter_t {
+        for var param in pattern.parameter_t {
+            has_type_def |= find_type_defs(param.tpe, typedefs)
+        }
+    }
+    has_type_def |= find_type_defs(pattern.tpe, typedefs)
+    return has_type_def
+}
+
+def is_polymorphic_parameter(tpe: &TypeRef, typedefs: &SSet) -> bool {
+    if not tpe { return false }
+    if is_type(tpe) { return false }
+
+    if tpe.name and typedefs.contains(tpe.name) {
+        return true
+    }
+
+    if not tpe.pattern { return false }
+    let pattern = tpe.pattern
+
+    if pattern.return_t {
+        for var ret in pattern.return_t {
+            if is_polymorphic_parameter(ret, typedefs) { return true }
+        }
+    }
+    if pattern.parameter_t {
+        for var param in pattern.parameter_t {
+            if is_polymorphic_parameter(param.tpe, typedefs) { return true }
+        }
+    }
+    return is_polymorphic_parameter(pattern.tpe, typedefs)
+}
+
+export def resolve_fdef(fdef: *FunctionDef) {
+    var name = fdef.name
+    if name.index_of("::(") < 0 { return }
+    name = name.split("::(")(0)
+    name += "::"
+
+    var new_params = vector::make(NamedParameterPre)
+    var typedefs = set::make()
+    for var param in fdef.parameter_t {
+        var new_param = param
+        let tpe = param.tpe
+        if not tpe { continue }
+        if param.kw == parser::VarDecl::TYPE {
+            typedefs.add(param.name)
+        } else if not is_type(tpe) and 
+            not find_type_defs(tpe, typedefs) and 
+            not is_polymorphic_parameter(tpe, typedefs) {
+
+            tpe.tpe = tpe.resolve(fdef.context.scope, force_compile = true)
+        } else if is_type(tpe) {
+            resolve_stub_types(tpe.tpe)
+        }
+        new_params.push(new_param)
+    }
+    name += mangle_function_parameters(new_params)
+    fdef.name = name
+}
+
 export def function_def(
     name: Str, 
     parameter_t: &Vector(NamedParameterPre), 
@@ -1557,7 +1636,7 @@ export def function_def(
         tname = type_name
     } else {
         let name = append_module(name, module.module) if module else name
-        tname = mangle_function_name(name, parameter_t, test, context, module)
+        tname = mangle_function_name(name, parameter_t, test, context)
     }
     
     return [
@@ -3585,14 +3664,8 @@ export def overload_score(
     return sum
 }
 
-export def mangle_function_name(name: Str, parameter_t: &Vector(NamedParameterPre), test: bool, context: &toolchain::Module, module: &toolchain::Module) -> Str {
-    var res = name
-    if context {
-        module = context
-        res = context.module + "#" + name
-    }
-    res += "::("
-
+export def mangle_function_parameters(parameter_t: &Vector(NamedParameterPre)) -> Str {
+    var res = to_buffer("(")
     let len = vector::length(parameter_t)
     for var i in 0..len {
         let np = parameter_t(i)
@@ -3604,10 +3677,7 @@ export def mangle_function_name(name: Str, parameter_t: &Vector(NamedParameterPr
             res += '['
         }
         if np.tpe {
-            let r = np.tpe.copy().resolve(module.scope, error_on_fail = false, force_compile = true)
-            if r and r.kind != TypeKind::STUB {
-                res += debug::type_to_str(r, true)
-            } else if np.tpe.tpe {
+            if np.tpe.tpe {
                 res += debug::type_to_str(np.tpe.tpe, true)
             } else if np.tpe.pattern {
                 res += generic_to_string(np.tpe.pattern)
@@ -3626,6 +3696,17 @@ export def mangle_function_name(name: Str, parameter_t: &Vector(NamedParameterPr
         }
     }
     res += ')'
+
+    return res.to_str()
+}
+
+export def mangle_function_name(name: Str, parameter_t: &Vector(NamedParameterPre), test: bool, context: &toolchain::Module) -> Str {
+    var res = name
+    if context {
+        res = context.module + "#" + name
+    }
+    res += "::"
+    res += mangle_function_parameters(parameter_t)
 
     if test {
         res = "__test::" + res
@@ -5806,6 +5887,16 @@ export def walk_Def(node: &parser::Node, state: &State, polymorph: bool = false)
         if polymorph {
             context = state.context.module
         }
+
+        // We need to resolve the parameter and return types
+        // because they might not be looked up completely
+        for var np in node.fdef.parameter_t {
+            np.tpe.resolve(state.scope, force_compile = true)
+        }
+        for var rt in node.fdef.return_t {
+            rt.resolve(state.scope, force_compile = true)
+        }
+
         fdef = function_def(node.fdef.unmangled, node.fdef.parameter_t, node.fdef.return_t, state.module, extern, test, context)
         orig_parameter_t = fdef.parameter_t
         check_is_valid_function(name, orig_parameter_t, state)
