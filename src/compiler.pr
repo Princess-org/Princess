@@ -16,6 +16,7 @@ import optional
 import arena
 import constants
 import io
+import strings
 
 export type Label = struct {
     name: Str
@@ -493,12 +494,9 @@ export type Function = struct {
     locals: &SMap(typechecking::TypeId)
     has_defer: bool
     defers: typechecking::TypeId
-    // Vector of Function
     defer_functions: &Vector(&Function)
     env: typechecking::TypeId
-    // These 
-    // used_type_meta: &Set(&typechecking::Type)
-    
+
     // This is a map of local variables that are defined at that point
     function_locals: &SSet
 
@@ -525,6 +523,9 @@ export type Function = struct {
     is_queued: bool
     is_compiled: bool
     is_typechecked: bool
+    
+    meta_hash: uint64
+    metadata: &SMap(&Value)
 }
 
 def add_local(state: &State, function: &Function, value: &scope::Value, tpe: typechecking::TypeId) {
@@ -535,16 +536,15 @@ def add_local(state: &State, function: &Function, value: &scope::Value, tpe: typ
 
 // TODO Maybe move this into module
 export type Result = struct {
-    // Map of Function
     functions: &SMap(&Function)
-    // Map of typechecking::Type
     structures: &SMap(typechecking::TypeId)
-    // Map of Global
     globals: &SMap(&Global)
-    // Map of Value
     metadata: &SMap(&Value)
 
     finalizer: &typechecking::FunctionDef
+    // This maps a metadata string to an integer 
+    // to be able to create unique indices when emitting the IR
+    meta_mapping: &SMap(int)
 }
 
 export def add_function(result: &Result, name: Str, function: &Function) {
@@ -569,6 +569,7 @@ export type Global = struct {
     debug: &Value
     identifier: &parser::Node   // TODO Use this in other places
     is_var_decl: bool // This is true to differentiate between actual defined globals and generated ones
+    metadata: &Vector(&Value)
 }
 
 type LoopState = struct {
@@ -742,6 +743,23 @@ def push_meta(meta: &Value, state: &State) -> &Value {
     return val
 }
 
+def push_meta_for_function(meta: &Value, state: &State) -> &Value {
+    let value = [
+        kind = ValueKind::METADATA
+    ] !&Value
+
+    let fun = state.current_function()
+    assert fun
+
+    if not fun.metadata {
+        fun.metadata = map::make(type &Value)
+        fun.meta_hash = hash(fun.name)
+    }
+    value.name = "!" + strings::int_to_hex_str(fun.meta_hash, prefix = false) + "_" + fun.metadata.size
+    fun.metadata(value.name) = meta
+    return value
+}
+
 def meta_to_debug_value(meta: &Value) -> DebugValue {
     if not meta { return [] !DebugValue }
     
@@ -773,7 +791,7 @@ export def make_location(node: &parser::Node, state: &State) -> &Value {
         name = "DILocation",
         debug_values = debug_values
     ] !&Value
-    return push_meta(di, state)
+    return push_meta_for_function(di, state)
 }
 
 export def make_label(state: &State) -> Label {
@@ -881,7 +899,7 @@ def push_declare_arg(node: &parser::Node, val: Value, name: Str, arg: int, state
     let args = allocate_ref(Value, 3)
     args(0) = val
     args(0).metadata = true
-    args(1) = @push_meta(value, state)
+    args(1) = @push_meta_for_function(value, state)
     args(1).metadata = true
     args(2) = [
         metadata = true,
@@ -1072,7 +1090,7 @@ def push_scope(node: &parser::Node, state: &State) {
         debug_values = debug_values
     ] !&Value
 
-    vector::push((@state).discope, push_meta(dilexical, state))
+    vector::push((@state).discope, push_meta_for_function(dilexical, state))
 }
 
 def pop_scope(state: &State) {
@@ -1806,7 +1824,7 @@ def convert_value_to_ref(tpe: typechecking::TypeId, value: Value, loc: &Value, s
     if builtins::builtins.fields.contains("DEBUG_REF_CYCLES") and not consteval::is_static {
         var line = -1
         if loc {
-            let di = state.module.result.metadata(loc.name)
+            let di = state.current_function().metadata(loc.name)
             line = di.debug_values(0).value.i !int
         }
         let linev = make_int_value(line) 
@@ -6760,7 +6778,7 @@ def di_subroutine_type(tpe: &typechecking::Type, state: &State) -> &Value {
         metadata = true,
         values = values
     ] !&Value
-    let typesp = push_meta(types, state)
+    let typesp = push_meta_for_function(types, state)
 
     let debug_values = allocate_ref(DebugParam, 1)
     debug_values(0) = [
@@ -6773,7 +6791,7 @@ def di_subroutine_type(tpe: &typechecking::Type, state: &State) -> &Value {
         debug_values = debug_values
     ] !&Value
 
-    return push_meta(di, state)
+    return push_meta_for_function(di, state)
 }
 
 def di_function_type(tpe: &typechecking::Type, state: &State) -> &Value {
@@ -6832,7 +6850,7 @@ def di_static_array_type(tpe: &typechecking::Type, state: &State) -> &Value {
     ] !&Value
 
     let values = allocate_ref(Value, 1)
-    values(0) = @push_meta(value, state)
+    values(0) = @push_meta_for_function(value, state)
     let elements = [
         kind = ValueKind::STRUCT,
         metadata = true,
@@ -6850,7 +6868,7 @@ def di_static_array_type(tpe: &typechecking::Type, state: &State) -> &Value {
         name = "size", value = [ kind = DebugValueKind::INT, i = tpe.size * 8 ] !DebugValue
     ] !DebugParam
     debug_values(3) = [
-        name = "elements", value = meta_to_debug_value(push_meta(elements, state))
+        name = "elements", value = meta_to_debug_value(push_meta_for_function(elements, state))
     ] !DebugParam
 
     let di = [
@@ -7281,6 +7299,7 @@ export def predeclare_function(function: &Function, scpe: &scope::Scope, overwri
 
 def create_debug_info(node: &parser::Node, function: &Function, tpe: &typechecking::Type, state: &State) {
     if not toolchain::debug_sym { return }
+    state.function_stack.push(function)
 
     var line = -1
     if node { line = node.loc.line }
@@ -7314,10 +7333,11 @@ def create_debug_info(node: &parser::Node, function: &Function, tpe: &typechecki
         distinct = true,
         debug_values = debug_values
     ] !&Value
-    let disubp = push_meta(disub, state)
+    let disubp = push_meta_for_function(disub, state)
     (@function).debug = disubp
 
     (@state).discope.push(disubp)
+    state.function_stack.pop()
 }
 
 def create_free_context(function: &Function, state: &State) {
@@ -9551,7 +9571,8 @@ export def make_result -> &Result {
         functions = map::make(type &Function),
         structures = map::make(type typechecking::TypeId),
         globals = map::make(type &Global),
-        metadata = map::make(type &Value)
+        metadata = map::make(type &Value),
+        meta_mapping = map::make(int)
     ] !&Result
 }
 
@@ -10122,6 +10143,7 @@ export def compile(state: &State, is_main: bool, no_cleanup: bool = false) {
         let values = vector::make(Value)
         for var i in 0..keys.size {
             let global = state.module.result.globals(keys(i))
+            global.metadata = vector::make(type &Value)
             if not global.is_var_decl { continue }
 
             let debug_values = allocate_ref(DebugParam, 6)
@@ -10168,7 +10190,7 @@ export def compile(state: &State, is_main: bool, no_cleanup: bool = false) {
             let diglobal_exprp = push_meta(diglobal_expr, state)
 
             values.push(@diglobal_exprp)
-            (@global).debug = diglobal_exprp
+            global.debug = diglobal_exprp
         }
         @globals = [
             kind = ValueKind::STRUCT,

@@ -8,6 +8,11 @@ import scope
 import debug
 import toolchain
 import builtins
+import strings
+
+// TODO Passing via global variables, eugh
+var cresult: &compiler::Result
+var cstart_index: int
 
 def type_to_str(tpe: &typechecking::Type) -> Str {
     if not tpe { return "void" }
@@ -142,6 +147,19 @@ def type_to_str(tpe: &typechecking::Type) -> Str {
     return ret
 }
 
+def metadata_to_str(name: Str) -> Str {
+    if name.starts_with("!") {
+        var index = cresult.meta_mapping.get_or_default(name, -1)
+        if index == -1 {
+            index = cstart_index
+            cresult.meta_mapping(name) = index
+            cstart_index += 1
+        }
+        name = to_string(index)
+    }
+    return name
+}
+
 def debug_value_to_str(value: compiler::DebugValue) -> Str {
     var ret: StringBuffer = ""
     switch value.kind !int {
@@ -160,7 +178,7 @@ def debug_value_to_str(value: compiler::DebugValue) -> Str {
         case compiler::DebugValueKind::CONST
             ret = value.name
         case compiler::DebugValueKind::METADATA
-            ret = "!" + value.name
+            ret = "!" + metadata_to_str(value.name)
         case compiler::DebugValueKind::DIEXP
             ret = "!DIExpression()"
     }
@@ -178,7 +196,7 @@ export def value_to_str(value: compiler::Value) -> Str {
         case compiler::ValueKind::UNDEF
             ret = "undef"
         case compiler::ValueKind::METADATA
-            ret = "!" + value.name
+            ret = "!" + metadata_to_str(value.name)
         case compiler::ValueKind::LOCAL
             ret = "%" + value.name
         case compiler::ValueKind::GLOBAL
@@ -798,11 +816,13 @@ def gen_header(fp: File, module: &toolchain::Module) {
 }
 
 export def gen(module: &toolchain::Module) {
+
     if module.stage !int >= toolchain::Stage::CODEGEN { return }
     module.stage = toolchain::Stage::CODEGEN
     
     toolchain::progress_update(module, toolchain::ProgressUpdate::START)
-    let result = module.result
+    cresult = module.result
+    cstart_index = (cresult.metadata.size - 1) !int
 
     let outfile = toolchain::outfolder + '/' + module.file + ".ll"
     let fp = open(outfile, "w")
@@ -815,9 +835,9 @@ export def gen(module: &toolchain::Module) {
         gen_main_function(fp)
     }
 
-    let keys_structures = map::keys(result.structures)
+    let keys_structures = map::keys(cresult.structures)
     for var i in 0..keys_structures.size {
-        let structure = result.structures(keys_structures(i)).resolve()
+        let structure = cresult.structures(keys_structures(i)).resolve()
         switch structure.kind !int {
             case typechecking::TypeKind::STRUCT
                 emit_structure(fp, structure)
@@ -836,19 +856,24 @@ export def gen(module: &toolchain::Module) {
     // of them will have the correct function.name set though, so we can use that to deduplicate them.
     let deduplicate = set::make()
 
-    let keys_functions = map::keys((@result).functions)
+    let keys_functions = map::keys(cresult.functions)
     for var i in 0..keys_functions.size {
-        let function = result.functions(keys_functions(i))
+        let function = cresult.functions(keys_functions(i))
         if map::contains(module.imported, (@function).name) {
             if deduplicate.contains(function.name) { continue }
             deduplicate.add(function.name)
+            if function.metadata {
+                for var k in @function.metadata.keys() {
+                    cresult.metadata(k) = function.metadata(k)
+                }
+            }
             emit_function(fp, function, module)
         }
     }
 
-    let keys_globals = map::keys((@result).globals)
+    let keys_globals = map::keys((@cresult).globals)
     for var i in 0..keys_globals.size {
-        let global = (@result).globals(keys_globals(i))
+        let global = cresult.globals(keys_globals(i))
         if global.private or map::contains(module.imported, global.name) {
             emit_global(fp, global)
         }
@@ -858,16 +883,18 @@ export def gen(module: &toolchain::Module) {
         fprint(fp, "declare void @llvm.dbg.declare(metadata, metadata, metadata)\n")
     }
     
-    let keys_meta = map::keys((@result).metadata)
-    for var i in 0..keys_meta.size {
-        let key = keys_meta(i)
-        let value = (@result).metadata(key)
-        fprint(fp, "!", key)
+    let keys_meta = map::keys(cresult.metadata)
+    for var key in @keys_meta {
+        let value = cresult.metadata(key)
+        if key.starts_with("!") {
+            fprint(fp, "; ", key, "\n")
+        }
+        fprint(fp, "!", metadata_to_str(key))
         fprint(fp, " = ")
         fprint(fp, value_to_str(@value))
         fprint(fp, "\n")
     }
-
+    
     close(fp)
     toolchain::progress_update(module, toolchain::ProgressUpdate::END)
 }
