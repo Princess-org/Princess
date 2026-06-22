@@ -33,33 +33,12 @@ def type_to_str(tpe: &typechecking::Type) -> Str {
                 case; assert
             }
         case typechecking::TypeKind::POINTER, typechecking::TypeKind::BYREF
-            let tpe_tpe = tpe.tpe.resolve()
-            if tpe_tpe and tpe_tpe.kind != typechecking::TypeKind::INTERFACE {
-                ret = type_to_str(tpe_tpe)
-                ret += '*'
-            } else {
-                // void pointer is i8*
-                ret = "i8*"
-            }
+            ret += "ptr"
         case typechecking::TypeKind::REFERENCE, typechecking::TypeKind::WEAK_REF
-            let tpe_tpe = tpe.tpe.resolve()
-            ret = "{{i64, i64}*, "
-            if tpe_tpe and tpe_tpe.kind != typechecking::TypeKind::INTERFACE {
-                ret += type_to_str(tpe_tpe)
-                ret += '*'
-            } else {
-                ret += "i8*"
-            }
-            ret += ", %\"runtime::Type\"*}"
+            ret += "{ptr, ptr, ptr}"
         case typechecking::TypeKind::ARRAY
             let tpe_tpe = tpe.tpe.resolve()
-            ret = "{i" + (size_of size_t) * 8 + ", "
-            if tpe_tpe {
-                ret += type_to_str(tpe_tpe) + '*'
-            } else {
-                ret += "i8*"
-            }
-            ret += '}'
+            ret = "{i" + (size_of size_t) * 8 + ", ptr}"
         case typechecking::TypeKind::STATIC_ARRAY
             assert tpe.length !uint64 < std::MAX_UINT64
             ret = "[" + tpe.length + " x " + type_to_str(tpe.tpe) + ']'
@@ -105,7 +84,7 @@ def type_to_str(tpe: &typechecking::Type) -> Str {
                 ret = "%\"" + name + '"'
             }
         case typechecking::TypeKind::TUNION
-            ret = "{%\"runtime::Type\"*, "
+            ret = "{ptr, "
             ret += type_to_str(tpe.tpe)
             ret += "}"
         case typechecking::TypeKind::ENUM
@@ -136,7 +115,7 @@ def type_to_str(tpe: &typechecking::Type) -> Str {
         //case typechecking::TypeKind::GENERIC
         //    ret = "<ERROR>"
         case typechecking::TypeKind::TYPE
-            ret = "{{i64, i64}*, i8*, %\"runtime::Type\"*}"
+            ret = "{ptr, ptr, ptr}"
         case typechecking::TypeKind::UNDEF
             ret = "undef"
         case
@@ -282,7 +261,7 @@ def named_parameter_to_str(named: typechecking::NamedParameter) -> Str {
     var tpe = named.tpe
     if named.varargs {
         if tpe {
-            ret += "{i" + (size_of size_t) * 8 + ", " + type_to_str(tpe) + "*}"
+            ret += "{i" + (size_of size_t) * 8 + ", ptr}"
         } else {
             ret += "..."
         }
@@ -444,7 +423,7 @@ def emit_convert(fp: File, name: string, insn: &compiler::Insn) {
 
 def emit_gep(fp: File, insn: &compiler::Insn) {
     fprint(fp, value_to_str((@insn).value.gep.ret))
-    fprint(fp, " = getelementptr ")
+    fprint(fp, " = getelementptr inbounds ")
     fprint(fp, type_to_str((@insn).value.gep.tpe))
     fprint(fp, ", ")
     fprint(fp, type_to_str((@insn).value.gep.value.tpe))
@@ -628,11 +607,20 @@ export def emit_block(fp: File, block: &compiler::Block) {
 def emit_function(fp: File, function: &compiler::Function, module: &toolchain::Module) {
     // TODO Everything in type has the wrong module, fix this elsewhere instead of just relying on it here
     let forward_declare = function.forward_declare or (function.module != module and module.module != "type") 
+    if function.meta_hash {
+        fprint(fp, "; ", strings::int_to_hex_str(function.meta_hash, prefix = false), "\n")
+    }
 
     if forward_declare {
         fprint(fp, "declare ")
     } else {
         fprint(fp, "define ")
+
+        if function.metadata {
+            for var k in @function.metadata.keys() {
+                cresult.metadata(k) = function.metadata(k)
+            }
+        }
     }
     if function.dllimport {
         fprint(fp, "dllimport ")
@@ -769,36 +757,35 @@ def emit_global(fp: File, global: &compiler::Global) {
 
 def gen_main_function(fp: File) {
     if toolchain::is_shared { return }
-    fprint(fp, "define i32 @main(i32 %argc, i8** %argv) {\n")
+    fprint(fp, "define i32 @main(i32 %argc, ptr %argv) {\n")
     fprint(fp, "\t%size = zext i32 %argc to i64\n")
     fprint(fp, "\t%size.1 = mul i64 %size, ", size_of string, "\n")
-    fprint(fp, "\t%args = call i8* @malloc(i64 %size.1)\n")
-    fprint(fp, "\t%args.1 = bitcast i8* %args to {i64, i8*}*\n")
-    fprint(fp, "\t%args.2 = insertvalue {i64, {i64, i8*}*} undef, i64 %size, 0\n")
-    fprint(fp, "\t%args.3 = insertvalue {i64, {i64, i8*}*} %args.2, {i64, i8*}* %args.1, 1\n")
+    fprint(fp, "\t%args = call ptr @malloc(i64 %size.1)\n")
+    fprint(fp, "\t%args.1 = insertvalue {i64, ptr} undef, i64 %size, 0\n")
+    fprint(fp, "\t%args.2 = insertvalue {i64, ptr} %args.1, ptr %args, 1\n")
     fprint(fp, "\t%i = alloca i32\n")
-    fprint(fp, "\tstore i32 0, i32* %i\n")
+    fprint(fp, "\tstore i32 0, ptr %i\n")
     fprint(fp, "\tbr label %loop\n")
     fprint(fp, "loop:\n")
-    fprint(fp, "\t%i.1 = load i32, i32* %i\n")
+    fprint(fp, "\t%i.1 = load i32, ptr %i\n")
     fprint(fp, "\t%cond = icmp eq i32 %argc, %i.1\n")
     fprint(fp, "\tbr i1 %cond, label %end, label %inner\n")
     fprint(fp, "inner:\n")
-    fprint(fp, "\t%arg = getelementptr i8*, i8** %argv, i32 %i.1\n")
-    fprint(fp, "\t%arg.1 = load i8*, i8** %arg\n")
-    fprint(fp, "\t%arg.2 = getelementptr {i64, i8*}, {i64, i8*}* %args.1, i32 %i.1\n")
-    fprint(fp, "\t%arglen = call i64 @strlen(i8* %arg.1)\n")
+    fprint(fp, "\t%arg = getelementptr ptr, ptr %argv, i32 %i.1\n")
+    fprint(fp, "\t%arg.1 = load ptr, ptr %arg\n")
+    fprint(fp, "\t%arg.2 = getelementptr {i64, ptr}, ptr %args, i32 %i.1\n")
+    fprint(fp, "\t%arglen = call i64 @strlen(ptr %arg.1)\n")
     fprint(fp, "\t%arglen.1 = add i64 %arglen, 1\n")
-    fprint(fp, "\t%arg.3 = insertvalue {i64, i8*} undef, i64 %arglen.1, 0\n")
-    fprint(fp, "\t%arg.4 = insertvalue {i64, i8*} %arg.3, i8* %arg.1, 1\n")
-    fprint(fp, "\tstore {i64, i8*} %arg.4, {i64, i8*}* %arg.2\n")
+    fprint(fp, "\t%arg.3 = insertvalue {i64, ptr} undef, i64 %arglen.1, 0\n")
+    fprint(fp, "\t%arg.4 = insertvalue {i64, ptr} %arg.3, ptr %arg.1, 1\n")
+    fprint(fp, "\tstore {i64, ptr} %arg.4, ptr %arg.2\n")
     fprint(fp, "\t%i.2 = add i32 %i.1, 1\n")
-    fprint(fp, "\tstore i32 %i.2, i32* %i\n")
+    fprint(fp, "\tstore i32 %i.2, ptr %i\n")
     fprint(fp, "\tbr label %loop\n")
     fprint(fp, "end:\n")
-    fprint(fp, "\tcall void @\"main::__main__::([[char]])\"({i64, {i64, i8*}*} %args.3)\n")
+    fprint(fp, "\tcall void @\"main::__main__::([[char]])\"({i64, ptr} %args.2)\n")
     fprint(fp, "\tcall void @\"main::__finalizer__::()\"()\n")
-    fprint(fp, "\tcall void @free(i8* %args)\n")
+    fprint(fp, "\tcall void @free(ptr %args)\n")
     fprint(fp, "\tret i32 0\n")
     fprint(fp, "}\n")
 }
@@ -811,7 +798,7 @@ def gen_header(fp: File, module: &toolchain::Module) {
     } else {
         fprint(fp, "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128\"\n")
         fprint(fp, "target triple = \"x86_64-pc-linux-gnu\"\n")
-        fprint(fp, "%__va_list_tag = type { i32, i32, i8*, i8* }\n")
+        fprint(fp, "%__va_list_tag = type { i32, i32, ptr, ptr }\n")
     }
 }
 
@@ -822,7 +809,6 @@ export def gen(module: &toolchain::Module) {
     
     toolchain::progress_update(module, toolchain::ProgressUpdate::START)
     cresult = module.result
-    cstart_index = (cresult.metadata.size - 1) !int
 
     let outfile = toolchain::outfolder + '/' + module.file + ".ll"
     let fp = open(outfile, "w")
@@ -848,6 +834,23 @@ export def gen(module: &toolchain::Module) {
         }
     }
 
+    // TODO inefficient looping over the entire set repeatedly
+    let generated_types = set::make(typechecking::TypeId)
+    loop {
+        var before = cresult.metadata.size
+        for var tpe in @cresult.ditypes.keys() {
+            if generated_types.contains(tpe) { continue }
+            let value = compiler::di_type_gen(tpe, module.compiler_state)
+            let name = compiler::di_type_name(tpe)
+            cresult.metadata(name) = value
+            generated_types.add(tpe)
+        }
+        if cresult.metadata.size == before { break }
+    }
+    
+
+    cstart_index = (cresult.metadata.size - 1) !int
+
     // TODO Sometimes in the compiler there might be multiple cases
     // of the same function defined under different names. We should only emit one of them.
     // This can happen if consteval incorrectly creates a name on a partial result 
@@ -862,11 +865,6 @@ export def gen(module: &toolchain::Module) {
         if map::contains(module.imported, (@function).name) {
             if deduplicate.contains(function.name) { continue }
             deduplicate.add(function.name)
-            if function.metadata {
-                for var k in @function.metadata.keys() {
-                    cresult.metadata(k) = function.metadata(k)
-                }
-            }
             emit_function(fp, function, module)
         }
     }

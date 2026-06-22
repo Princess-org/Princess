@@ -193,15 +193,9 @@ export type InsnConvert = struct {
 }
 
 export def bitcast(state: &State, ret: typechecking::TypeId, value: Value, loc: &Value = null) -> Value {
-    let bitcast_ret = make_local_value(ret, null, state)
-    let bitcast = make_insn_dbg(InsnKind::BITCAST, loc)
-    bitcast.value.convert = [
-        ret = bitcast_ret,
-        value = value
-    ] !InsnConvert
-    push_insn(bitcast, state)
-
-    return bitcast_ret
+    // TODO This is a noop but sometimes the type needs to be preserved
+    value.tpe = ret
+    return value
 }
 
 export def ptr_to_int(state: &State, value: Value, loc: &Value = null) -> Value {
@@ -545,6 +539,7 @@ export type Result = struct {
     // This maps a metadata string to an integer 
     // to be able to create unique indices when emitting the IR
     meta_mapping: &SMap(int)
+    ditypes: &Set(typechecking::TypeId)
 }
 
 export def add_function(result: &Result, name: Str, function: &Function) {
@@ -587,8 +582,6 @@ export type State = struct {
     current_block: &Block
     // Vector of LoopState 
     loops: &Vector(LoopState)
-    // Map of Value
-    ditypes: &Map(&typechecking::Type, &Value)
     difile: &Value
     diunit: &Value
     // Vector of Value
@@ -737,7 +730,8 @@ def make_meta(state: &State) -> &Value {
     return value
 }
 
-def push_meta(meta: &Value, state: &State) -> &Value {
+def push_meta(meta: &Value, state: &State, function_local: bool = false) -> &Value {
+    if function_local { return push_meta_for_function(meta, state) }
     let val = make_meta(state)
     state.module.result.metadata((@val).name) = meta
     return val
@@ -755,7 +749,7 @@ def push_meta_for_function(meta: &Value, state: &State) -> &Value {
         fun.metadata = map::make(type &Value)
         fun.meta_hash = hash(fun.name)
     }
-    value.name = "!" + strings::int_to_hex_str(fun.meta_hash, prefix = false) + "_" + fun.metadata.size
+    value.name = "!F_" + strings::int_to_hex_str(fun.meta_hash, prefix = false) + "_" + fun.metadata.size
     fun.metadata(value.name) = meta
     return value
 }
@@ -1128,6 +1122,7 @@ def make_return_type(rtpe: &typechecking::Type, module: &toolchain::Module) -> t
     }
 
     let struct_type = typechecking::make_struct_type(fields)
+    struct_type.type_name = "__ret::" + debug::type_to_str(rtpe, full_name = true)
     struct_type.id = typechecking::next_type_id()
     struct_type.is_literal = true
     typechecking::register_internal(struct_type.id, struct_type)
@@ -1673,13 +1668,7 @@ def convert_value_to_ref(tpe: typechecking::TypeId, value: Value, loc: &Value, s
         ] !InsnCall
         push_insn(call2, state)
         
-        heapval = make_local_value(typechecking::pointer(value.tpe), null, state)
-        let bitcast2 = make_insn_dbg(InsnKind::BITCAST, loc)
-        bitcast2.value.convert = [
-            ret = heapval,
-            value = call2_ret
-        ] !InsnConvert
-        push_insn(bitcast2, state)
+        heapval = state.bitcast(typechecking::pointer(value.tpe), call2_ret, loc)
         
         if has_copy_constructor(value.tpe) {
             let ret = state.alloca(value.tpe, loc, no_yield_capture = true)
@@ -1770,14 +1759,7 @@ def convert_value_to_ref(tpe: typechecking::TypeId, value: Value, loc: &Value, s
         push_insn(store2, state)
 
         if not typechecking::equals(tpe.tpe, value.tpe) {
-            let bitcast2_ret = make_local_value(typechecking::pointer(tpe.tpe), null, state)
-            let bitcast2 = make_insn_dbg(InsnKind::BITCAST, loc)
-            bitcast2.value.convert = [
-                ret = bitcast2_ret,
-                value = heapval
-            ] !InsnConvert
-            push_insn(bitcast2, state)
-            heapval = bitcast2_ret
+            heapval = state.bitcast(pointer(tpe.tpe), heapval, loc)
         }
     } else {
         heapval = [ kind = ValueKind::NULL, tpe = typechecking::pointer(value.tpe) ] !Value
@@ -1881,15 +1863,7 @@ def convert_array_to_array(tpe: typechecking::TypeId, value: Value, loc: &Value,
         push_insn(gep, state)
 
         if not tpe.tpe {
-            let local1 = local
-            local = make_local_value(typechecking::pointer(0), null, state)
-            let bitcast = make_insn_dbg(InsnKind::BITCAST, loc)
-            (@bitcast).value.convert = [
-                ret = local,
-                value = local1
-            ] !InsnConvert
-
-            push_insn(bitcast, state)
+            local = state.bitcast(typechecking::pointer(0), local, loc)
         }
 
         let ret = make_local_value(tpe, null, state)
@@ -1952,14 +1926,7 @@ def convert_array_to_array(tpe: typechecking::TypeId, value: Value, loc: &Value,
 
         push_insn(extract2, state)
 
-        let bitcast_ret = make_local_value(typechecking::pointer(0), null, state)
-        let bitcast = make_insn_dbg(InsnKind::BITCAST, loc)
-        (@bitcast).value.convert = [
-            ret = bitcast_ret,
-            value = ptr
-        ] !InsnConvert
-
-        push_insn(bitcast, state)
+        let bitcast_ret = state.bitcast(typechecking::pointer(0), ptr, loc)
 
         let insert1_ret = make_local_value(tpe, null, state)
         let insert1 = make_insn_dbg(InsnKind::INSERTVALUE, loc)
@@ -2410,7 +2377,9 @@ def convert_to(loc: &Value, value: Value, tpe: typechecking::TypeId, state: &Sta
                 tpe = tpe 
             ] !Value
         } else if typechecking::is_pointer(value.tpe) or value.tpe.kind == typechecking::TypeKind::NULL {
-            return convert_to(InsnKind::BITCAST, loc, value, tpe, state)
+            let value = load_value(value, loc, state)
+            value.tpe = tpe
+            return value
         } else if typechecking::is_integer(value.tpe) {
             return convert_to(InsnKind::INTTOPTR, loc, value, tpe, state)
         }
@@ -2506,13 +2475,7 @@ def walk_StructLitUnion(node: &parser::Node, state: &State) -> Value {
     ] !InsnGetElementPtr
     push_insn(gep, state)
 
-    let bitcast_ret = make_local_value(typechecking::pointer(arg_tpe), null, state)
-    let bitcast = make_insn_dbg(InsnKind::BITCAST, loc)
-    (@bitcast).value.convert = [
-        ret = bitcast_ret,
-        value = gep_ret
-    ] !InsnConvert
-    push_insn(bitcast, state)
+    let bitcast_ret = state.bitcast(typechecking::pointer(0), gep_ret, loc)
 
     let store = make_insn_dbg(InsnKind::STORE, loc)
     (@store).value.store = [
@@ -4291,14 +4254,7 @@ def walk_MemberAccess_struct(node: &parser::Node, tpe: typechecking::TypeId, mem
         ] !InsnGetElementPtr
         push_insn(gep, state)
 
-        let bitcast_ret = make_local_value(typechecking::pointer(member_type), null, state)
-        let bitcast = make_insn_dbg(InsnKind::BITCAST, loc)
-        (@bitcast).value.convert = [
-            ret = bitcast_ret,
-            value = gep_ret
-        ] !InsnConvert
-        push_insn(bitcast, state)
-
+        let bitcast_ret = state.bitcast(typechecking::pointer(member_type), gep_ret, loc)
         let ret = make_address_value(member_type, bitcast_ret, state)
         return ret
     } else {
@@ -6752,7 +6708,7 @@ def di_forward_declare(tpe: &typechecking::Type, name: Str, state: &State) -> &V
     return di
 }
 
-def di_subroutine_type(tpe: &typechecking::Type, state: &State) -> &Value {
+def di_subroutine_type(tpe: &typechecking::Type, state: &State, function_local: bool = false) -> &Value {
     let values = allocate_ref(Value, vector::length(tpe.parameter_t) + 1)
 
     var ret_tpe: typechecking::TypeId
@@ -6778,7 +6734,7 @@ def di_subroutine_type(tpe: &typechecking::Type, state: &State) -> &Value {
         metadata = true,
         values = values
     ] !&Value
-    let typesp = push_meta_for_function(types, state)
+    let typesp = push_meta(types, state, function_local)
 
     let debug_values = allocate_ref(DebugParam, 1)
     debug_values(0) = [
@@ -6791,7 +6747,7 @@ def di_subroutine_type(tpe: &typechecking::Type, state: &State) -> &Value {
         debug_values = debug_values
     ] !&Value
 
-    return push_meta_for_function(di, state)
+    return push_meta(di, state, function_local)
 }
 
 def di_function_type(tpe: &typechecking::Type, state: &State) -> &Value {
@@ -6850,7 +6806,7 @@ def di_static_array_type(tpe: &typechecking::Type, state: &State) -> &Value {
     ] !&Value
 
     let values = allocate_ref(Value, 1)
-    values(0) = @push_meta_for_function(value, state)
+    values(0) = @push_meta(value, state)
     let elements = [
         kind = ValueKind::STRUCT,
         metadata = true,
@@ -6868,7 +6824,7 @@ def di_static_array_type(tpe: &typechecking::Type, state: &State) -> &Value {
         name = "size", value = [ kind = DebugValueKind::INT, i = tpe.size * 8 ] !DebugValue
     ] !DebugParam
     debug_values(3) = [
-        name = "elements", value = meta_to_debug_value(push_meta_for_function(elements, state))
+        name = "elements", value = meta_to_debug_value(push_meta(elements, state))
     ] !DebugParam
 
     let di = [
@@ -6897,26 +6853,33 @@ def di_ref_type(value: &Value, tpe: &typechecking::Type, is_weak: bool, state: &
     return di_composite_type(value, _ref, "<weak_ref>" if is_weak else "<ref>", "DW_TAG_structure_type", state)
 }
 
+export def di_type_name(tpe: &typechecking::Type) -> Str {
+    return "!T_" + strings::int_to_hex_str(tpe.stable_hash(), prefix = false)
+}
+
 def di_type(tpe: &typechecking::Type, state: &State) -> &Value {
     if not tpe or tpe.kind == typechecking::TypeKind::INTERFACE or 
         tpe.kind == typechecking::TypeKind::TYPE_CONSTRUCTOR or
         tpe.kind == typechecking::TypeKind::OPAQUE { 
         return null 
     }
+    state.module.result.ditypes.add(tpe.id)
+    let name = di_type_name(tpe)
+    return [ 
+        kind = ValueKind::METADATA, 
+        name = name
+    ] !&Value
+}
 
+export def di_type_gen(tpe: &typechecking::Type, state: &State) -> &Value {
     let anonymous = tpe.type_name == null
-    var ditpe = state.ditypes.get_or_default(tpe, null)
-    if ditpe { return ditpe }
-
     var name = tpe.type_name
     if anonymous {
         name = "<anonymous>"
     }
 
-    ditpe = [] !&Value
-    let ditpep = push_meta(ditpe, state)
-    (@state).ditypes(tpe) = ditpep
-
+    let ditpep = di_type(tpe, state)
+    var ditpe = [] !&Value
     switch tpe.kind !int {
         // TODO compare with char for special casing
         case typechecking::TypeKind::WORD
@@ -6973,7 +6936,7 @@ def di_type(tpe: &typechecking::Type, state: &State) -> &Value {
             error(tpe.kind, "\n") 
             assert(false)
     }
-    return ditpep
+    return ditpe
 }
 
 def generate_defer_types_pre(state: &State) {
@@ -7318,7 +7281,7 @@ def create_debug_info(node: &parser::Node, function: &Function, tpe: &typechecki
         name = "line", value = [ kind = DebugValueKind::INT, i = line + 1 ] !DebugValue
     ] !DebugParam
     debug_values(4) = [
-        name = "type", value = meta_to_debug_value(di_subroutine_type(tpe, state))
+        name = "type", value = meta_to_debug_value(di_subroutine_type(tpe, state, function_local = true))
     ] !DebugParam
     debug_values(5) = [
         name = "scopeLine", value = [ kind = DebugValueKind::INT, i = line + 1 ] !DebugValue
@@ -7667,21 +7630,13 @@ export def create_function(
             ] !InsnLoad
             function.allocas.push(load)
 
-            let context = make_local_value(pointer(0), null, state)
             let ev = make_insn(InsnKind::EXTRACTVALUE)
             ev.value.extract_value = [
-                ret = context,
+                ret = [ kind = ValueKind::LOCAL, name = "__context", tpe = pointer(function.context) ] !Value,
                 value = generator,
                 index = [1]
             ] !InsnExtractValue
             function.allocas.push(ev)
-
-            let context_cast = make_insn(InsnKind::BITCAST)
-            context_cast.value.convert = [
-                ret = [ kind = ValueKind::LOCAL, name = "__context", tpe = pointer(function.context) ] !Value,
-                value = context
-            ] !InsnConvert
-            function.allocas.push(context_cast)
         }
 
         if is_closure {
@@ -9572,7 +9527,8 @@ export def make_result -> &Result {
         structures = map::make(type typechecking::TypeId),
         globals = map::make(type &Global),
         metadata = map::make(type &Value),
-        meta_mapping = map::make(int)
+        meta_mapping = map::make(int),
+        ditypes = set::make(typechecking::TypeId)
     ] !&Result
 }
 
@@ -9580,7 +9536,6 @@ export def make_state(module: &toolchain::Module) -> &State {
     let state = [
         module = module,
         loops = vector::make(LoopState),
-        ditypes = map::make(type &typechecking::Type, type &Value),
         discope = vector::make(type &Value),
         current_block = make_block(),
         globals = map::make(type *),
