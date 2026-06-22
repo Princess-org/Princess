@@ -260,6 +260,13 @@ def serialize_function(fp: File, value: &scope::Value, state: &Serialize) {
         fp.write(*loc.end_line)
         fp.write(*loc.end_column)
     }
+
+    // Function code
+    let function = fdef.context.result.functions.get_or_default(fdef.name, null)
+    var block: &compiler::Block
+    if function { block = function.block }
+
+    serialize_block(fp, block, state)
 }
 
 def serialize_typeref(fp: File, typeref: &typechecking::TypeRef, state: &Serialize) {
@@ -715,6 +722,9 @@ def deserialize_function(deserialize: &Deserialize, fp: File, poly_instance: boo
     }
 
     debug::trace("    Function " + type_name + " (" + hash + ")")
+
+    let block = deserialize_block(fp, deserialize)
+
     deserialize.functions.push([
         name = name,
         hash = hash,
@@ -727,7 +737,8 @@ def deserialize_function(deserialize: &Deserialize, fp: File, poly_instance: boo
         poly_instance = poly_instance,
         context = context,
         impl = impl,
-        is_dyn_dispatch = is_dyn_dispatch
+        is_dyn_dispatch = is_dyn_dispatch,
+        block = block
     ] !FunctionEntry)
 }
 
@@ -803,6 +814,9 @@ def serialize_value(fp: File, value: &compiler::Value, state: &Serialize) {
     }
     let kind = value.kind !byte
     fp.write(*kind)
+    if value.kind == compiler::ValueKind::NULL {
+        return
+    }
     if value.kind == compiler::ValueKind::TYPE {
         write_type(fp, value.value_tpe, state)
         return
@@ -826,6 +840,18 @@ def serialize_value(fp: File, value: &compiler::Value, state: &Serialize) {
         fp.write(*zero)
     }
     write_type(fp, value.tpe, state)
+
+    if value.kind == compiler::ValueKind::DEBUG_INFO {
+        fp.write(*value.debug_values.size)
+        for var param in @value.debug_values {
+            fp.write_str(param.name)
+            var kind = param.value.kind !byte
+            fp.write(*kind)
+            fp.write_str(param.value.name)
+            fp.write_str(param.value.s)
+            fp.write(*param.value.i)
+        }
+    }
 }
 
 def deserialize_value(deserialize: &Deserialize, fp: File) -> &compiler::Value {
@@ -833,6 +859,9 @@ def deserialize_value(deserialize: &Deserialize, fp: File) -> &compiler::Value {
     fp.read(*kind)
     if kind == NO_VALUE {
         return null
+    }
+    if kind == compiler::ValueKind::NULL {
+        return compiler::NO_VALUE
     }
 
     let value = [] !&compiler::Value
@@ -851,13 +880,335 @@ def deserialize_value(deserialize: &Deserialize, fp: File) -> &compiler::Value {
     value.value_tpe = read_type(fp)
     var sz: uint64
     fp.read(*sz)
-    value.values = allocate_ref(type compiler::Value, sz)
+    value.values = allocate_ref(compiler::Value, sz)
     for var i in 0..sz {
         value.values(i) = @deserialize_value(deserialize, fp)
     }
     value.tpe = read_type(fp)
 
+    if value.kind == compiler::ValueKind::DEBUG_INFO {
+        var sz: uint64
+        fp.read(*sz)
+        value.debug_values = allocate_ref(compiler::DebugParam, sz)
+        for var i in 0..sz {
+            var param: compiler::DebugParam
+            param.name = fp.read_str()
+
+            var kind: byte
+            fp.read(*kind)
+            param.value.kind = kind !compiler::DebugValueKind
+            param.value.name = fp.read_str()
+            param.value.s = fp.read_str()
+            fp.read(*param.value.i)
+
+            value.debug_values(i) = param
+        }
+    }
+
     return value
+}
+
+def resolve_value(value: *compiler::Value) {
+    if value.value_tpe {
+        value.value_tpe = deserialized_types(value.value_tpe).id
+    }
+    if value.tpe {
+        value.tpe = deserialized_types(value.tpe).id
+    }
+    if value.values {
+        for var i in 0..value.values.size {
+            resolve_value(*value.values(i))
+        }
+    }
+}
+
+def serialize_label(fp: File, label_: compiler::Label) {
+    fp.write_str(label_.name)
+}
+
+def deserialize_label(fp: File) -> compiler::Label {
+    let name = fp.read_str()
+    return [ name = name ] !compiler::Label
+}
+
+def serialize_insn(fp: File, insn: &compiler::Insn, state: &Serialize) {
+    let kind = insn.kind !byte
+    fp.write(*kind)
+    // Optional debug info
+    serialize_value(fp, insn.debug, state)
+
+    switch insn.kind {
+        case compiler::InsnKind::ADD..=compiler::InsnKind::XOR
+            serialize_value(fp, insn.value.arith.ret, state)
+            serialize_value(fp, insn.value.arith.left, state)
+            serialize_value(fp, insn.value.arith.right, state)
+        case compiler::InsnKind::FCMP
+            let op = insn.value.fcmp.op !byte
+            fp.write(*op)
+            serialize_value(fp, insn.value.fcmp.ret, state)
+            serialize_value(fp, insn.value.fcmp.left, state)
+            serialize_value(fp, insn.value.fcmp.right, state)
+        case compiler::InsnKind::ICMP
+            let op = insn.value.icmp.op !byte
+            fp.write(*op)
+            serialize_value(fp, insn.value.icmp.ret, state)
+            serialize_value(fp, insn.value.icmp.left, state)
+            serialize_value(fp, insn.value.icmp.right, state)
+        case compiler::InsnKind::FNEG
+            serialize_value(fp, insn.value.fneg.ret, state)
+            serialize_value(fp, insn.value.fneg.value, state)
+        case compiler::InsnKind::RET
+            serialize_value(fp, insn.value.ret.value, state)
+        case compiler::InsnKind::LOAD
+            serialize_value(fp, insn.value.load.value, state)
+            serialize_value(fp, insn.value.load.loc, state)
+        case compiler::InsnKind::STORE
+            serialize_value(fp, insn.value.store.value, state)
+            serialize_value(fp, insn.value.store.loc, state)
+        case compiler::InsnKind::ALLOCA
+            serialize_value(fp, insn.value.alloca.ret, state)
+        case compiler::InsnKind::INSERTVALUE
+            serialize_value(fp, insn.value.insert_value.ret, state)
+            serialize_value(fp, insn.value.insert_value.value, state)
+            serialize_value(fp, insn.value.insert_value.element, state)
+            fp.write(*insn.value.insert_value.index.size)
+            for var i in @insn.value.insert_value.index {
+                fp.write(*i)
+            }
+        case compiler::InsnKind::EXTRACTVALUE
+            serialize_value(fp, insn.value.extract_value.ret, state)
+            serialize_value(fp, insn.value.extract_value.value, state)
+            fp.write(*insn.value.extract_value.index.size)
+            for var i in @insn.value.extract_value.index {
+                fp.write(*i)
+            }
+        case compiler::InsnKind::GETELEMENTPTR
+            serialize_value(fp, insn.value.gep.ret, state)
+            write_type(fp, insn.value.gep.tpe, state)
+            serialize_value(fp, insn.value.gep.value, state)
+            fp.write(*insn.value.gep.index.size)
+            for var v in @insn.value.gep.index {
+                serialize_value(fp, v, state)
+            }
+        case compiler::InsnKind::TRUNC..=compiler::InsnKind::BITCAST
+            serialize_value(fp, insn.value.convert.ret, state)
+            serialize_value(fp, insn.value.convert.value, state)
+        case compiler::InsnKind::SWITCH
+            serialize_value(fp, insn.value.switch_.value, state)
+            serialize_label(fp, insn.value.switch_.otherwise)
+            fp.write(*insn.value.switch_.switch_values.length)
+            for var sv in insn.value.switch_.switch_values {
+                serialize_value(fp, sv.value, state)
+                serialize_label(fp, sv.label_)
+            }
+        case compiler::InsnKind::CALL
+            serialize_value(fp, insn.value.call.name, state)
+            serialize_value(fp, insn.value.call.ret, state)
+            fp.write(*insn.value.call.args.size)
+            for var v in @insn.value.call.args {
+                serialize_value(fp, v, state)
+            }
+            let zero: size_t = 0
+            if insn.value.call.proto {
+                fp.write(*insn.value.call.proto.size)
+                for var np in @insn.value.call.proto {
+                    fp.write_str(np.name)
+                    write_type(fp, np.tpe, state)
+                    fp.write(*np.varargs)
+                }
+            } else {
+                fp.write(*zero)
+            }
+        case compiler::InsnKind::BR_UNC
+            serialize_label(fp, insn.value.br_unc.label_)
+        case compiler::InsnKind::BR
+            serialize_value(fp, insn.value.br.cond, state)
+            serialize_label(fp, insn.value.br.if_true)
+            serialize_label(fp, insn.value.br.if_false)
+        case compiler::InsnKind::UNREACHABLE
+            // SNIP
+        case
+            error(insn.kind, "\n")
+            assert
+    }
+}
+
+def deserialize_insn(deserialize: &Deserialize, fp: File) -> &compiler::Insn {
+    var kind: byte
+    fp.read(*kind)
+
+    var insn = [] !&compiler::Insn
+    insn.kind = kind !compiler::InsnKind
+    insn.debug = deserialize_value(deserialize, fp)
+
+    switch insn.kind {
+        case compiler::InsnKind::ADD..=compiler::InsnKind::XOR
+            insn.value.arith.ret = @deserialize_value(deserialize, fp)
+            insn.value.arith.left = @deserialize_value(deserialize, fp)
+            insn.value.arith.right = @deserialize_value(deserialize, fp)
+        case compiler::InsnKind::FCMP
+            var op: byte
+            fp.read(*op)
+            insn.value.fcmp.op = op !compiler::CompareFloat
+            insn.value.fcmp.ret = @deserialize_value(deserialize, fp)
+            insn.value.fcmp.left = @deserialize_value(deserialize, fp)
+            insn.value.fcmp.right = @deserialize_value(deserialize, fp)
+        case compiler::InsnKind::ICMP
+            var op: byte
+            fp.read(*op)
+            insn.value.icmp.op = op !compiler::CompareInt
+            insn.value.icmp.ret = @deserialize_value(deserialize, fp)
+            insn.value.icmp.left = @deserialize_value(deserialize, fp)
+            insn.value.icmp.right = @deserialize_value(deserialize, fp)
+        case compiler::InsnKind::FNEG
+            insn.value.fneg.ret = @deserialize_value(deserialize, fp)
+            insn.value.fneg.value = @deserialize_value(deserialize, fp)
+        case compiler::InsnKind::RET
+            insn.value.ret.value = @deserialize_value(deserialize, fp)
+        case compiler::InsnKind::LOAD
+            insn.value.load.value = @deserialize_value(deserialize, fp)
+            insn.value.load.loc = @deserialize_value(deserialize, fp)
+        case compiler::InsnKind::STORE
+            insn.value.store.value = @deserialize_value(deserialize, fp)
+            insn.value.store.loc = @deserialize_value(deserialize, fp)
+        case compiler::InsnKind::ALLOCA
+            insn.value.alloca.ret = @deserialize_value(deserialize, fp)
+        case compiler::InsnKind::INSERTVALUE
+            insn.value.insert_value.ret = @deserialize_value(deserialize, fp)
+            insn.value.insert_value.value = @deserialize_value(deserialize, fp)
+            insn.value.insert_value.element = @deserialize_value(deserialize, fp)
+            var idx_sz: size_t
+            fp.read(*idx_sz)
+            insn.value.insert_value.index = allocate_ref(int, idx_sz)
+            for var i in 0..idx_sz {
+                var idx: int
+                fp.read(*idx)
+                insn.value.insert_value.index(i) = idx
+            }
+        case compiler::InsnKind::EXTRACTVALUE
+            insn.value.extract_value.ret = @deserialize_value(deserialize, fp)
+            insn.value.extract_value.value = @deserialize_value(deserialize, fp)
+            var idx_sz: size_t
+            fp.read(*idx_sz)
+            insn.value.extract_value.index = allocate_ref(int, idx_sz)
+            for var i in 0..idx_sz {
+                var idx: int
+                fp.read(*idx)
+                insn.value.extract_value.index(i) = idx
+            }
+        case compiler::InsnKind::GETELEMENTPTR
+            insn.value.gep.ret = @deserialize_value(deserialize, fp)
+            insn.value.gep.tpe = read_type(fp)
+            insn.value.gep.value = @deserialize_value(deserialize, fp)
+            var idx_sz: size_t
+            fp.read(*idx_sz)
+            insn.value.gep.index = allocate_ref(compiler::Value, idx_sz)
+            for var i in 0..idx_sz {
+                insn.value.gep.index(i) = @deserialize_value(deserialize, fp)
+            }
+        case compiler::InsnKind::TRUNC..=compiler::InsnKind::BITCAST
+            insn.value.convert.ret = @deserialize_value(deserialize, fp)
+            insn.value.convert.value = @deserialize_value(deserialize, fp)
+        case compiler::InsnKind::SWITCH
+            insn.value.switch_.value = @deserialize_value(deserialize, fp)
+            insn.value.switch_.otherwise = deserialize_label(fp)
+            var sz: size_t
+            fp.read(*sz)
+            insn.value.switch_.switch_values = vector::make(compiler::SwitchValue)
+            for var i in 0..sz {
+                var sv: compiler::SwitchValue
+                sv.value = @deserialize_value(deserialize, fp)
+                sv.label_ = deserialize_label(fp)
+                insn.value.switch_.switch_values.push(sv)
+            }
+        case compiler::InsnKind::CALL
+            insn.value.call.name = @deserialize_value(deserialize, fp)
+            insn.value.call.ret = @deserialize_value(deserialize, fp)
+            var args_sz: size_t
+            fp.read(*args_sz)
+            insn.value.call.args = allocate_ref(compiler::Value, args_sz)
+            for var i in 0..args_sz {
+                insn.value.call.args(i) = @deserialize_value(deserialize, fp)
+            }
+            var proto_sz: size_t
+            fp.read(*proto_sz)
+            if proto_sz > 0 {
+                insn.value.call.proto = allocate_ref(typechecking::NamedParameter, proto_sz)
+                for var i in 0..proto_sz {
+                    var pname = fp.read_str()
+                    var ptpe = read_type(fp)
+                    var pvarargs: bool
+                    fp.read(*pvarargs)
+                    insn.value.call.proto(i) = [
+                        name = pname, tpe = ptpe, varargs = pvarargs 
+                    ] !typechecking::NamedParameter
+                }
+            }
+        case compiler::InsnKind::BR_UNC
+            insn.value.br_unc.label_ = deserialize_label(fp)
+        case compiler::InsnKind::BR
+            insn.value.br.cond = @deserialize_value(deserialize, fp)
+            insn.value.br.if_true = deserialize_label(fp)
+            insn.value.br.if_false = deserialize_label(fp)
+        case compiler::InsnKind::UNREACHABLE
+            // nothing to read
+        case
+            error(insn.kind, "\n")
+            assert
+    }
+    return insn
+}
+
+def serialize_block(fp: File, block: &compiler::Block, state: &Serialize) {
+    let zero: byte = 0
+    let one: byte = 1
+    
+    // Is the block empty or not?
+    if not block { 
+        fp.write(*zero)
+        return
+    }
+    fp.write(*one)
+    fp.write_str(block.label_)
+
+    // Number of instructions
+    let sz = block.insn.length
+    fp.write(*sz)
+    for var insn in block.insn {
+        serialize_insn(fp, insn, state)
+    }
+
+    serialize_block(fp, block.next, state)
+}
+
+def deserialize_block(fp: File, deserialize: &Deserialize) -> &compiler::Block {
+    var first: &compiler::Block
+    var last: &compiler::Block
+    var has_next: byte
+
+    loop {
+        fp.read(*has_next)
+        if not has_next { return first }
+
+        let block = [] !&compiler::Block
+        block.label_ = fp.read_str()
+
+        var sz: size_t
+        fp.read(*sz)
+        block.insn = vector::make(type &compiler::Insn)
+        for var i in 0..sz {
+            block.insn.push(deserialize_insn(deserialize, fp))
+        }
+
+        if not first {
+            first = block
+        } else {
+            last.next = block
+        }
+        last = block
+    }
+    
+    return first
 }
 
 def add_dependencies(dependencies: &Set(scope::Ident), state: &Serialize) {
@@ -1107,6 +1458,7 @@ type FunctionEntry = struct {
     impl: bool
     context: &toolchain::Module
     is_dyn_dispatch: bool
+    block: &compiler::Block
 }
 
 type VariableEntry = struct {
@@ -1416,28 +1768,6 @@ def resolve_typeref(tr: &typechecking::TypeRef) {
 
 export def resolve_types_and_members {
 
-    // We need to loop until there is no alias anymore, this is because
-    // there might be an alias pointing to another alias and then it doesn't
-    // get resolved in one pass
-    /*var found_alias = true
-    loop {
-        found_alias = false
-        for var hash in @deserialized_types.keys() {
-            let tpe = deserialized_types(hash)
-            if tpe.kind == typechecking::TypeKind::UNSET {
-                if deserialized_types.contains(tpe._hash) {
-                    deserialized_types(hash) = deserialized_types(tpe._hash)
-                    found_alias = true
-                }
-            }
-        }
-
-        // If we didn't find any new alias we need to break, this might indicate 
-        // a problem with the deserialization if there are still aliases left
-        // but an infinite loop is bad regardless
-        if not found_alias { break }
-    }*/
-
     let types = map::make(int64, type &typechecking::Type)
     for var hash in @deserialized_types.keys() {
         let tpe = deserialized_types(hash)
@@ -1726,11 +2056,14 @@ export def resolve_types_and_members {
             }
             for var entry in deserialize.variables {
                 resolve_typeref(entry.tpe)
+                if entry.value { resolve_value(entry.value !*compiler::Value) }
             }
             for var entry in deserialize.functions {
                 let fdef = entry.fdef
                 for var i in 0..fdef.parameter_t.length() {
-                    resolve_typeref(fdef.parameter_t(i).tpe)
+                    var np = fdef.parameter_t(i)
+                    resolve_typeref(np.tpe)
+                    if np.value { resolve_value(np.value !*compiler::Value) }
                 }
                 for var i in 0..fdef.return_t.length() {
                     resolve_typeref(fdef.return_t(i))
