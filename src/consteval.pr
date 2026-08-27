@@ -51,10 +51,10 @@ export def copy_state(state: &typechecking::State) -> &typechecking::State {
 
 def set_current_function -> &compiler::Function {
     let block = compiler::make_block()
-    var is_compiled = false
+    var is_ctfe = false
     let previous_function = compiler_state.current_function()
     if previous_function {
-        is_compiled = previous_function.is_compiled
+        is_ctfe = previous_function.is_ctfe
     }
     let function = [
         name = "main",
@@ -63,7 +63,7 @@ def set_current_function -> &compiler::Function {
         allocas = vector::make(type &compiler::Insn),
         block = block,
         function_locals = set::make(),
-        is_compiled = is_compiled
+        is_ctfe = is_ctfe
     ] !&compiler::Function
     compiler_state.function_stack.push(function)
     compiler_state.current_block = block
@@ -316,7 +316,7 @@ def walk_Lambda(node: &parser::Node, state: &typechecking::State) {
     }
 }
 
-export def walk_Def(node: &parser::Node, state: &typechecking::State) {
+export def walk_Def(node: &parser::Node, function: &compiler::Function, state: &typechecking::State) {
     let share = node.value.def_.share
     let name = node.value.def_.name
     let params = node.value.def_.params
@@ -426,8 +426,6 @@ export def walk_Def(node: &parser::Node, state: &typechecking::State) {
     errors::current_function = fdef.name
     errors::current_signature = node.signature_hash
 
-    var function = node.value.def_.function
-
     if state.function_stack.length <= 1 {
         if function {
             node.svalue = scope::create_function(state.scope, name, function.value)
@@ -440,6 +438,9 @@ export def walk_Def(node: &parser::Node, state: &typechecking::State) {
         }
         if node.svalue {
             node.svalue.imported = imported
+            if node.svalue.function {
+                function = node.svalue.function
+            }
         }
     }
 
@@ -460,10 +461,15 @@ export def walk_Def(node: &parser::Node, state: &typechecking::State) {
             test = test,
             imported = imported
         ] !&compiler::Function
-        node.value.def_.function = function
     }
-    function.has_yield = has_yield
     
+    node.value.def_.function = function
+    function.has_yield = has_yield
+    if node.svalue and function != node.svalue.function {
+        // FIXME Assigning to itself causes problems with weak references
+        node.svalue.function = function
+    }
+
     debug::trace("Consteval: ", fdef.name)
 
     if has_yield {
@@ -943,8 +949,9 @@ export def compile_queued_functions {
             }
 
             // Compile function
-            function = compiler::create_function(entry.node, fdef, entry.node.value.def_.body, entry.node.inner_scope, null, compiler_state, params = entry.node.value.def_.params) 
-            
+            function = compiler::create_function(entry.node, fdef, entry.node.value.def_.body, entry.node.inner_scope, null, compiler_state, params = entry.node.value.def_.params, set_compiled = false) 
+            function.is_ctfe = true // This is set to true for functions that have been compiled during ctfe
+
             if function and function.defer_functions {
                 for var i in 0..vector::length(function.defer_functions) {
                     let deferf = function.defer_functions(i)
@@ -1008,7 +1015,7 @@ export def compile_function(value: &scope::Value, context: &scope::Scope, argume
         module = new_value.module
     }*/
 
-    var function = node.value.def_.function
+    var function = value.function
     //if function.is_typechecked and not is_repurposed { return value }
 
     let is_polymorph = typechecking::is_polymorph(function.fdef)
@@ -1022,7 +1029,7 @@ export def compile_function(value: &scope::Value, context: &scope::Scope, argume
     }
     if not is_polymorph { module.result.add_function(function.name, function) }
 
-    if function.is_compiled or function.is_queued {
+    if function.is_ctfe or function.is_queued {
         return value
     }
     if not node.value.def_.body {
@@ -1041,12 +1048,12 @@ export def compile_function(value: &scope::Value, context: &scope::Scope, argume
             compiler::predeclare_function(function, context, overwrite = true)
             const_module.result.add_function(function.name, function) 
         } else {
-            walk_Def(node, state)
+            walk_Def(node, function, state)
             let prev_context = state.context
             state.context = node.scope
             //node.tpe = value.tpe = typechecking::lookup_parameters(node, state)
             //print(node.tpe.type_name, "\n")
-            typechecking::walk_Def(node, state)
+            typechecking::walk_Def(node, function, state)
             state.context = prev_context
         }
     }
@@ -1297,7 +1304,7 @@ def walk_top(parent: &parser::Node, node: &parser::Node, state: &typechecking::S
         case parser::NodeKind::IMPORT
             walk_Import(node, state)
         case parser::NodeKind::DEF
-            if not state.shallow_walk { walk_Def(node, state) }
+            if not state.shallow_walk { walk_Def(node, null, state) }
         case parser::NodeKind::TYPE_DECL
             if not state.shallow_walk { walk_TypeDecl(node, state) }
         case parser::NodeKind::VAR_DECL

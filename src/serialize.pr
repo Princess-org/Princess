@@ -15,6 +15,7 @@ import builtins
 import md5
 import strings
 import io
+import codegen
 
 type TypeHash = struct {
     is_alias: bool
@@ -121,6 +122,7 @@ def serialize_type(fp: File, tpe: &typechecking::Type, state: &Serialize, is_ali
         write_type(fp, tpe._tpe, state)
     } else if typechecking::is_struct(tpe) {
         let sz = tpe.fields.length()
+        fp.write(*tpe.is_literal)
         fp.write(*sz)
         for var i in 0..sz {
             let field = tpe.fields(i)
@@ -263,7 +265,7 @@ def serialize_function(fp: File, value: &scope::Value, state: &Serialize) {
     }
 
     // Function code
-    let function = fdef.context.result.functions.get_or_default(fdef.name, null)
+    let function = value.function
     var block: &compiler::Block
     if function { block = function.block }
 
@@ -473,6 +475,8 @@ def deserialize_type(fp: File, state: &Deserialize) -> &typechecking::Type {
 
         // FIXME const fields
 
+        var is_literal: bool
+        fp.read(*is_literal)
         var sz: size_t
         fp.read(*sz)
 
@@ -488,6 +492,7 @@ def deserialize_type(fp: File, state: &Deserialize) -> &typechecking::Type {
         tpe.fields = fields
         tpe.size = size
         tpe.align = align
+        tpe.is_literal = is_literal
     case typechecking::TypeKind::FUNCTION,
         typechecking::TypeKind::CLOSURE
 
@@ -747,8 +752,6 @@ def deserialize_function(deserialize: &Deserialize, fp: File, poly_instance: boo
         }
     }
 
-    debug::trace("    Function " + type_name + " (" + hash + ")")
-
     var sz: size_t
     fp.read(*sz)
     var data = allocate_ref(uint8, sz)
@@ -769,6 +772,8 @@ def deserialize_function(deserialize: &Deserialize, fp: File, poly_instance: boo
         is_dyn_dispatch = is_dyn_dispatch,
         block_data = data
     ] !FunctionEntry)
+
+    debug::trace("    Function " + type_name + " (" + hash + ") with " + sz + " bytes of code")
 }
 
 def serialize_variable(fp: File, value: &scope::Value, state: &Serialize) {
@@ -1074,7 +1079,7 @@ def deserialize_insn(deserialize: &Deserialize, fp: File) -> &compiler::Insn {
         case compiler::InsnKind::ADD..=compiler::InsnKind::XOR
             insn.value.arith.ret = @deserialize_value(deserialize, fp, true)
             insn.value.arith.left = @deserialize_value(deserialize, fp, true)
-            insn.value.arith.right = @deserialize_value(deserialize, fp)
+            insn.value.arith.right = @deserialize_value(deserialize, fp, true)
         case compiler::InsnKind::FCMP
             var op: byte
             fp.read(*op)
@@ -1127,7 +1132,7 @@ def deserialize_insn(deserialize: &Deserialize, fp: File) -> &compiler::Insn {
             }
         case compiler::InsnKind::GETELEMENTPTR
             insn.value.gep.ret = @deserialize_value(deserialize, fp, true)
-            insn.value.gep.tpe = read_type(fp)
+            insn.value.gep.tpe = read_type(fp, lookup = true)
             insn.value.gep.value = @deserialize_value(deserialize, fp, true)
             var idx_sz: size_t
             fp.read(*idx_sz)
@@ -1165,7 +1170,7 @@ def deserialize_insn(deserialize: &Deserialize, fp: File) -> &compiler::Insn {
                 insn.value.call.proto = allocate_ref(typechecking::NamedParameter, proto_sz)
                 for var i in 0..proto_sz {
                     var pname = fp.read_str()
-                    var ptpe = read_type(fp)
+                    var ptpe = read_type(fp, lookup = true)
                     var pvarargs: bool
                     fp.read(*pvarargs)
                     insn.value.call.proto(i) = [
@@ -1226,7 +1231,8 @@ def deserialize_block(fp: File, deserialize: &Deserialize) -> &compiler::Block {
         fp.read(*sz)
         block.insn = vector::make(type &compiler::Insn)
         for var i in 0..sz {
-            block.insn.push(deserialize_insn(deserialize, fp))
+            let insn = deserialize_insn(deserialize, fp)
+            block.insn.push(insn)
         }
 
         if not first {
@@ -1489,7 +1495,7 @@ type FunctionEntry = struct {
     is_dyn_dispatch: bool
     block_data: &[uint8]
     block: &compiler::Block
-    metadata: &Vector(&compiler::Value)
+    metadata: &SMap(&compiler::Value)
 }
 
 type VariableEntry = struct {
@@ -1702,7 +1708,7 @@ export def define_members(module: &toolchain::Module) {
         name_node.loc.module = module.module
         let val = scope::create_type(
             deserialize.module.scope, name_node, entry.share,
-            typechecking::make_type_ref(entry.tpe), scope::Phase::COMPILED, null
+            typechecking::make_type_ref(entry.tpe), scope::Phase::CACHED, null
         )
         val.is_cached = true
         val.ident = scope::make_ident(entry.name, module, entry.hash)
@@ -1717,29 +1723,46 @@ export def define_members(module: &toolchain::Module) {
         name_node.loc.module = module.module
 
         let fdef = entry.fdef
-        let phase = scope::Phase::DEFINED if typechecking::is_polymorph(fdef) else scope::Phase::CACHED
+        let is_polymorph = typechecking::is_polymorph(fdef)
 
         var value: &scope::Value
         if entry.poly_instance {
             value = scope::create_polymorph(
-                module.scope, entry.context.scope, name_node, fdef, scope::Phase::COMPILED, null, entry.impl
+                module.scope, entry.context.scope, name_node, fdef, scope::Phase::CACHED, null, entry.impl
             )
         } else {
             value = scope::create_function_without_checking(
-                module.scope, name_node, entry.share, fdef, entry.impl
+                module.scope, name_node, entry.share, fdef, entry.impl, scope::Phase::CACHED
             )
         }
+
+        // Codegen only considers the function if its "imported" TODO naming bad
+        module.imported.add(fdef.name)
 
         value.is_cached = true
         value.is_dyn_dispatch = entry.is_dyn_dispatch
         value.is_generated = entry.is_dyn_dispatch
-        value.phase = phase
+        value.phase = scope::Phase::CACHED
         value.node = entry.node
 
         value.imported = entry.imported
         value.ident = scope::make_ident(entry.name, module, entry.hash, entry.contents_hash, fdef.name)
         value.identifier = name_node
         value.polymorph = entry.polymorph
+
+        value.function = [
+            module = deserialize.module,
+            name = value._assembly_name,
+            unmangled = value.name,
+            fdef = fdef,
+            value = value,
+            scope = deserialize.module.scope,
+            block = entry.block,
+            is_compiled = not is_polymorph, // Prevent double typechecking/compilation of deserialized functions
+            is_typechecked = not is_polymorph,
+            meta_hash = hash(fdef.name),
+            metadata = entry.metadata
+        ] !&compiler::Function
 
         if value.is_dyn_dispatch {
             module.dyn_dispatch.push(fdef)
@@ -1757,7 +1780,7 @@ export def define_members(module: &toolchain::Module) {
             module.scope, id, entry.share,
             entry.modifier, entry.tpe,
             entry.extern, entry.dllimport, entry.dllexport, entry.value,
-            scope::Phase::COMPILED, null, null
+            scope::Phase::CACHED, null, null
         )
         val.ident._hash = entry.hash
         val.identifier = id
@@ -2031,6 +2054,7 @@ export def resolve_types_and_members {
         let tc_tpe = tpe.tc_tpe
         let tc_args = tpe.tc_args
         let _hash = tpe._hash
+        let is_literal = tpe.is_literal
         
         let has_builtin_destructor_cached = tpe.has_builtin_destructor_cached
         let has_constructor_cached = tpe.has_constructor_cached
@@ -2055,6 +2079,7 @@ export def resolve_types_and_members {
 
         tpe.id = id
         tpe._hash = _hash
+        tpe.is_literal = is_literal
         tpe.tc_tpe = tc_tpe
         tpe.tc_args = tc_args
         tpe.has_builtin_destructor_cached = has_builtin_destructor_cached
@@ -2089,7 +2114,9 @@ export def resolve_types_and_members {
                 resolve_typeref(entry.tpe)
                 if entry.value { resolve_value(entry.value !*compiler::Value) }
             }
-            for var entry in deserialize.functions {
+            for var i in 0..deserialize.functions.length {
+                let entry = deserialize.functions.get(i)
+
                 let fdef = entry.fdef
                 for var i in 0..fdef.parameter_t.length() {
                     var np = fdef.parameter_t(i)
@@ -2110,9 +2137,11 @@ export def resolve_types_and_members {
 
                     var sz: size_t
                     bfp.read(*sz)
-                    entry.metadata = vector::make(type &compiler::Value)
+                    entry.metadata = map::make(Str, &compiler::Value)
                     for var i in 0..sz {
-                        entry.metadata.push(deserialize_value(deserialize, bfp, lookup = true))
+                        let key = bfp.read_str()
+                        let value = deserialize_value(deserialize, bfp, lookup = true)
+                        entry.metadata(key) = value
                     }
 
                     close(bfp)
