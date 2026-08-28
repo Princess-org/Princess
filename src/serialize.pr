@@ -275,6 +275,7 @@ def serialize_function(fp: File, value: &scope::Value, state: &Serialize) {
     
     serialize_block(fp, block, state)
     
+    let zero: size_t = 0
     if function and function.metadata {
         fp.write(*function.metadata.size)
         for var key in @function.metadata.keys() {
@@ -282,10 +283,17 @@ def serialize_function(fp: File, value: &scope::Value, state: &Serialize) {
             fp.write_str(key)
             serialize_value(fp, value, state)
         }
-    } else {
-        let zero: size_t = 0
-        fp.write(*zero)
-    }
+    } else { fp.write(*zero) }
+
+    if function and function.constants {
+        fp.write(*function.constants.size)
+        for var key in @function.constants.keys() {
+            let global = function.constants(key)
+            fp.write_str(key)
+            write_type(fp, global.tpe, state)
+            serialize_value(fp, global.value, state)
+        }
+    } else { fp.write(*zero) }
 
     let end_pos = fp.tell()
     fp.seek(pos, std::SEEK_SET)
@@ -939,6 +947,23 @@ def deserialize_value(deserialize: &Deserialize, fp: File, lookup: bool = false)
         }
     }
 
+    if value.kind == compiler::ValueKind::GLOBAL and value.tpe {
+        let name = value.name
+        if not name.starts_with("__f::") and 
+            not has_variable(deserialize, name) and 
+            not deserialize.module.result.globals.contains(name) {
+
+            let global = [
+                name = name,
+                tpe = value.tpe,
+                external = true
+            ] !&compiler::Global
+
+            deserialize.module.result.globals(name) = global
+            deserialize.module.imported.add(name)
+        }
+    }
+
     return value
 }
 
@@ -1156,7 +1181,8 @@ def deserialize_insn(deserialize: &Deserialize, fp: File) -> &compiler::Insn {
                 insn.value.switch_.switch_values.push(sv)
             }
         case compiler::InsnKind::CALL
-            insn.value.call.name = @deserialize_value(deserialize, fp, true)
+            let name = @deserialize_value(deserialize, fp, true)
+            insn.value.call.name = name
             insn.value.call.ret = @deserialize_value(deserialize, fp, true)
             var args_sz: size_t
             fp.read(*args_sz)
@@ -1178,6 +1204,37 @@ def deserialize_insn(deserialize: &Deserialize, fp: File) -> &compiler::Insn {
                     ] !typechecking::NamedParameter
                 }
             }
+
+            // Define the function if it doesn't exist yet
+            if name.kind == compiler::ValueKind::GLOBAL {
+                let fname = name.name
+                if not deserialize.module.result.functions.contains(fname) and
+                    not deserialize.has_function(fname) {
+                    
+                    var args = vector::make(typechecking::NamedParameter)
+                    if insn.value.call.proto {
+                        // Prototype gets precedence over the function arguments
+                        for var np in @insn.value.call.proto {
+                            args.push(np)
+                        }
+                    } else {
+                        for var arg in @insn.value.call.args {
+                            args.push([ tpe = arg.tpe ] !typechecking::NamedParameter)
+                        }
+                    }
+                    
+                    let function = [
+                        forward_declare = true,
+                        name = fname,
+                        args = args,
+                        ret = insn.value.call.ret.tpe
+                    ] !&compiler::Function
+
+                    deserialize.module.result.functions(fname) = function
+                    deserialize.module.imported.add(fname)
+                }
+            }
+
         case compiler::InsnKind::BR_UNC
             insn.value.br_unc.label_ = deserialize_label(fp)
         case compiler::InsnKind::BR
@@ -1496,6 +1553,7 @@ type FunctionEntry = struct {
     block_data: &[uint8]
     block: &compiler::Block
     metadata: &SMap(&compiler::Value)
+    constants: &SMap(&compiler::Global)
 }
 
 type VariableEntry = struct {
@@ -1527,6 +1585,20 @@ export type Deserialize = struct {
     rtypes: &Vector(TypeEntry)
     used_destructors: &Set(uint64)
     used_copy_constructors: &Set(uint64)
+}
+
+def has_function(deserialize: &Deserialize, name: Str) -> bool {
+    for var f in deserialize.functions { 
+        if f.name == name { return true }
+    }
+    return false
+}
+
+def has_variable(deserialize: &Deserialize, name: Str) -> bool {
+    for var v in deserialize.variables { 
+        if v.name == name { return true }
+    }
+    return false
 }
 
 // This is a mapping from the hash to the actual type which has been deserialized.
@@ -1761,7 +1833,8 @@ export def define_members(module: &toolchain::Module) {
             is_compiled = not is_polymorph, // Prevent double typechecking/compilation of deserialized functions
             is_typechecked = not is_polymorph,
             meta_hash = hash(fdef.name),
-            metadata = entry.metadata
+            metadata = entry.metadata,
+            constants = entry.constants
         ] !&compiler::Function
 
         if value.is_dyn_dispatch {
@@ -2142,6 +2215,21 @@ export def resolve_types_and_members {
                         let key = bfp.read_str()
                         let value = deserialize_value(deserialize, bfp, lookup = true)
                         entry.metadata(key) = value
+                    }
+
+                    bfp.read(*sz)
+                    entry.constants = map::make(Str, &compiler::Global)
+                    for var i in 0..sz {
+                        let key = bfp.read_str()
+                        let tpe = read_type(bfp, lookup = true)
+                        let value = deserialize_value(deserialize, bfp)
+                        entry.constants(key) = [
+                            name = key,
+                            tpe = tpe,
+                            value = value,
+                            is_function_scoped = true,
+                            private = true
+                        ] !compiler::Global
                     }
 
                     close(bfp)
