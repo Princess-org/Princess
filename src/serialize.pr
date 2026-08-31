@@ -204,6 +204,139 @@ def serialize_type(fp: File, tpe: &typechecking::Type, state: &Serialize, is_ali
     }
 }
 
+def serialize_function_data(fp: File, function: &compiler::Function, state: &Serialize) {
+    
+    var block: &compiler::Block
+    if function { block = function.block }
+    
+    serialize_block(fp, block, state)
+    
+    let zero: size_t = 0
+    if function and function.metadata {
+        fp.write(*function.metadata.size)
+        for var key in @function.metadata.keys() {
+            let value = function.metadata(key)
+            fp.write_str(key)
+            serialize_value(fp, value, state)
+        }
+    } else { fp.write(*zero) }
+
+    if function and function.constants {
+        fp.write(*function.constants.size)
+        for var key in @function.constants.keys() {
+            let global = function.constants(key)
+            fp.write_str(key)
+            write_type(fp, global.tpe, state)
+            serialize_value(fp, global.value, state)
+        }
+    } else { fp.write(*zero) }
+
+    // Ditypes
+    if function and function.ditypes {
+        fp.write(*function.ditypes.size)
+        for var tpe in @function.ditypes.keys() {
+            write_type(fp, tpe, state)
+        }
+    } else {
+        fp.write(*zero)
+    }
+}
+
+def deserialize_function_data(fp: File, entry: *FunctionEntry, deserialize: &Deserialize) {
+    entry.block = deserialize_block(fp, deserialize)
+
+    var sz: size_t
+    fp.read(*sz)
+    entry.metadata = map::make(Str, &compiler::Value)
+    for var i in 0..sz {
+        let key = fp.read_str()
+        let value = deserialize_value(deserialize, fp, lookup = true)
+        entry.metadata(key) = value
+    }
+
+    fp.read(*sz)
+    entry.constants = map::make(Str, &compiler::Global)
+    for var i in 0..sz {
+        let key = fp.read_str()
+        let tpe = read_type(fp, lookup = true)
+        let value = deserialize_value(deserialize, fp)
+        entry.constants(key) = [
+            name = key,
+            tpe = tpe,
+            value = value,
+            is_function_scoped = true,
+            private = true
+        ] !compiler::Global
+    }
+
+    fp.read(*sz)
+    entry.ditypes = set::make(typechecking::TypeId)
+    for var i in 0..sz {
+        let tpe = read_type(fp, lookup = true)
+        entry.ditypes.add(tpe)
+    }
+}
+
+
+def serialize_parameters(fp: File, parameter_t: &Vector(typechecking::NamedParameterPre), state: &Serialize) {
+    fp.write(*parameter_t.length)
+    for var i in 0..parameter_t.length {
+        let np = parameter_t(i)
+        var kw = np.kw !byte
+        fp.write_str(np.name)
+        fp.write(*kw)
+        fp.write(*np.varargs)
+        serialize_typeref(fp, np.tpe, state)
+        let has_value = np.value !bool
+        fp.write(*has_value)
+        if has_value {
+            serialize_value(fp, np.value, state)
+        }
+    }
+}
+
+def deserialize_parameters(fp: File, deserialize: &Deserialize) -> &Vector(typechecking::NamedParameterPre) {
+    var size: size_t
+    fp.read(*size)
+
+    let parameter_t = vector::make(typechecking::NamedParameterPre)
+    for var i in 0..size {
+        var name = fp.read_str()
+        let name_node = parser::make_identifier(name)
+        deserialize.nodes.push(name_node) // keep a strong reference
+
+        var kw: byte
+        fp.read(*kw)
+        var varargs: bool
+        fp.read(*varargs)
+
+        var tpe = deserialize_typeref(fp)
+        var has_value: bool
+        fp.read(*has_value)
+
+        var value: &compiler::Value
+        if has_value {
+            value = deserialize_value(deserialize, fp)
+        }
+        parameter_t.push([ 
+            name = name, tpe = tpe, 
+            varargs = varargs, 
+            kw = kw !parser::VarDecl,
+            node = name_node,
+            value = value 
+        ] !typechecking::NamedParameterPre)
+    }
+    return parameter_t
+}
+
+def resolve_parameters(parameter_t: &Vector(typechecking::NamedParameterPre), deserialize: &Deserialize) {
+    for var i in 0..parameter_t.length() {
+        var np = parameter_t(i)
+        resolve_typeref(deserialize, np.tpe)
+        if np.value { resolve_value(np.value !*compiler::Value) }
+    }
+}
+
 def serialize_function(fp: File, value: &scope::Value, state: &Serialize) {
     let fdef = value.fdef
     let hash = value.ident._hash
@@ -217,26 +350,14 @@ def serialize_function(fp: File, value: &scope::Value, state: &Serialize) {
     fp.write(*value.polymorph)
     fp.write(*value.impl)
     fp.write(*value.is_dyn_dispatch)
-    // TODO Get Function object with dllexport and dllimport
-    fp.write_str(value.name)
 
     typechecking::resolve_fdef(*fdef, value.extern)
+
+    // TODO Get Function object with dllexport and dllimport
+    fp.write_str(fdef.unmangled)
     fp.write_str(fdef.name)
 
-    fp.write(*fdef.parameter_t.length)
-    for var i in 0..fdef.parameter_t.length {
-        let np = fdef.parameter_t(i)
-        var kw = np.kw !byte
-        fp.write_str(np.name)
-        fp.write(*kw)
-        fp.write(*np.varargs)
-        serialize_typeref(fp, np.tpe, state)
-        let has_value = np.value !bool
-        fp.write(*has_value)
-        if has_value {
-            serialize_value(fp, np.value, state)
-        }
-    }
+    serialize_parameters(fp, fdef.parameter_t, state)
     fp.write(*fdef.return_t.length)
     for var i in 0..fdef.return_t.length {
         let tpe = fdef.return_t(i)
@@ -269,40 +390,27 @@ def serialize_function(fp: File, value: &scope::Value, state: &Serialize) {
 
     // Function code
     let function = value.function
-    var block: &compiler::Block
-    if function { block = function.block }
-
     let pos = fp.tell()
     let sze: size_t = 0
     fp.write(*sze)
     
-    serialize_block(fp, block, state)
-    
+    serialize_function_data(fp, function, state)
+
     let zero: size_t = 0
-    if function and function.metadata {
-        fp.write(*function.metadata.size)
-        for var key in @function.metadata.keys() {
-            let value = function.metadata(key)
-            fp.write_str(key)
-            serialize_value(fp, value, state)
-        }
-    } else { fp.write(*zero) }
+    if function and function.companion_functions {
+        fp.write(*function.companion_functions.length)
+        for var i in 0..function.companion_functions.length {
+            let dfr = function.companion_functions(i)
 
-    if function and function.constants {
-        fp.write(*function.constants.size)
-        for var key in @function.constants.keys() {
-            let global = function.constants(key)
-            fp.write_str(key)
-            write_type(fp, global.tpe, state)
-            serialize_value(fp, global.value, state)
-        }
-    } else { fp.write(*zero) }
+            fp.write_str(dfr.name)
+            fp.write(*dfr.args.length)
+            for var np in dfr.args {
+                fp.write_str(np.name)
+                write_type(fp, np.tpe, state)
+            }
+            write_type(fp, dfr.ret, state)
 
-    // Ditypes
-    if function and function.ditypes {
-        fp.write(*function.ditypes.size)
-        for var tpe in @function.ditypes.keys() {
-            write_type(fp, tpe, state)
+            serialize_function_data(fp, dfr, state)
         }
     } else {
         fp.write(*zero)
@@ -391,6 +499,14 @@ def deserialize_type_node(deserialize: &Deserialize, loc: parser::SourceLoc) -> 
 
     deserialize.nodes.push(node)
     return node
+}
+
+def read_type(deserialize: &Deserialize, fp: File, lookup: bool = false) -> typechecking::TypeId {
+    let tid = read_type(fp, lookup = lookup)
+    if lookup {
+        compiler::import_structures(tid, deserialize.module)
+    }
+    return tid
 }
 
 def read_type(fp: File, lookup: bool = false) -> typechecking::TypeId {
@@ -705,38 +821,10 @@ def deserialize_function(deserialize: &Deserialize, fp: File, poly_instance: boo
     name = fp.read_str()
     type_name = fp.read_str()
 
-    var size: size_t
-    fp.read(*size)
-
-    let parameter_t = vector::make(typechecking::NamedParameterPre)
-    for var i in 0..size {
-        var name = fp.read_str()
-        let name_node = parser::make_identifier(name)
-        deserialize.nodes.push(name_node) // keep a strong reference
-
-        var kw: byte
-        fp.read(*kw)
-        var varargs: bool
-        fp.read(*varargs)
-
-        var tpe = deserialize_typeref(fp)
-        var has_value: bool
-        fp.read(*has_value)
-
-        var value: &compiler::Value
-        if has_value {
-            value = deserialize_value(deserialize, fp)
-        }
-        parameter_t.push([ 
-            name = name, tpe = tpe, 
-            varargs = varargs, 
-            kw = kw !parser::VarDecl,
-            node = name_node,
-            value = value 
-        ] !typechecking::NamedParameterPre)
-    }
-
+    let parameter_t = deserialize_parameters(fp, deserialize)
     let return_t = vector::make(&typechecking::TypeRef)
+
+    var size: size_t
     fp.read(*size)
     for var i in 0..size {
         let tpe = deserialize_typeref(fp)
@@ -933,6 +1021,7 @@ def serialize_value(fp: File, value: &compiler::Value, state: &Serialize) {
     let kind = value.kind !byte
     fp.write(*kind)
     if value.kind == compiler::ValueKind::NULL {
+        write_type(fp, value.tpe, state)
         return
     }
     if value.kind == compiler::ValueKind::TYPE {
@@ -979,13 +1068,15 @@ def deserialize_value(deserialize: &Deserialize, fp: File, lookup: bool = false)
         return null
     }
     if kind == compiler::ValueKind::NULL {
-        return compiler::NO_VALUE
+        let value = compiler::NO_VALUE
+        value.tpe = read_type(deserialize, fp, lookup)
+        return value
     }
 
     let value = [] !&compiler::Value
     value.kind = kind !compiler::ValueKind
     if value.kind == compiler::ValueKind::TYPE {
-        value.value_tpe = read_type(fp, lookup)
+        value.value_tpe = read_type(deserialize, fp, lookup)
         return value
     }
 
@@ -995,14 +1086,14 @@ def deserialize_value(deserialize: &Deserialize, fp: File, lookup: bool = false)
     fp.read(*value.i)
     fp.read(*value.f)
     value.s = fp.read_str().to_array()
-    value.value_tpe = read_type(fp, lookup)
+    value.value_tpe = read_type(deserialize, fp, lookup)
     var sz: uint64
     fp.read(*sz)
     value.values = allocate_ref(compiler::Value, sz)
     for var i in 0..sz {
         value.values(i) = @deserialize_value(deserialize, fp, lookup)
     }
-    value.tpe = read_type(fp, lookup)
+    value.tpe = read_type(deserialize, fp, lookup)
 
     if value.kind == compiler::ValueKind::DEBUG_INFO {
         var sz: uint64
@@ -1459,15 +1550,15 @@ export def serialize(module: &toolchain::Module) {
             fp.write_str(context.module)
             fp.write_str(filename)
 
-            let polymorhs = vector::make(type &scope::Value)
+            let polymorphs = vector::make(type &scope::Value)
             let scpe = module.scope.polymorphics(filename)
             for var instance in scope::all_functions(scpe) {
-                polymorhs.push(instance)
+                polymorphs.push(instance)
             }
 
-            fp.write(*polymorhs.length)
-            for var i in 0..polymorhs.length {
-                let value = polymorhs(i)
+            fp.write(*polymorphs.length)
+            for var i in 0..polymorphs.length {
+                let value = polymorphs(i)
                 serialize_function(fp, value, state)
             }
         }
@@ -1588,6 +1679,7 @@ type FunctionEntry = struct {
     dependencies: &Set(Ident)
     dependants: &Set(Ident)
     ditypes: &Set(typechecking::TypeId)
+    companion_functions: &Vector(&compiler::Function)
 }
 
 type VariableEntry = struct {
@@ -1869,11 +1961,11 @@ export def define_members(module: &toolchain::Module) {
         value.ident = scope::make_ident(entry.name, module, entry.hash, entry.contents_hash, fdef.name)
         value.identifier = name_node
         value.polymorph = entry.polymorph
-
+        
         value.function = [
             module = deserialize.module,
-            name = value._assembly_name,
-            unmangled = value.name,
+            name = fdef.name,
+            unmangled = fdef.unmangled,
             fdef = fdef,
             value = value,
             scope = deserialize.module.scope,
@@ -1883,7 +1975,8 @@ export def define_members(module: &toolchain::Module) {
             meta_hash = hash(fdef.name),
             metadata = entry.metadata,
             constants = entry.constants,
-            ditypes = entry.ditypes
+            ditypes = entry.ditypes,
+            companion_functions = entry.companion_functions
         ] !&compiler::Function
 
         if value.is_dyn_dispatch {
@@ -1892,6 +1985,13 @@ export def define_members(module: &toolchain::Module) {
 
         value.dependencies = entry.dependencies
         value.dependants = entry.dependants
+
+        if entry.poly_instance {
+            // need to add them to the compiler result because there's no node for them
+            compiler::predeclare_function(value.function, module.scope, overwrite = true)
+            value.function.forward_declare = false
+            module.imported.add(fdef.name)
+        }
 
         debug::trace("Defined function " + fdef.name + " (" + entry.hash + ")")
         print_deps(value)
@@ -1919,12 +2019,14 @@ export def define_members(module: &toolchain::Module) {
     }
 }
 
-def resolve_typeref(tr: &typechecking::TypeRef) {
+def resolve_typeref(deserialize: &Deserialize, tr: &typechecking::TypeRef) {
     if tr == null { return}
     if typechecking::is_type(tr) {
         let dtpe = deserialized_types(tr.tpe)
         let new_id = dtpe.id
         assert new_id != 0
+
+        compiler::import_structures(new_id, deserialize.module)
         tr.tpe = new_id
         return
     } else if tr.name {
@@ -1934,16 +2036,16 @@ def resolve_typeref(tr: &typechecking::TypeRef) {
     assert pattern
     
     if pattern.tpe {
-        resolve_typeref(pattern.tpe)
+        resolve_typeref(deserialize, pattern.tpe)
     }
     if pattern.parameter_t {
         for var i in 0..pattern.parameter_t.length() {
-            resolve_typeref(pattern.parameter_t(i).tpe)
+            resolve_typeref(deserialize, pattern.parameter_t(i).tpe)
         }
     }
     if pattern.return_t {
         for var i in 0..pattern.return_t.length() {
-            resolve_typeref(pattern.return_t(i))
+            resolve_typeref(deserialize, pattern.return_t(i))
         }
     }
     // TODO We currently don't support struct and union patterns
@@ -2243,20 +2345,16 @@ export def resolve_types_and_members {
                 entry.tpe = deserialized_types(entry.tpe).id
             }
             for var entry in deserialize.variables {
-                resolve_typeref(entry.tpe)
+                resolve_typeref(deserialize, entry.tpe)
                 if entry.value { resolve_value(entry.value !*compiler::Value) }
             }
             for var i in 0..deserialize.functions.length {
                 let entry = deserialize.functions.get(i)
 
                 let fdef = entry.fdef
-                for var i in 0..fdef.parameter_t.length() {
-                    var np = fdef.parameter_t(i)
-                    resolve_typeref(np.tpe)
-                    if np.value { resolve_value(np.value !*compiler::Value) }
-                }
+                resolve_parameters(fdef.parameter_t, deserialize)
                 for var i in 0..fdef.return_t.length() {
-                    resolve_typeref(fdef.return_t(i))
+                    resolve_typeref(deserialize, fdef.return_t(i))
                 }
                 entry.fdef = typechecking::function_def(
                     fdef.unmangled, fdef.parameter_t, fdef.return_t, fdef.context, extern = entry.extern,
@@ -2269,37 +2367,42 @@ export def resolve_types_and_members {
                     // it would be more efficient and we would not need to keep the block data in memory
                     let bfp = open_memory_as_file(@entry.block_data, "rb")
 
-                    entry.block = deserialize_block(bfp, deserialize)
+                    deserialize_function_data(bfp, entry, deserialize)
 
                     var sz: size_t
                     bfp.read(*sz)
-                    entry.metadata = map::make(Str, &compiler::Value)
-                    for var i in 0..sz {
-                        let key = bfp.read_str()
-                        let value = deserialize_value(deserialize, bfp, lookup = true)
-                        entry.metadata(key) = value
-                    }
+                    if sz > 0 {
+                        entry.companion_functions = vector::make(&compiler::Function)
+                        for var i in 0..sz {
+                            let name = bfp.read_str()
+                            let parameters = vector::make(typechecking::NamedParameter)
+                            var asz: size_t
+                            bfp.read(*asz)
+                            for var j in 0..asz {
+                                let pname = bfp.read_str()
+                                let ptype = read_type(bfp, true)
+                                parameters.push([
+                                    name = pname,
+                                    tpe = ptype
+                                ] !typechecking::NamedParameter)
+                            }
+                            let ret = read_type(bfp, true)
 
-                    bfp.read(*sz)
-                    entry.constants = map::make(Str, &compiler::Global)
-                    for var i in 0..sz {
-                        let key = bfp.read_str()
-                        let tpe = read_type(bfp, lookup = true)
-                        let value = deserialize_value(deserialize, bfp)
-                        entry.constants(key) = [
-                            name = key,
-                            tpe = tpe,
-                            value = value,
-                            is_function_scoped = true,
-                            private = true
-                        ] !compiler::Global
-                    }
+                            var new_entry: FunctionEntry
+                            deserialize_function_data(bfp, *new_entry, deserialize)
 
-                    bfp.read(*sz)
-                    entry.ditypes = set::make(typechecking::TypeId)
-                    for var i in 0..sz {
-                        let tpe = read_type(bfp, lookup = true)
-                        entry.ditypes.add(tpe)
+                            let function = [
+                                name = name,
+                                module = deserialize.module,
+                                args = parameters,
+                                ret = ret,
+                                block = new_entry.block,
+                                metadata = new_entry.metadata,
+                                constants = new_entry.constants,
+                                ditypes = new_entry.ditypes
+                            ] !&compiler::Function
+                            entry.companion_functions.push(function)
+                        }
                     }
 
                     close(bfp)

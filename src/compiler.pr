@@ -498,7 +498,6 @@ export type Function = struct {
     locals: &SMap(typechecking::TypeId)
     has_defer: bool
     defers: typechecking::TypeId
-    defer_functions: &Vector(&Function)
     env: typechecking::TypeId
 
     // This is a map of local variables that are defined at that point
@@ -533,12 +532,20 @@ export type Function = struct {
     metadata: &SMap(&Value)
     constants: &SMap(&Global)
     ditypes: &Set(typechecking::TypeId)
+    companion_functions: &Vector(&Function)
 }
 
 def add_local(state: &State, function: &Function, value: &scope::Value, tpe: typechecking::TypeId) {
     if function.locals {
         function.locals(value.assembly_name(state)) = tpe
     }
+}
+
+def add_companion(function: &Function, other: &Function) {
+    if not function.companion_functions {
+        function.companion_functions = vector::make(type &Function)
+    }
+    function.companion_functions.push(other)
 }
 
 // TODO Maybe move this into module
@@ -6190,7 +6197,7 @@ def walk_Defer(node: &parser::Node, state: &State) {
     let parameter_t = vector::make(typechecking::NamedParameter)
     parameter_t.push([
         name = "__env",
-        tpe = typechecking::pointer(current_function.env)
+        tpe = typechecking::pointer(0)
     ] !typechecking::NamedParameter)
 
     let tpe = typechecking::function(parameter_t, vector::make(typechecking::TypeId))
@@ -6361,10 +6368,7 @@ def walk_Defer(node: &parser::Node, state: &State) {
         state.discope.push(scope) 
     }
 
-    if not current_function.defer_functions {
-        current_function.defer_functions = vector::make(type &Function)
-    }
-    current_function.defer_functions.push(function)
+    add_companion(current_function, function)
 
     vector::insert(function.block.insn, 0, function.allocas)
     state.module.imported.add(function.name)
@@ -7239,6 +7243,9 @@ export def predeclare_function(fdef: typechecking::FunctionDef, module: &toolcha
     }
     var function = module.result.functions.get_or_default(fun_name, null)
     if function {
+        function.name = fdef.name
+        function.unmangled = fdef.unmangled
+
         return function 
     } else {
         function = [ 
@@ -7256,6 +7263,9 @@ export def predeclare_function(fdef: typechecking::FunctionDef, module: &toolcha
 export def predeclare_function(function: &Function, scpe: &scope::Scope, overwrite: bool = false) {
     let fdef = function.fdef
     
+    assert fdef.name.length() > 0
+    assert fdef.unmangled.length() > 0
+
     function.name = fdef.name
     function.unmangled = fdef.unmangled
     function.forward_declare = true
@@ -7563,6 +7573,8 @@ export def create_function(
     }
 
     function.name = fdef.name
+    function.unmangled = fdef.unmangled
+
     // TODO Return multiple values via tuple
     if function.has_yield and (not function.ret or typechecking::is_tuple(function.ret)) { return null }
     if not block {
@@ -7909,6 +7921,10 @@ export def create_function(
             impl.forward_declare = false
             impl.block = block
             impl.args = parameter_t
+            impl.ret = function.optional.tpe
+            impl.metadata = function.metadata
+
+            add_companion(function, impl)
 
             set::add(state.module.imported, impl_def.name)
 
@@ -7948,6 +7964,8 @@ export def create_function(
             free_context.forward_declare = false
             free_context.block = new_block
             free_context.args = parameter_t2
+
+            add_companion(function, free_context)
 
             state.module.imported.add(free_context_def.name)
 
@@ -8288,6 +8306,7 @@ export def create_dyn_dispatch(dyn_dispatch: &Vector(typechecking::FunctionDef),
         let fdef = dyn_dispatch(0)
         dyn_dispatch.remove(0)
         let function = predeclare_function(fdef, state.module)
+        function.module = state.module
         generate_vtable_function(function, fdef, state)
         consteval::const_module.result.add_function(function.name, function)
     }
@@ -8299,6 +8318,7 @@ export def create_dyn_casts(state: &State) {
         let fdef = dyn_casts(cast)
         if state.module.result.functions.contains(fdef.name) { continue }
         let function = predeclare_function(fdef, state.module)
+        function.module = state.module
         create_dyn_cast_function(function, cast, state)
         consteval::const_module.result.add_function(function.name, function)
     }
@@ -9793,7 +9813,7 @@ export def generate_vtable_function(function: &Function, fdef: typechecking::Fun
                     
                     let vec = vector::make(Member)
                     if not resolve_member(vec, stpe, name) {
-                        return
+                        continue
                     }
 
                     let len = vector::length(vec)
