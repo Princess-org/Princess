@@ -364,6 +364,12 @@ def serialize_function(fp: File, value: &scope::Value, state: &Serialize) {
         serialize_typeref(fp, tpe, state)
     }
 
+    let has_poly_original: bool = value.polymorph and value.polymorph_original
+    fp.write(*has_poly_original)
+    if has_poly_original {
+        serialize_ident(fp, value.polymorph_original.ident)
+    }
+
     // TODO This is because is_polymorph (incorrectly) returns true for TYPE_DEF
     // This is needed in some other places, hence the workaround
     let polymorph = typechecking::is_polymorph(fdef) and value.node
@@ -831,6 +837,13 @@ def deserialize_function(deserialize: &Deserialize, fp: File, poly_instance: boo
         return_t.push(tpe)
     }
 
+    var has_poly_original: bool
+    var poly_original: scope::Ident
+    fp.read(*has_poly_original)
+    if has_poly_original {
+        poly_original = deserialize_ident(fp, deserialize.module)
+    }
+
     var node: &parser::Node
     let fdef = typechecking::function_def(
         name, parameter_t, return_t, deserialize.module,
@@ -882,6 +895,7 @@ def deserialize_function(deserialize: &Deserialize, fp: File, poly_instance: boo
         imported = imported,
         polymorph = polymorph,
         poly_instance = poly_instance,
+        poly_original = poly_original,
         context = context,
         impl = impl,
         is_dyn_dispatch = is_dyn_dispatch,
@@ -961,6 +975,8 @@ def deserialize_variable(deserialize: &Deserialize, fp: File) {
 }
 
 def serialize_ident(fp: File, ident: scope::Ident) {
+    let kind = ident.kind !byte
+    fp.write(*kind)
     fp.write(*ident._hash)
     fp.write(*ident._contents_hash)
     fp.write_str(ident.name)
@@ -969,6 +985,8 @@ def serialize_ident(fp: File, ident: scope::Ident) {
 }
 
 def deserialize_ident(fp: File, module: &toolchain::Module) -> scope::Ident {
+    var kind: byte
+    fp.read(*kind)
     var hash: uint64
     fp.read(*hash)
     var content_hash: uint64
@@ -980,6 +998,7 @@ def deserialize_ident(fp: File, module: &toolchain::Module) -> scope::Ident {
     let dep_module = toolchain::create_module_if_absent(path, module_name)
 
     return [ 
+        kind = kind !scope::IdentKind,
         _hash = hash, 
         _contents_hash = content_hash, 
         name = name, 
@@ -1669,6 +1688,7 @@ type FunctionEntry = struct {
     imported: bool
     polymorph: bool
     poly_instance: bool
+    poly_original: scope::Ident
     impl: bool
     context: &toolchain::Module
     is_dyn_dispatch: bool
@@ -1887,18 +1907,17 @@ export def resolver_pass(module: &toolchain::Module) {
     }
 }
 
-
 def print_deps(value: &scope::Value) {
     if value.dependencies.size > 0 {
         debug::trace("Dependencies: ")
         for var dep in @value.dependencies.keys() {
-            debug::trace("    ", dep.signature, " (H: ", to_string(dep._hash), " C: ", to_string(dep._contents_hash), ")")
+            debug::trace("    ", to_string(dep.kind), " ", dep.signature, " (H: ", to_string(dep._hash), " C: ", to_string(dep._contents_hash), ")")
         }
     }
     if value.dependants.size > 0 {
         debug::trace("Dependants: ")
         for var dep in @value.dependants.keys() {
-            debug::trace("    ", dep.signature, " (H: ", to_string(dep._hash), " C: ", to_string(dep._contents_hash), ")")
+            debug::trace("    ", to_string(dep.kind), " ", dep.signature, " (H: ", to_string(dep._hash), " C: ", to_string(dep._contents_hash), ")")
         }
     }
 }
@@ -1918,7 +1937,7 @@ export def define_members(module: &toolchain::Module) {
             typechecking::make_type_ref(entry.tpe), scope::Phase::CACHED, null
         )
         val.is_cached = true
-        val.ident = scope::make_ident(entry.name, module, entry.hash)
+        val.ident = scope::make_ident(entry.name, module, entry.hash, kind = scope::IdentKind::TYPE)
         val.identifier = name_node
 
         val.dependencies = entry.dependencies
@@ -1958,9 +1977,18 @@ export def define_members(module: &toolchain::Module) {
         value.node = entry.node
 
         value.imported = entry.imported
-        value.ident = scope::make_ident(entry.name, module, entry.hash, entry.contents_hash, fdef.name)
+        value.ident = scope::make_ident(
+            entry.name, module, entry.hash, entry.contents_hash, 
+            fdef.name, kind = scope::IdentKind::FUNCTION
+        )
+
         value.identifier = name_node
         value.polymorph = entry.polymorph
+        
+        var poly_original: &scope::Value
+        if entry.poly_instance {
+            value.polymorph_original = scope::find(entry.poly_original)
+        }
         
         value.function = [
             module = deserialize.module,
@@ -2445,25 +2473,42 @@ export def check_dependencies {
                 continue
             }
 
+            var is_dirty = false
             if val.dependencies {
                 for var dep in @val.dependencies.keys() {
-                    let dep_val = scope::find(dep)
-                    if not dep_val or (
-                            dep_val.phase == scope::Phase::CACHED and 
-                            not dep_val.polymorph and 
-                            not dep_val.is_dyn_dispatch) or                           
-                        (dep._contents_hash != 0 and dep_val.ident._contents_hash != dep._contents_hash) or
-                        (dep._hash != dep_val.ident._hash) { 
-                        
-                        val.function.is_typechecked = false
-                        val.function.is_compiled = false
-                        toolchain::set_dirty(module)
-
-                        debug::trace("Dependency ", dep.name, " out of date, marking ", val.fdef.name, " as dirty")
-
-                        break
+                    if dep.kind == scope::IdentKind::IMPLEMENTS {
+                        is_dirty = true
+                        if dep.module {
+                            for var impl in scope::all_impl(dep.module.scope) {
+                                if impl.node.hash == dep._hash  {
+                                    is_dirty = false
+                                    break
+                                } 
+                            }
+                        }
+                        if is_dirty {
+                            debug::trace("Impl ", dep.name, " out of date, marking ", val.fdef.name, " as dirty")
+                            break
+                        }
+                    } else {
+                        let dep_val = scope::find(dep)
+                        if not dep_val or (
+                                dep_val.phase == scope::Phase::CACHED and 
+                                not dep_val.polymorph and 
+                                not dep_val.is_dyn_dispatch) or                           
+                            (dep._contents_hash != 0 and dep_val.ident._contents_hash != dep._contents_hash) or
+                            (dep._hash != dep_val.ident._hash) { 
+                            is_dirty = true
+                            debug::trace("Dependency ", dep.name, " out of date, marking ", val.fdef.name, " as dirty")
+                            break
+                        }
                     }
                 } 
+            }
+            if is_dirty {
+                val.function.is_typechecked = false
+                val.function.is_compiled = false
+                toolchain::set_dirty(module)
             }
         }
 

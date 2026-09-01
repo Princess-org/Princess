@@ -11,8 +11,13 @@ import compiler
 import errors
 import consteval
 
+export type IdentKind = enum {
+    UNKNOWN; VALUE; FUNCTION; TYPE; IMPLEMENTS
+}
+
 // This is used to uniquely identify a value
 export type Ident = struct {
+    kind: IdentKind
     name: Str
     signature: Str
     _hash: uint64
@@ -27,11 +32,13 @@ export type ImportedModule = struct {
 
 export def make_ident(
     name: Str, module: &toolchain::Module = null, 
-    hash: uint64 = 0, contents_hash: uint64 = 0, signature: String = null
+    hash: uint64 = 0, contents_hash: uint64 = 0, signature: String = null,
+    kind: IdentKind = IdentKind::UNKNOWN
 ) -> Ident {
     
     if not signature { signature = name }
     return [
+        kind = kind,
         name = name,
         signature = signature,
         module = module,
@@ -41,9 +48,15 @@ export def make_ident(
 }
 
 export def hash(ident: Ident) -> uint64 {
-    return combine_hashes(hash(ident.signature), hash(ident.module.module) if ident.module else 0)
+    return combine_hashes(ident.kind !uint64, hash(ident.signature), hash(ident.module.module) if ident.module else 0)
 }
 export def == (this: Ident, other: Ident) -> bool {
+    if this.kind != IdentKind::UNKNOWN and 
+        other.kind != IdentKind::UNKNOWN and 
+        this.kind != other.kind {
+        return false
+    }
+
     if not other.module {
         return this.signature == other.signature
     } else {
@@ -65,6 +78,7 @@ export def fuzzy_equals(this: Ident, other: Ident) -> bool {
 
 export def find(ident: Ident) -> &Value {
     if not ident.module { return null }
+    assert ident.kind != IdentKind::IMPLEMENTS
 
     let scope = ident.module.scope
     let values = scope.all_values()
@@ -345,6 +359,17 @@ export def create_dependency(this: &Value, other: &parser::Node, contents: bool 
             create_dependency(this, make_ident(parser::identifier_to_str(ident)))
         }
     }
+}
+
+export def create_dependency_on_impl(this: &Value, impl: &Impl) {
+    if not this or not impl { return }
+    if not impl.right { return }
+
+    let tname = to_string(impl.node.hash) !Str
+    this.dependencies.add(make_ident(tname, 
+        module = impl.module, hash = impl.node.hash, 
+        kind = IdentKind::IMPLEMENTS
+    ))
 }
 
 export def create_dependency_on_type(this: &Value, node: &parser::Node) {
@@ -1811,7 +1836,7 @@ export def create_function_without_checking(
         fdef = fdef,
         phase = phase,
         global = global,
-        ident = make_ident(name, scope.module, 0, 0, fdef.name),
+        ident = make_ident(name, scope.module, 0, 0, fdef.name, IdentKind::FUNCTION),
         polymorph = typechecking::is_polymorph(fdef),
         module = scope.module
     ] !&Value
@@ -1910,7 +1935,8 @@ def create_function_value(
         global = global,
         node = node,
         ident = make_ident(name, scope.module, 
-            node.signature_hash if node else 0, node.hash if node else 0, fdef.name),
+            node.signature_hash if node else 0, 
+            node.hash if node else 0, fdef.name, IdentKind::FUNCTION),
             
         polymorph = typechecking::is_polymorph(fdef),
         references = vector::make(parser::SourceLoc),
@@ -2000,7 +2026,7 @@ export def create_variable(
     if not scope { return null }
     let name = last_path_element(name_node)
 
-    let ident = make_ident(name, scope.module, node._hash if node else 0)
+    let ident = make_ident(name, scope.module, node._hash if node else 0, kind = IdentKind::VALUE)
 
     let global = scope.is_global
     let v = [
@@ -2083,7 +2109,7 @@ export def create_type(
     scope = create_path(scope, name_node)
     if not scope { return null }
     let name = last_path_element(name_node)
-    let ident =  make_ident(name, scope.module, node.signature_hash if node else 0, node.hash if node else 0)
+    let ident =  make_ident(name, scope.module, node.signature_hash if node else 0, node.hash if node else 0, null, IdentKind::TYPE)
 
     let value = scope.fields.get_or_default(name, null)
     if value {
@@ -2169,14 +2195,14 @@ export def create_impl(
     scope.impls.push(impl)
 }
 
-def all_impl(scope: &Scope) -> &Vector(&Impl) {
+export def all_impl(scope: &Scope) -> &Vector(&Impl) {
     let vec = vector::make(&Impl)
     all_impl(scope, scope.module, set::make(), vec)
     return vec
 }
 
 def all_impl(scope: &Scope, module: &toolchain::Module, visited: &SSet, all: &Vector(&Impl)) {
-    if not scope { return}
+    if not scope { return }
     if scope.imports  {
         for var imp in scope.imports {
             if visited.contains(module.module) { continue }
@@ -2213,7 +2239,7 @@ export def trigger_impl(scope: &Scope, tpe: &typechecking::Type) {
     
     
     if not tpe.meta.implements {
-        tpe.meta.implements = set::make(typechecking::TypeId)
+        tpe.meta.implements = map::make(typechecking::TypeId, type &Impl)
     }
 
     let impls = all_impl(scope)
@@ -2255,7 +2281,7 @@ export def trigger_impl(scope: &Scope, tpe: &typechecking::Type) {
             }
 
             // Add this here to prevent infinite recursion    
-            tpe.meta.implements.add(right.id)
+            tpe.meta.implements(right.id) = null
             var cnt = typechecking::implements_interface(
                 tpe, right, scope, impl.module, functions, 
                 error_on_fail = true, node = impl.node
@@ -2282,7 +2308,7 @@ export def trigger_impl(scope: &Scope, tpe: &typechecking::Type) {
             right.meta.implementors(tpe.id) = functions
 
             debug::trace("trigger_impl: ", debug::type_to_str(tpe), " implements ", debug::type_to_str(right))
-            tpe.meta.implements.add(right.id)
+            tpe.meta.implements(right.id) = impl
         }
     }
 }

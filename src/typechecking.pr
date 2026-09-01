@@ -265,7 +265,7 @@ export type TypeMeta = struct {
     destructor: &scope::Value
     builtin_destructor: &scope::Value
 
-    implements: &Set(TypeId)
+    implements: &Map(TypeId, &scope::Impl)
     // Used by typechecking to avoid multiple errors for the same type when it fails to implement an interface
     not_implements: &Set(TypeId)
     implementors: &Map(TypeId, &Vector(&scope::Value))
@@ -2640,6 +2640,33 @@ export def implements(a: &Type, b: &Type, scpe: &scope::Scope, check_embed: bool
     }
 }
 
+// This gets called on type conversions to check if you converted a type <a> to an interface
+// and adds a dependency on the impl that implements the interface <b>
+export def check_create_dependency(a: &Type, b: &Type, state: &State) {
+    if not a or not b { return }
+
+    if is_ref(b) and b.tpe and b.tpe.kind == TypeKind::INTERFACE {
+        if is_weak_ref(b) {
+            b = reference(b.tpe)
+        }
+        if not is_ref(a) {
+            if is_type(a) { return }
+            a = reference(a.id) // We can convert the value type to a reference
+        }
+
+        if not a { return }
+        scope::trigger_impl(state.scope, a)
+
+        let implements = a.meta.implements
+        
+        //print(debug::type_to_str(a), " -> ", debug::type_to_str(b), " implements: ", (implements.size if implements else 0), "\n")
+        if implements and implements.contains(b.id) { 
+            let impl = implements(b.id)
+            scope::create_dependency_on_impl(state.current_value(), impl)
+        }
+    }
+}
+
 export def implements_interface(
     tpe: &Type, right: &Type, scpe: &scope::Scope, 
     module: &toolchain::Module, functions: &Vector(&Value) = null, 
@@ -4819,6 +4846,7 @@ def collapse_types(
                 k += 1
             }
         } else {
+            check_create_dependency(rtpe, ltpe, state) // TODO other branch?
             implicit_conversion(value, ltpe, state)
             rtypes.push(value.tpe)
             k += 1
@@ -5011,6 +5039,7 @@ export def walk_VarDecl(node: &parser::Node, state: &State, set_constant: bool =
                     errors::errorn(node, "Can't use type constructor as variable type")
                     ltpe = 0
                 }
+                check_create_dependency(rtpe, ltpe, state)
             }
 
             if not rtpe and ltpe and ltpe.kind == TypeKind::STATIC_ARRAY and ltpe.resolve().length == std::MAX_UINT64 {
@@ -5056,6 +5085,8 @@ export def walk_VarDecl(node: &parser::Node, state: &State, set_constant: bool =
             if not ltpe or not rtpe { continue }
             if not is_assignable(ltpe, rtpe, state.scope) {
                 errors::errorn(node, "Incompatible types ", debug::type_to_str(rtpe), " and ", debug::type_to_str(ltpe))
+            } else {
+                check_create_dependency(rtpe, ltpe, state)
             }
         }
     }
@@ -5499,6 +5530,8 @@ def walk_Cast(node: &parser::Node, state: &State) {
     if not node.tpe {
         node.tpe = rtpe
     }
+
+    check_create_dependency(node.tpe, rtpe, state)
 
     //left.tpe = rtpe
     // TODO Dunno if this did anything special
@@ -6252,6 +6285,8 @@ def check_return_arguments(is_yield: bool, node: &parser::Node, ltypes: &Vector(
                 "Wrong type of ", "yield" if is_yield else "return",
                 " argument, got ", debug::type_to_str(rettpe), ", expected ", debug::type_to_str(argtpe)
             )
+        } else {
+            check_create_dependency(argtpe, rettpe, state)
         }
     }
 }
@@ -6777,6 +6812,7 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
         }
 
         implicit_conversion(n, rhstpe, state)
+        check_create_dependency(n.tpe, rhstpe, state)
     }
     for var i in 0..vector::length(node.value.func_call.kwargs) {
         let n = node.value.func_call.kwargs(i)
@@ -6795,6 +6831,7 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
         }
 
         implicit_conversion(arg, rhstpe, state)
+        check_create_dependency(n.tpe, rhstpe, state)
     }
 
     node.tpe = flatten_return_type(node, tpe.return_t)
@@ -7371,6 +7408,8 @@ def walk_StructLit(node: &parser::Node, state: &State) {
                         errors::errorn(n, "Incompatible types, got " + debug::type_to_str(n.tpe) + " and expected " + debug::type_to_str(etpe))
                         return
                     }
+                    
+                    check_create_dependency(n.tpe, etpe, state)
                 }
             } else if tpe.kind == TypeKind::ARRAY or tpe.kind == TypeKind::STATIC_ARRAY {
                 // Check conversion to array
@@ -7389,6 +7428,7 @@ def walk_StructLit(node: &parser::Node, state: &State) {
                         errors::errorn(n, "Incompatible types, got " + debug::type_to_str(n.tpe) + " and expected " + debug::type_to_str(tpe.tpe))
                         return
                     }
+                    check_create_dependency(n.tpe, tpe.tpe, state)
                 }
             }
         }
@@ -7478,6 +7518,8 @@ def walk_StructLit(node: &parser::Node, state: &State) {
                     errors::errorn(n, "Incompatible types ", debug::type_to_str((@n).tpe), " and ", debug::type_to_str(ntpe), )
                     return
                 }
+
+                check_create_dependency(n.tpe, ntpe, state)
                 break
             }
         }
