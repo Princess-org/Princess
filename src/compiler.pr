@@ -347,10 +347,8 @@ export def call(state: &State, name_v: Value, tpe: typechecking::TypeId, args: &
         let name = name_v.name
         func = state.module.result.functions.get_or_default(name, null)
         if func {
-            // TODO Getting the Node like this seems like a terrible idea, maybe give Function a Node instead
-            let value = scope::find(scope::make_ident(name, func.module))
-            if value {
-                node = value.node
+            if func.value {
+                node = func.value.node
             }
             if node {
                 do_inline = do_inline or node.value.def_.inline
@@ -4313,6 +4311,59 @@ def walk_MemberAccess_struct(node: &parser::Node, tpe: typechecking::TypeId, mem
         
 }
 
+def type_t_to_reflection_type(res: Value, loc: &Value, state: &State) -> Value {
+    let ptr_to_type = res
+    res = state.load(builtins::type_t(), res, loc)
+
+    let tmp = state.alloca(builtins::reflection_type_t(), loc)
+    let cached_type_ref = state.extract_value(builtins::reference(0), res, [3], loc)
+    
+    // Check if the cached type is null
+    let cached_type = state.extract_value(builtins::pointer(0), cached_type_ref, [1], loc)
+    let cached_type_addr = state.ptr_to_int(cached_type, loc)
+    let cond = state.icmp(CompareInt::eq, cached_type_addr, [ kind = ValueKind::INT, tpe = builtins::int64_, i = 0 ] !Value, loc)
+
+    let br_to_end = make_insn_dbg(InsnKind::BR_UNC, loc)
+    
+    let br = make_insn_dbg(InsnKind::BR, loc)        
+    br.value.br = [ cond = cond ] !InsnBr
+    push_insn(br, state)
+
+    let if_false = make_label(state)
+    push_label(if_false, state)
+    br.value.br.if_false = if_false
+
+    increase_ref_count_of_value(cached_type_ref, loc, state)
+
+    // Has been cached, just store the cached type
+    state.store(tmp, cached_type_ref, loc)
+    push_insn(br_to_end, state)
+
+    let if_true = make_label(state)
+    push_label(if_true, state)
+    br.value.br.if_true = if_true
+
+    res = state.extract_value(builtins::int64_, res, [0], loc)
+    let fun = declare_reflection_type_t_fun(state)
+    if not fun { return NO_VALUE }
+    
+    res = state.call(fun.fdef.name, builtins::reflection_type_t(), [res], loc)
+    
+    // Update the cached type with the result
+    let ptr_to_rtype = state.gep(pointer(builtins::reflection_type_t()), builtins::type_t(), ptr_to_type, [make_int_value(0), make_int_value(3)], loc)
+    state.store(ptr_to_rtype, res, loc)
+
+    state.store(tmp, res, loc)
+    create_temporary(tmp, res, loc, state)
+
+    push_insn(br_to_end, state)
+    let end_label = make_label(state)
+    push_label(end_label, state)
+    br_to_end.value.br_unc.label_ = end_label
+
+    return state.load(builtins::reflection_type_t(), tmp, loc)
+}
+
 def walk_MemberAccess(node: &parser::Node, state: &State) -> Value {
     let loc = make_location(node, state)
     if not node.tpe { 
@@ -4347,17 +4398,7 @@ def walk_MemberAccess(node: &parser::Node, state: &State) -> Value {
             return res
         }
 
-        res = state.load(builtins::type_t(), res, loc)
-        res = state.extract_value(builtins::int64_, res, [0], loc)
-        let fun = declare_reflection_type_t_fun(state)
-        if not fun { return NO_VALUE }
-        
-        let tmp = state.alloca(builtins::reflection_type_t(), loc)
-        res = state.call(fun.fdef.name, builtins::reflection_type_t(), [res], loc)
-        state.store(tmp, res, loc)
-        create_temporary(tmp, res, loc, state)
-
-        return res
+        return type_t_to_reflection_type(res, loc, state)
     }
 
     if tpe.kind == typechecking::TypeKind::STATIC_ARRAY {
@@ -9010,10 +9051,11 @@ def do_create_type(tpe: &typechecking::Type, svalue: &scope::Value, module: &too
     consteval::const_module.result.add_global(global2.name, global2)
 
     let type_ = builtins::type_t().resolve()
-    value.values = allocate_ref(Value, 3)
+    value.values = allocate_ref(Value, 4)
     value.values(0) = [ kind = ValueKind::INT, tpe = builtins::int64_, i = tpe.stable_hash() ] !Value
     value.values(1) = [ kind = ValueKind::ZEROINITIALIZER, tpe = type_.field_types(1).tpe ] !Value
     value.values(2) = [ kind = ValueKind::ZEROINITIALIZER, tpe = type_.field_types(2).tpe ] !Value
+    value.values(3) = [ kind = ValueKind::ZEROINITIALIZER, tpe = type_.field_types(3).tpe ] !Value
 
     if is_ref(tpe) and typechecking::has_destructor(tpe) {
         let fp = type_.field_types(1).tpe
@@ -9206,13 +9248,8 @@ def change_value_to_type(tpe: &typechecking::Type, loc: &Value, state: &State) -
     //add_type_meta(tpe, state)
     if not create_type(tpe, state.module) { return NO_VALUE }
 
-    let fun = declare_reflection_type_t_fun(state)
-    if not fun { return NO_VALUE }
-    let tmp = state.alloca(builtins::reflection_type_t(), loc)
-    let res = state.call(fun.fdef.name, builtins::reflection_type_t(), [[ tpe = builtins::uint64_, kind = ValueKind::INT, i = tpe.stable_hash() ] !Value], loc)
-    state.store(tmp, res, loc)
-    create_temporary(tmp, res, loc, state)
-    return res
+    let ctpe = do_create_type(tpe, state.module)
+    return type_t_to_reflection_type(ctpe, loc, state)
 }
 
 def make_global_data(name: Str, value: &ByteStream, state: &State) {

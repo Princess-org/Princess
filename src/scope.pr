@@ -269,6 +269,20 @@ export type ReExport = struct {
     pattern: &parser::Node
 }
 
+export type ConvertPair = struct {
+    left: typechecking::TypeId
+    right: typechecking::TypeId
+}
+export def hash(pair: ConvertPair) -> uint64 {
+    return combine_hashes(pair.left !uint64, pair.right !uint64)
+}
+export def == (this: ConvertPair, other: ConvertPair) -> bool {
+    return this.left == other.left and this.right == other.right
+}
+export def != (this: ConvertPair, other: ConvertPair) -> bool {
+    return not (this == other)
+}
+
 export type Scope = struct {
     module: weak &toolchain::Module
     is_function: bool
@@ -293,6 +307,7 @@ export type Scope = struct {
     // Polymorphic instances
     polymorphics: &SMap(&Scope)
     impls: &Vector(&Impl)
+    implicit_cache: &Map(ConvertPair, weak &Value)
 }
 
 export def print_scope(scope: &Scope) {
@@ -483,7 +498,8 @@ export def enter_scope(parents: &Vector(weak &Scope), module: &toolchain::Module
         implicits = vector::make(type &Value),
         underscore_count = 0,
         is_global = is_global,
-        impls = vector::make(type &Impl)
+        impls = vector::make(type &Impl),
+        implicit_cache = map::make(ConvertPair, type weak &Value)
     ] !&Scope
     let function_parent = get_function_parent(s)
     if function_parent {
@@ -511,7 +527,8 @@ export def enter_function_scope(scope: &Scope, module: &toolchain::Module, is_gl
         is_function = true,
         is_global = is_global,
         scope_count = 0,
-        impls = vector::make(type &Impl)
+        impls = vector::make(type &Impl),
+        implicit_cache = map::make(ConvertPair, type weak &Value)
     ] !&Scope
 }
 
@@ -928,8 +945,13 @@ export def find_implicit_function(scope: &Scope, parameter_t: &Vector(typechecki
     if first_param.kind == typechecking::TypeKind::REFERENCE and 
         typechecking::equals(first_param.tpe, typechecking::null_) { return null }
 
+    let cpair = [ left = first_param.id, right = ret.id ] !ConvertPair
+
     let r = ret // TODO Capture parameters
     def find(scope: &Scope, score: *int, check_export: bool) -> &Value {
+        let cached = scope.implicit_cache.get(cpair)
+        if cached.exists { return cached.value }
+
         var value: &Value = null
         var d = false
         for var i in 0..scope.implicits.length {
@@ -950,10 +972,12 @@ export def find_implicit_function(scope: &Scope, parameter_t: &Vector(typechecki
                 value = v
             }
         }
-        if d { return null }
-        if check_export and value and not (value.share !int & parser::ShareMarker::EXPORT !int) {
-            return null
+        if d { value = null }
+        else if check_export and value and not (value.share !int & parser::ShareMarker::EXPORT !int) {
+            value = null
         }
+
+        scope.implicit_cache(cpair) = value
         return value
     }
 
@@ -1872,6 +1896,10 @@ export def create_function(scope: &Scope, name_node: &parser::Node, v: &Value, i
     let name = last_path_element(name_node)
     let phase = v.phase
     let fdef = v.fdef
+
+    // A new function might add an implicit conversion, we just don't know so
+    // we clear the cache and start over again
+    scope.implicit_cache.clear()
 
     if scope.fields.contains(name) {
         var val = scope.fields(name)
