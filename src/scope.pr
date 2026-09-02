@@ -76,6 +76,33 @@ export def fuzzy_equals(this: Ident, other: Ident) -> bool {
     }
 }
 
+// TODO why is this needed?
+export def resolve_fdefs(scope: &Scope) {
+    for var fun in scope.all_functions() {
+        typechecking::resolve_fdef(*fun.fdef, fun.extern)
+        fun.ident.signature = fun.fdef.name
+    }
+}
+
+export def find_all(input: &Map(Ident, &Value)) {
+    var modules = set::make(type &toolchain::Module)
+    for var e in input {
+        if e.key.module {
+            modules.push(e.key.module)
+        }
+    }
+    
+    for var module in modules {
+        let scope = module.scope
+        for var v in scope.all_values() {
+            if input.contains(v.ident) {
+                input(v.ident) = v
+            }
+        }
+    }
+
+}
+
 export def find(ident: Ident) -> &Value {
     if not ident.module { return null }
     assert ident.kind != IdentKind::IMPLEMENTS
@@ -83,11 +110,6 @@ export def find(ident: Ident) -> &Value {
     let scope = ident.module.scope
     let values = scope.all_values()
     for var fun in values {
-        if fun.kind == ValueKind::FUNCTION {
-            // TODO This is really slow...
-            typechecking::resolve_fdef(*fun.fdef, fun.extern)
-            fun.ident.signature = fun.fdef.name
-        }
         if fun.ident == ident {
             return fun
         }
@@ -322,12 +344,18 @@ def print_scope(scope: &Scope, indent: Str, visited: &Set(uint64)) {
     visited.add(scope !* !uint64)
 
     print(indent, "Scope (module=", scope.module.module if scope.module else to_str("<null>"), "):\n")
-    let keys = scope.fields.keys()
-    for var i in 0..keys.size {
-        let key = keys(i)
-        let value = scope.fields(key)
+    for var e in scope.fields {
+        let key = e.key
+        let value = e.value
         print(indent, "  ", key, " -> ", typechecking::generic_to_string(value.tpe), " (", to_string(value.kind), ", ", to_string(value.phase), ")\n")
-    }
+        if value.kind == ValueKind::FUNCTION {
+            var f = value
+            while f {
+                print(indent, "    Function: ", f.fdef.name, " (", to_string(f.phase), ")\n")
+                f = f.next
+            }
+        }
+    }   
     if scope.parents {
         for var parent in scope.parents {
             print(indent, "Parent:\n")
@@ -543,10 +571,9 @@ export def exit_scope(scope: &Scope) -> &Scope {
 }
 
 export def all_functions(scope: &Scope) -> &Value {
-    let keys = scope.fields.keys()
-    for var i in 0..keys.size {
-        let key = keys(i)
-        var value = scope.fields(key)
+    for var e in scope.fields {
+        let key = e.key
+        var value = e.value
         if value.kind == ValueKind::FUNCTION {
             while value {
                 yield value
@@ -557,10 +584,9 @@ export def all_functions(scope: &Scope) -> &Value {
 }
 
 export def all_values(scope: &Scope) -> &Value {
-    let keys = scope.fields.keys()
-    for var i in 0..keys.size {
-        let key = keys(i)
-        var value = scope.fields(key)
+    for var e in scope.fields {
+        let key = e.key
+        var value = e.value
         while value {
             yield value
             value = value.next
@@ -568,8 +594,8 @@ export def all_values(scope: &Scope) -> &Value {
     }
 
     if scope.polymorphics {
-        for var key in @scope.polymorphics.keys() {
-            let polymorphic = scope.polymorphics(key)
+        for var e in scope.polymorphics {
+            let polymorphic = e.value
             for var value in all_values(polymorphic) { 
                 yield value
             }
@@ -611,8 +637,9 @@ def find_functions(value: &Value, resolved: &SMap(&Vector(typechecking::Function
 }
 
 def find_functions(scope: &Scope, name: Str, ret: &Vector(&Value), params: &Vector(typechecking::TypeId) = null, check_export: bool = false) {
-    for var key in @scope.fields.keys() {
-        var value = scope.fields(key)
+    for var e in scope.fields {
+        let key = e.key
+        var value = e.value
         if key == name and value.kind == ValueKind::FUNCTION {
             let value_def = value.fdef
             while value {
@@ -674,8 +701,8 @@ export def find_functions(scope: &Scope, name: Str, params: &Vector(typechecking
 // TODO Duplicate code, we want a filter function
 def find_functions(scope: &Scope, tpe: &typechecking::Type, ret: &Vector(&Value), found: &SSet, check_export: bool = false) {
     if not scope { return }
-    for var key in @scope.fields.keys() {
-        var value = scope.fields(key)
+    for var e in scope.fields {
+        var value = e.value
         if check_export and not (value.share !int & parser::ShareMarker::EXPORT !int) { continue }
         if value.kind == ValueKind::FUNCTION {
             let value_def = value.fdef
@@ -730,8 +757,8 @@ export def find_functions(scope: &Scope, tpe: &typechecking::Type) -> &Vector(&V
 
 def find_all(scope: &Scope, ret: &Vector(&Value), found: &SSet, check_export: bool = false) {
     if not scope { return }
-    for var key in @scope.fields.keys() {
-        var value = scope.fields(key)
+    for var e in scope.fields {
+        var value = e.value
         if check_export and not (value.share !int & parser::ShareMarker::EXPORT !int) { continue }
 
         if value.modifier == parser::VarDecl::CONST and value.tpe and
@@ -1037,13 +1064,29 @@ export def has_function(scope: &Scope, fdef: typechecking::FunctionDef) -> &Valu
     return null
 }
 
+export def remove_polymorph(scope: &Scope, ident: Ident) {
+    if scope.polymorphics {
+        let polymorphics = scope.polymorphics
+        for var e in polymorphics {
+            let polymorphic = e.value
+            var val: &Value
+            for var value in all_values(polymorphic) {
+                if value.ident == ident {
+                    val = value
+                    break
+                }
+            }
+            remove(polymorphic, val)
+        } 
+    }
+}
+
 export def remove(scope: &Scope, value: &Value) {
     if not value or not scope { return }
 
-    let keys = scope.fields.keys()
-    for var i in 0..keys.size {
-        let key = keys(i)
-        var v = scope.fields(key)
+    for var e in scope.fields {
+        let key = e.key
+        var v = e.value
         if v !* == value !* {
             scope.fields.remove(key)
             if v.next {
@@ -1445,8 +1488,8 @@ def get_function_check_impl(
                     }
                 } else {
                     // Otherwise we have a non qualified call, which means we need to look at ALL modules
-                    for var module_name in @root_scope.polymorphics.keys() {
-                        let poly_scope = root_scope.polymorphics(module_name)
+                    for var e in root_scope.polymorphics {
+                        let poly_scope = e.value
                         if poly_scope {
                             let val = poly_scope.fields.get_or_default(name, null)
                             let new_code, new_value = find_function(poly_scope, id, val, parameter_t, *new_score, dry_run, context)

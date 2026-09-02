@@ -510,7 +510,8 @@ def deserialize_type_node(deserialize: &Deserialize, loc: parser::SourceLoc) -> 
 
 def read_type(deserialize: &Deserialize, fp: File, lookup: bool = false) -> typechecking::TypeId {
     let tid = read_type(fp, lookup = lookup)
-    if lookup {
+    if lookup and not deserialize.looked_up_types.contains(tid) {
+        deserialize.looked_up_types.add(tid)
         compiler::import_structures(tid, deserialize.module)
     }
     return tid
@@ -1736,6 +1737,8 @@ export type Deserialize = struct {
     rtypes: &Vector(TypeEntry)
     used_destructors: &Set(uint64)
     used_copy_constructors: &Set(uint64)
+    looked_up_types: &Set(typechecking::TypeId)
+    values: &Map(scope::Ident, &scope::Value)
 }
 
 def has_function(deserialize: &Deserialize, name: Str) -> bool {
@@ -1777,7 +1780,9 @@ export def resolver_pass(module: &toolchain::Module) {
         variables = vector::make(VariableEntry),
         rtypes = vector::make(TypeEntry),
         used_destructors = set::make(uint64),
-        used_copy_constructors = set::make(uint64)
+        used_copy_constructors = set::make(uint64),
+        looked_up_types = set::make(typechecking::TypeId),
+        values = map::make(scope::Ident, &scope::Value)
     ] !&Deserialize
 
     module.deserialize = deserialize
@@ -2055,7 +2060,10 @@ def resolve_typeref(deserialize: &Deserialize, tr: &typechecking::TypeRef) {
         let new_id = dtpe.id
         assert new_id != 0
 
-        compiler::import_structures(new_id, deserialize.module)
+        if not deserialize.looked_up_types.contains(new_id) {
+            deserialize.looked_up_types.add(new_id)
+            compiler::import_structures(new_id, deserialize.module)
+        }
         tr.tpe = new_id
         return
     } else if tr.name {
@@ -2291,6 +2299,7 @@ export def resolve_types_and_members {
             tpe._hash = _hash
             tpe.tc_tpe = tc_tpe
             tpe.tc_args = tc_args
+            tpe.tc_cached = true
             tpe.has_builtin_destructor_cached = has_builtin_destructor_cached
             tpe.has_constructor_cached = has_constructor_cached
             tpe.name = name
@@ -2448,94 +2457,119 @@ export def resolve_types_and_members {
     }
 }
 
+def check_function_dependency(entry: FunctionEntry, module: &toolchain::Module) {
+    var ident: scope::Ident
+    let eident = scope::make_ident(entry.fdef.name, module)
+    if entry.poly_instance { 
+        ident = entry.poly_original
+    } else {
+        ident = eident
+    }
+
+    var val = scope::find(ident)
+    if not val or not val.function { return }
+    if val.phase == scope::Phase::CACHED and not val.polymorph and not val.is_dyn_dispatch and val.name != "__main__" {
+        // Function doesn't exist anymore, remove it from the scope
+        debug::trace("Function ", entry.fdef.name, " doesn't exist anymore, removing from scope")
+        if entry.poly_instance {
+            scope::remove_polymorph(module.scope, eident)
+        } else {
+            scope::remove(module.scope, val)
+        }
+        return
+    }
+    if val.ident._contents_hash != entry.contents_hash {
+        // Recompile function if contents has changed
+        debug::trace("Function ", entry.fdef.name, " contents hash changed, marking as dirty")
+
+        if entry.poly_instance {
+            scope::remove_polymorph(module.scope, eident)
+        } else {
+            val.function.is_typechecked = false
+            val.function.is_compiled = false
+            toolchain::set_dirty(module)
+        }
+        return
+    }
+
+    if entry.poly_instance {
+        val = scope::find(eident)
+    }
+
+    var is_dirty = false
+    if val.dependencies {
+        for var dep in @val.dependencies.keys() {
+            if dep.kind == scope::IdentKind::IMPLEMENTS {
+                is_dirty = true
+                if dep.module {
+                    for var impl in scope::all_impl(dep.module.scope) {
+                        if impl.node.hash == dep._hash  {
+                            is_dirty = false
+                            break
+                        } 
+                    }
+                }
+                if is_dirty {
+                    debug::trace("Impl ", dep.name, " out of date, marking ", val.fdef.name, " as dirty")
+                    break
+                }
+            } else {
+                let dep_val = scope::find(dep)
+                if not dep_val or (
+                        dep_val.phase == scope::Phase::CACHED and 
+                        not dep_val.polymorph and 
+                        not dep_val.is_dyn_dispatch) or                           
+                    (dep._contents_hash != 0 and dep_val.ident._contents_hash != dep._contents_hash) or
+                    (dep._hash != dep_val.ident._hash) { 
+                    is_dirty = true
+                    debug::trace("Dependency ", dep.name, " out of date, marking ", val.fdef.name, " as dirty")
+                    break
+                }
+            }
+        } 
+    }
+    if is_dirty {
+        val.function.is_typechecked = false
+        val.function.is_compiled = false
+        toolchain::set_dirty(module)
+    }
+}
+
 export def check_dependencies {
+    for var name in @toolchain::modules.keys() {
+        let module = toolchain::modules(name)
+        if not module.deserialize { continue }
+
+        scope::resolve_fdefs(module.scope)
+    }
 
     for var name in @toolchain::modules.keys() {
         let module = toolchain::modules(name)
         if not module.deserialize { continue }
 
-        for var entry in module.deserialize.functions {
-            if entry.polymorph { continue }
+        for var entry in module.deserialize.rtypes {
+            var node: &parser::Node
+            let tpe = entry.tpe.resolve()
+            if tpe and tpe.kind == typechecking::TypeKind::TYPE_CONSTRUCTOR {
 
-            let val = scope::find(scope::make_ident(entry.fdef.name, module))
-            if not val or not val.function { continue }
-            if val.phase == scope::Phase::CACHED and not val.polymorph and not val.is_dyn_dispatch and val.name != "__main__" {
-                // Function doesn't exist anymore, remove it from the scope
-                debug::trace("Function ", val.fdef.name, " doensn't exist anymore, removing from scope")
-                scope::remove(module.scope, val)
-                continue
-            }
-            if val.ident._contents_hash != entry.contents_hash {
-                // Recompile function if contents has changed
-                debug::trace("Function ", val.fdef.name, " contents hash changed, marking as dirty")
-                val.function.is_typechecked = false
-                val.function.is_compiled = false
-                toolchain::set_dirty(module)
-                continue
-            }
+                let name_node = parser::make_identifier(entry.name)
+                name_node.loc.module = module.module
 
-            var is_dirty = false
-            if val.dependencies {
-                for var dep in @val.dependencies.keys() {
-                    if dep.kind == scope::IdentKind::IMPLEMENTS {
-                        is_dirty = true
-                        if dep.module {
-                            for var impl in scope::all_impl(dep.module.scope) {
-                                if impl.node.hash == dep._hash  {
-                                    is_dirty = false
-                                    break
-                                } 
-                            }
-                        }
-                        if is_dirty {
-                            debug::trace("Impl ", dep.name, " out of date, marking ", val.fdef.name, " as dirty")
-                            break
-                        }
-                    } else {
-                        let dep_val = scope::find(dep)
-                        if not dep_val or (
-                                dep_val.phase == scope::Phase::CACHED and 
-                                not dep_val.polymorph and 
-                                not dep_val.is_dyn_dispatch) or                           
-                            (dep._contents_hash != 0 and dep_val.ident._contents_hash != dep._contents_hash) or
-                            (dep._hash != dep_val.ident._hash) { 
-                            is_dirty = true
-                            debug::trace("Dependency ", dep.name, " out of date, marking ", val.fdef.name, " as dirty")
-                            break
-                        }
-                    }
-                } 
-            }
-            if is_dirty {
-                val.function.is_typechecked = false
-                val.function.is_compiled = false
-                toolchain::set_dirty(module)
+                // Get the node from scope if it exists
+                let val = scope::get(module.scope, name_node)
+                if val and val.kind == scope::ValueKind::TYPE {
+                    node = val.node
+                    tpe.tc_node = node
+                }
             }
         }
 
-        /*let deserialize = module.deserialize
-        if not deserialize.dependencies { continue }
-        
-        // Check if any of the dependencies are out of date
-        for var i in 0..deserialize.dependencies.size {
-            let dep = deserialize.dependencies(i)
-            let value = scope::find(dep)
-
-            /*print("Checking dependency ", dep.name, " (", dep._hash, " & ", dep._contents_hash, ")\n")
-            print("\tFound value: ", "yes" if value else "no", "\n")
-            if value {
-                print("\tValue hash: ", value.ident._hash, "\n")
-                print("\tContents hash: ", value.ident._contents_hash, "\n")
-            }*/
-            // contents_hash gets set to a nonzero value when the value depends on the actual structure of the value,
-            // for example if it is used in consteval or if the function is polymorphic
-            if not value or value.ident._hash != dep._hash or (
-                dep._contents_hash != 0 and value.ident._contents_hash != dep._contents_hash) {
-                debug::trace("Dependency ", dep.name, " out of date, marking ", module.module, " as dirty")
-                toolchain::set_dirty(module)
-                break
-            }
-        }*/
+        for var entry in module.deserialize.functions {
+            if entry.poly_instance { check_function_dependency(entry, module) }
+        }
+        for var entry in module.deserialize.functions {
+            if not entry.poly_instance { check_function_dependency(entry, module) }
+        }
     }
 }
 
