@@ -1361,20 +1361,21 @@ def walk_String(node: &parser::Node, state: &State) -> Value {
 export def resolve_types(res: &Vector(TypeEntry)) {
     let state = toolchain::types_state
     // We need an independent block that we can run for constant evaluation
-    let old_block = toolchain::types_state.current_block
-    let new_block = make_block()
-    new_block.counter = old_block.counter
-    state.current_block = new_block
+    //let old_block = toolchain::types_state.current_block
+    //let new_block = make_block()
+    //new_block.counter = old_block.counter
+    //state.current_block = new_block
 
     for var entry in res {
+        //print("Resolving type: ", debug::type_to_str(entry.tpe, full_name = true),  "\n")
         entry.value.value = do_create_type(entry.tpe, entry.value, entry.module)
         entry.value.phase = scope::Phase::COMPILED
     }
         
-    old_block.counter = new_block.counter
-    for var i in 0..vector::length(new_block.insn) {
-        old_block.insn.push(new_block.insn(i))
-    }
+    //old_block.counter = new_block.counter
+    //for var i in 0..vector::length(new_block.insn) {
+    //    old_block.insn.push(new_block.insn(i))
+    //}
 
     /*if state.consteval {
         let old_cstate_block = consteval::compiler_state.current_block
@@ -1408,7 +1409,7 @@ export def resolve_types(res: &Vector(TypeEntry)) {
         consteval::compiler_state.function_stack.pop()
     }*/
 
-    state.current_block = old_block
+    //state.current_block = old_block
 }
 
 export def create_type(tpe: &typechecking::Type, module: &toolchain::Module) -> &Value {
@@ -3933,8 +3934,9 @@ def create_temporary(addr: Value, ret: Value, loc: &Value, state: &State) {
             private = true
         ] !&Global
         
-        state.module.result.add_global((@global).name, global)
+        state.module.result.add_global(global.name, global)
         state.module.imported.add(global.name)
+        consteval::const_module.result.add_global(global.name, global)
         
         state.store([ kind = ValueKind::GLOBAL, tpe = pointer(ret.tpe), name = name ] !Value, ret, loc)
     } else {
@@ -7624,6 +7626,7 @@ export def create_function(
 
     debug::trace("Compiling function " + function.name)
     //print(function !*, "\n")
+    const_module.result.add_function(function.name, function)
 
     function.allocas = vector::make(type &Insn)
     function.function_locals = set::make()
@@ -8245,6 +8248,7 @@ export def walk_top_VarDecl(node: &parser::Node, state: &State, set_constant: bo
             
             state.module.result.add_global((@global).name, global)
             state.module.imported.add(global.name)
+            consteval::const_module.result.add_global(global.name, global)
 
             let current_function = state.current_function
             if current_function.function_locals {
@@ -8294,7 +8298,7 @@ def insert_module_main(module: &toolchain::Module, name: &parser::Node, scpe: &s
     }
 
     let finalizer = module.result.finalizer
-    if finalizer {
+    if finalizer and state.finalizer {
         let previous_block = state.current_block
         state.current_block = state.finalizer.block
 
@@ -9947,13 +9951,17 @@ export def compile(state: &State, is_main: bool, no_cleanup: bool = false) {
     let node = state.module.node
     assert(node.kind == parser::NodeKind::PROGRAM)
 
-    let finalizer = @state.module.result.finalizer
-    
-    let finalizer_start_block = make_block()
-    state.finalizer = predeclare_function(finalizer, state.module)
-    state.finalizer.forward_declare = false
-    state.finalizer.block = finalizer_start_block
-    state.finalizer.dllexport = true
+    var finalizer_start_block: &Block
+
+    if not no_cleanup {
+        finalizer_start_block = make_block()
+
+        let finalizer = @state.module.result.finalizer
+        state.finalizer = predeclare_function(finalizer, state.module)
+        state.finalizer.forward_declare = false
+        state.finalizer.block = finalizer_start_block
+        state.finalizer.dllexport = true
+    }
 
     let ident = parser::make_identifier("__main__")
     ident.loc.module = state.module.module
@@ -10258,45 +10266,47 @@ export def compile(state: &State, is_main: bool, no_cleanup: bool = false) {
         ] !Value
     }
 
-    state.function_stack.pop()
+    if not no_cleanup {
+        state.function_stack.pop()
 
-    let old_block = state.current_block
-    state.function_stack.push(state.finalizer)
-    state.current_block = state.finalizer.block
+        let old_block = state.current_block
+        state.function_stack.push(state.finalizer)
+        state.current_block = state.finalizer.block
 
-    // Insert destructors for global values
-    let keys = map::reverse_keys(node.scope.fields)
-    for var i in 0..keys.size {            
-        let value = node.scope.fields(keys(i))
-        if value.modifier == parser::VarDecl::TYPE or 
-            value.modifier == parser::VarDecl::CONST {
-            continue
+        // Insert destructors for global values
+        let keys = map::reverse_keys(node.scope.fields)
+        for var i in 0..keys.size {            
+            let value = node.scope.fields(keys(i))
+            if value.modifier == parser::VarDecl::TYPE or 
+                value.modifier == parser::VarDecl::CONST {
+                continue
+            }
+
+            // Create destructor
+            insert_destructor([ kind = ValueKind::GLOBAL, tpe = pointer(value.get_type()), name = value.assembly_name(state) ] !Value, null, state)
         }
 
-        // Create destructor
-        insert_destructor([ kind = ValueKind::GLOBAL, tpe = pointer(value.get_type()), name = value.assembly_name(state) ] !Value, null, state)
+        if builtins::builtins.fields.contains("DEBUG_REF_CYCLES") and state.module.module == "main" {
+            let fdef = toolchain::find_module("std").scope.get(parser::make_identifier("find_cycles")).fdef
+            predeclare_function(fdef, state.module)
+            state.module.imported.add(fdef.name)
+            state.call(fdef.name, 0, [] ![Value])
+        }
+
+        state.ret(NO_VALUE)
+        state.current_block = old_block
+        state.finalizer.block = finalizer_start_block
+        vector::insert(finalizer_start_block.insn, 0, state.current_function.allocas)
+
+        //if no_cleanup {
+            // In the repl we clear out the finalizer
+        //   state.finalizer.block = make_block()
+        //}
+
+        insert_function(state.module, state.finalizer)
+        state.module.imported.add(state.finalizer.name)
+        state.function_stack.pop()
     }
-
-    if builtins::builtins.fields.contains("DEBUG_REF_CYCLES") and state.module.module == "main" {
-        let fdef = toolchain::find_module("std").scope.get(parser::make_identifier("find_cycles")).fdef
-        predeclare_function(fdef, state.module)
-        state.module.imported.add(fdef.name)
-        state.call(fdef.name, 0, [] ![Value])
-    }
-
-    state.ret(NO_VALUE)
-    state.current_block = old_block
-    state.finalizer.block = finalizer_start_block
-    vector::insert(finalizer_start_block.insn, 0, state.current_function.allocas)
-
-    if no_cleanup {
-        // In the repl we clear out the finalizer
-        state.finalizer.block = make_block()
-    }
-
-    insert_function(state.module, state.finalizer)
-    state.module.imported.add(state.finalizer.name)
-    state.function_stack.pop()
 
     toolchain::progress_update(state.module, toolchain::ProgressUpdate::END)
 }
