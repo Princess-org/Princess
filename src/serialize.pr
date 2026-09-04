@@ -242,7 +242,7 @@ def serialize_function_data(fp: File, function: &compiler::Function, state: &Ser
     }
 }
 
-def deserialize_function_data(fp: File, entry: *FunctionEntry, deserialize: &Deserialize) {
+def deserialize_function_data(fp: File, entry: &FunctionEntry, deserialize: &Deserialize) {
     entry.block = deserialize_block(fp, deserialize)
 
     var sz: size_t
@@ -886,7 +886,7 @@ def deserialize_function(deserialize: &Deserialize, fp: File, poly_instance: boo
     var data = allocate_ref(uint8, sz)
     fp.read(@data)
 
-    deserialize.functions.push([
+    deserialize.functions(fdef.name) = [
         name = name,
         extern = extern,
         hash = hash,
@@ -904,7 +904,7 @@ def deserialize_function(deserialize: &Deserialize, fp: File, poly_instance: boo
         block_data = data,
         dependencies = dependencies,
         dependants = dependants
-    ] !FunctionEntry)
+    ] !&FunctionEntry
 
     debug::trace("    Function " + type_name + " (" + hash + ") with " + sz + " bytes of code")
 }
@@ -961,7 +961,7 @@ def deserialize_variable(deserialize: &Deserialize, fp: File) {
     }
 
     debug::trace("    Variable " + name + " (" + hash + ")")
-    deserialize.variables.push([
+    deserialize.variables(name) = [
         name = name,
         hash = hash,
         share = share !parser::ShareMarker,
@@ -973,7 +973,7 @@ def deserialize_variable(deserialize: &Deserialize, fp: File) {
         value = value,
         dependencies = dependencies,
         dependants = dependants
-    ] !VariableEntry)
+    ] !&VariableEntry
 }
 
 def serialize_ident(fp: File, ident: scope::Ident) {
@@ -1138,7 +1138,7 @@ def deserialize_value(deserialize: &Deserialize, fp: File, lookup: bool = false)
     if value.kind == compiler::ValueKind::GLOBAL and value.tpe {
         let name = value.name
         if not name.starts_with("__f::") and 
-            not has_variable(deserialize, name) and 
+            not deserialize.variables.contains(name) and 
             not deserialize.module.result.globals.contains(name) {
 
             let global = [
@@ -1398,7 +1398,7 @@ def deserialize_insn(deserialize: &Deserialize, fp: File) -> &compiler::Insn {
                 let fname = name.name
                 if not fname.starts_with("llvm.") and 
                     not deserialize.module.result.functions.contains(fname) and
-                    not deserialize.has_function(fname) {
+                    not deserialize.functions.contains(fname) {
                     
                     var args = vector::make(typechecking::NamedParameter)
                     if insn.value.call.proto {
@@ -1732,27 +1732,13 @@ export type Deserialize = struct {
     nodes: &Vector(&parser::Node) // Strong references to nodes
     scopes: &Vector(&scope::Scope) // Strong references to enum scopes
     //dependencies: &[scope::Ident]
-    functions: &Vector(FunctionEntry) // Things get written before the type information so we must delay processing
-    variables: &Vector(VariableEntry)
+    functions: &SMap(&FunctionEntry) // Things get written before the type information so we must delay processing
+    variables: &SMap(&VariableEntry)
     rtypes: &Vector(TypeEntry)
     used_destructors: &Set(uint64)
     used_copy_constructors: &Set(uint64)
     looked_up_types: &Set(typechecking::TypeId)
     values: &Map(scope::Ident, &scope::Value)
-}
-
-def has_function(deserialize: &Deserialize, name: Str) -> bool {
-    for var f in deserialize.functions { 
-        if f.fdef.name == name { return true }
-    }
-    return false
-}
-
-def has_variable(deserialize: &Deserialize, name: Str) -> bool {
-    for var v in deserialize.variables { 
-        if v.name == name { return true }
-    }
-    return false
 }
 
 // This is a mapping from the hash to the actual type which has been deserialized.
@@ -1776,8 +1762,8 @@ export def resolver_pass(module: &toolchain::Module) {
         module = module,
         nodes = vector::make(type &parser::Node),
         scopes = vector::make(type &scope::Scope),
-        functions = vector::make(FunctionEntry),
-        variables = vector::make(VariableEntry),
+        functions = map::make(type &FunctionEntry),
+        variables = map::make(type &VariableEntry),
         rtypes = vector::make(TypeEntry),
         used_destructors = set::make(uint64),
         used_copy_constructors = set::make(uint64),
@@ -1953,8 +1939,8 @@ export def define_members(module: &toolchain::Module) {
         print_deps(val)
     }
 
-    for var i in 0..deserialize.functions.length {
-        let entry = deserialize.functions(i)
+    for var e in deserialize.functions {
+        let entry = e.value
         let name_node = parser::make_identifier(entry.name)
         name_node.loc.module = module.module
 
@@ -1992,9 +1978,9 @@ export def define_members(module: &toolchain::Module) {
         value.polymorph = entry.polymorph
         
         var poly_original: &scope::Value
-        if entry.poly_instance {
-            value.polymorph_original = scope::find(entry.poly_original)
-        }
+        //if entry.poly_instance {
+        //   value.polymorph_original = scope::find(entry.poly_original)
+        //}
         
         value.function = [
             module = deserialize.module,
@@ -2032,8 +2018,8 @@ export def define_members(module: &toolchain::Module) {
         //typechecking::print_fdef(entry.fdef)
     }
 
-    for var i in 0..deserialize.variables.length {
-        let entry = deserialize.variables(i)
+    for var e in deserialize.variables {
+        let entry = e.value
         let id = parser::make_identifier(entry.name)
         id.loc.module = module.module
         let val = scope::create_variable(
@@ -2382,12 +2368,13 @@ export def resolve_types_and_members {
                 let entry = deserialize.rtypes.get(i)
                 entry.tpe = deserialized_types(entry.tpe).id
             }
-            for var entry in deserialize.variables {
+            for var e in deserialize.variables {
+                let entry = e.value
                 resolve_typeref(deserialize, entry.tpe)
                 if entry.value { resolve_value(entry.value !*compiler::Value) }
             }
-            for var i in 0..deserialize.functions.length {
-                let entry = deserialize.functions.get(i)
+            for var e in deserialize.functions {
+                let entry = e.value
 
                 let fdef = entry.fdef
                 resolve_parameters(fdef.parameter_t, deserialize)
@@ -2426,8 +2413,8 @@ export def resolve_types_and_members {
                             }
                             let ret = read_type(bfp, true)
 
-                            var new_entry: FunctionEntry
-                            deserialize_function_data(bfp, *new_entry, deserialize)
+                            var new_entry = [] !&FunctionEntry
+                            deserialize_function_data(bfp, new_entry, deserialize)
 
                             let function = [
                                 name = name,
@@ -2457,7 +2444,7 @@ export def resolve_types_and_members {
     }
 }
 
-def check_function_dependency(entry: FunctionEntry, module: &toolchain::Module) {
+def check_function_dependency(deserialize: &Deserialize, entry: &FunctionEntry, module: &toolchain::Module) {
     var ident: scope::Ident
     let eident = scope::make_ident(entry.fdef.name, module)
     if entry.poly_instance { 
@@ -2466,7 +2453,7 @@ def check_function_dependency(entry: FunctionEntry, module: &toolchain::Module) 
         ident = eident
     }
 
-    var val = scope::find(ident)
+    var val = deserialize.values.get_or_default(ident, null)
     if not val or not val.function { return }
     if val.phase == scope::Phase::CACHED and not val.polymorph and not val.is_dyn_dispatch and val.name != "__main__" {
         // Function doesn't exist anymore, remove it from the scope
@@ -2493,12 +2480,14 @@ def check_function_dependency(entry: FunctionEntry, module: &toolchain::Module) 
     }
 
     if entry.poly_instance {
-        val = scope::find(eident)
+        let orig = val
+        val = deserialize.values.get_or_default(ident, null)
+        val.polymorph_original = orig
     }
 
     var is_dirty = false
-    if val.dependencies {
-        for var dep in @val.dependencies.keys() {
+    if entry.dependencies {
+        for var dep in @entry.dependencies.keys() {
             if dep.kind == scope::IdentKind::IMPLEMENTS {
                 is_dirty = true
                 if dep.module {
@@ -2514,7 +2503,7 @@ def check_function_dependency(entry: FunctionEntry, module: &toolchain::Module) 
                     break
                 }
             } else {
-                let dep_val = scope::find(dep)
+                let dep_val = deserialize.values.get_or_default(dep, null)
                 if not dep_val or (
                         dep_val.phase == scope::Phase::CACHED and 
                         not dep_val.polymorph and 
@@ -2564,11 +2553,36 @@ export def check_dependencies {
             }
         }
 
-        for var entry in module.deserialize.functions {
-            if entry.poly_instance { check_function_dependency(entry, module) }
+        for var e in module.deserialize.functions {
+            let entry = e.value
+            if entry.poly_instance {
+                module.deserialize.values(entry.poly_original) = null
+            }
+            let eident = scope::make_ident(entry.fdef.name, module)
+            module.deserialize.values(eident) = null
+
+            if entry.dependencies {
+                for var dep in @entry.dependencies.keys() {
+                    if dep.kind != scope::IdentKind::IMPLEMENTS {
+                        module.deserialize.values(dep) = null
+                    }
+                }
+            }
         }
-        for var entry in module.deserialize.functions {
-            if not entry.poly_instance { check_function_dependency(entry, module) }
+
+        scope::find_all(module.deserialize.values)
+
+        for var e in module.deserialize.functions {
+            let value = e.value
+            if value.poly_instance { 
+                check_function_dependency(module.deserialize, value, module) 
+            }
+        }
+        for var e in module.deserialize.functions {
+            let value = e.value
+            if not value.poly_instance { 
+                check_function_dependency(module.deserialize, value, module)
+            }
         }
     }
 }
