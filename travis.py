@@ -1,4 +1,6 @@
 #!/usr/bin/python3.9
+import json
+import requests
 from pathlib import Path
 import subprocess
 import build
@@ -13,7 +15,19 @@ def compile(extra):
 def main():
     Path("build").mkdir(exist_ok = True)
     Path("bin").mkdir(exist_ok = True)
-    build.download()
+
+    print("Downloading Princess compiler from Github...")
+    releases = json.loads(requests.get(build.RELEASES_URL).text)
+    assets = releases[0]["assets"]
+    for asset in assets:
+        if asset["name"] == "princess":
+            url = asset["browser_download_url"]
+            break
+
+    with open("bin/princess", "wb") as fp:
+        fp.write(requests.get(url).content)
+
+    
     print("Building the compiler...")
     build.build([])
     print("Building test suite...")
