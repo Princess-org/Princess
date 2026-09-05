@@ -27,6 +27,7 @@ def main():
     with open("bin/princess", "wb") as fp:
         fp.write(requests.get(url).content)
 
+    os.chmod("bin/princess", 0o755)
     
     print("Building the compiler...")
     build.build([])
