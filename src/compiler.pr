@@ -492,6 +492,9 @@ export type Function = struct {
     block: &Block
     debug: &Value
     allocas: &Vector(&Insn)
+    // Maximum amount of local variables to allocate for this function,
+    // used by eval to preallocate an array
+    max_stack: uint64
 
     locals: &SMap(typechecking::TypeId)
     has_defer: bool
@@ -952,11 +955,13 @@ export def make_address_value(tpe: typechecking::TypeId, addr: &Value, state: &S
 }
 
 export def make_local_value(tpe: typechecking::TypeId, addr: &Value, state: &State) -> Value {
-    let s = to_string(state.current_block.counter)
+    let cnt = state.current_block.counter
+    let s = to_string(cnt)
     state.current_block.counter += 1
     return [
         kind = ValueKind::LOCAL,
         name = s,
+        i = cnt + 1, // We start at 1 because 0 means its a named variable
         tpe = tpe,
         addr = addr
     ] !Value
@@ -3126,10 +3131,12 @@ def walk_Call(node: &parser::Node, state: &State) -> Value {
         }
     }
     if not tpe { 
-        debug::trace("Error: Could not determine type of function call `" + (
-                parser::identifier_to_str(left) if left.kind == parser::NodeKind::IDENTIFIER else to_str("???")
-            ) + "` " + node.module.module + "@" + (node.loc.line + 1)
-        )
+        if node.module {
+            debug::trace("Error: Could not determine type of function call `" + (
+                    parser::identifier_to_str(left) if left.kind == parser::NodeKind::IDENTIFIER else to_str("???")
+                ) + "` " + node.module.module + "@" + (node.loc.line + 1)
+            )
+        }
         return NO_VALUE
     }
 
@@ -8184,6 +8191,7 @@ export def walk_TypeDecl(node: &parser::Node, state: &State) {
             import_structures(svalue.fdef.to_type(), state.module)
             state.module.imported.add(function.name)
             state.module.result.add_function(function.name, function)
+            consteval::const_module.result.add_function(function.name, function)
             state.function_stack.pop()
         }
 
@@ -9366,7 +9374,23 @@ export def generate_reflection_data_queued -> &io::ByteStream, &UniquedStrings, 
     while queued_types.size > 0 {
         for var id in @queued_types.keys() {
             let tpe = queued_types(id)
+
+            var filtered = false
+            var ftpe = tpe
+            if typechecking::is_box(ftpe) { ftpe = ftpe.tpe }
+            if typechecking::is_function(ftpe) or typechecking::is_closure(ftpe) {
+                for var arg in ftpe.parameter_t {
+                    // This is used for lambda arguments, we don't want it anywhere near reflection
+                    if arg.tpe == typechecking::to_infer.id {
+                        filtered = true
+                        break
+                    }
+                }
+            }
+
             queued_types.remove(id)
+
+            if filtered { continue }
             all_types(tpe.stable_hash()) = tpe
 
             // TODO This might be unnecessary

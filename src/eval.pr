@@ -22,6 +22,7 @@ export type StackFrame = struct {
     next: &compiler::Block
     jump_table: &SMap(&compiler::Block)
     locals: &SMap(*)
+    registers: &[*]
     function_name: Str
     line: int
     ret: compiler::Value
@@ -88,10 +89,15 @@ export def make_stack_frame(block: &compiler::Block, name: Str, line: int) -> &S
         mem = arena::make(1024) // TODO maybe calculate the size based on the local variables...
     ] !&StackFrame
 
+    var last_block = block
     while block {
         stack_frame.jump_table(block.label_) = block
+        last_block = block
         block = block.next
     }
+
+    let max_stack = last_block.counter + 1
+    stack_frame.registers = allocate_ref(type *, max_stack)
 
     return stack_frame
 }
@@ -186,6 +192,9 @@ export def get(mem: *, tpe: &typechecking::Type) -> compiler::Value {
 export def get_address(loc: compiler::Value, state: &State) -> * {
     if loc.kind == compiler::ValueKind::LOCAL {
         let frame = get_stack_frame(state)
+        if loc.i > 0 {
+            return frame.registers(loc.i - 1)
+        }
         let mem = frame.locals.get_or_default(loc.name, null)
         if not mem {
             errors::errorv("Couldn't find memory for `", loc.name, "`")
@@ -337,12 +346,22 @@ def set(mem: *, tpe: &typechecking::Type, value: compiler::Value) {
 export def set_value(loc: compiler::Value, value: compiler::Value, state: &State) {
     let loc_tpe = loc.tpe.resolve()
     if loc.kind == compiler::ValueKind::LOCAL {
-        var mem = get_stack_frame(state).locals.get_or_default(loc.name, null)
-        if not mem {
-            let frame = get_stack_frame(state)
-            mem = frame.mem.allocate(loc_tpe.size)
-            frame.locals(loc.name) = mem
+        let frame = get_stack_frame(state)
+        var mem: * = null
+        if loc.i > 0 {
+            mem = frame.registers(loc.i - 1)
+            if not mem {
+                mem = frame.mem.allocate(loc_tpe.size)
+                frame.registers(loc.i - 1) = mem
+            }
+        } else {
+            mem = frame.locals.get_or_default(loc.name, null)
+            if not mem {
+                mem = frame.mem.allocate(loc_tpe.size)
+                frame.locals(loc.name) = mem
+            }   
         }
+
         set(mem, loc.tpe, value)
     } else if loc.kind == compiler::ValueKind::GLOBAL {
         var mem = state.cstate.globals.get_or_default(loc.name, null)
@@ -550,7 +569,11 @@ def eval_Alloca(insn: &compiler::Insn, state: &State) {
     ret.tpe = typechecking::pointer(ret.tpe)
     let ptr = [ kind = compiler::ValueKind::POINTER, tpe = ret.tpe, i = mem !int64 ] !compiler::Value
     let addr = frame.mem.allocate(ret.tpe.resolve().size)
-    frame.locals(ret.name) = addr
+    if ret.i > 0 {
+        frame.registers(ret.i - 1) = addr
+    } else {
+        frame.locals(ret.name) = addr
+    }
     set(addr, ret.tpe, ptr)
 }
 
@@ -914,7 +937,11 @@ def ffi_call(args: &[compiler::Value], ret: compiler::Value, parameter_t: &Vecto
         let frame = get_stack_frame(state)
         rvalue = frame.mem.allocate(size)
         // TODO This will fail for function pointers
-        frame.locals(ret.name) = rvalue
+        if ret.i > 0 {
+            frame.registers(ret.i - 1) = rvalue
+        } else {
+            frame.locals(ret.name) = rvalue
+        }
     }
     
     ffi::ffi_call(ffi_cif, function, rvalue, avalues)
