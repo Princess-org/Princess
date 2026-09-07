@@ -14,6 +14,7 @@ import compiler
 import util
 import debug
 import errors
+import serialize
 
 export let const_module = toolchain::make_module(
     filename = null,
@@ -211,30 +212,37 @@ def walk_From(node: &parser::Node, state: &typechecking::State) {
     }
 }
 
-export def evaluate_parameter(node: &parser::Node, param: &parser::Node, tpe: typechecking::TypeId, state: &typechecking::State) -> &compiler::Value {
+export def evaluate_parameter(
+    node: &parser::Node, param: &parser::Node, tpe: typechecking::TypeId, 
+    context_fun: &compiler::Function, state: &typechecking::State) -> &compiler::Value {
+
     var value: &compiler::Value = null
     if param.value.param.value {
         // Set up temporary scope
+        // TODO all of this bookkeeping sucks, let's do that better
+        let prev_module = compiler_state.module
         let prev_scope = compiler_state.module.scope
         let temp_scope = scope::enter_scope(state.module.scope)
         
         let prev_queue = function_queue
         function_queue = map::make(typechecking::FunctionDef, QueueEntry)
 
+        compiler_state.module = state.module
         compiler_state.scope = temp_scope
         let previous_block = compiler_state.current_block
         let function = set_current_function()
         typechecking::walk(node, param.value.param.value, state)
         var result = compiler::walk_expression(param.value.param.value, compiler_state)
         vector::insert(function.block.insn, 0, function.allocas)
-        let gvalue = compiler::make_global_value(result.tpe, "default_param", null, compiler_state)
-        
+
+        state.function_stack.push(context_fun)
+        let gvalue = compiler::make_global_value(result.tpe, "default_param", null, compiler_state, is_function_scoped = true)
+        state.function_stack.pop()
+
         let estate = compile_and_eval()
         function_queue = prev_queue
 
         result = eval::get_value(result, estate)
-        
-        compiler_state.scope = prev_scope
         
         if result.kind != compiler::ValueKind::NULL {
             eval::set_value(gvalue, result, estate)
@@ -268,6 +276,9 @@ export def evaluate_parameter(node: &parser::Node, param: &parser::Node, tpe: ty
                 errors::errorn(param.value.param.value, "Can only assign null to a pointer or reference")
             }
         }
+
+        compiler_state.scope = prev_scope
+        compiler_state.module = prev_module
         compiler_state.function_stack.pop()
         compiler_state.current_block = previous_block
 
@@ -496,6 +507,8 @@ export def walk_Def(node: &parser::Node, function: &compiler::Function, state: &
             imported = imported
         ] !&compiler::Function
     }
+
+    function.is_constevaled = true
     
     node.value.def_.function = function
     function.has_yield = has_yield
@@ -960,7 +973,7 @@ export def compile_queued_functions {
             }
 
             // Compile function
-            function = compiler::create_function(entry.node, fdef, entry.node.value.def_.body, entry.node.inner_scope, null, compiler_state, params = entry.node.value.def_.params, set_compiled = false) 
+            function = compiler::create_function(entry.node, fdef, entry.node.value.def_.body, entry.node.inner_scope, null, compiler_state, params = entry.node.value.def_.params, is_consteval = true) 
             function.is_ctfe = true // This is set to true for functions that have been compiled during ctfe
             /*const_module.result.add_function(function.name, function)
 
@@ -983,6 +996,7 @@ export def compile_queued_functions {
 def compile_and_eval -> &eval::State {
     //compiler::load_fun_load_types_function()
     compile_queued_functions()
+    serialize::define_deserialized_types()
     return eval::eval(compiler_state)
 }
 

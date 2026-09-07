@@ -528,6 +528,7 @@ export type Function = struct {
     is_ctfe: bool
     is_compiled: bool
     is_typechecked: bool
+    is_constevaled: bool
     
     meta_hash: uint64
     metadata: &SMap(&Value)
@@ -979,10 +980,10 @@ export def make_named_local(tpe: typechecking::TypeId, addr: &Value, state: &Sta
     ] !Value
 }
 
-export def make_global_name(name: Str, state: &State) -> Str {
-    let current_function = state.current_function()
+export def make_global_name(name: Str, state: &State, is_function_scoped: bool = true) -> Str {
     var ret: Str
-    if current_function {
+    let current_function = state.current_function()
+    if is_function_scoped and current_function {
         ret = "__f::" + current_function.name + "::"
     } else {
         ret = state.module.module + "::"
@@ -993,7 +994,7 @@ export def make_global_name(name: Str, state: &State) -> Str {
 }
 
 export def make_global_value(tpe: typechecking::TypeId, name: Str, value: &Value, state: &State, private: bool = true, is_function_scoped: bool = true) -> Value {
-    name = make_global_name(name, state)
+    name = make_global_name(name, state, is_function_scoped)
 
     let global = [
         private = private,
@@ -1004,12 +1005,14 @@ export def make_global_value(tpe: typechecking::TypeId, name: Str, value: &Value
         is_function_scoped = is_function_scoped
     ] !&Global
 
-    let current_function = state.current_function()
-    if current_function {
-        if not current_function.constants { 
-            current_function.constants = map::make(Str, &Global)
+    if is_function_scoped {
+        let current_function = state.current_function()
+        if current_function {
+            if not current_function.constants { 
+                current_function.constants = map::make(Str, &Global)
+            }
+            current_function.constants(name) = global
         }
-        current_function.constants(name) = global
     }
 
     state.module.result.add_global(global.name, global)
@@ -1138,6 +1141,27 @@ def pop_scope(state: &State) {
             abort()
         }
         state.current_function.current_snapshot.pop()
+    }
+}
+
+export def add_return_and_args(function: &Function) {
+    let fdef = function.fdef
+    let tpe = fdef.to_type().resolve()
+
+    function.args = vector::make(typechecking::NamedParameter)
+    for var np in fdef.parameter_t {
+        let arg = [
+            name = np.name,
+            tpe = np.tpe.resolve(fdef.context.scope),
+            varargs = np.varargs
+        ] !typechecking::NamedParameter
+        function.args.push(arg)
+    }
+    if vector::length(tpe.return_t) > 1 {
+        function.ret = make_return_type(tpe, fdef.context)
+        function.multiple_returns = true
+    } else if vector::length(fdef.return_t) == 1 {
+        function.ret = vector::peek(tpe.return_t)
     }
 }
 
@@ -7303,6 +7327,22 @@ export def predeclare_function(fdef: typechecking::FunctionDef, module: &toolcha
             module = fdef.context,
             imported = imported
         ] !&Function
+
+        /*let tpe = fdef.to_type().resolve()
+        function = [ 
+            fdef = fdef,
+            module = fdef.context,
+            imported = imported,
+            args = tpe.parameter_t
+        ] !&Function
+        
+        if vector::length(fdef.return_t) > 1 {
+            function.ret = make_return_type(tpe, fdef.context)
+            function.multiple_returns = true
+        } else if vector::length(fdef.return_t) == 1 {
+            function.ret = vector::peek(tpe.return_t)
+        }*/
+
         //print("Predeclaring function ", fun_name, " in module ", module.module, " ", function !*, "\n")
     }
     predeclare_function(function, module.scope)
@@ -7612,7 +7652,7 @@ export def create_function(
     no_cleanup: bool = false,
     is_closure: bool = false,
     params: &Vector(&Node) = null,
-    set_compiled: bool = true
+    is_consteval: bool = false
 ) -> &Function {
     let function = state.module.result.functions.get_or_default(fdef.name, null)
     if not function { return null }
@@ -8047,7 +8087,7 @@ export def create_function(
         state.current_block = previous_block
         state.local_counter = previous_counter
         state.scope = previous_scope
-        if set_compiled {
+        if not is_consteval {
             function.is_compiled = true
         }
     }
@@ -8354,13 +8394,14 @@ export def create_builtin_functions {
     create_constructors()
 }
 
-export def create_dyn_dispatch(dyn_dispatch: &Vector(typechecking::FunctionDef), state: &State) {
+export def create_dyn_dispatch(dyn_dispatch: &Vector(weak &scope::Value), state: &State) {
     while dyn_dispatch.length > 0 {
-        let fdef = dyn_dispatch(0)
-        dyn_dispatch.remove(0)
-        let function = predeclare_function(fdef, state.module)
+        let value = dyn_dispatch(0)
+        dyn_dispatch.remove(0) // TODO This is not very efficient
+        let function = predeclare_function(value.fdef, state.module)
         function.module = state.module
-        generate_vtable_function(function, fdef, state)
+        generate_vtable_function(function, value.fdef, state)
+        value.function = function
         consteval::const_module.result.add_function(function.name, function)
     }
 }
@@ -8481,6 +8522,8 @@ def create_constructors {
 export def create_constructor(fdef: typechecking::FunctionDef) {
     let state = toolchain::types_state
     //if typechecking::is_polymorph(tpe) { return }
+
+    //print("Creating constructor: ", fdef.name, "\n")
             
     let function = predeclare_function(fdef, state.module)
     consteval::const_module.result.add_function(function.name, function)
@@ -8650,6 +8693,7 @@ def create_destructors {
 export def create_destructor(fdef: typechecking::FunctionDef) {
     let state = toolchain::types_state
     //if typechecking::is_polymorph(tpe) { return }
+    //print("Creating destructor for ", fdef.name, "\n")
             
     let function = predeclare_function(fdef, state.module)
     consteval::const_module.result.add_function(function.name, function)
@@ -9069,12 +9113,15 @@ def do_create_type(tpe: &typechecking::Type, svalue: &scope::Value, module: &too
     value.values(2) = [ kind = ValueKind::ZEROINITIALIZER, tpe = type_.field_types(2).tpe ] !Value
     value.values(3) = [ kind = ValueKind::ZEROINITIALIZER, tpe = type_.field_types(3).tpe ] !Value
 
+    //print("Creating type for ", debug::type_to_str(tpe, full_name = true), "\n")
+
     if is_ref(tpe) and typechecking::has_destructor(tpe) {
         let fp = type_.field_types(1).tpe
         // Add destructor reference
         let dtor = typechecking::get_builtin_destructor(tpe)
         let fdef = dtor.fdef.to_type()
         value.values(1) = [ kind = ValueKind::GLOBAL, tpe = pointer(fdef), name = dtor.fdef.name] !Value
+        //print("\tHas destructor: ", dtor.fdef.name, "\n")
     }
 
     if is_ref(tpe) and typechecking::has_copy_constructor(tpe) {
@@ -9083,6 +9130,7 @@ def do_create_type(tpe: &typechecking::Type, svalue: &scope::Value, module: &too
         let ctor = typechecking::get_constructor(tpe)
         let fdef = ctor.fdef.to_type()
         value.values(2) = [ kind = ValueKind::GLOBAL, tpe = pointer(fdef), name = ctor.fdef.name ] !Value
+        //print("\tHas copy constructor: ", ctor.fdef.name, "\n")
     }
 
     value.kind = ValueKind::STRUCT
@@ -9377,6 +9425,7 @@ export def generate_reflection_data_queued -> &io::ByteStream, &UniquedStrings, 
 
             var filtered = false
             var ftpe = tpe
+            if ftpe.id == typechecking::to_infer.id { filtered = true }
             if typechecking::is_box(ftpe) { ftpe = ftpe.tpe }
             if typechecking::is_function(ftpe) or typechecking::is_closure(ftpe) {
                 for var arg in ftpe.parameter_t {
