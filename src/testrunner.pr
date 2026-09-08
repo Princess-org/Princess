@@ -58,9 +58,9 @@ def assertion_handler(result: bool, msg: *char) {
 
 cstd::signal(cstd::SIGINT, *handle_sigint)
 
+var interrupted = false // FIXME This needs to be atomic & volatile but that's not supported right now
 def handle_sigint(signal: int) {
-    print("\x1B[?25h\n")
-    cstd::exit(0)
+    interrupted = true
 }
 
 var stdout_file: Str
@@ -162,6 +162,7 @@ if not no_compile {
             flush(std::stdout())
         }
         while proc.running {
+            if interrupted { break }
             proc.wait(100)
             if is_tty {
                 print("\x1B[1D")
@@ -170,6 +171,13 @@ if not no_compile {
             }
             index += 1
         }
+        if interrupted {
+            proc.terminate()
+            print("\n")
+            print("Interrupted by user\n")
+            break
+        }
+
         if is_tty {
             print("\x1B[1D")
             print(" \n")
@@ -188,40 +196,52 @@ if not no_compile {
 var total_tests = 0
 var failed_tests = 0
 
-for var i in 0..files.length {
-    let file = files(i)
-    if not file { continue }
-    let dll_file = file.substring(0, file.length - 3) + dll_ext
+if not interrupted {
+    for var i in 0..files.length {
+        let file = files(i)
+        if not file { continue }
+        let dll_file = file.substring(0, file.length - 3) + dll_ext
 
-    let tests_to_run = vector::make(String)
+        let tests_to_run = vector::make(String)
 
-    let lib = shared::load(dll_file, init = false) // We only want the symbol information
-    for var symbol in @lib.symbols {
-        if symbol.name.starts_with("__test::") and std::match(filter_str, symbol.name) {
-            tests_to_run.push(symbol.name)
+        let lib = shared::load(dll_file, init = false) // We only want the symbol information
+        for var symbol in @lib.symbols {
+            if symbol.name.starts_with("__test::") and std::match(filter_str, symbol.name) {
+                tests_to_run.push(symbol.name)
+            }
         }
-    }
-    shared::close(*lib, finalize = false)
+        shared::close(*lib, finalize = false)
 
-    for var i in 0..tests_to_run.length {
-        let test_function = tests_to_run(i)
-        let proc = *process::spawn(executable_file(), 
-            ["--runner" !String, ("--runner-file=" + dll_file + "") !String, ("--runner-test=" + test_function + "") !String] ![String],
-            stdout = std::stdout()
-        )
-        proc.wait()
+        for var i in 0..tests_to_run.length {
+            let test_function = tests_to_run(i)
+            let proc = *process::spawn(executable_file(), 
+                ["--runner" !String, ("--runner-file=" + dll_file + "") !String, ("--runner-test=" + test_function + "") !String] ![String],
+                stdout = std::stdout()
+            )
+            while proc.running {
+                if interrupted { break }
+                proc.wait(100)
+            }
+            if interrupted {
+                print("\n")
+                print("Interrupted by user\n")
+                proc.terminate()
+                break
+            }
 
-        total_tests += 1
-        if proc.exit_code {
-            failed_tests += 1
-            print(" \x1B[31m[ERROR]\x1B[0m (", proc.exit_code, ")\n")
-        } else {
-            print(" \x1B[32m[OK]\x1B[0m\n")
+            total_tests += 1
+            if proc.exit_code {
+                failed_tests += 1
+                print(" \x1B[31m[ERROR]\x1B[0m (", proc.exit_code, ")\n")
+            } else {
+                print(" \x1B[32m[OK]\x1B[0m\n")
+            }
+
+            proc.dispose()
         }
-
-        proc.dispose()
     }
 }
+print("\x1B[?25h")
 print("============================================\n")
 print("Finished. Succeeded: ", total_tests - failed_tests, "/", total_tests, "\n")
 if failed_tests > 0 {
