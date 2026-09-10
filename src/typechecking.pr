@@ -375,22 +375,26 @@ export def kind(typeref: &TypeRef) -> TypeKind {
     }
 }
 
-export def resolve_stub_types(tpe: &Type, rec: bool = true) {
-    if not tpe { return }
+export def resolve_stub_types(tpe: &Type, rec: bool = true) -> bool {
+    if not tpe { return false }
     if is_box(tpe) and rec {
-        resolve_stub_types(tpe.tpe)
+        return resolve_stub_types(tpe.tpe)
     } else if tpe.kind == TypeKind::STUB {
         assert tpe.defmodule != null
         // Lookup stub types on demand
         let id = scope::get_type_id(tpe.defmodule.scope, parser::make_identifier(tpe.name), force_compile = true)
-        if id == 0 { return }
+        if id == 0 { return true }
 
         assert id == tpe.id
+        return false
     } else if tpe.kind == TypeKind::TUPLE or tpe.kind == TypeKind::TUNION {
+        var was_stub = false
         for var r in tpe.return_t {
-            resolve_stub_types(r)
+            was_stub = was_stub or resolve_stub_types(r)
         }
+        return was_stub
     }
+    return false
 }
 
 export def resolve(typeref: &TypeRef, scpe: &Scope, error_on_fail: bool = true, force_compile: bool = false, resolve_stubs: bool = true) -> TypeId {
@@ -698,7 +702,7 @@ def generic_to_string(generic: &Pattern) -> Str {
     } else if generic.kind == TypeKind::STATIC_ARRAY {
         return "[" + generic.length + "; " + generic_to_string(generic.tpe) + "]"
     } else if generic.kind == TypeKind::TYPE_INSTANCE {
-        var res: StringBuffer = generic_to_string(generic.tpe) + "("
+        var res: &StringBuffer = generic_to_string(generic.tpe) + "("
         let len = generic.return_t.length()
         for var i in 0..len {
             res += generic_to_string(generic.return_t(i))
@@ -709,7 +713,7 @@ def generic_to_string(generic: &Pattern) -> Str {
         res += ')'
         return res
     } else if generic.kind == TypeKind::TUPLE {
-        var res: StringBuffer = "["
+        var res: &StringBuffer = "["
         let len = generic.return_t.length()
         for var i in 0..len {
             res += generic_to_string(generic.return_t(i))
@@ -720,7 +724,7 @@ def generic_to_string(generic: &Pattern) -> Str {
         res += ']'
         return res
     } else if generic.kind == TypeKind::FUNCTION or generic.kind == TypeKind::CLOSURE {
-        var res: StringBuffer = "def [" if generic.kind == TypeKind::CLOSURE else "["
+        var res: &StringBuffer = "def [" if generic.kind == TypeKind::CLOSURE else "["
         var len = generic.parameter_t.length()
         for var i in 0..len {
             res += generic_to_string(generic.parameter_t(i).tpe)
@@ -738,7 +742,7 @@ def generic_to_string(generic: &Pattern) -> Str {
         }
         return res
     } else if generic.kind == TypeKind::TUNION {
-        var res: StringBuffer = "("
+        var res: &StringBuffer = "("
         let len = generic.return_t.length()
         for var i in 0..len {
             res += generic_to_string(generic.return_t(i))
@@ -1433,7 +1437,7 @@ export def is_tunion(tpe: &Type) -> bool {
 }*/
 
 export def append_module(name: Str, module: Str) -> Str {
-    var res: StringBuffer = ""
+    var res: &StringBuffer = ""
     if module {
         res += module + "::"
     }
@@ -1488,6 +1492,7 @@ export type FunctionDef = struct {
     context: weak &toolchain::Module
     parameter_t: &Vector(NamedParameterPre)
     return_t: &Vector(&TypeRef)
+    is_polymorphic: Ternary
 }
 export def print_fdef(fdef: FunctionDef) {
     print(fdef.name + "(")
@@ -3300,7 +3305,7 @@ export def convert_type_score(a: &Type, b: &Type, scpe: &scope::Scope, impl: boo
     if impl and a.kind != TypeKind::TYPE {
         let parameter_t = vector::make(NamedParameter)
         parameter_t.push([ tpe = b.id ] !NamedParameter)
-        let conv = scope::find_implicit_function(scpe, parameter_t, a, not consteval::is_static)
+        let conv = scope::find_implicit_function(scpe.module.scope, parameter_t, a, not consteval::is_static)
         if conv {
             if consteval::is_static {
                 consteval::compile_function(conv, scpe, parameter_t)
@@ -3592,14 +3597,14 @@ def parameter_equals_single(a: &TypeRef, b: &TypeRef, env: &EqEnv) -> bool {
 }
 
 export def overload_score(
-    a: FunctionDef, param_b: &Vector(NamedParameter), scpe: &scope::Scope, 
+    a: *FunctionDef, param_b: &Vector(NamedParameter), scpe: &scope::Scope, 
     positional: bool, partial: bool = false, impl: bool = true) -> int {
     
     var score = overload_score(
         a.parameter_t, a.return_t, param_b, scpe, 
-        positional, partial, impl
+        positional, partial, impl, a
     )
-    if is_polymorph(a) and score >= 0 {
+    if is_polymorph(@a) and score >= 0 {
         // Penalty for overload resolution of polymorphs, so that specializations always win over polymorphs
         score += 1
     }
@@ -3616,21 +3621,50 @@ export def overload_score(
     param_b: &Vector(NamedParameter),
     scpe: &scope::Scope, 
     positional: bool, partial: bool = false,
-    impl: bool = true
+    impl: bool = true,
+    fdef: *FunctionDef = null
 ) -> int {
+
+    /*let param_a2 = vector::make(NamedParameterPre)
+    for var np in param_a {
+        param_a2.push(np.copy())
+    }
+    param_a = param_a2
+    let return_t2 = vector::make(&TypeRef)
+    for var rt in return_t {
+        return_t2.push(rt.copy())
+    }
+    return_t = return_t2*/
     
+    var is_polymorphic = Ternary::FALSE
+    if not fdef or (fdef and fdef.is_polymorphic == Ternary::TRUE) {
+        is_polymorphic = Ternary::TRUE
+    }
+
     let param_a2 = vector::make(NamedParameterPre)
     for var np in param_a {
+        if fdef and fdef.is_polymorphic == Ternary::UNDEFINED and 
+            is_polymorph(np.tpe, scpe) {
+            is_polymorphic = Ternary::TRUE
+        }
         param_a2.push(np.copy())
     }
     param_a = param_a2
 
     let return_t2 = vector::make(&TypeRef)
     for var rt in return_t {
+        if fdef and fdef.is_polymorphic == Ternary::UNDEFINED and
+            is_polymorph(rt, scpe) {
+            is_polymorphic = Ternary::TRUE
+        }
         return_t2.push(rt.copy())
     }
     return_t = return_t2
 
+    if fdef and fdef.is_polymorphic == Ternary::UNDEFINED {
+        fdef.is_polymorphic = is_polymorphic
+    }
+    
     if vector::length(param_a) > vector::length(param_b) and not partial {
         let a = param_a(vector::length(param_b))
         let not_default_param = a.value == null or a.tpe.kind == TypeKind::TYPE
@@ -3643,7 +3677,9 @@ export def overload_score(
         }
     }
 
-    replace_type_defs(param_a, return_t, param_b, scpe, false, impl = impl)
+    if is_polymorphic == Ternary::TRUE {
+        replace_type_defs(param_a, return_t, param_b, scpe, false, impl = impl)
+    }
 
     var sum = 0
     for var i in 0..vector::length(param_b) {
@@ -6437,7 +6473,7 @@ def walk_YieldFrom(node: &parser::Node, state: &State) {
 
 export def append_arguments(arguments: &Vector(NamedParameter)) -> Str {
     let len = vector::length(arguments)
-    var res: StringBuffer = ""
+    var res: &StringBuffer = ""
     if len > 0 {
         res = "Arguments were of type "
     } else {
@@ -6713,8 +6749,8 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
                     errors::errorn(left, "Function overload not found")
                     return false
                 }
-                if overload_score(function.fdef, arguments, state.scope, false) < 0 {
-                    var msg: StringBuffer = "Incorrect arguments to overloaded function. "
+                if overload_score(*function.fdef, arguments, state.scope, false) < 0 {
+                    var msg: &StringBuffer = "Incorrect arguments to overloaded function. "
                     msg += append_arguments(arguments)
                     errors::errorn(left, msg)
                     return false
@@ -6748,7 +6784,7 @@ export def walk_Call(node: &parser::Node, dry_run: bool, state: &State) -> bool 
                     //if not np.tpe { return false }
                 }*/
 
-                var msg: StringBuffer = "Function `" + parser::identifier_to_str(left) + "` not found. "
+                var msg: &StringBuffer = "Function `" + parser::identifier_to_str(left) + "` not found. "
                 msg += append_arguments(arguments)
                 errors::errorn(left, msg)
             }
