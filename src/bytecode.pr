@@ -28,7 +28,7 @@ export type Opcode = enum: uint8 {
     AND; OR; XOR
     AND64; OR64; XOR64
 
-    ICMP_EQ; ICMP_NE; ICMP_UGT; ICMP_UGE; ICMP_ULT
+    ICMP_EQ; ICMP_NE; ICMP_UGT; ICMP_UGE; ICMP_ULT // Size argument
     ICMP_ULE; ICMP_SGT; ICMP_SGE; ICMP_SLT; ICMP_SLE
 
     FCMP_UEQ; FCMP_UGT; FCMP_UGE; FCMP_ULT; FCMP_ULE; FCMP_UNE
@@ -45,7 +45,7 @@ export type Opcode = enum: uint8 {
     DUP64; DUP
     SWAP; ROT; ROLL; PICK
 
-    GOTO; BR; CALLG; CALL; RET
+    GOTO; BR; CALLG; CALL; RET; RETVOID
 
     LOAD; LOAD64
     STORE; STORE64
@@ -135,7 +135,9 @@ def create_cfg(block: &compiler::Block) -> Cfg {
             label_ = label_counter,
             cblock = block, 
             pred = vector::make(type weak &Block),
-            succ = vector::make(type weak &Block)
+            succ = vector::make(type weak &Block),
+            insn = vector::make(type Instruction),
+            stack = vector::make(type StackValue)
         ] !&Block
         blocks(block.label_) = new_block
         block = block.next
@@ -221,27 +223,37 @@ def create_cfg(block: &compiler::Block) -> Cfg {
 }
 
 def get_label(cfg: *Cfg, lbl: Str) -> int {
-    for var block in cfg.blocks.values() {
-        if block.cblock.label_.name == lbl {
+    for var e in cfg.blocks {
+        let block = e.value
+        if block.cblock.label_ == lbl {
             return block.label_
         }
     }
     assert
 }
 
+def expect_stack_value_top(stack: &Vector(StackValue), index: uint64, tpe: typechecking::TypeId) {
+    let size = round_up(tpe.resolve().size, 8)
+    let num_parts = size / 8
+    for var i in 0..num_parts {
+        stack.push([ variable = index, sub_index = i ] !StackValue)
+    }
+}
+
 def expect_stack_value(stack: &Vector(StackValue), index: uint64, tpe: typechecking::TypeId) {
     let size = round_up(tpe.resolve().size, 8)
     let num_parts = size / 8
     for var i in 0..num_parts {
-        stack.push([ variable = index - 1, sub_index = i ] !StackValue)
+        stack.insert(0, [ variable = index, sub_index = num_parts - 1 - i ] !StackValue)
     }
 }
+
 
 def expect_value(cfg: *Cfg, block: &Block, loc: compiler::Value) {
     if loc.kind == compiler::ValueKind::LOCAL {
         if loc.i > 0 {
             // Actual local variable
-            expect_stack_value(block.stack, loc.i, loc.tpe)
+            expect_stack_value(block.stack, loc.i - 1, loc.tpe)
         } else {
             block.insn.push([ 
                 op = Opcode::ADDROFLOCAL, 
@@ -256,91 +268,133 @@ def expect_value(cfg: *Cfg, block: &Block, loc: compiler::Value) {
     }
 }
 
-def equalize_stacks(block: &Block, source: &Vector(StackValue), target: &Vector(StackValue)) {
+def print_stack(stack: &Vector(StackValue)) {
+    for var v in stack {
+        print(v.variable, ":", v.sub_index, " ")
+    }
+}
+
+def equalize_stacks(
+    block: &Block,
+    source: &Vector(StackValue),
+    target: &Vector(StackValue)
+) {
     let stack = source.copy()
     let program = vector::make(Instruction)
 
-    var target_index = target.length - 1
-    while target_index >= 0 {
+    print("Equalizing stacks: ")
+    print_stack(source)
+    print("-> ")
+    print_stack(target)
+    print("\n")
+
+    var target_index: int64 = 0
+
+    while target_index < target.length {
         let wanted = target(target_index)
-        let fixed = stack.length - (target.length - target_index)
+        var pos: int64 = -1
 
-        assert fixed >= 0
-
-        if stack(fixed) == wanted {
-            continue
-        }
-
-        var pos = -1
-        for var i in fixed..stack.length {
+        for var i in target_index..stack.length {
             if stack(i) == wanted {
                 pos = i
                 break
             }
         }
 
-        assert pos != -1
+        if pos == -1 {
+            for var i in 0..target_index {
+                if stack(i) == wanted {
+                    pos = i
+                    break
+                }
+            }
 
-        var n = stack.length - 1 - pos
-        if n == 1 {
-            program.push([ op = Opcode::SWAP ] !Instruction)
-            let top = stack.length - 1
-            let temp = stack(top)
-            stack(top) = stack(top - 1)
-            stack(top - 1) = temp
-        } else if n == 2 {
-            program.push([ op = Opcode::ROT ] !Instruction);
-            let top = stack.length - 1
+            assert pos != -1
 
-            // [... A B C] -> [... C A B]
-            let a = stack(top - 2)
-            let b = stack(top - 1)
-            let c = stack(top)
+            let n = stack.length - 1 - pos
+            program.push([
+                op = Opcode::PICK,
+                arg1 = n
+            ] !Instruction)
+            stack.push(stack(pos))
+            pos = stack.length - 1
+        }
 
-            stack(top - 2) = c
-            stack(top - 1) = a
-            stack(top) = b
-        } else {
-            program.push([ op = Opcode::ROLL, arg1 = n ] !Instruction);
+        while pos > target_index {
+            let previous = pos - 1
+            program.push([
+                op = Opcode::SWAP,
+                arg1 = previous
+            ] !Instruction)
+
+            let temp = stack(pos)
+            stack(pos) = stack(previous)
+            stack(previous) = temp
+            pos = previous
+        }
+
+        target_index += 1
+    }
+
+    while stack.length > target.length {
+        let pos = target.length
+        let n = stack.length - 1 - pos
+
+        if n != 0 {
+            program.push([
+                op = Opcode::ROLL,
+                arg1 = n
+            ] !Instruction)
 
             let value = stack(pos)
             stack.remove(pos)
             stack.push(value)
         }
-        target_index -= 1
+
+        program.push([
+            op = Opcode::POP
+        ] !Instruction)
+
+        stack.pop()
     }
 
-    if stack.length > target.length {
-        if stack.length - target.length == 1 {
-            program.push([ op = Opcode::POP ] !Instruction)
-            stack.pop()
-        } else {
-            program.push([ op = Opcode::POP, arg1 = stack.length - target.length ] !Instruction)
-            while stack.length > target.length {
-                stack.pop()
-            }
-        }
+    assert stack.length == target.length
+
+    for var i in 0..target.length {
+        assert stack(i) == target(i)
     }
 
-    // Add the operations in opposite order
+    for var v in program {
+        print("\t", v.op, " ", v.arg1, " ", v.arg2, "\n")
+    }
+
     for var i in 0..program.length {
-        block.insn.push(program(program.length - 1 - i))
+        let value = program(program.length - 1 - i)
+        block.insn.push(value)
     }
 }
 
 def push_stack_value(block: &Block, loc: compiler::Value) {
     assert loc.kind == compiler::ValueKind::LOCAL
     var expected_stack = block.stack.copy()
+    var used = false
     var new_stack = vector::make(StackValue)
     for var i in 0..block.stack.length {
         let v = block.stack(i)
-        if v.variable != loc.i {
+        if v.variable != loc.i - 1 {
             new_stack.push(v)
-        }
+        } else { used = true }
     }
+    block.stack = new_stack.copy()
+    if used {
+        expect_stack_value_top(block.stack, loc.i - 1, loc.tpe)
+    } else {
+        // if the value is unused, we need to pop it
+        // TODO Actually remove useless instructions
+        block.insn.push([ op = Opcode::POP ] !Instruction)   
+    }
+    equalize_stacks(block, block.stack, expected_stack)
     block.stack = new_stack
-    expect_stack_value(block.stack, loc.i, loc.tpe)
-    equalize_stacks(block, expected_stack, block.stack)
 }
 
 def get_address(tpe: typechecking::TypeId, index: &[compiler::Value], 
@@ -556,10 +610,11 @@ def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Bl
             store_value(cfg, block, value)
             expect_value(cfg, block, loc)
         case compiler::InsnKind::LOAD
+            let value = insn.value.load.value
             let loc = insn.value.load.loc
             expect_value(cfg, block, loc)
             load_value(cfg, block, loc.tpe)
-            push_stack_value(block, insn.value.load.ret)
+            push_stack_value(block, value)
         case compiler::InsnKind::GETELEMENTPTR
             getelementptr(cfg, block, insn)
         case compiler::InsnKind::INSERTVALUE
@@ -567,12 +622,35 @@ def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Bl
         case compiler::InsnKind::EXTRACTVALUE
             extract_value(cfg, block, insn)
         case compiler::InsnKind::ICMP
+            expect_value(cfg, block, insn.value.icmp.left)
+            expect_value(cfg, block, insn.value.icmp.right)
+            var op: Opcode
+            switch insn.value.icmp.op {
+                case compiler::CompareInt::eq;  op = Opcode::ICMP_EQ
+                case compiler::CompareInt::ne;  op = Opcode::ICMP_NE
+                case compiler::CompareInt::ugt; op = Opcode::ICMP_UGT
+                case compiler::CompareInt::uge; op = Opcode::ICMP_UGE
+                case compiler::CompareInt::ult; op = Opcode::ICMP_ULT
+                case compiler::CompareInt::ule; op = Opcode::ICMP_ULE
+                case compiler::CompareInt::sgt; op = Opcode::ICMP_SGT
+                case compiler::CompareInt::sge; op = Opcode::ICMP_SGE
+                case compiler::CompareInt::slt; op = Opcode::ICMP_SLT
+                case compiler::CompareInt::sle; op = Opcode::ICMP_SLE
+            }
+            let sz = insn.value.icmp.left.tpe.resolve().size
+            block.insn.push([ op = op, arg1 = sz ] !Instruction)
+            push_stack_value(block, insn.value.icmp.ret)
         case compiler::InsnKind::BR
-            expect_value(cfg, block, insn.value.br.condition)
+            expect_value(cfg, block, insn.value.br.cond)
             block.insn.push([ 
                 op = Opcode::BR, 
                 arg1 = get_label(cfg, insn.value.br.if_true.name),
                 arg2 = get_label(cfg, insn.value.br.if_false.name)
+            ] !Instruction)
+        case compiler::InsnKind::BR_UNC
+            block.insn.push([ 
+                op = Opcode::GOTO, 
+                arg1 = get_label(cfg, insn.value.br_unc.label_.name)
             ] !Instruction)
         case compiler::InsnKind::CALL
             if insn.value.call.name.kind == compiler::ValueKind::LOCAL {
@@ -592,10 +670,47 @@ def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Bl
             if insn.value.call.ret.tpe != 0 {
                 push_stack_value(block, insn.value.call.ret)
             }
-        }
+        case compiler::InsnKind::ADD, compiler::InsnKind::SUB, compiler::InsnKind::MUL, 
+            compiler::InsnKind::SDIV, compiler::InsnKind::UDIV, compiler::InsnKind::SREM, 
+            compiler::InsnKind::UREM
+            
+            expect_value(cfg, block, insn.value.arith.left)
+            expect_value(cfg, block, insn.value.arith.right)
+
+            let sz = insn.value.arith.ret.tpe.resolve().size
+            var op: Opcode
+            switch insn.kind {
+                case compiler::InsnKind::ADD;  op = (Opcode::ADD  if sz > 8  else Opcode::ADD64)
+                case compiler::InsnKind::SUB;  op = (Opcode::SUB  if sz > 8  else Opcode::SUB64)
+                case compiler::InsnKind::MUL;  op = (Opcode::MUL  if sz > 8  else Opcode::MUL64)
+                case compiler::InsnKind::SDIV; op = (Opcode::SDIV if sz != 8 else Opcode::SDIV64)
+                case compiler::InsnKind::UDIV; op = (Opcode::UDIV if sz != 8 else Opcode::UDIV64)
+                case compiler::InsnKind::SREM; op = (Opcode::SREM if sz != 8 else Opcode::SREM64)
+                case compiler::InsnKind::UREM; op = (Opcode::UREM if sz != 8 else Opcode::UREM64)
+            }
+            block.insn.push([ op = op, arg1 = sz ] !Instruction)
+            push_stack_value(block, insn.value.arith.ret)
         case compiler::InsnKind::PTRTOINT
-            expect_value(cfg, block, insn.value.ptrtoint.value)
-            push_stack_value(block, insn.value.ptrtoint.ret)
+            expect_value(cfg, block, insn.value.convert.value)
+            push_stack_value(block, insn.value.convert.ret)
+        case compiler::InsnKind::RET
+            if insn.value.ret.value.tpe != 0 {
+                expect_value(cfg, block, insn.value.ret.value)
+                block.insn.push([ op = Opcode::RET ] !Instruction)
+            } else {
+                block.insn.push([ op = Opcode::RETVOID ] !Instruction)
+            }
+        case; assert
+        }
+    }
+
+    for var pred in block.pred {
+        queue.add(pred)
+    }
+
+    // Print the generated instructions
+    for var insn in block.insn {
+        print("\t", insn.op, " ", insn.arg1, " ", insn.arg2, "\n")
     }
 }
 
@@ -619,7 +734,7 @@ export def to_bytecode(block: &compiler::Block) -> &Vector(uint8) {
                 }
             }
             if all_succ_visited {
-                to_bytecode(*cfg,block, queue, visited)
+                to_bytecode(*cfg, block, queue, visited)
             }
         }
     }
