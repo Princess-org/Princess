@@ -20,7 +20,7 @@ Building the bootstrap compiler is not very straight forward but will eventually
 
 There is a native Windows version, but for working on the compiler it is recommended to use 
 WSL in order to get a Linux environment. This is because the tests currently don't run on Windows since
-it would take too log to build them.
+it would take too long to build them.
 
 You need Python >= 3.9 in order to run the build scripts. Install dependencies with:
 ```
