@@ -112,12 +112,14 @@ export def serialize(mem: *, tpe: &typechecking::Type, value: compiler::Value) {
 }
 
 type State = struct {
+    module: &toolchain::Module
     program: &bytecode::Program
     code: *uint8
     stack: *uint8
     locals: *uint8
     sp: int
     ip: uint64
+    retval: *uint8
 }
 
 // TODO This should be a local function but it doesn't seem to work right now
@@ -128,16 +130,18 @@ def push_stack(state: *State, value: int64) {
 }
 
 def pop_stack(state: *State) -> int64 {
-    assert state.sp > 0, "Stack underflow!!!"
-    state.sp -= 1
-    return @((state.stack ++ (state.sp * 8)) !*int64)
+    return pop_stack(state, int64)
 }
 
-export def eval(program: &bytecode::Program) {
-    print("Allocation sizes: stack = ", program.max_stack_size * 8, 
-        " bytes, locals = ", program.locals_size, " bytes\n")
+def pop_stack(state: *State, type T) -> T {
+    assert state.sp > 0, "Stack underflow!!!"
+    state.sp -= 1
+    return @((state.stack ++ (state.sp * 8)) !*T)
+}
 
+def prepare_state(program: &bytecode::Program, module: &toolchain::Module) -> State {
     let state = [
+        module = module,
         program = program,
         code = program.code.get(0),
         stack = allocate(program.max_stack_size * 8) !*uint8,
@@ -146,6 +150,29 @@ export def eval(program: &bytecode::Program) {
         ip = program.start_offset
     ] !State
 
+    if program.retvalue_size > 0 {
+        state.retval = allocate(program.retvalue_size) !*uint8
+    }
+
+    return state
+}
+
+def cleanup_state(state: *State) {
+    free(state.stack)
+    free(state.locals)
+    free(state.retval)
+}
+
+export def eval(program: &bytecode::Program, module: &toolchain::Module) {
+    let state = prepare_state(program, module)
+    eval(program, *state)
+    cleanup_state(*state)
+}
+
+def eval(program: &bytecode::Program, state: *State) {
+    print("Allocation sizes: stack = ", program.max_stack_size * 8, 
+        " bytes, locals = ", program.locals_size, " bytes\n")
+
     loop {
         assert state.sp <= state.program.max_stack_size, "Stack overflow!!!"
         assert state.sp >= 0, "Stack underflow!!!"
@@ -153,15 +180,16 @@ export def eval(program: &bytecode::Program) {
         if state.ip >= program.code.length { 
             assert false, "Execution fell off a cliff" 
         }
-
         let op = @(state.code ++ state.ip) !bytecode::Opcode
+        //print("OP:", op, " sp: ", state.sp, ", ip: ", state.ip, "\n")
+
         state.ip += 1
         switch op {
         case Opcode::NOP // nothing
         case Opcode::PICK
             let index = @((state.code ++ state.ip) !*uint16)
             let value = @((state.stack ++ ((state.sp - 1 - index) * 8)) !*int64)
-            push_stack(*state, value)
+            push_stack(state, value)
             state.ip += 2
         case Opcode::SWAP
             let index1 = @((state.code ++ state.ip) !*uint16)
@@ -188,79 +216,97 @@ export def eval(program: &bytecode::Program) {
         case Opcode::POP64
             state.sp -= 1
         case Opcode::STORE
-            let addr = pop_stack(*state) !*
+            let addr = pop_stack(state) !*
             let size = round_up(@((state.code ++ state.ip) !*uint16), 8)
             cstd::memcpy(addr, (state.stack ++ (state.sp * 8 - size)), size)
             state.sp -= size / 8
             state.ip += 2
         case Opcode::STORE64
-            let addr = pop_stack(*state) !*int64
-            let value = pop_stack(*state)
+            let addr = pop_stack(state) !*int64
+            let value = pop_stack(state)
             @addr = value
+        case Opcode::PUSH32
+            let value = @((state.code ++ state.ip) !*int32)
+            push_stack(state, value)
+            state.ip += 4
         case Opcode::PUSH64
             let value = @((state.code ++ state.ip) !*int64)
-            push_stack(*state, value)
+            push_stack(state, value)
             state.ip += 8
+        case Opcode::PUSH
+            let size = @((state.code ++ state.ip) !*uint16)
+            let roundup_size = round_up(size, 8)
+            cstd::memset((state.stack ++ (state.sp * 8)), 0, roundup_size)
+            cstd::memcpy((state.stack ++ (state.sp * 8)), (state.code ++ (state.ip + 2)), size)
+            state.sp += roundup_size / 8
+            state.ip += 2 + size
         case Opcode::PUSHZ
             let size = round_up(@((state.code ++ state.ip) !*uint16), 8)
-            memset((state.stack ++ (state.sp * 8)), 0, size)
+            cstd::memset((state.stack ++ (state.sp * 8)), 0, size)
             state.sp += size / 8
             state.ip += 2
         case Opcode::STOREIZ
             let size = @((state.code ++ state.ip) !*uint16)
-            let addr = pop_stack(*state) !*uint8
+            let addr = pop_stack(state) !*uint8
             cstd::memset(addr, 0, size)
             state.ip += 2
         case Opcode::STOREI32
             let value = @((state.code ++ state.ip) !*int32)
-            let addr = pop_stack(*state) !*int32
+            let addr = pop_stack(state) !*int32
             @addr = value
             state.ip += 4
         case Opcode::STOREI64
             let value = @((state.code ++ state.ip) !*int64)
-            let addr = pop_stack(*state) !*int64
+            let addr = pop_stack(state) !*int64
             @addr = value
             state.ip += 8
         case Opcode::LOAD
-            let addr = pop_stack(*state) !*
+            let addr = pop_stack(state) !*
             let size = round_up(@((state.code ++ state.ip) !*uint16), 8)
             cstd::memcpy((state.stack ++ (state.sp * 8)), addr, size)
             state.sp += size / 8
             state.ip += 2
         case Opcode::LOAD64
-            let addr = pop_stack(*state) !*int64
+            let addr = pop_stack(state) !*int64
             let value = @addr
-            push_stack(*state, value)
+            push_stack(state, value)
         case Opcode::ADDROFLOCAL
             let index = @((state.code ++ state.ip) !*uint32)
-            push_stack(*state, (state.locals ++ index) !int64)
+            push_stack(state, (state.locals ++ index) !int64)
             state.ip += 4
         case Opcode::ADDROFSTACK
             let index = @((state.code ++ state.ip) !*uint16)
-            push_stack(*state, (state.stack ++ ((state.sp - 1 - index) * 8)) !int64)
+            push_stack(state, (state.stack ++ ((state.sp - 1 - index) * 8)) !int64)
             state.ip += 2
         case Opcode::ADDROFGLOBAL
             let global_index = @((state.code ++ state.ip) !*uint16)
             let global_name = state.program.globals(global_index)
-            let global_addr = get_global_address(*state, global_name)
-            push_stack(*state, global_addr !int64)
+            let global_addr = get_global_address(state, global_name)
+            push_stack(state, global_addr !int64)
             state.ip += 2
         case Opcode::ADD64
-            let value1 = pop_stack(*state)
-            let value2 = pop_stack(*state)
-            push_stack(*state, value1 + value2)
-        case Opcode::ICMP_EQ
+            let value1 = pop_stack(state)
+            let value2 = pop_stack(state)
+            push_stack(state, value1 + value2)
+        case Opcode::SUB64
+            let value1 = pop_stack(state)
+            let value2 = pop_stack(state)
+            push_stack(state, value2 - value1)
+        case Opcode::SEXT32
+            let value = pop_stack(state, int32)
+            push_stack(state, value)
+        case Opcode::ICMP_EQ // TODO: Compact
             let sz = @((state.code ++ state.ip) !*uint16)
             state.ip += 2
 
             if sz == 8 {
-                let value1 = pop_stack(*state)
-                let value2 = pop_stack(*state)
-                push_stack(*state, (1 if value1 == value2 else 0))
+                let value2 = pop_stack(state)
+                let value1 = pop_stack(state)
+                push_stack(state, (1 if value1 == value2 else 0))
             } else if sz == 4 {
-                let value1 = pop_stack(*state) !*int32
-                let value2 = pop_stack(*state) !*int32
-                push_stack(*state, (1 if value1 == value2 else 0))
+                let value2 = pop_stack(state, int32)
+                let value1 = pop_stack(state, int32)
+                push_stack(state, (1 if value1 == value2 else 0))
             } else {
                 error(sz, "\n")
                 assert
@@ -270,13 +316,29 @@ export def eval(program: &bytecode::Program) {
             state.ip += 2
 
             if sz == 8 {
-                let value1 = pop_stack(*state)
-                let value2 = pop_stack(*state)
-                push_stack(*state, (1 if value1 <= value2 else 0))
+                let value2 = pop_stack(state)
+                let value1 = pop_stack(state)
+                push_stack(state, (1 if value1 <= value2 else 0))
             } else if sz == 4 {
-                let value1 = pop_stack(*state) !*int32
-                let value2 = pop_stack(*state) !*int32
-                push_stack(*state, (1 if value1 <= value2 else 0))
+                let value2 = pop_stack(state, int32)
+                let value1 = pop_stack(state, int32)
+                push_stack(state, (1 if value1 <= value2 else 0))
+            } else {
+                error(sz, "\n")
+                assert
+            }
+        case Opcode::ICMP_SLT
+            let sz = @((state.code ++ state.ip) !*uint16)
+            state.ip += 2
+
+            if sz == 8 {
+                let value2 = pop_stack(state)
+                let value1 = pop_stack(state)
+                push_stack(state, (1 if value1 < value2 else 0))
+            } else if sz == 4 {
+                let value2 = pop_stack(state, int32)
+                let value1 = pop_stack(state, int32)
+                push_stack(state, (1 if value1 < value2 else 0))
             } else {
                 error(sz, "\n")
                 assert
@@ -287,12 +349,12 @@ export def eval(program: &bytecode::Program) {
             state.ip += 4
 
             let global_name = state.program.globals(global_index)
-            call_global(*state, nargs, global_name)
+            call_global(state, nargs, global_name)
         case Opcode::BR
             let label_if_false = @((state.code ++ state.ip) !*uint32)
             let label_if_true = @((state.code ++ (state.ip + 4)) !*uint32)
 
-            if pop_stack(*state) == 0 {
+            if pop_stack(state) == 0 {
                 state.ip = label_if_true
             } else {
                 state.ip = label_if_false
@@ -300,16 +362,21 @@ export def eval(program: &bytecode::Program) {
         case Opcode::GOTO
             let label_ = @((state.code ++ state.ip) !*uint32)
             state.ip = label_
+        case Opcode::RET
+            let size = program.retvalue_size
+            cstd::memcpy(state.retval, (state.stack ++ (state.sp * 8 - size)), size)
+            return
+        case Opcode::RETVOID
+            return
         case
             error(op, "\n")
             assert false, "Unknown opcode"
         }
-        print("OP:", op, " sp: ", state.sp, ", ip: ", state.ip, "\n")
-        print("stack: ")
-        for var i in 0..state.sp {
-            print(@((state.stack ++ (i * 8)) !*int64), " ")
-        }
-        print("\n")
+        //print("stack: ")
+        //for var i in 0..state.sp {
+        //    print(@((state.stack ++ (i * 8)) !*int64), " ")
+        //}
+        //print("\n")
     }
 }
 
@@ -360,19 +427,23 @@ def type_to_ffi(tpe: &typechecking::Type, varargs: bool = false) -> ffi::s__ffi_
 }
 
 def get_global_address(state: *State, global_name: Str) -> * {
-    let cstate = consteval::compiler_state
+    let cstate = state.module.compiler_state
     var mem = cstate.globals.get_or_default(global_name, null)
     if mem { return mem }
 
-    var function = cstate.module.result.functions.get_or_default(global_name, null)
+    var function = state.module.result.functions.get_or_default(global_name, null)
     if function {
         assert false, "Getting address of functions is not implemented yet"
+    }
+
+    var global = state.module.result.globals.get_or_default(global_name, null)
+    if not global {
+        global = consteval::const_module.result.globals.get_or_default(global_name, null)
     }
 
     let ffi_global = preload::symbols.get_or_default(global_name, null)
     if ffi_global { return ffi_global.variable }
     
-    let global = cstate.module.result.globals.get_or_default(global_name, null)
     if not global {
         error("Global '", global_name, "' not found\n")
         assert
@@ -386,6 +457,7 @@ def get_global_address(state: *State, global_name: Str) -> * {
 }
 
 def call_global(state: *State, nargs: uint16, global_name: Str) {
+    print("Calling global function: ", global_name, " with ", nargs, " arguments\n")
     let function = consteval::const_module.result.functions.get_or_default(global_name, null)
     if function == null {
         error("Function '", global_name, "' not found\n")
@@ -400,10 +472,16 @@ def call_global(state: *State, nargs: uint16, global_name: Str) {
         var ffi_ret_tpe: *ffi::s__ffi_type
 
         if function.varargs or not ffi_function.initialized {
-            ffi_args = allocate((size_of type *ffi::s__ffi_type) * function.args.length) !**ffi::s__ffi_type
+            ffi_args = allocate((size_of type *ffi::s__ffi_type) * nargs) !**ffi::s__ffi_type
             
-            for var i in 0..function.args.length {
-                var tpe = function.args(i).tpe
+            for var i in 0..nargs {
+                var tpe: typechecking::TypeId
+                if i >= function.args.length {
+                    tpe = function.args(function.args.length - 1).tpe
+                } else {
+                    tpe = function.args(i).tpe
+                }
+
                 if function.varargs { tpe = promote(tpe) }
                 let ffi_tpe = allocate(ffi::s__ffi_type)
                 @ffi_tpe = type_to_ffi(tpe)
@@ -431,9 +509,10 @@ def call_global(state: *State, nargs: uint16, global_name: Str) {
         }
 
         let avalues = allocate((size_of type *) * nargs) !**
-        for var i in 0..nargs {
+        for var j in 0..nargs {
+            var i = nargs - 1 - j
             var tpe: typechecking::TypeId
-            if i > function.args.length {
+            if i >= function.args.length {
                 tpe = function.args(function.args.length - 1).tpe
             } else {
                 tpe = function.args(i).tpe
@@ -441,7 +520,7 @@ def call_global(state: *State, nargs: uint16, global_name: Str) {
             if function.varargs { tpe = promote(tpe) }
 
             state.sp -= bytecode::round_up(tpe.resolve().size, 8) / 8
-            let mem = (state.stack ++ state.sp) !*
+            let mem = (state.stack ++ (state.sp * 8)) !*
             @(avalues ++ i) = mem
         }
 
@@ -463,8 +542,8 @@ def call_global(state: *State, nargs: uint16, global_name: Str) {
                 push_stack(state, @(rvalue !*int64))
             } else {
                 let size = round_up(ret_tpe.size, 8)
-                std::memcpy(state.stack ++ state.sp, rvalue, ret_tpe.size)
-                state.sp += size
+                std::memcpy(state.stack ++ (state.sp * 8), rvalue, ret_tpe.size)
+                state.sp += size / 8
             }    
         }
 
@@ -479,6 +558,38 @@ def call_global(state: *State, nargs: uint16, global_name: Str) {
         free(avalues)
         free(rvalue)
     } else {
-        assert false, "Not implemented"
+        if not function.bytecode {
+            function.bytecode = bytecode::to_bytecode(function)
+        }
+        let ret_tpe = function.ret.resolve()
+        let fun_state = prepare_state(function.bytecode, function.module)
+       
+        for var j in 0..nargs {
+            var i = nargs - 1 - j
+            var tpe: typechecking::TypeId
+            if i >= function.args.length {
+                tpe = function.args(function.args.length - 1).tpe
+            } else {
+                tpe = function.args(i).tpe
+            }
+
+            let sz = bytecode::round_up(tpe.resolve().size, 8) / 8
+            state.sp -= sz
+            let mem = state.stack ++ (state.sp * 8)
+            cstd::memcpy(fun_state.stack ++ (fun_state.sp * 8), mem, sz * 8)
+            fun_state.sp += sz
+        }
+
+        eval(function.bytecode, *fun_state)
+
+        if ret_tpe {
+            let size = round_up(ret_tpe.size, 8)
+            std::memcpy(state.stack ++ (state.sp * 8), fun_state.retval, ret_tpe.size)
+            state.sp += size / 8
+        }
+
+        cleanup_state(*fun_state)
+
+        assert function.bytecode != null
     }
 }

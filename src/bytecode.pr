@@ -83,10 +83,10 @@ type Variable = struct {
 }
 
 type StackValue = struct {
-    variable: uint64
+    variable: int
     // When the variable is bigger than 64 bits, this is
     // the index of the part of the variable
-    sub_index: uint64
+    sub_index: int
 }
 def hash(value: StackValue) -> uint64 {
     return combine_hashes(value.variable !uint64, value.sub_index !uint64)
@@ -99,6 +99,7 @@ def != (a: StackValue, b: StackValue) -> bool {
 }
 
 type Block = struct {
+    index: int
     label_: int
     cblock: &compiler::Block
     pred_stack: &Vector(StackValue)
@@ -118,6 +119,8 @@ def push_insn(block: &Block, insn: Instruction) {
 }
 
 type Cfg = struct {
+    parameter_count: uint64
+    parameters: &SMap(int)
     globals: &SMap(uint64)
     last_global: uint64
     variables: &SMap(Variable)
@@ -136,6 +139,7 @@ export type Program = struct {
     locals_size: uint64
     code: &Vector(uint8)
     locals: &Vector(Variable)
+    retvalue_size: uint64
 }
 
 def add_global(cfg: *Cfg, name: Str) -> uint64 {
@@ -164,8 +168,10 @@ def create_cfg(block: &compiler::Block) -> Cfg {
     var local_offset = 0
 
     var first_block: &Block
+    var index = 0
     while block {
         var new_block = [
+            index = index,
             label_ = blocks_by_index.length !int32,
             cblock = block, 
             pred = vector::make(type weak &Block),
@@ -196,6 +202,7 @@ def create_cfg(block: &compiler::Block) -> Cfg {
         if not first_block {
             first_block = new_block
         }
+        index += 1
     }
 
     var visisted = set::make(type &Block)
@@ -211,7 +218,7 @@ def create_cfg(block: &compiler::Block) -> Cfg {
     add_next(first_block)
     while queue.length > 0 {
         var current = queue.pop()
-        //print("Processing block: " + current.cblock.label_, "\n")
+        print("Processing block: " + current.cblock.label_, "\n")
         let cblock = current.cblock
         let last_insn = cblock.insn(cblock.insn.length - 1)
         if last_insn.kind == compiler::InsnKind::BR_UNC {
@@ -272,7 +279,7 @@ def expect_stack_value(stack: &Vector(StackValue), index: uint64, tpe: typecheck
     let size = round_up(tpe.resolve().size, 8)
     let num_parts = size / 8
     for var i in 0..num_parts {
-        stack.push([ variable = index, sub_index = i ] !StackValue)
+        stack.push([ variable = index !int, sub_index = i ] !StackValue)
     }
 }
 
@@ -297,12 +304,16 @@ def expect_value(cfg: *Cfg, block: &Block, loc: compiler::Value) {
     if loc.kind == compiler::ValueKind::LOCAL {
         if loc.i > 0 {
             // Actual local variable
-            expect_stack_value(block.stack, loc.i - 1, loc.tpe)
+            expect_stack_value(block.stack, loc.i - 1 + cfg.parameter_count, loc.tpe)
         } else {
-            block.push_insn([ 
-                op = Opcode::ADDROFLOCAL, 
-                arg1 = cfg.variables(loc.name).stack_index
-            ] !Instruction)
+            if cfg.parameters.contains(loc.name) {
+                expect_stack_value(block.stack, cfg.parameters(loc.name), loc.tpe)
+            } else {
+                block.push_insn([ 
+                    op = Opcode::ADDROFLOCAL, 
+                    arg1 = cfg.variables(loc.name).stack_index
+                ] !Instruction)
+            }
         }
     } else if loc.kind == compiler::ValueKind::GLOBAL {
         block.push_insn([ 
@@ -333,6 +344,10 @@ def expect_value(cfg: *Cfg, block: &Block, loc: compiler::Value) {
                 block.push_insn([ op = Opcode::PUSH, arg1 = vsize, value = mem ] !Instruction)
             }
         } 
+        let vssize = round_up(vsize, 8)
+        if cfg.max_stack_size < block.stack.length + (vssize / 8) {
+            cfg.max_stack_size = block.stack.length + (vssize / 8)
+        }
     }
 }
 
@@ -435,9 +450,9 @@ def equalize_stacks(
         assert stack(i) == target(i)
     }
 
-    //for var v in program {
-    //    print("\t", v.op, " ", v.arg1, " ", v.arg2, "\n")
-    //}
+    for var v in program {
+        print("\t", v.op, " ", v.arg1, " ", v.arg2, "\n")
+    }
 
     for var i in 0..program.length {
         let value = program(program.length - 1 - i)
@@ -445,20 +460,20 @@ def equalize_stacks(
     }
 }
 
-def push_stack_value(block: &Block, loc: compiler::Value) {
+def push_stack_value(cfg: *Cfg, block: &Block, loc: compiler::Value) {
     assert loc.kind == compiler::ValueKind::LOCAL
     var expected_stack = block.stack.copy()
     var used = false
     var new_stack = vector::make(StackValue)
     for var i in 0..block.stack.length {
         let v = block.stack(i)
-        if v.variable != loc.i - 1 {
+        if v.variable != loc.i - 1 + cfg.parameter_count {
             new_stack.push(v)
         } else { used = true }
     }
     block.stack = new_stack.copy()
     if used {
-        expect_stack_value(block.stack, loc.i - 1, loc.tpe)
+        expect_stack_value(block.stack, loc.i - 1 + cfg.parameter_count, loc.tpe)
     } else {
         // if the value is unused, we need to pop it
         // TODO Actually remove useless instructions
@@ -475,6 +490,9 @@ def push_stack_value(block: &Block, loc: compiler::Value) {
 
 def get_address(tpe: typechecking::TypeId, idx: &[compiler::Value], 
     instructions: &Vector(Instruction), stack: &Vector(StackValue)) -> uint64 {
+    
+    // TODO
+    assert idx(0).kind == compiler::ValueKind::INT and idx(0).i == 0, "First index must be 0 for now!"
 
     var addr: uint64 = 0
     for var i in 1..idx.size {
@@ -563,7 +581,7 @@ def getelementptr(cfg: *Cfg, block: &Block, insn: &compiler::Insn) -> uint64 {
     var index = insn.value.gep.index
     var stack = vector::make(StackValue)
     
-    push_stack_value(block, insn.value.gep.ret)
+    push_stack_value(cfg, block, insn.value.gep.ret)
 
     let addr = get_address(insn.value.gep.tpe, insn.value.gep.index, instructions, stack)
 
@@ -588,7 +606,7 @@ def insert_value(cfg: *Cfg, block: &Block, insn: &compiler::Insn) {
     let size = round_up(tpe.size, 8)
     var offset = size - tpe.size
 
-    push_stack_value(block, insn.value.insert_value.ret)
+    push_stack_value(cfg, block, insn.value.insert_value.ret)
 
     let e_size = round_up(insn.value.insert_value.element.tpe.resolve().size, 8)
     if e_size == 8 {
@@ -620,14 +638,14 @@ def insert_value(cfg: *Cfg, block: &Block, insn: &compiler::Insn) {
             block.push_insn([ op = Opcode::ROLL, arg1 = (size / 8) + (e_size / 8) - 1 ] !Instruction)
         }
     }
+    
+    // We temporarily might go over the stack limit here
+    if block.stack.length + 1 + (e_size / 8) + (size / 8) > cfg.max_stack_size {
+        cfg.max_stack_size = block.stack.length + 1 + (e_size / 8) + (size / 8)
+    }
 
     expect_value(cfg, block, insn.value.insert_value.element)
     expect_value(cfg, block, insn.value.insert_value.value)
-
-    // We temporarily might go over the stack limit here
-    if block.stack.length + 2 > cfg.max_stack_size {
-        cfg.max_stack_size = block.stack.length + 2
-    }
 }
 
 def extract_value(cfg: *Cfg, block: &Block, insn: &compiler::Insn) {
@@ -635,18 +653,18 @@ def extract_value(cfg: *Cfg, block: &Block, insn: &compiler::Insn) {
     let size = round_up(tpe.size, 8)
     var offset = size - tpe.size
 
-    let r_size = round_up(insn.value.extract_value.ret.tpe.resolve().size, 8)
+    push_stack_value(cfg, block, insn.value.extract_value.ret)
 
     block.push_insn([ op = Opcode::POP, arg1 = size / 8 ] !Instruction)
     // Pop value off the stack (v = value, r = result)
     // v v v r r ->
     // r r v v v ->
     // r r
-    for var i in 0..(r_size / 8) {
-        block.push_insn([ op = Opcode::ROLL, arg1 = r_size / 8 ] !Instruction)
+    for var i in 0..(size / 8) {
+        block.push_insn([ op = Opcode::ROLL, arg1 = size / 8 ] !Instruction)
     }
 
-    push_stack_value(block, insn.value.extract_value.ret)
+    let r_size = round_up(insn.value.extract_value.ret.tpe.resolve().size, 8)
     load_value(cfg, block, insn.value.extract_value.ret.tpe)
 
     let index = allocate_ref(compiler::Value, insn.value.extract_value.index.size + 1)
@@ -665,9 +683,8 @@ def extract_value(cfg: *Cfg, block: &Block, insn: &compiler::Insn) {
     expect_value(cfg, block, insn.value.extract_value.value)
 
     // We temporarily might go over the stack limit here
-    // this includes the address and the offset value, which is why we add 2
-    if block.stack.length + 2 > cfg.max_stack_size {
-        cfg.max_stack_size = block.stack.length + 2
+    if block.stack.length + 1 + (size / 8) + (r_size / 8) > cfg.max_stack_size {
+        cfg.max_stack_size = block.stack.length + 1 + (size / 8) + (r_size / 8)
     }
 }
 
@@ -717,6 +734,10 @@ def store_value(cfg: *Cfg, block: &Block, value: compiler::Value) {
             }
         } 
     }
+
+    if cfg.max_stack_size < block.stack.length + (size / 8) {
+        cfg.max_stack_size = block.stack.length + (size / 8)
+    }
 }
 
 def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Block)) {
@@ -742,7 +763,7 @@ def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Bl
         case compiler::InsnKind::LOAD
             let value = insn.value.load.value
             let loc = insn.value.load.loc
-            push_stack_value(block, value)
+            push_stack_value(cfg, block, value)
             load_value(cfg, block, value.tpe)
             expect_value(cfg, block, loc)
         case compiler::InsnKind::GETELEMENTPTR
@@ -752,7 +773,7 @@ def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Bl
         case compiler::InsnKind::EXTRACTVALUE
             extract_value(cfg, block, insn)
         case compiler::InsnKind::ICMP
-            push_stack_value(block, insn.value.icmp.ret)
+            push_stack_value(cfg, block, insn.value.icmp.ret)
             var op: Opcode
             switch insn.value.icmp.op {
                 case compiler::CompareInt::eq;  op = Opcode::ICMP_EQ
@@ -768,8 +789,8 @@ def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Bl
             }
             let sz = insn.value.icmp.left.tpe.resolve().size
             block.push_insn([ op = op, arg1 = sz ] !Instruction)
-            expect_value(cfg, block, insn.value.icmp.right)
             expect_value(cfg, block, insn.value.icmp.left)
+            expect_value(cfg, block, insn.value.icmp.right)
 
         case compiler::InsnKind::BR
             expect_value(cfg, block, insn.value.br.cond)
@@ -785,7 +806,7 @@ def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Bl
             ] !Instruction)
         case compiler::InsnKind::CALL
             if insn.value.call.ret.tpe != 0 {
-                push_stack_value(block, insn.value.call.ret)
+                push_stack_value(cfg, block, insn.value.call.ret)
             }
             if insn.value.call.name.kind == compiler::ValueKind::LOCAL {
                 expect_value(cfg, block, insn.value.call.name)
@@ -797,17 +818,71 @@ def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Bl
                     arg2 = insn.value.call.args.size
                 ] !Instruction)
             }
-            
+
+            let insn_before = block.insn.copy()
+            let insn_added = vector::make(Instruction)
+            block.insn = insn_added
+
+            var expected_stack = block.stack.copy()
+            var actual_stack = vector::make(StackValue)
+
+            var stack_size = block.stack.length
             let size = insn.value.call.args.size 
             for var i in 0..size {
-                let arg = insn.value.call.args(size - 1 - i)
+                let arg = insn.value.call.args(i)
+                let argsz = round_up(arg.tpe.resolve().size, 8)
+                stack_size += argsz / 8
+
+                let stack_size_before = block.stack.length
                 expect_value(cfg, block, arg)
+
+                if arg.kind != compiler::ValueKind::LOCAL and arg.kind != compiler::ValueKind::GLOBAL {
+                    for var j in 0..(argsz / 8) {
+                        expected_stack.push([ variable = -i - 1, sub_index = j ] !StackValue)
+                    }
+                } else {
+                    for var j in 0..(argsz / 8) {
+                        expected_stack.push(block.stack(stack_size_before + j))
+                    }
+                }
             }
+
+            for var j in 0..size {
+                var i = (size - 1 - j) !int
+                let arg = insn.value.call.args(i)
+                let argsz = round_up(arg.tpe.resolve().size, 8)
+
+                if arg.kind != compiler::ValueKind::LOCAL and arg.kind != compiler::ValueKind::GLOBAL {
+                    for var j in 0..(argsz / 8) {
+                        actual_stack.push([ variable = -i - 1, sub_index = j ] !StackValue)
+                    }
+                }
+            }
+
+            let s_tmp = block.stack.copy()
+            s_tmp.add_all(actual_stack)
+            actual_stack = s_tmp        
+
+            print("Expected stack before call: ")
+            print_stack(expected_stack)
+            print("\n")
+            print("Actual stack before call: ")
+            print_stack(actual_stack)
+            print("\n")
+
+            block.insn = insn_before
+            equalize_stacks(block, actual_stack, expected_stack)
+            block.insn.add_all(insn_added)
+
+            if stack_size > cfg.max_stack_size {
+                cfg.max_stack_size = stack_size
+            }
+
         case compiler::InsnKind::ADD, compiler::InsnKind::SUB, compiler::InsnKind::MUL, 
             compiler::InsnKind::SDIV, compiler::InsnKind::UDIV, compiler::InsnKind::SREM, 
             compiler::InsnKind::UREM
             
-            push_stack_value(block, insn.value.arith.ret)
+            push_stack_value(cfg, block, insn.value.arith.ret)
 
             let sz = insn.value.arith.ret.tpe.resolve().size
             var op: Opcode
@@ -826,8 +901,27 @@ def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Bl
             expect_value(cfg, block, insn.value.arith.left)
 
         case compiler::InsnKind::PTRTOINT
-            push_stack_value(block, insn.value.convert.ret)
+            push_stack_value(cfg, block, insn.value.convert.ret)
             expect_value(cfg, block, insn.value.convert.value)
+        
+        case compiler::InsnKind::SEXT
+            let retsz = insn.value.convert.ret.tpe.resolve().size
+            assert retsz <= 8, "SEXT result type must be 8 bytes or less"
+            push_stack_value(cfg, block, insn.value.convert.ret)
+            let srcsz = insn.value.convert.value.tpe.resolve().size
+            if srcsz == 1 {
+                block.push_insn([ op = Opcode::SEXT8 ] !Instruction)
+            } else if srcsz == 2 {
+                block.push_insn([ op = Opcode::SEXT16 ] !Instruction)
+            } else if srcsz == 4 {
+                block.push_insn([ op = Opcode::SEXT32 ] !Instruction)
+            } else if srcsz == 8 {
+                // No need to do anything
+            } else {
+                assert false, "SEXT source type must be 1, 2, 4, or 8 bytes"
+            }
+            expect_value(cfg, block, insn.value.convert.value)
+            
 
         case compiler::InsnKind::RET
             if insn.value.ret.value.tpe != 0 {
@@ -880,11 +974,23 @@ def add_temporary_branch(cfg: *Cfg, block: &Block, stack: &Vector(StackValue), t
     ] !Instruction)
 
     equalize_stacks(branch1, stack, succt.stack)
+    branch1.stack = stack.copy()
     return branch1
 }
 
-export def to_bytecode(block: &compiler::Block) -> &Program {
+export def to_bytecode(function: &compiler::Function) -> &Program {
+    return to_bytecode(function.block, function.args, function.ret)
+}
+
+export def to_bytecode(block: &compiler::Block, args: &Vector(typechecking::NamedParameter), return_value: &typechecking::Type) -> &Program {
     let cfg = create_cfg(block)
+    cfg.parameter_count = args.length
+    cfg.parameters = map::make(int)
+
+    for var i in 0..args.length {
+        let param = args(i)
+        cfg.parameters(param.name + ".value") = i
+    }
 
     var queue = set::make(type &Block)
     var visited = set::make(type &Block)
@@ -897,7 +1003,7 @@ export def to_bytecode(block: &compiler::Block) -> &Program {
         for var block in @queue.keys() {
             var all_succ_visited = true
             for var succ in block.succ {
-                if not visited.contains(succ) {
+                if not visited.contains(succ) and succ.index > block.index {
                     all_succ_visited = false
                     break
                 }
@@ -924,6 +1030,19 @@ export def to_bytecode(block: &compiler::Block) -> &Program {
                 to_bytecode(*cfg, block, queue, visited)
                 block.pred_stack = block.stack.copy()
 
+                if block == cfg.start {
+                    let start_stack = vector::make(StackValue)
+                    for var i in 0..cfg.parameter_count {
+                        let tpe = args(i).tpe.resolve()
+                        let size = round_up(tpe.size, 8)
+                        let num_parts = size / 8
+                        for var j in 0..num_parts {
+                            start_stack.push([ variable = i, sub_index = j ] !StackValue)
+                        }
+                    }
+                    equalize_stacks(block, start_stack, block.stack)
+                }
+
                 if block.succ.length == 2 {
 
                     let true_suc = block.insn(0).arg1 !int
@@ -945,6 +1064,12 @@ export def to_bytecode(block: &compiler::Block) -> &Program {
 
                     block.insn.get(0).arg1 = succ.label_
                     block.succ(0) = succ
+                }
+            } else {
+                for var pred in block.pred {
+                    if not visited.contains(pred) {
+                        queue.add(pred)
+                    }
                 }
             }
         }
@@ -1001,12 +1126,23 @@ export def to_bytecode(block: &compiler::Block) -> &Program {
         globals_inverse(e.value) = e.key
     }
 
+    var max_stack_size = cfg.max_stack_size
+    for var arg in args {
+        let tpe = arg.tpe.resolve()
+        let size = round_up(tpe.size, 8)
+        max_stack_size += size / 8
+    }
+
     let program = [
         globals = globals_inverse,
-        max_stack_size = cfg.max_stack_size,
+        max_stack_size = max_stack_size,
         code = code,
         locals_size = cfg.local_offset
     ] !Program
+
+    if return_value {
+        program.retvalue_size = round_up(return_value.size, 8)
+    }
 
     for var block in cfg.blocks_by_index {
         if block.label_ == 0 {
@@ -1054,8 +1190,9 @@ export def to_bytecode(block: &compiler::Block) -> &Program {
                 @(code.get(code.length - 8) !*int64) = @(*insn.value(0) !*int64)
             case Opcode::PUSH, Opcode::STOREI
                 assert insn.arg1 <= 0xFFFF
+                let offset = code.length
                 code.resize(code.length + 2 + insn.arg1)
-                @(code.get(code.length - 2) !*int16) = insn.arg1 !int16
+                @(code.get(offset) !*int16) = insn.arg1 !int16
                 memcopy(insn.value.value, code.get(code.length - insn.arg1), insn.arg1)
             case Opcode::SWAP
                 assert insn.arg1 <= 0xFFFF
@@ -1090,9 +1227,31 @@ export def to_bytecode(block: &compiler::Block) -> &Program {
 
 let src = """
     def main {
-        var x: &int = 10
-        var y: weak &int = x
-        var z: &int = y
+        //var x: &int = 10
+        //var y: weak &int = x
+        //var z: &int = y
+        //cstd::printf("Hello, World! %d\\n".value, add(10, 20))
+
+        /*let a = 1
+        let b = 2
+        let c = 3
+        let d = 4
+        test(1, 2, 3, 4)*/
+        
+        var x = 0
+        for var i in 0..1000000 {
+            x += 1
+            //cstd::printf("x = %d\\n".value, x)
+        }
+        //cstd::printf("x = %d\\n".value, x)
+    }
+
+    def test(a: long, b: long, c: long, d: long) {
+        cstd::printf("Test: %lld %lld %lld %lld\\n".value, a, b, c, d)
+    }
+
+    def add(x: int, y: int) -> int {
+        return x + y
     }
 """
 
@@ -1108,14 +1267,19 @@ let tokens = lexer::lex(src)
 let node = parser::parse(tokens, lines, "main.pr", "main")
 let sc = scope::enter_function_scope(builtins::builtins, null, true)
 let module = toolchain::make_module("main.pr", "main", node, sc, src, lines)
+
+consteval::is_static = true
 consteval::consteval(module)
 typechecking::typecheck(module)
 compiler::compile(module.compiler_state, is_main = false, no_cleanup = true)
+consteval::is_static = false
 
 let main_function = module.result.functions("main::main::()")
+let add_function = module.result.functions("main::add::(int32, int32)")
 
-let program = to_bytecode(main_function.block)
+let main_program = to_bytecode(main_function)
+//let add_program = to_bytecode(add_function)
 
-evalbc::eval(program)
+evalbc::eval(main_program, module)
 
 delete(tokens)
