@@ -37,8 +37,8 @@ export type Opcode = enum: uint8 {
     LOAD64; STORE64
 
     FPTRUNC; FPEXT
-    DPTOUI; FPTOUI; FPTOSI
-    UITODP; UITOFP
+    DFPTOUI; FPTOUI; FPTOSI
+    UITODFP; UITOFP
 
     TRUNC8; TRUNC16; TRUNC32
     ZEXT8; ZEXT16; ZEXT32
@@ -73,13 +73,6 @@ type Instruction = struct {
     arg1: uint64
     arg2: uint64
     value: &[uint8] // Embedded value like for store
-}
-
-type Variable = struct {
-    name: Str
-    tpe: typechecking::TypeId
-    size: uint64 // Size in bytes, multiple of 8
-    stack_index: uint64
 }
 
 type StackValue = struct {
@@ -130,16 +123,6 @@ type Cfg = struct {
     start: weak &Block
     ends: &Vector(weak &Block)
     max_stack_size: uint64
-}
-
-export type Program = struct {
-    start_offset: uint64
-    globals: &Map(uint64, Str)
-    max_stack_size: uint64
-    locals_size: uint64
-    code: &Vector(uint8)
-    locals: &Vector(Variable)
-    retvalue_size: uint64
 }
 
 def add_global(cfg: *Cfg, name: Str) -> uint64 {
@@ -787,10 +770,22 @@ def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Bl
                 case compiler::CompareInt::slt; op = Opcode::ICMP_SLT
                 case compiler::CompareInt::sle; op = Opcode::ICMP_SLE
             }
-            let sz = insn.value.icmp.left.tpe.resolve().size
+
+            assert insn.value.icmp.right.tpe == insn.value.icmp.left.tpe, "Mismatched types in ICMP instruction"
+
+            let sz = insn.value.icmp.right.tpe.resolve().size
             block.push_insn([ op = op, arg1 = sz ] !Instruction)
-            expect_value(cfg, block, insn.value.icmp.left)
+            
+            // Swap the operands if the right operand is not a local or global variable, so that it is on top of the stack
+            if insn.value.icmp.right.kind != compiler::ValueKind::LOCAL and insn.value.icmp.right.kind != compiler::ValueKind::GLOBAL {
+                let rsz = round_up(sz, 8)
+                for var i in 0..(rsz / 8) {
+                    block.push_insn([ op = Opcode::SWAP, arg1 = i, arg2 = (rsz / 8) + i ] !Instruction)
+                }
+            }
+            
             expect_value(cfg, block, insn.value.icmp.right)
+            expect_value(cfg, block, insn.value.icmp.left)
 
         case compiler::InsnKind::BR
             expect_value(cfg, block, insn.value.br.cond)
@@ -896,6 +891,16 @@ def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Bl
                 case compiler::InsnKind::UREM; op = (Opcode::UREM if sz != 8 else Opcode::UREM64)
             }
             block.push_insn([ op = op, arg1 = sz ] !Instruction)
+
+            assert insn.value.arith.right.tpe == insn.value.arith.left.tpe, "Arithmetic operands must have the same type"
+
+            // Swap the operands if the right operand is not a local or global variable, so that it is on top of the stack
+            if insn.value.arith.right.kind != compiler::ValueKind::LOCAL and insn.value.arith.right.kind != compiler::ValueKind::GLOBAL {
+                let sz = round_up(insn.value.arith.right.tpe.resolve().size, 8)
+                for var i in 0..(sz / 8) {
+                    block.push_insn([ op = Opcode::SWAP, arg1 = i, arg2 = (sz / 8) + i ] !Instruction)
+                }
+            }
 
             expect_value(cfg, block, insn.value.arith.right)
             expect_value(cfg, block, insn.value.arith.left)
@@ -1231,15 +1236,7 @@ let src = """
         for var i in 0..1000000 {
             x += 1
         }
-        cstd::printf("x = %d\\n".value, x)
-    }
-
-    def test(a: long, b: long, c: long, d: long) {
-        cstd::printf("Test: %lld %lld %lld %lld\\n".value, a, b, c, d)
-    }
-
-    def add(x: int, y: int) -> int {
-        return x + y
+        cstd::printf("count: %d\n".value, x)
     }
 """
 
@@ -1263,7 +1260,7 @@ compiler::compile(module.compiler_state, is_main = false, no_cleanup = true)
 consteval::is_static = false
 
 let main_function = module.result.functions("main::main::()")
-let add_function = module.result.functions("main::add::(int32, int32)")
+//let add_function = module.result.functions("main::add::(int32, int32)")
 
 let main_program = to_bytecode(main_function)
 //let add_program = to_bytecode(add_function)
