@@ -17,6 +17,7 @@ import evalbc
 export type Opcode = enum: uint8 {
     // Instructions with zero arguments
     NOP = 0
+    UNREACHABLE
 
     ADD64; SUB64; MUL64; SREM64; UREM64; SDIV64; UDIV64
     FADD; FSUB; FMUL; FREM; FDIV
@@ -38,8 +39,8 @@ export type Opcode = enum: uint8 {
     STORE8; STORE16; STORE32; STORE64
 
     FPTRUNC; FPEXT
-    DFPTOUI; FPTOUI; FPTOSI
-    UITODFP; UITOFP
+    DFPTOUI; FPTOUI; DFPTOSI; FPTOSI
+    UITODFP; UITOFP; SITODFP; SITOFP
 
     TRUNC8; TRUNC16; TRUNC32
     ZEXT8; ZEXT16; ZEXT32
@@ -238,6 +239,8 @@ def create_cfg(block: &compiler::Block) -> Cfg {
                 add_next(next)
             }
         } else if last_insn.kind == compiler::InsnKind::RET {
+            ends.push(current)
+        } else if last_insn.kind == compiler::InsnKind::UNREACHABLE {
             ends.push(current)
         } else {
             assert
@@ -928,13 +931,24 @@ def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Bl
                 let stack_size_before = block.stack.length
                 expect_value(cfg, block, arg)
 
-                if arg.kind != compiler::ValueKind::LOCAL and arg.kind != compiler::ValueKind::GLOBAL {
+                if arg.kind == compiler::ValueKind::LOCAL {
+                    if arg.i > 0 {
+                        for var j in 0..(argsz / 8) {
+                            expected_stack.push(block.stack(stack_size_before + j))
+                        }
+                    } else if cfg.parameters.contains(arg.name) {
+                        let index = cfg.parameters(arg.name)
+                        for var j in 0..(argsz / 8) {
+                            expected_stack.push([ 
+                                variable = index, sub_index = j 
+                            ] !StackValue)
+                        }
+                    }
+                } else if arg.kind != compiler::ValueKind::LOCAL and 
+                    arg.kind != compiler::ValueKind::GLOBAL {
+
                     for var j in 0..(argsz / 8) {
                         expected_stack.push([ variable = -i - 1, sub_index = j ] !StackValue)
-                    }
-                } else {
-                    for var j in 0..(argsz / 8) {
-                        expected_stack.push(block.stack(stack_size_before + j))
                     }
                 }
             }
@@ -972,7 +986,8 @@ def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Bl
 
         case compiler::InsnKind::ADD, compiler::InsnKind::SUB, compiler::InsnKind::MUL, 
             compiler::InsnKind::SDIV, compiler::InsnKind::UDIV, compiler::InsnKind::SREM, 
-            compiler::InsnKind::UREM
+            compiler::InsnKind::UREM, compiler::InsnKind::AND, compiler::InsnKind::OR, 
+            compiler::InsnKind::XOR
             
             push_stack_value(cfg, block, insn.value.arith.ret)
 
@@ -982,6 +997,9 @@ def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Bl
                 case compiler::InsnKind::ADD;  op = (Opcode::ADD  if sz > 8  else Opcode::ADD64)
                 case compiler::InsnKind::SUB;  op = (Opcode::SUB  if sz > 8  else Opcode::SUB64)
                 case compiler::InsnKind::MUL;  op = (Opcode::MUL  if sz > 8  else Opcode::MUL64)
+                case compiler::InsnKind::AND;  op = (Opcode::AND  if sz > 8  else Opcode::AND64)
+                case compiler::InsnKind::OR;   op = (Opcode::OR   if sz > 8  else Opcode::OR64)
+                case compiler::InsnKind::XOR;  op = (Opcode::XOR  if sz > 8  else Opcode::XOR64)
                 case compiler::InsnKind::SDIV; op = (Opcode::SDIV if sz != 8 else Opcode::SDIV64)
                 case compiler::InsnKind::UDIV; op = (Opcode::UDIV if sz != 8 else Opcode::UDIV64)
                 case compiler::InsnKind::SREM; op = (Opcode::SREM if sz != 8 else Opcode::SREM64)
@@ -1002,10 +1020,61 @@ def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Bl
             expect_value(cfg, block, insn.value.arith.right)
             expect_value(cfg, block, insn.value.arith.left)
 
-        case compiler::InsnKind::PTRTOINT
+        case compiler::InsnKind::PTRTOINT, compiler::InsnKind::INTTOPTR
+            // these actually do nothing
             push_stack_value(cfg, block, insn.value.convert.ret)
             expect_value(cfg, block, insn.value.convert.value)
 
+        case compiler::InsnKind::FPTOUI, compiler::InsnKind::FPTOSI
+            let sz = insn.value.convert.value.tpe.resolve().size
+            push_stack_value(cfg, block, insn.value.convert.ret)
+            if insn.kind == compiler::InsnKind::FPTOSI {
+                switch sz {
+                    case 4; block.push_insn([ op = Opcode::FPTOSI ] !Instruction)
+                    case 8; block.push_insn([ op = Opcode::DFPTOSI ] !Instruction)
+                    case; assert
+                }
+            } else if insn.kind == compiler::InsnKind::FPTOUI {
+                switch sz {
+                    case 4; block.push_insn([ op = Opcode::FPTOUI ] !Instruction)
+                    case 8; block.push_insn([ op = Opcode::DFPTOUI ] !Instruction)
+                    case; assert
+                }
+            }
+            expect_value(cfg, block, insn.value.convert.value)
+        case compiler::InsnKind::UITOFP, compiler::InsnKind::SITOFP
+            let sz = insn.value.convert.value.tpe.resolve().size
+            let dst_sz = insn.value.convert.ret.tpe.resolve().size
+
+            push_stack_value(cfg, block, insn.value.convert.ret)
+            if insn.kind == compiler::InsnKind::SITOFP {
+                switch dst_sz {
+                    case 4; block.push_insn([ op = Opcode::SITOFP ] !Instruction)
+                    case 8; block.push_insn([ op = Opcode::SITODFP ] !Instruction)
+                    case; assert
+                }
+                switch sz {
+                    case 1; block.push_insn([ op = Opcode::SEXT8 ] !Instruction)
+                    case 2; block.push_insn([ op = Opcode::SEXT16 ] !Instruction)
+                    case 4; block.push_insn([ op = Opcode::SEXT32 ] !Instruction)
+                    case 8; // do nothing
+                    case; assert
+                }
+            } else if insn.kind == compiler::InsnKind::UITOFP {
+                switch dst_sz {
+                    case 4; block.push_insn([ op = Opcode::UITOFP ] !Instruction)
+                    case 8; block.push_insn([ op = Opcode::UITODFP ] !Instruction)
+                    case; assert
+                }
+                switch sz {
+                    case 1; block.push_insn([ op = Opcode::ZEXT8 ] !Instruction)
+                    case 2; block.push_insn([ op = Opcode::ZEXT16 ] !Instruction)
+                    case 4; block.push_insn([ op = Opcode::ZEXT32 ] !Instruction)
+                    case 8; // do nothing
+                    case; assert
+                }
+            }
+            expect_value(cfg, block, insn.value.convert.value)
         case compiler::InsnKind::RET
             if insn.value.ret.value.tpe != 0 {
                 expect_value(cfg, block, insn.value.ret.value)
@@ -1018,6 +1087,8 @@ def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Bl
             continue
         case compiler::InsnKind::SWITCH
             switch_(cfg, block, insn)
+        case compiler::InsnKind::UNREACHABLE
+            block.push_insn([ op = Opcode::UNREACHABLE ] !Instruction)
         case
             error(insn.kind, "\n") 
             assert
@@ -1117,7 +1188,8 @@ export def to_bytecode(block: &compiler::Block, args: &Vector(typechecking::Name
 
                 if block == cfg.start {
                     let start_stack = vector::make(StackValue)
-                    for var i in 0..cfg.parameter_count {
+                    for var p in 0..cfg.parameter_count {
+                        let i = (cfg.parameter_count - 1 - p) !int
                         let tpe = args(i).tpe.resolve()
                         let size = round_up(tpe.size, 8)
                         let num_parts = size / 8
@@ -1342,25 +1414,33 @@ export def to_bytecode(block: &compiler::Block, args: &Vector(typechecking::Name
 }
 
 let src = """
-    def bubble_sort(arr: [int]) {
-        let n = arr.size
+    import vector
+
+    def bubble_sort(vec: &Vector(int32)) {
+        let n = vec.length
         for var i in 0..n {
             for var j in 0..(n - i - 1) {
-                if arr(j) > arr(j + 1) {
-                    let temp = arr(j)
-                    arr(j) = arr(j + 1)
-                    arr(j + 1) = temp
+                if vec(j) > vec(j + 1) {
+                    let temp = vec(j)
+                    vec(j) = vec(j + 1)
+                    vec(j + 1) = temp
                 }
             }
         }
     }
 
     def main {
-        let arr: [int] = [12, 5, -1, 3, 8, 0, -7, 4]
-        bubble_sort(arr)
+        let vec = vector::make(int32)
+        vec.push(-1)
+        vec.push(5)
+        vec.push(3)
+        vec.push(2)
+        vec.push(4)
+        vec.push(-7)
+        bubble_sort(vec)
         
-        for var i in 0..arr.size {
-            cstd::printf("%d ".value, arr(i))
+        for var i in 0..vec.length {
+            cstd::printf("%d ".value, vec(i))
         }
         cstd::printf("\n".value)
     }
