@@ -34,7 +34,8 @@ export type Opcode = enum: uint8 {
 
     CALL; RET; RETVOID
 
-    LOAD64; STORE64
+    LOAD8; LOAD16; LOAD32; LOAD64
+    STORE8; STORE16; STORE32; STORE64
 
     FPTRUNC; FPEXT
     DFPTOUI; FPTOUI; FPTOSI
@@ -65,7 +66,13 @@ export type Opcode = enum: uint8 {
 
     // Instructions with special arguments
     GOTO; BR; CALLG; SWAP
-    ADDROFLOCAL
+    ADDROFLOCAL;
+
+    // arg1 is size, arg2 is number of cases
+    // value is the default label followed by the case labels
+    // value is 64 bits and case label is 32 bits
+    // [default_branch, label1, value1, label2, value2, ...]
+    SWITCH
 }
 
 type Instruction = struct {
@@ -107,7 +114,7 @@ export def hash(block: &Block) -> uint64 {
     return block !* !uint64
 }
 def push_insn(block: &Block, insn: Instruction) {
-    //print("\t", insn.op, " ", insn.arg1, " ", insn.arg2, "\n")
+    print("\t", insn.op, " ", insn.arg1, " ", insn.arg2, "\n")
     block.insn.push(insn)
 }
 
@@ -219,17 +226,17 @@ def create_cfg(block: &compiler::Block) -> Cfg {
             add_next(next1)
             add_next(next2)
         } else if last_insn.kind == compiler::InsnKind::SWITCH {
-            assert false, "Switch statements are not implemented yet"
-            /*for var case_ in last_insn.value.switch_.switch_values {
+            let default = blocks(last_insn.value.switch_.otherwise.name)
+            default.pred.push(current)
+            current.succ.push(default)
+            add_next(default)
+
+            for var case_ in last_insn.value.switch_.switch_values {
                 let next = blocks(case_.label_.name)
                 next.pred.push(current)
                 current.succ.push(next)
                 add_next(next)
             }
-            let default = blocks(last_insn.value.switch_.otherwise.name)
-            default.pred.push(current)
-            current.succ.push(default)
-            add_next(default)*/
         } else if last_insn.kind == compiler::InsnKind::RET {
             ends.push(current)
         } else {
@@ -471,13 +478,27 @@ def push_stack_value(cfg: *Cfg, block: &Block, loc: compiler::Value) {
     block.stack = new_stack
 }
 
-def get_address(tpe: typechecking::TypeId, idx: &[compiler::Value], 
+def get_address(cfg: *Cfg, tpe: typechecking::TypeId, idx: &[compiler::Value], 
     instructions: &Vector(Instruction), stack: &Vector(StackValue)) -> uint64 {
     
-    // TODO
-    assert idx(0).kind == compiler::ValueKind::INT and idx(0).i == 0, "First index must be 0 for now!"
-
     var addr: uint64 = 0
+
+    let first = idx(0)
+    // TODO
+    if first.kind == compiler::ValueKind::INT {
+        if first.i != 0 {
+            addr = addr + (first.i * tpe.resolve().size)
+        }
+    } else if first.kind == compiler::ValueKind::LOCAL {
+        expect_stack_value(stack, first.i - 1 + cfg.parameter_count, first.tpe)
+        instructions.push([op = Opcode::SWAP, arg1 = 0, arg2 = 1] !Instruction)
+        instructions.push([op = Opcode::PUSH64, value = int_to_mem(tpe.resolve().size, 8)] !Instruction)
+        instructions.push([op = Opcode::MUL64] !Instruction)
+        instructions.push([op = Opcode::ADD64] !Instruction)
+    } else {
+        assert
+    }
+
     for var i in 1..idx.size {
         let kind = tpe.resolve().kind
         let index = idx(i)
@@ -487,7 +508,7 @@ def get_address(tpe: typechecking::TypeId, idx: &[compiler::Value],
             let len = vector::length(stpe.field_types)
             assert index.i < len
             let type_member = stpe.field_types(index.i)
-            addr = addr + type_member.offset
+            addr += type_member.offset
             tpe = type_member.tpe
         } else if kind == typechecking::TypeKind::UNION {
             assert index.kind == compiler::ValueKind::INT
@@ -498,7 +519,7 @@ def get_address(tpe: typechecking::TypeId, idx: &[compiler::Value],
             if index.i == 0 {
                 tpe = builtins::size_t_
             } else if index.i == 1 {
-                let addr = addr + (size_of size_t)
+                addr += (size_of size_t)
                 tpe = tpe.tpe
             } else {
                 assert
@@ -523,7 +544,8 @@ def get_address(tpe: typechecking::TypeId, idx: &[compiler::Value],
                 addr += array_tpe.tpe.resolve().size * index.i
                 tpe = tpe.tpe
             } else {
-                expect_stack_value(stack, index.i, index.tpe)
+                expect_stack_value(stack, index.i - 1 + cfg.parameter_count, index.tpe)
+                instructions.push([op = Opcode::SWAP, arg1 = 0, arg2 = 1] !Instruction)
                 instructions.push([op = Opcode::PUSH64, value = int_to_mem(tpe.tpe.resolve().size, 8)] !Instruction)
                 instructions.push([op = Opcode::MUL64] !Instruction)
                 instructions.push([op = Opcode::ADD64] !Instruction)
@@ -539,7 +561,8 @@ def get_address(tpe: typechecking::TypeId, idx: &[compiler::Value],
                 addr += (index.i * tpe.tpe.resolve().size)
                 tpe = tpe.tpe
             } else {
-                expect_stack_value(stack, index.i, index.tpe)
+                expect_stack_value(stack, index.i - 1 + cfg.parameter_count, index.tpe)
+                instructions.push([op = Opcode::SWAP, arg1 = 0, arg2 = 1] !Instruction)
                 instructions.push([op = Opcode::PUSH64, value = int_to_mem(tpe.tpe.resolve().size, 8)] !Instruction)
                 instructions.push([op = Opcode::MUL64] !Instruction)
                 instructions.push([op = Opcode::ADD64] !Instruction)
@@ -566,7 +589,7 @@ def getelementptr(cfg: *Cfg, block: &Block, insn: &compiler::Insn) -> uint64 {
     
     push_stack_value(cfg, block, insn.value.gep.ret)
 
-    let addr = get_address(insn.value.gep.tpe, insn.value.gep.index, instructions, stack)
+    let addr = get_address(cfg, insn.value.gep.tpe, insn.value.gep.index, instructions, stack)
 
     if addr > 0 {
         instructions.push([op = Opcode::PUSH64, value = int_to_mem(addr, 8)] !Instruction)
@@ -582,6 +605,39 @@ def getelementptr(cfg: *Cfg, block: &Block, insn: &compiler::Insn) -> uint64 {
     }
 
     expect_value(cfg, block, insn.value.gep.value)
+
+    if cfg.max_stack_size < block.stack.length + 2 {
+        cfg.max_stack_size = block.stack.length + 2
+    }
+}
+
+def switch_(cfg: *Cfg, block: &Block, insn: &compiler::Insn) {
+    assert insn.kind == compiler::InsnKind::SWITCH
+
+    let sz = insn.value.switch_.value.tpe.resolve().size
+    let num_cases = insn.value.switch_.switch_values.length
+
+    // every branch has an int for a label and an int of sz for the value
+    let value = allocate_ref(uint8, 4 + num_cases * 4 + num_cases * 8)
+    @(*value(0) !*int) = get_label(cfg, insn.value.switch_.otherwise.name)
+
+    for var i in 0..num_cases {
+        let case_ = insn.value.switch_.switch_values(i)
+        @(*value(4 + i * 4 + i * 8) !*int) = get_label(cfg, case_.label_.name)
+        let v = case_.value.i
+        @(*value(4 + i * 4 + i * 8 + 4) !*uint64) = v !uint64
+    }
+
+    print("Switch value: ", value, "\n")
+
+    block.push_insn([
+        op = Opcode::SWITCH,
+        arg1 = sz,
+        arg2 = num_cases,
+        value = value
+    ] !Instruction)
+
+    expect_value(cfg, block, insn.value.switch_.value)
 }
 
 def insert_value(cfg: *Cfg, block: &Block, insn: &compiler::Insn) {
@@ -591,12 +647,9 @@ def insert_value(cfg: *Cfg, block: &Block, insn: &compiler::Insn) {
 
     push_stack_value(cfg, block, insn.value.insert_value.ret)
 
-    let e_size = round_up(insn.value.insert_value.element.tpe.resolve().size, 8)
-    if e_size == 8 {
-        block.push_insn([ op = Opcode::STORE64 ] !Instruction)
-    } else {
-        block.push_insn([ op = Opcode::STORE, arg1 = size ] !Instruction)
-    }
+    let e_size = insn.value.insert_value.element.tpe.resolve().size
+    let e_sizer = round_up(e_size, 8)
+    store_size(block, e_size)
 
     let index = allocate_ref(compiler::Value, insn.value.insert_value.index.size + 1)
     index(0) = ([ kind = compiler::ValueKind::INT, i = 0 ] !compiler::Value)
@@ -604,7 +657,7 @@ def insert_value(cfg: *Cfg, block: &Block, insn: &compiler::Insn) {
         let ind = insn.value.insert_value.index(i)
         index(i + 1) = ([ kind = compiler::ValueKind::INT, i = ind ] !compiler::Value)
     }
-    offset += get_address(insn.value.insert_value.value.tpe, index, null, null)
+    offset += get_address(cfg, insn.value.insert_value.value.tpe, index, null, null)
     //print("insert_value: ", debug::type_to_str(insn.value.insert_value.value.tpe), 
     //    " index: ", insn.value.insert_value.index, 
     //    " offset: ", offset, "\n")
@@ -617,14 +670,14 @@ def insert_value(cfg: *Cfg, block: &Block, insn: &compiler::Insn) {
 
     // roll element to the top of the stack if it is a stack value
     if insn.value.insert_value.element.kind == compiler::ValueKind::LOCAL {
-        for var i in 0..(e_size / 8) {
-            block.push_insn([ op = Opcode::ROLL, arg1 = (size / 8) + (e_size / 8) - 1 ] !Instruction)
+        for var i in 0..(e_sizer / 8) {
+            block.push_insn([ op = Opcode::ROLL, arg1 = (size / 8) + (e_sizer / 8) - 1 ] !Instruction)
         }
     }
     
     // We temporarily might go over the stack limit here
-    if block.stack.length + 1 + (e_size / 8) + (size / 8) > cfg.max_stack_size {
-        cfg.max_stack_size = block.stack.length + 1 + (e_size / 8) + (size / 8)
+    if block.stack.length + 1 + (e_sizer / 8) + (size / 8) > cfg.max_stack_size {
+        cfg.max_stack_size = block.stack.length + 1 + (e_sizer / 8) + (size / 8)
     }
 
     expect_value(cfg, block, insn.value.insert_value.element)
@@ -656,7 +709,7 @@ def extract_value(cfg: *Cfg, block: &Block, insn: &compiler::Insn) {
         let ind = insn.value.extract_value.index(i)
         index(i + 1) = ([ kind = compiler::ValueKind::INT, i = ind ] !compiler::Value)
     }
-    offset += get_address(insn.value.extract_value.value.tpe, index, null, null)
+    offset += get_address(cfg, insn.value.extract_value.value.tpe, index, null, null)
 
     if offset > 0 {
         block.push_insn([ op = Opcode::ADD64 ] !Instruction)
@@ -672,26 +725,34 @@ def extract_value(cfg: *Cfg, block: &Block, insn: &compiler::Insn) {
 }
 
 def load_value(cfg: *Cfg, block: &Block, tpe: typechecking::TypeId) {
-    let size = round_up(tpe.resolve().size, 8)
-    if size == 8 {
-        block.push_insn([ op = Opcode::LOAD64 ] !Instruction)
-    } else {
-        block.push_insn([ op = Opcode::LOAD, arg1 = size ] !Instruction)
+    let size = tpe.resolve().size
+    switch size {
+        case 1; block.push_insn([ op = Opcode::LOAD8 ] !Instruction)
+        case 2; block.push_insn([ op = Opcode::LOAD16 ] !Instruction)
+        case 4; block.push_insn([ op = Opcode::LOAD32 ] !Instruction)
+        case 8; block.push_insn([ op = Opcode::LOAD64 ] !Instruction)
+        case; block.push_insn([ op = Opcode::LOAD, arg1 = size ] !Instruction)
+    }
+}
+
+def store_size(block: &Block, sz: uint64) {
+    switch sz {
+        case 1; block.push_insn([ op = Opcode::STORE8 ] !Instruction)
+        case 2; block.push_insn([ op = Opcode::STORE16 ] !Instruction)
+        case 4; block.push_insn([ op = Opcode::STORE32 ] !Instruction)
+        case 8; block.push_insn([ op = Opcode::STORE64 ] !Instruction)
+        case; block.push_insn([ op = Opcode::STORE, arg1 = sz ] !Instruction)
     }
 }
 
 def store_value(cfg: *Cfg, block: &Block, value: compiler::Value) {
     let tpe = value.tpe.resolve()
-    let size = round_up(tpe.size, 8)
+    let size = tpe.size
+    let sizer = round_up(size, 8)
 
     if value.kind == compiler::ValueKind::LOCAL or 
         value.kind == compiler::ValueKind::GLOBAL {
-        
-        if size == 8 {
-            block.push_insn([ op = Opcode::STORE64 ] !Instruction)
-        } else {
-            block.push_insn([ op = Opcode::STORE, arg1 = size ] !Instruction)
-        }
+        store_size(block, size)
         expect_value(cfg, block, value)
     } else {
         let vsize = tpe.size
@@ -718,8 +779,8 @@ def store_value(cfg: *Cfg, block: &Block, value: compiler::Value) {
         } 
     }
 
-    if cfg.max_stack_size < block.stack.length + (size / 8) {
-        cfg.max_stack_size = block.stack.length + (size / 8)
+    if cfg.max_stack_size < block.stack.length + (sizer / 8) {
+        cfg.max_stack_size = block.stack.length + (sizer / 8)
     }
 }
 
@@ -755,6 +816,42 @@ def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Bl
             insert_value(cfg, block, insn)
         case compiler::InsnKind::EXTRACTVALUE
             extract_value(cfg, block, insn)
+        case compiler::InsnKind::TRUNC, compiler::InsnKind::SEXT, compiler::InsnKind::ZEXT
+            push_stack_value(cfg, block, insn.value.convert.ret)
+            let from_size = insn.value.convert.value.tpe.resolve().size
+            let to_size = insn.value.convert.ret.tpe.resolve().size
+
+            assert from_size <= 8, "Convert from size > 8 is not supported"
+            assert to_size <= 8, "Convert to size > 8 is not supported"
+
+            if insn.kind == compiler::InsnKind::SEXT {
+                switch to_size {
+                    case 1; block.push_insn([ op = Opcode::SEXT8 ] !Instruction)
+                    case 2; block.push_insn([ op = Opcode::SEXT16 ] !Instruction)
+                    case 4; block.push_insn([ op = Opcode::SEXT32 ] !Instruction)
+                    case 8 //do nothing
+                    case; assert
+                }
+            } else if insn.kind == compiler::InsnKind::ZEXT {
+                switch to_size {
+                    case 1; block.push_insn([ op = Opcode::ZEXT8 ] !Instruction)
+                    case 2; block.push_insn([ op = Opcode::ZEXT16 ] !Instruction)
+                    case 4; block.push_insn([ op = Opcode::ZEXT32 ] !Instruction)
+                    case 8 //do nothing
+                    case; assert
+                }
+            } else if insn.kind == compiler::InsnKind::TRUNC {
+                switch to_size {
+                    case 1; block.push_insn([ op = Opcode::TRUNC8 ] !Instruction)
+                    case 2; block.push_insn([ op = Opcode::TRUNC16 ] !Instruction)
+                    case 4; block.push_insn([ op = Opcode::TRUNC32 ] !Instruction)
+                    case 8 //do nothing
+                    case; assert
+                }
+            }
+
+            expect_value(cfg, block, insn.value.convert.value)
+
         case compiler::InsnKind::ICMP
             push_stack_value(cfg, block, insn.value.icmp.ret)
             var op: Opcode
@@ -908,25 +1005,6 @@ def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Bl
         case compiler::InsnKind::PTRTOINT
             push_stack_value(cfg, block, insn.value.convert.ret)
             expect_value(cfg, block, insn.value.convert.value)
-        
-        case compiler::InsnKind::SEXT
-            let retsz = insn.value.convert.ret.tpe.resolve().size
-            assert retsz <= 8, "SEXT result type must be 8 bytes or less"
-            push_stack_value(cfg, block, insn.value.convert.ret)
-            let srcsz = insn.value.convert.value.tpe.resolve().size
-            if srcsz == 1 {
-                block.push_insn([ op = Opcode::SEXT8 ] !Instruction)
-            } else if srcsz == 2 {
-                block.push_insn([ op = Opcode::SEXT16 ] !Instruction)
-            } else if srcsz == 4 {
-                block.push_insn([ op = Opcode::SEXT32 ] !Instruction)
-            } else if srcsz == 8 {
-                // No need to do anything
-            } else {
-                assert false, "SEXT source type must be 1, 2, 4, or 8 bytes"
-            }
-            expect_value(cfg, block, insn.value.convert.value)
-            
 
         case compiler::InsnKind::RET
             if insn.value.ret.value.tpe != 0 {
@@ -938,6 +1016,8 @@ def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Bl
         case compiler::InsnKind::ALLOCA
             // Alloca instructions are handled in the CFG creation phase
             continue
+        case compiler::InsnKind::SWITCH
+            switch_(cfg, block, insn)
         case
             error(insn.kind, "\n") 
             assert
@@ -1048,7 +1128,10 @@ export def to_bytecode(block: &compiler::Block, args: &Vector(typechecking::Name
                     equalize_stacks(block, start_stack, block.stack)
                 }
 
-                if block.succ.length == 2 {
+                // TODO It's wasteful to generate a new block if
+                // the successor doesn't need any stack changes
+                let last_insn = block.insn(0)
+                if last_insn.op == Opcode::BR {
 
                     let true_suc = block.insn(0).arg1 !int
                     let false_suc = block.insn(0).arg2 !int
@@ -1063,12 +1146,25 @@ export def to_bytecode(block: &compiler::Block, args: &Vector(typechecking::Name
 
                     block.insn.get(0).arg1 = succt.label_
                     block.insn.get(0).arg2 = succf.label_
-                } else if block.succ.length == 1 {
+                } else if last_insn.op == Opcode::GOTO {
                     let succt = block.succ(0)
                     let succ = add_temporary_branch(*cfg, block, stack, succt.label_)
 
                     block.insn.get(0).arg1 = succ.label_
                     block.succ(0) = succ
+                } else if last_insn.op == Opcode::SWITCH {
+                    let num_cases = last_insn.arg2 !int
+                    let default_suc = @(*last_insn.value(0) !*int)
+                    let succd = add_temporary_branch(*cfg, block, stack, default_suc)
+                    block.succ(0) = succd // default case
+
+                    for var i in 0..num_cases {
+                        let offset = 4 + i * 4 + i * 8
+                        let label_ = *last_insn.value(offset) !*int
+                        let succ = add_temporary_branch(*cfg, block, stack, @label_)
+                        @label_ = succ.label_
+                        block.succ(i + 1) = succ
+                    }
                 }
             } else {
                 for var pred in block.pred {
@@ -1168,7 +1264,7 @@ export def to_bytecode(block: &compiler::Block, args: &Vector(typechecking::Name
                 @(code.get(code.length - 2) !*uint16) = insn.arg1 !uint16
             case Opcode::GOTO
                 assert insn.arg1 <= 0xFFFFFFFF
-                code.resize(code.length + 4) // reserve 2 bytes for label
+                code.resize(code.length + 4) // reserve 4 bytes for label
                 label_map(code.length - 4) = insn.arg1 !uint32
             case Opcode::BR
                 assert insn.arg1 <= 0xFFFFFFFF
@@ -1209,6 +1305,21 @@ export def to_bytecode(block: &compiler::Block, args: &Vector(typechecking::Name
                 assert insn.arg1 <= 0xFFFFFFFF
                 code.resize(code.length + 4)
                 @(code.get(code.length - 4) !*uint32) = insn.arg1 !uint32
+            case Opcode::SWITCH
+                assert insn.arg1 <= 0xFFFF
+                assert insn.arg2 <= 0xFFFFFFFF
+                code.resize(code.length + 6)
+                @(code.get(code.length - 6) !*uint16) = insn.arg1 !uint16
+                @(code.get(code.length - 4) !*uint32) = insn.arg2 !uint32
+
+                code.resize(code.length + insn.value.size)
+                memcopy(insn.value.value, code.get(code.length - insn.value.size), insn.value.size)
+                
+                label_map(code.length - insn.value.size) = @(*insn.value(0) !*uint32)
+                for var i in 0..insn.arg2 {
+                    let offset = 4 + i * 4 + i * 8
+                    label_map(code.length - insn.value.size + offset) = @(*insn.value(offset) !*uint32)
+                }
             case 
                 error(insn.op, "\n")
                 assert
@@ -1231,12 +1342,27 @@ export def to_bytecode(block: &compiler::Block, args: &Vector(typechecking::Name
 }
 
 let src = """
-    def main {
-        var x = 0
-        for var i in 0..1000000 {
-            x += 1
+    def bubble_sort(arr: [int]) {
+        let n = arr.size
+        for var i in 0..n {
+            for var j in 0..(n - i - 1) {
+                if arr(j) > arr(j + 1) {
+                    let temp = arr(j)
+                    arr(j) = arr(j + 1)
+                    arr(j + 1) = temp
+                }
+            }
         }
-        cstd::printf("count: %d\n".value, x)
+    }
+
+    def main {
+        let arr: [int] = [12, 5, -1, 3, 8, 0, -7, 4]
+        bubble_sort(arr)
+        
+        for var i in 0..arr.size {
+            cstd::printf("%d ".value, arr(i))
+        }
+        cstd::printf("\n".value)
     }
 """
 
