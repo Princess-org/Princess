@@ -11,14 +11,31 @@ import compiler
 import builtins
 import debug
 
+type FFICallSite = struct {
+    ffi_cif: ffi::s_ffi_cif
+    nargs: uint32
+    ffi_args: **ffi::s__ffi_type
+    ffi_ret_tpe: *ffi::s__ffi_type
+}
+
 type FunctionStore = struct {
     mem_to_fun: &Map(size_t, &compiler::Function)
     fun_to_mem: &Map(&compiler::Function, size_t)
+    ffi_cifs: &Map(size_t, FFICallSite)
+}
+
+def cleanup(site: *FFICallSite) {
+    for var i in 0..site.nargs {
+        free(@(site.ffi_args ++ i))
+    }
+    free(site.ffi_args)
+    free(site.ffi_ret_tpe)
 }
 
 // This keeps memory for the function pointers around
 let function_store = [] !FunctionStore
 function_store.mem_to_fun = map::make(size_t, type &compiler::Function)
+function_store.ffi_cifs = map::make(size_t, FFICallSite)
 function_store.fun_to_mem = map::make(type &compiler::Function, size_t)
 
 export def destruct(store: *FunctionStore) {
@@ -27,6 +44,11 @@ export def destruct(store: *FunctionStore) {
     }
     function_store.mem_to_fun.clear()
     function_store.fun_to_mem.clear()
+    
+    for var e in function_store.ffi_cifs {
+        cleanup(*e.value)
+    }
+    function_store.ffi_cifs.clear()
 }
 
 export def hash(fun: &compiler::Function) -> size_t {
@@ -204,10 +226,10 @@ def print_stack(state: *State) {
 }
 
 def eval(program: &Program, state: *State) {
-    //print("Allocation sizes: stack = ", program.max_stack_size * 8, 
-    //    " bytes, locals = ", program.locals_size, " bytes\n")
+    print("Allocation sizes: stack = ", program.max_stack_size * 8, 
+        " bytes, locals = ", program.locals_size, " bytes\n")
     
-    //print_stack(state)
+    print_stack(state)
 
     loop {        
         assert state.sp <= state.program.max_stack_size, "Stack overflow!!!"
@@ -217,7 +239,7 @@ def eval(program: &Program, state: *State) {
             assert false, "Execution fell off a cliff" 
         }
         let op = @(state.code ++ state.ip) !bytecode::Opcode
-        //print("OP:", op, " sp: ", state.sp, ", ip: ", state.ip, "\n")
+        print("OP:", op, " sp: ", state.sp, ", ip: ", state.ip, "\n")
 
         state.ip += 1
         switch op {
@@ -273,6 +295,7 @@ def eval(program: &Program, state: *State) {
         case Opcode::STORE64
             let addr = pop_stack(state) !*int64
             let value = pop_stack(state)
+            print("Storing value ", value, " at address ", addr !uint64, "\n")
             @addr = value
         case Opcode::PUSH8
             let value = @((state.code ++ state.ip) !*int8)
@@ -365,6 +388,7 @@ def eval(program: &Program, state: *State) {
         case Opcode::ADDROFGLOBAL
             let global_index = @((state.code ++ state.ip) !*uint16)
             let global_name = state.program.globals(global_index)
+            print("Getting address of global: ", global_name, "\n")
             let global_addr = get_global_address(state, global_name)
             push_stack(state, global_addr !int64)
             state.ip += 2
@@ -495,6 +519,12 @@ def eval(program: &Program, state: *State) {
 
             let global_name = state.program.globals(global_index)
             call_global(state, nargs, global_name)
+        case Opcode::CALL
+            let call_signature_index = @((state.code ++ state.ip) !*uint16)
+            state.ip += 2
+            let signature = state.program.call_signatures(call_signature_index)
+            let fp = pop_stack(state) !*
+            call_local(state, signature, fp)
         case Opcode::BR
             let label_if_false = @((state.code ++ state.ip) !*uint32)
             let label_if_true = @((state.code ++ (state.ip + 4)) !*uint32)
@@ -542,7 +572,7 @@ def eval(program: &Program, state: *State) {
             error(op, "\n")
             assert false, "Unknown opcode"
         }
-        //print_stack(state)
+        print_stack(state)
     }
 }
 
@@ -593,14 +623,14 @@ def type_to_ffi(tpe: &typechecking::Type, varargs: bool = false) -> ffi::s__ffi_
 }
 
 def get_global_address(state: *State, global_name: Str) -> * {
+    var function = state.module.result.functions.get_or_default(global_name, null)
+    if function {
+        return to_function_ptr(function)
+    }
+
     let cstate = state.module.compiler_state
     var mem = cstate.globals.get_or_default(global_name, null)
     if mem { return mem }
-
-    var function = state.module.result.functions.get_or_default(global_name, null)
-    if function {
-        assert false, "Getting address of functions is not implemented yet"
-    }
 
     var global = state.module.result.globals.get_or_default(global_name, null)
     if not global {
@@ -622,107 +652,148 @@ def get_global_address(state: *State, global_name: Str) -> * {
     return mem
 }
 
-def call_global(state: *State, nargs: uint16, global_name: Str) {
-    //print("Calling global function: ", global_name, " with ", nargs, " arguments\n")
+def ffi_call(state: *State, 
+    ffi_cif: *ffi::s_ffi_cif, ffi_function_ptr: (def ->), varargs: bool,
+    args: &Vector(typechecking::NamedParameter), ret_tpe: &typechecking::Type, nargs: uint32) {
+
+    let avalues = allocate((size_of type *) * nargs) !**
+    for var j in 0..nargs {
+        var i = nargs - 1 - j
+        var tpe: typechecking::TypeId
+        if i >= args.length {
+            tpe = args(args.length - 1).tpe
+        } else {
+            tpe = args(i).tpe
+        }
+        if varargs { tpe = promote(tpe) }
+
+        state.sp -= bytecode::round_up(tpe.resolve().size, 8) / 8
+        let mem = (state.stack ++ (state.sp * 8)) !*
+        @(avalues ++ i) = mem
+    }
+
+    var rvalue: * = null
+    if ret_tpe {
+        // TODO Define the register size somewhere
+        // Can we even return structs like this?
+        var size = 8 !size_t
+        if ret_tpe.size > size {
+            size = ret_tpe.size
+        }
+        rvalue = allocate(size) !*
+    }
+
+    ffi::ffi_call(ffi_cif, ffi_function_ptr, rvalue, avalues)
+
+    // add the return value to the stack
+    if rvalue != null {
+        if ret_tpe.size <= 8 {
+            push_stack(state, @(rvalue !*int64))
+        } else {
+            let size = round_up(ret_tpe.size, 8)
+            std::memcpy(state.stack ++ (state.sp * 8), rvalue, ret_tpe.size)
+            state.sp += size / 8
+        }    
+    }
+
+    free(avalues)
+    free(rvalue)
+}
+
+def ffi_prep_cif(varargs: bool, args: &Vector(typechecking::NamedParameter), ret_tpe: &typechecking::Type, nargs: uint32, call_site: *FFICallSite) -> ffi::e_ffi_status {
+    call_site.ffi_args = allocate((size_of type *ffi::s__ffi_type) * nargs) !**ffi::s__ffi_type
+    
+    for var i in 0..nargs {
+        var tpe: typechecking::TypeId
+        if i >= args.length {
+            tpe = args(args.length - 1).tpe
+        } else {
+            tpe = args(i).tpe
+        }
+
+        if varargs { tpe = promote(tpe) }
+        let ffi_tpe = allocate(ffi::s__ffi_type)
+        @ffi_tpe = type_to_ffi(tpe)
+        @(call_site.ffi_args ++ i) = ffi_tpe
+    }
+
+    let ffi_ret_tpe = allocate(ffi::s__ffi_type)
+    @ffi_ret_tpe = type_to_ffi(ret_tpe)
+    call_site.ffi_ret_tpe = ffi_ret_tpe
+
+    var status: ffi::e_ffi_status = ffi::e_ffi_status::FFI_OK
+    if varargs {
+        status = ffi::ffi_prep_cif_var(*call_site.ffi_cif, ffi::e_ffi_abi::FFI_DEFAULT_ABI, (args.length - 1) !uint, nargs, call_site.ffi_ret_tpe, call_site.ffi_args)
+    } else {
+        status = ffi::ffi_prep_cif(*call_site.ffi_cif, ffi::e_ffi_abi::FFI_DEFAULT_ABI, nargs, call_site.ffi_ret_tpe, call_site.ffi_args)
+    }
+}
+
+def call_local(state: *State, signature: typechecking::Signature, fp: *) {
+    let function = function_store.mem_to_fun.get_or_default(fp !size_t, null)
+    if function {
+        call_global(state, signature.parameter_t.length !uint32, function)
+        return
+    }
+
+    var ret_tpe: &typechecking::Type
+    if signature.return_t.length > 0 {
+        ret_tpe = signature.return_t(0)
+    }
+
+    var call_site: FFICallSite
+    if function_store.ffi_cifs.contains(fp !size_t) {
+        call_site = function_store.ffi_cifs(fp !size_t)
+    } else {
+        let status = ffi_prep_cif(false, signature.parameter_t, ret_tpe, signature.parameter_t.length !uint32, *call_site)
+        if status != ffi::e_ffi_status::FFI_OK {
+            error("Failed to prepare ffi for function pointer `", fp, "` Status: ", status, "\n")
+            assert
+        }
+        function_store.ffi_cifs(fp !size_t) = call_site
+    }
+    ffi_call(state, *call_site.ffi_cif, fp !(def ->), false, signature.parameter_t, ret_tpe, signature.parameter_t.length !uint32)
+}
+
+def call_global(state: *State, nargs: uint32, global_name: Str) {
     let function = consteval::const_module.result.functions.get_or_default(global_name, null)
     if function == null {
         error("Function '", global_name, "' not found\n")
         assert
-    } else if function.imported {
+    }
+    call_global(state, nargs, function)
+}
+
+def call_global(state: *State, nargs: uint32, function: &compiler::Function) {
+    print("Calling function `", function.name, "` with ", nargs, " arguments\n")
+    if function.imported {
         let ret_tpe = function.ret.resolve()
-        let ffi_function = preload::symbols(global_name)
+        let ffi_function = preload::symbols(function.name)
         let ffi_function_ptr = preload::get_function(ffi_function)
 
-        let ffi_cif = *ffi_function.ffi_cif
-        var ffi_args: **ffi::s__ffi_type
-        var ffi_ret_tpe: *ffi::s__ffi_type
+        var call_site: FFICallSite
+        call_site.ffi_cif = ffi_function.ffi_cif
+        call_site.ffi_args = ffi_function.args
+        call_site.ffi_ret_tpe = ffi_function.ret
 
         if function.varargs or not ffi_function.initialized {
-            ffi_args = allocate((size_of type *ffi::s__ffi_type) * nargs) !**ffi::s__ffi_type
-            
-            for var i in 0..nargs {
-                var tpe: typechecking::TypeId
-                if i >= function.args.length {
-                    tpe = function.args(function.args.length - 1).tpe
-                } else {
-                    tpe = function.args(i).tpe
-                }
-
-                if function.varargs { tpe = promote(tpe) }
-                let ffi_tpe = allocate(ffi::s__ffi_type)
-                @ffi_tpe = type_to_ffi(tpe)
-                @(ffi_args ++ i) = ffi_tpe
+            let status = ffi_prep_cif(function.varargs, function.args, ret_tpe, nargs, *call_site)
+            if status != ffi::e_ffi_status::FFI_OK {
+                error("Failed to prepare ffi for function `", ffi_function.name, "`. Status: ", status, "\n")
+                assert
             }
-
-            ffi_ret_tpe = allocate(ffi::s__ffi_type)
-            @ffi_ret_tpe = type_to_ffi(ret_tpe)
+            ffi_function.ffi_cif = call_site.ffi_cif
+            ffi_function.args = call_site.ffi_args
+            ffi_function.ret = call_site.ffi_ret_tpe
             ffi_function.arglen = function.args.length
-            ffi_function.args = ffi_args
-            ffi_function.ret = ffi_ret_tpe
-        }
-
-        var status: ffi::e_ffi_status = ffi::e_ffi_status::FFI_OK
-        if function.varargs {
-            status = ffi::ffi_prep_cif_var(ffi_cif, ffi::e_ffi_abi::FFI_DEFAULT_ABI, (function.args.length - 1) !uint, nargs !uint, ffi_ret_tpe, ffi_args)
-        } else if not ffi_function.initialized {
-            status = ffi::ffi_prep_cif(ffi_cif, ffi::e_ffi_abi::FFI_DEFAULT_ABI, nargs !uint, ffi_ret_tpe, ffi_args)
             ffi_function.initialized = true
         }
 
-        if status != ffi::e_ffi_status::FFI_OK {
-            error("Failed to prepare ffi for function `", ffi_function.name, "`. Status: ", status, "\n")
-            assert
-        }
-
-        let avalues = allocate((size_of type *) * nargs) !**
-        for var j in 0..nargs {
-            var i = nargs - 1 - j
-            var tpe: typechecking::TypeId
-            if i >= function.args.length {
-                tpe = function.args(function.args.length - 1).tpe
-            } else {
-                tpe = function.args(i).tpe
-            }
-            if function.varargs { tpe = promote(tpe) }
-
-            state.sp -= bytecode::round_up(tpe.resolve().size, 8) / 8
-            let mem = (state.stack ++ (state.sp * 8)) !*
-            @(avalues ++ i) = mem
-        }
-
-        var rvalue: * = null
-        if ret_tpe {
-            // TODO Define the register size somewhere
-            var size = 8 !size_t
-            if ret_tpe.size > size {
-                size = ret_tpe.size
-            }
-            rvalue = allocate(size) !*
-        }
-
-        ffi::ffi_call(ffi_cif, ffi_function_ptr, rvalue, avalues)
-
-        // add the return value to the stack
-        if rvalue != null {
-            if ret_tpe.size <= 8 {
-                push_stack(state, @(rvalue !*int64))
-            } else {
-                let size = round_up(ret_tpe.size, 8)
-                std::memcpy(state.stack ++ (state.sp * 8), rvalue, ret_tpe.size)
-                state.sp += size / 8
-            }    
-        }
+        ffi_call(state, *call_site.ffi_cif, ffi_function_ptr, function.varargs, function.args, ret_tpe, nargs)
 
         if function.varargs {
-            // Cleanup
-            for var i in 0..function.args.length {
-                free(@(ffi_args ++ i))
-            }
-            free(ffi_args)
-            free(ffi_ret_tpe)
+            cleanup(*call_site)
         }
-        free(avalues)
-        free(rvalue)
     } else {
         if not function.bytecode {
             function.bytecode = bytecode::to_bytecode(function)

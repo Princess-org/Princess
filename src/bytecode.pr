@@ -33,7 +33,7 @@ export type Opcode = enum: uint8 {
     FNEG; DNEG
     POP64; DUP64
 
-    CALL; RET; RETVOID
+    RET; RETVOID
 
     LOAD8; LOAD16; LOAD32; LOAD64
     STORE8; STORE16; STORE32; STORE64
@@ -66,7 +66,7 @@ export type Opcode = enum: uint8 {
     STOREI; STOREI8; STOREI16; STOREI32; STOREI64
 
     // Instructions with special arguments
-    GOTO; BR; CALLG; SWAP
+    GOTO; BR; CALL; CALLG; SWAP
     ADDROFLOCAL;
 
     // arg1 is size, arg2 is number of cases
@@ -122,6 +122,7 @@ def push_insn(block: &Block, insn: Instruction) {
 type Cfg = struct {
     parameter_count: uint64
     parameters: &SMap(int)
+    call_signatures: &Vector(typechecking::Signature)
     globals: &SMap(uint64)
     last_global: uint64
     variables: &SMap(Variable)
@@ -249,6 +250,7 @@ def create_cfg(block: &compiler::Block) -> Cfg {
     }
     return [
         globals = globals,
+        call_signatures = vector::make(typechecking::Signature),
         variables = variables,
         local_offset = local_offset,
         blocks = blocks,
@@ -748,7 +750,7 @@ def store_size(block: &Block, sz: uint64) {
     }
 }
 
-def store_value(cfg: *Cfg, block: &Block, value: compiler::Value) {
+def store_value(cfg: *Cfg, block: &Block, value: compiler::Value, loc: compiler::Value) {
     let tpe = value.tpe.resolve()
     let size = tpe.size
     let sizer = round_up(size, 8)
@@ -756,7 +758,14 @@ def store_value(cfg: *Cfg, block: &Block, value: compiler::Value) {
     if value.kind == compiler::ValueKind::LOCAL or 
         value.kind == compiler::ValueKind::GLOBAL {
         store_size(block, size)
+
+        // Roll address to the top of the stack if value is not a stack value
+        if value.kind == compiler::ValueKind::GLOBAL {
+            block.push_insn([ op = Opcode::ROLL, arg1 = sizer / 8 ] !Instruction)
+        }
+
         expect_value(cfg, block, value)
+        expect_value(cfg, block, loc)
     } else {
         let vsize = tpe.size
         let mem = allocate_ref(uint8, vsize)
@@ -779,7 +788,8 @@ def store_value(cfg: *Cfg, block: &Block, value: compiler::Value) {
             } else {
                 block.push_insn([ op = Opcode::STOREI, arg1 = vsize, value = mem ] !Instruction)
             }
-        } 
+        }
+        expect_value(cfg, block, loc)
     }
 
     if cfg.max_stack_size < block.stack.length + (sizer / 8) {
@@ -805,8 +815,7 @@ def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Bl
         case compiler::InsnKind::STORE
             let value = insn.value.store.value
             let loc = insn.value.store.loc
-            store_value(cfg, block, value)
-            expect_value(cfg, block, loc)
+            store_value(cfg, block, value, loc)
         case compiler::InsnKind::LOAD
             let value = insn.value.load.value
             let loc = insn.value.load.loc
@@ -904,8 +913,14 @@ def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Bl
                 push_stack_value(cfg, block, insn.value.call.ret)
             }
             if insn.value.call.name.kind == compiler::ValueKind::LOCAL {
-                expect_value(cfg, block, insn.value.call.name)
-                block.push_insn([ op = Opcode::CALL ] !Instruction)
+                // TODO varargs get cleared by this (We don't even support varargs for function pointers yet)
+                let ftpe = insn.value.call.name.tpe.tpe.resolve()
+                let offset = cfg.call_signatures.length
+                cfg.call_signatures.push([
+                    parameter_t = ftpe.parameter_t, 
+                    return_t = ftpe.return_t 
+                ] !typechecking::Signature)
+                block.push_insn([ op = Opcode::CALL, arg1 = offset ] !Instruction)
             } else if insn.value.call.name.kind == compiler::ValueKind::GLOBAL {
                 block.push_insn([ 
                     op = Opcode::CALLG, 
@@ -965,6 +980,8 @@ def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Bl
                 }
             }
 
+            let param_size = block.stack.length - actual_stack.length
+
             let s_tmp = block.stack.copy()
             s_tmp.add_all(actual_stack)
             actual_stack = s_tmp        
@@ -978,6 +995,10 @@ def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Bl
 
             block.insn = insn_before
             equalize_stacks(block, actual_stack, expected_stack)
+
+            if insn.value.call.name.kind == compiler::ValueKind::LOCAL {
+                expect_value(cfg, block, insn.value.call.name)
+            }
             block.insn.add_all(insn_added)
 
             if stack_size > cfg.max_stack_size {
@@ -1308,6 +1329,7 @@ export def to_bytecode(block: &compiler::Block, args: &Vector(typechecking::Name
 
     let program = [
         globals = globals_inverse,
+        call_signatures = cfg.call_signatures,
         max_stack_size = max_stack_size,
         code = code,
         locals_size = cfg.local_offset
@@ -1344,6 +1366,10 @@ export def to_bytecode(block: &compiler::Block, args: &Vector(typechecking::Name
                 code.resize(code.length + 8) // reserve 8 bytes for labels
                 label_map(code.length - 8) = insn.arg1 !uint32
                 label_map(code.length - 4) = insn.arg2 !uint32
+            case Opcode::CALL
+                assert insn.arg1 <= 0xFFFF
+                code.resize(code.length + 2)
+                @(code.get(code.length - 2) !*uint16) = insn.arg1 !uint16
             case Opcode::CALLG
                 assert insn.arg1 <= 0xFFFF
                 assert insn.arg2 <= 0xFFFF
@@ -1439,8 +1465,8 @@ let src = """
         vec.push(-7)
         bubble_sort(vec)
         
-        for var i in 0..vec.length {
-            cstd::printf("%d ".value, vec(i))
+        for var e in vec {
+            cstd::printf("%d ".value, e)
         }
         cstd::printf("\n".value)
     }
