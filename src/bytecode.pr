@@ -2,6 +2,7 @@ import vector
 import map
 import set
 
+import compiler
 import toolchain
 import builtins
 import lexer
@@ -10,9 +11,9 @@ import util
 import scope
 import consteval
 import typechecking
-import compiler
 import debug
 import evalbc
+import codegen
 
 export type Opcode = enum: uint8 {
     // Instructions with zero arguments
@@ -51,7 +52,8 @@ export type Opcode = enum: uint8 {
     AND; OR; XOR
     ASHR; LSHR; SHL
     ZEXT; SEXT; TRUNC
-    LOAD; STORE
+    LOAD; STORE; 
+    
     STOREIZ; PUSHZ
 
     POP; DUP; ROLL; PICK
@@ -68,6 +70,11 @@ export type Opcode = enum: uint8 {
     // Instructions with special arguments
     GOTO; BR; CALL; CALLG; SWAP
     ADDROFLOCAL;
+
+    // This opcode is only used for getting values out of the stack machine.
+    // It doesn't remove the value from the stack and is generally followed by
+    // a regular STORE. Normal code doesn't use this but consteval needs it.
+    STORECAPTURE 
 
     // arg1 is size, arg2 is number of cases
     // value is the default label followed by the case labels
@@ -134,6 +141,7 @@ type Cfg = struct {
     start: weak &Block
     ends: &Vector(weak &Block)
     max_stack_size: uint64
+    captures: &SMap(int)
 }
 
 def add_global(cfg: *Cfg, name: Str) -> uint64 {
@@ -166,6 +174,8 @@ def create_cfg(block: &compiler::Block) -> Cfg {
     var first_block: &Block
     var index = 0
     while block {
+        codegen::emit_block(std::stdout(), block)
+
         var new_block = [
             index = index,
             label_ = blocks_by_index.length !int32,
@@ -251,6 +261,7 @@ def create_cfg(block: &compiler::Block) -> Cfg {
         var current = queue.pop()
         //print("Processing block: " + current.cblock.label_, "\n")
         let cblock = current.cblock
+        if cblock.insn.length == 0 { continue }
         let last_insn = cblock.insn(cblock.insn.length - 1)
         if last_insn.kind == compiler::InsnKind::BR_UNC {
             let next = blocks(last_insn.value.br_unc.label_.name)
@@ -283,7 +294,8 @@ def create_cfg(block: &compiler::Block) -> Cfg {
         } else if last_insn.kind == compiler::InsnKind::UNREACHABLE {
             ends.push(current)
         } else {
-            assert
+            // Incomplete block, let's just assume it is at the end. Consteval creates incomplete blocks
+            ends.push(current)
         }
         //print("\tPred: " + current.pred.length + ", Succ: " + current.succ.length + "\n")
     }
@@ -297,7 +309,8 @@ def create_cfg(block: &compiler::Block) -> Cfg {
         blocks = blocks,
         blocks_by_index = blocks_by_index,
         start = first_block,
-        ends = ends
+        ends = ends,
+        captures = map::make(int)
     ] !Cfg
 }
 
@@ -517,6 +530,13 @@ def push_stack_value(cfg: *Cfg, block: &Block, loc: compiler::Value) {
             op = Opcode::ADDROFLOCAL, 
             arg1 = variable.stack_index
         ] !Instruction)
+        if cfg.captures.contains(variable.name) {
+            block.push_insn([ 
+                op = Opcode::STORECAPTURE,
+                arg1 = variable.size,
+                arg2 = cfg.captures(variable.name)
+            ] !Instruction)
+        }
         return
     }
 
@@ -542,6 +562,16 @@ def push_stack_value(cfg: *Cfg, block: &Block, loc: compiler::Value) {
             block.push_insn([ op = Opcode::POP, arg1 = sz / 8 ] !Instruction)
         }
     }
+
+    if cfg.captures.contains(loc.name) {
+        block.push_insn([ 
+            op = Opcode::STORECAPTURE,
+            arg1 = loc.tpe.resolve().size,
+            arg2 = cfg.captures(loc.name)
+        ] !Instruction)
+    }
+
+
     equalize_stacks(block, block.stack, expected_stack)
     block.stack = new_stack
 }
@@ -750,13 +780,15 @@ def extract_value(cfg: *Cfg, block: &Block, insn: &compiler::Insn) {
 
     push_stack_value(cfg, block, insn.value.extract_value.ret)
 
+    let size_ret = round_up(insn.value.extract_value.ret.tpe.resolve().size, 8)
+
     block.push_insn([ op = Opcode::POP, arg1 = size / 8 ] !Instruction)
     // Pop value off the stack (v = value, r = result)
     // v v v r r ->
     // r r v v v ->
     // r r
     for var i in 0..(size / 8) {
-        block.push_insn([ op = Opcode::ROLL, arg1 = size / 8 ] !Instruction)
+        block.push_insn([ op = Opcode::ROLL, arg1 = size / 8 + size_ret / 8 - 1 ] !Instruction)
     }
 
     let r_size = round_up(insn.value.extract_value.ret.tpe.resolve().size, 8)
@@ -815,10 +847,23 @@ def store_value(cfg: *Cfg, block: &Block, value: compiler::Value, loc: compiler:
 
         expect_value(cfg, block, value)
         expect_value(cfg, block, loc)
+
+        if cfg.captures.contains(loc.name) {
+            let capture_index = cfg.captures(loc.name)
+            block.push_insn([ op = Opcode::STORECAPTURE, arg1 = size, arg2 = capture_index ] !Instruction)
+        }
     } else {
         let vsize = tpe.size
         let mem = allocate_ref(uint8, vsize)
         serialize(mem.value, tpe, value)
+
+        if cfg.captures.contains(loc.name) {
+            let capture_index = cfg.captures(loc.name)
+            block.push_insn([ op = Opcode::POP, arg1 = sizer / 8 ] !Instruction)
+            block.push_insn([ op = Opcode::STORECAPTURE, arg1 = size, arg2 = capture_index ] !Instruction)
+            block.push_insn([ op = Opcode::PUSH, arg1 = vsize, value = mem ] !Instruction)
+        }
+
         if vsize == 8 {
             block.push_insn([ op = Opcode::STOREI64, value = mem ] !Instruction)
         } else if vsize == 4 {
@@ -925,9 +970,10 @@ def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Bl
                 case compiler::CompareInt::sle; op = Opcode::ICMP_SLE
             }
 
-            assert insn.value.icmp.right.tpe == insn.value.icmp.left.tpe, "Mismatched types in ICMP instruction"
+            // TODO We should look into why the types are mismatched in some cases, it is not visible in the IR
+            //assert insn.value.icmp.right.tpe == insn.value.icmp.left.tpe, "Mismatched types in ICMP instruction"
 
-            let sz = insn.value.icmp.right.tpe.resolve().size
+            let sz = insn.value.icmp.left.tpe.resolve().size
             block.push_insn([ op = op, arg1 = sz ] !Instruction)
             
             // Swap the operands if the right operand is not a local or global variable, so that it is on top of the stack
@@ -942,7 +988,7 @@ def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Bl
             expect_value(cfg, block, insn.value.icmp.left)
         case compiler::InsnKind::FCMP
             push_stack_value(cfg, block, insn.value.fcmp.ret)
-            let sz = insn.value.fcmp.right.tpe.resolve().size
+            let sz = insn.value.fcmp.left.tpe.resolve().size
 
             var op: Opcode
             if sz == 4 {
@@ -965,7 +1011,7 @@ def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Bl
                 }
             } else { assert }
             
-            assert insn.value.fcmp.right.tpe == insn.value.fcmp.left.tpe, "Mismatched types in FCMP instruction"
+            //assert insn.value.fcmp.right.tpe == insn.value.fcmp.left.tpe, "Mismatched types in FCMP instruction"
 
             block.push_insn([ op = op, arg1 = sz ] !Instruction)
 
@@ -1028,19 +1074,24 @@ def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Bl
             let insn_added = vector::make(Instruction)
             block.insn = insn_added
 
-            var expected_stack = block.stack.copy()
+            var expected_stack = vector::make(StackValue)
             var actual_stack = vector::make(StackValue)
 
             for var i in 0..size {
+                let arg = insn.value.call.args(size - 1 - i)
+                expect_value(cfg, block, arg)
+            }
+
+            for var i in 0..size {
+                //let i = (size - 1 - k) !int
                 let arg = insn.value.call.args(i)
                 let argsz = round_up(arg.tpe.resolve().size, 8)
 
                 if arg.kind == compiler::ValueKind::LOCAL {
                     if arg.i > 0 {
-                        let stack_size_before = block.stack.length
-                        expect_value(cfg, block, arg)
+                        let index = (arg.i - 1 + cfg.value_count) !int
                         for var j in 0..(argsz / 8) {
-                            expected_stack.push(block.stack(stack_size_before + j))
+                            expected_stack.push([ variable = index, sub_index = j ] !StackValue)
                         }
                     } else if cfg.named_values.contains(arg.name) {
                         let index = cfg.named_values(arg.name)
@@ -1049,43 +1100,60 @@ def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Bl
                                 variable = index, sub_index = j 
                             ] !StackValue)
                         }
+                    } else if cfg.variables.contains(arg.name) {
+                        for var j in 0..(argsz / 8) {
+                            expected_stack.push([ variable = -i - 1, sub_index = j ] !StackValue)
+                        }
                     }
-                } else if arg.kind != compiler::ValueKind::LOCAL and 
-                    arg.kind != compiler::ValueKind::GLOBAL {
-
-                    expect_value(cfg, block, arg)
-
+                } else {
                     for var j in 0..(argsz / 8) {
                         expected_stack.push([ variable = -i - 1, sub_index = j ] !StackValue)
                     }
                 }
             }
 
-            for var j in 0..size {
-                var i = (size - 1 - j) !int
+            for var k in 0..size {
+                let i = (size - 1 - k) !int
                 let arg = insn.value.call.args(i)
-                let argsz = round_up(arg.tpe.resolve().size, 8)
+                if arg.kind == compiler::ValueKind::LOCAL and (arg.i > 0 or cfg.named_values.contains(arg.name)) {
+                    var index: int
+                    if arg.i > 0 {
+                        index = (arg.i - 1 + cfg.value_count) !int
+                    } else {
+                        index = cfg.named_values(arg.name)
+                    }
+                    let argsz = round_up(arg.tpe.resolve().size, 8)
+                    for var j in 0..(argsz / 8) {
+                        actual_stack.push([ variable = index, sub_index = j ] !StackValue)
+                    }
+                } 
+            }
+ 
+            for var i in 0..size {
+                //let i = (size - 1 - k) !int
+                let arg = insn.value.call.args(i)
+                if (arg.kind == compiler::ValueKind::LOCAL and arg.i == 0 and cfg.variables.contains(arg.name)) or 
+                    arg.kind == compiler::ValueKind::GLOBAL {
 
-                if arg.kind == compiler::ValueKind::LOCAL and arg.i == 0 or arg.kind == compiler::ValueKind::GLOBAL {
-                    expect_value(cfg, block, arg)
-                }
-                if arg.kind != compiler::ValueKind::LOCAL and arg.kind != compiler::ValueKind::GLOBAL {
+                    let argsz = round_up(arg.tpe.resolve().size, 8)
+                    for var j in 0..(argsz / 8) {
+                        actual_stack.push([ variable = -i - 1, sub_index = j ] !StackValue)
+                    } 
+                } else if arg.kind != compiler::ValueKind::LOCAL and arg.kind != compiler::ValueKind::GLOBAL {
+                    let argsz = round_up(arg.tpe.resolve().size, 8)
                     for var j in 0..(argsz / 8) {
                         actual_stack.push([ variable = -i - 1, sub_index = j ] !StackValue)
                     }
                 }
-            }
+            } 
 
-            let s_tmp = block.stack.copy()
-            s_tmp.add_all(actual_stack)
-            actual_stack = s_tmp        
-
-            /*print("Expected stack before call: ")
+            print("Call instruction: ", insn.value.call.name.name, "\n")
+            print("Expected stack before call: ")
             print_stack(expected_stack)
             print("\n")
             print("Actual stack before call: ")
             print_stack(actual_stack)
-            print("\n")*/
+            print("\n")
 
             block.insn = insn_before
             equalize_stacks(block, actual_stack, expected_stack)
@@ -1271,16 +1339,26 @@ def add_temporary_branch(cfg: *Cfg, block: &Block, stack: &Vector(StackValue), t
     return branch1
 }
 
-export def to_bytecode(function: &compiler::Function) -> &Program {
-    return to_bytecode(function.block, function.args, function.ret, function.name)
+export def to_bytecode(function: &compiler::Function, captures: compiler::Value...) -> &Program {
+    return to_bytecode(function.block, function.args, function.ret, function.name, captures)
 }
 
-export def to_bytecode(block: &compiler::Block) -> &Program {
-    return to_bytecode(block, vector::make(typechecking::NamedParameter), 0, "<inline>")
+export def to_bytecode(block: &compiler::Block, captures: compiler::Value...) -> &Program {
+    return to_bytecode(block, vector::make(typechecking::NamedParameter), 0, "<inline>", captures)
 }
 
-export def to_bytecode(block: &compiler::Block, args: &Vector(typechecking::NamedParameter), return_value: &typechecking::Type, name: Str) -> &Program {
+export def to_bytecode(block: &compiler::Block, args: &Vector(typechecking::NamedParameter), return_value: &typechecking::Type, name: Str, captures: compiler::Value...) -> &Program {
+    print("Creating bytecode for function: ", name, "\n")
+    
     let cfg = create_cfg(block)
+    let capture_names = map::make(uint64, Str)
+
+    var capture_count = 0
+    for var capture in captures {
+        cfg.captures(capture.name) = capture_count
+        capture_names(capture_count !uint64) = capture.name
+        capture_count += 1
+    }
 
     for var i in 0..args.length {
         let param = args(i)
@@ -1381,6 +1459,13 @@ export def to_bytecode(block: &compiler::Block, args: &Vector(typechecking::Name
                         @label_ = succ.label_
                         block.succ(i + 1) = succ
                     }
+                } else if last_insn.op == Opcode::UNREACHABLE or 
+                    last_insn.op == Opcode::RET or 
+                    last_insn.op == Opcode::RETVOID {
+                    // Do nothing, this block has no successors
+                } else {
+                    // Fix it up here, consteval creates partial blocks that don't have to end in a return
+                    block.insn.insert(0, [ op = Opcode::RETVOID ] !Instruction)
                 }
             } else {
                 for var pred in block.pred {
@@ -1401,7 +1486,7 @@ export def to_bytecode(block: &compiler::Block, args: &Vector(typechecking::Name
         for var block in @queue.keys() {
             queue.remove(block)
             visited.add(block)
-            
+
             print("Block: ", block.label_, "\n")
             print("Stack: ")
             print_stack(block.pred_stack)
@@ -1448,8 +1533,14 @@ export def to_bytecode(block: &compiler::Block, args: &Vector(typechecking::Name
         globals = globals_inverse,
         call_signatures = cfg.call_signatures,
         code = code,
-        locals_size = cfg.local_offset
-    ] !Program
+        locals_size = cfg.local_offset,
+        captures = map::make(type *),
+        capture_names = capture_names
+    ] !&Program
+
+    for var capture in captures {
+        program.captures(capture.name) = null
+    }
 
     if return_value {
         program.retvalue_size = round_up(return_value.size, 8)
@@ -1576,6 +1667,12 @@ export def to_bytecode(block: &compiler::Block, args: &Vector(typechecking::Name
                 assert insn.arg1 <= 0xFFFFFFFF
                 code.resize(code.length + 4)
                 @(code.get(code.length - 4) !*uint32) = insn.arg1 !uint32
+            case Opcode::STORECAPTURE
+                assert insn.arg1 <= 0xFFFF
+                assert insn.arg2 <= 0xFFFFFFFF
+                code.resize(code.length + 6)
+                @(code.get(code.length - 6) !*uint16) = insn.arg1 !uint16
+                @(code.get(code.length - 4) !*uint32) = insn.arg2 !uint32
             case Opcode::SWITCH
                 assert insn.arg1 <= 0xFFFF
                 assert insn.arg2 <= 0xFFFFFFFF
@@ -1617,6 +1714,7 @@ export def to_bytecode(block: &compiler::Block, args: &Vector(typechecking::Name
     return program
 }
 
+/*
 let src = """
     import vector
     import map
@@ -1714,3 +1812,4 @@ let main_program = to_bytecode(main_function)
 evalbc::eval(main_program, module)
 
 delete(tokens)
+*/

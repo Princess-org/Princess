@@ -1,13 +1,13 @@
 import map
 import vector
 
+import compiler
 import bytecode
 import toolchain
 import ffi
 import preload
 import typechecking
 import consteval
-import compiler
 import builtins
 import debug
 
@@ -133,6 +133,113 @@ export def serialize(mem: *, tpe: &typechecking::Type, value: compiler::Value) {
     }
 }
 
+export def deserialize(mem: *, tpe: &typechecking::Type) -> compiler::Value {
+    if not mem { return NO_VALUE }
+    switch tpe.kind !int {
+        case typechecking::TypeKind::WORD, typechecking::TypeKind::CHAR
+            let size = tpe.size
+            var result: int64 = 0
+            for var i in 0..size {
+                result |= (@((mem !*uint8) ++ i) !uint64 << (i * 8))
+            }
+            if not tpe.unsig {
+                let sign = (result >> ((size - 1) * 8)) & 0x80
+                if sign {
+                    for var i in size..(size_of int64) {
+                        result |= 0xFF !int64 << (i * 8)
+                    }
+                }
+            }
+            return [ kind = compiler::ValueKind::INT, tpe = tpe.id, i = result ] !compiler::Value
+        case typechecking::TypeKind::FLOAT
+            var result: double
+            if tpe.size == (size_of float) {
+                result = @(mem !*float) !double
+            } else if tpe.size == (size_of double) {
+                result = @(mem !*double)
+            } else {
+                assert(false)
+            }
+            return [ kind = compiler::ValueKind::FLOAT, tpe = tpe.id, f = result ] !compiler::Value
+        case typechecking::TypeKind::BOOL
+            return [ kind = compiler::ValueKind::BOOL, tpe = tpe.id, i = (@(mem !*bool)) !int64 ] !compiler::Value
+        case typechecking::TypeKind::POINTER, typechecking::TypeKind::BYREF
+            return [ kind = compiler::ValueKind::POINTER, tpe = tpe.id, i = @(mem !*int64) ] !compiler::Value
+        case typechecking::TypeKind::REFERENCE, typechecking::TypeKind::WEAK_REF
+            let values = allocate_ref(compiler::Value, 3)
+            values(0) = [ kind = compiler::ValueKind::POINTER, tpe = typechecking::pointer(compiler::ref_meta()), i = @(mem !*int64) ] !compiler::Value
+            values(1) = [ kind = compiler::ValueKind::POINTER, tpe = typechecking::pointer(tpe.tpe), i = @((mem ++ (size_of type *)) !*int64) ] !compiler::Value
+            values(2) = [ kind = compiler::ValueKind::POINTER, tpe = typechecking::pointer(builtins::type_t()), i = @((mem ++ (size_of type *) * 2) !*int64) ] !compiler::Value
+            return [ kind = compiler::ValueKind::STRUCT, tpe = tpe.id, values = values ] !compiler::Value
+        case typechecking::TypeKind::UNION
+            return deserialize(mem, typechecking::static_array(builtins::int8_, tpe.size))
+        case typechecking::TypeKind::STRUCT, typechecking::TypeKind::CLOSURE
+            let len = vector::length(tpe.field_types)
+            let values = allocate_ref(compiler::Value, len)
+            for var i in 0..len {
+                let type_member = tpe.field_types(i)
+                values(i) = deserialize(mem ++ type_member.offset, type_member.tpe)
+            }
+            return [ kind = compiler::ValueKind::STRUCT, tpe = tpe.id, values = values ] !compiler::Value
+        case typechecking::TypeKind::TUNION
+            let values = allocate_ref(compiler::Value, 2)
+            values(0) = deserialize(mem, pointer(builtins::type_t()))
+            values(1) = deserialize(mem, tpe.tpe)
+            return [ kind = compiler::ValueKind::STRUCT, tpe = tpe.id, values = values ] !compiler::Value
+        case typechecking::TypeKind::STATIC_ARRAY
+            if typechecking::equals(tpe.tpe, builtins::char_) {
+                let str = allocate_ref(char, tpe.size)
+                memcopy(mem, str.value, tpe.size)
+                return [ kind = compiler::ValueKind::STRING, tpe = tpe.id, s = str ] !compiler::Value
+            } else {
+                let values = allocate_ref(compiler::Value, tpe.size / tpe.tpe.resolve().size)
+                for var i in 0..values.size {
+                    values(i) = deserialize(mem, tpe.tpe)
+                    mem = mem ++ tpe.tpe.resolve().size
+                }
+                return [ kind = compiler::ValueKind::ARRAY, tpe = tpe.id, values = values ] !compiler::Value
+            }
+        case typechecking::TypeKind::ARRAY
+            let values = allocate_ref(compiler::Value, 2)
+            values(0) = [ kind = compiler::ValueKind::INT, tpe = builtins::size_t_, i = @(mem !*int64) ] !compiler::Value
+            values(1) = [ kind = compiler::ValueKind::POINTER, tpe = typechecking::pointer(tpe.tpe), i = @((mem ++ (size_of size_t)) !*int64) ] !compiler::Value
+            return [ kind = compiler::ValueKind::STRUCT, tpe = tpe.id, values = values ] !compiler::Value
+        /*case typechecking::TypeKind::FUNCTION
+            if function_store.store.contains(mem !size_t) {
+                return [ kind = compiler::ValueKind::FUNCTION, tpe = tpe.id, function = function_store.store(mem !size_t) ] !compiler::Value
+            } else {
+                let fp = [ is_fp = true ] !FunctionPtr
+                fp.fp = mem !(def ->)
+                return [ kind = compiler::ValueKind::FUNCTION, tpe = tpe.id, function = fp ] !compiler::Value 
+            }*/
+        case typechecking::TypeKind::ENUM
+            let value = deserialize(mem, tpe.tpe)
+            value.tpe = tpe.id
+            return value
+        case; assert(false)
+    }
+}
+
+export def set(module: &toolchain::Module, global: compiler::Value, value: compiler::Value) {
+    assert global.kind == compiler::ValueKind::GLOBAL
+    let mem = get_global_address(module, global.name)
+    serialize(mem, global.tpe, value)
+}
+
+export def get(program: &Program, value: compiler::Value, module: &toolchain::Module) -> compiler::Value {
+    if value.kind == compiler::ValueKind::LOCAL {
+        if program.captures.contains(value.name) {
+            let mem = program.captures(value.name)
+            return deserialize(mem, value.tpe.resolve())
+        }
+    } else if value.kind == compiler::ValueKind::GLOBAL {
+        let mem = get_global_address(module, value.name)
+        return deserialize(mem, value.tpe.resolve())
+    } else {
+        return value
+    }
+}
+
 type State = struct {
     module: &toolchain::Module
     program: &Program
@@ -191,6 +298,27 @@ export def eval(program: &Program, module: &toolchain::Module) {
     cleanup_state(*state)
 }
 
+// If retval is provided, it needs to be defined with the correct type
+export def eval_with_params(program: &Program, module: &toolchain::Module, params: &Vector(compiler::Value), retval: compiler::Value) -> compiler::Value {
+    let state = prepare_state(program, module)
+
+    var param_offset = 0
+    for var i in 0..params.length {
+        let param = params(params.length - 1 - i)
+        serialize(state.stack ++ param_offset, param.tpe.resolve(), param)
+        param_offset += round_up(param.tpe.resolve().size, 8)
+    }
+
+    eval(program, *state)
+
+    if state.retval and retval.kind != compiler::ValueKind::NULL {
+        retval = deserialize(state.retval, retval.tpe)
+    }
+
+    cleanup_state(*state)
+    return retval
+}
+
 def icmp(state: *State, cmp_fun: [int64, int64] -> bool) {
     let sz = @((state.code ++ state.ip) !*uint16)
     state.ip += 2
@@ -240,10 +368,10 @@ def print_stack(state: *State) {
 }
 
 def eval(program: &Program, state: *State) {
-    //print("Allocation sizes: stack = ", program.max_stack_size * 8, 
-    //    " bytes, locals = ", program.locals_size, " bytes\n")
+    print("Allocation sizes: stack = ", program.max_stack_size * 8, 
+        " bytes, locals = ", program.locals_size, " bytes\n")
     
-    //print_stack(state)
+    print_stack(state)
 
     loop {        
         assert state.sp <= state.program.max_stack_size, "Stack overflow!!!"
@@ -253,7 +381,7 @@ def eval(program: &Program, state: *State) {
             assert false, "Execution fell off a cliff" 
         }
         let op = @(state.code ++ state.ip) !bytecode::Opcode
-        //print("OP:", op, " sp: ", state.sp, ", ip: ", state.ip, "\n")
+        print("OP:", op, " sp: ", state.sp, ", ip: ", state.ip, "\n")
 
         state.ip += 1
         switch op {
@@ -294,6 +422,20 @@ def eval(program: &Program, state: *State) {
             cstd::memmove(addr, (state.stack ++ (state.sp * 8 - rsize)), size)
             state.sp -= rsize / 8
             state.ip += 2
+        case Opcode::STORECAPTURE
+            let size = @((state.code ++ state.ip) !*uint16)
+            let rsize = round_up(size, 8)
+            let capture_index = @((state.code ++ (state.ip + 2)) !*uint32)
+            state.ip += 6
+            let name = program.capture_names(capture_index)
+            var mem: *
+            if program.captures.contains(name) {
+                mem = program.captures(name)
+            } else {
+                mem = allocate(size) !*
+                program.captures(name) = mem
+            }
+            cstd::memmove(mem, (state.stack ++ (state.sp * 8 - rsize)), size)
         case Opcode::STORE8
             let addr = pop_stack(state) !*int8
             let value = pop_stack(state, int8)
@@ -598,14 +740,14 @@ def eval(program: &Program, state: *State) {
 
             let global_name = state.program.globals(global_index)
             call_global(state, nargs, global_name)
-            //print("<- ", program.name, "\n")
+            print("<- ", program.name, "\n")
         case Opcode::CALL
             let call_signature_index = @((state.code ++ state.ip) !*uint16)
             state.ip += 2
             let signature = state.program.call_signatures(call_signature_index)
             let fp = pop_stack(state) !*
             call_local(state, signature, fp)
-            //print("<- ", program.name, "\n")
+            print("<- ", program.name, "\n")
         case Opcode::BR
             let label_if_false = @((state.code ++ state.ip) !*uint32)
             let label_if_true = @((state.code ++ (state.ip + 4)) !*uint32)
@@ -620,9 +762,9 @@ def eval(program: &Program, state: *State) {
             state.ip = label_
         case Opcode::SWITCH
             let sz = @((state.code ++ state.ip) !*uint16)
-            let mask = ((1 !uint64) << (sz * 8)) - 1
+            let mask = (((1 !uint64) << (sz * 8)) - 1) if sz < 8 else (0 !uint64 - 1)
             let num_cases = @((state.code ++ (state.ip + 2)) !*uint32)
-            let value = pop_stack(state) & mask
+            let value = pop_stack(state, uint64) & mask
 
             var found_case = false
             for var i in 0..num_cases {
@@ -653,7 +795,7 @@ def eval(program: &Program, state: *State) {
             error(op, "\n")
             assert false, "Unknown opcode"
         }
-        //print_stack(state)
+        print_stack(state)
     }
 }
 
@@ -704,16 +846,26 @@ def type_to_ffi(tpe: &typechecking::Type, varargs: bool = false) -> ffi::s__ffi_
 }
 
 def get_global_address(state: *State, global_name: Str) -> * {
-    var function = state.module.result.functions.get_or_default(global_name, null)
+    return get_global_address(state.module, global_name)
+}
+
+def get_global_address(module: &toolchain::Module, global_name: Str) -> * {
+    var function = module.result.functions.get_or_default(global_name, null)
     if function {
         return to_function_ptr(function)
     }
 
-    let cstate = state.module.compiler_state
+    let cstate = module.compiler_state
     var mem = cstate.globals.get_or_default(global_name, null)
-    if mem { return mem }
+    if mem { 
+        print("Found global '", global_name, "' at ", mem, "\n")
+        return mem 
+    }
 
-    var global = state.module.result.globals.get_or_default(global_name, null)
+    var global = toolchain::types.result.globals.get_or_default(global_name, null)
+    if not global {
+        global = module.result.globals.get_or_default(global_name, null)
+    }
     if not global {
         global = consteval::const_module.result.globals.get_or_default(global_name, null)
     }
@@ -727,7 +879,9 @@ def get_global_address(state: *State, global_name: Str) -> * {
     }
     let ltpe = global.tpe.resolve()
     mem = cstate.mem.allocate(ltpe.size)
+    print("Allocated global '", global_name, "' of size ", ltpe.size, " at ", mem, "\n")
     if global.value {
+        print("Initializing global '", global_name, "' with value ", global.value, "\n")
         serialize(mem, ltpe, @global.value)
     }
     cstate.globals(global_name) = mem
@@ -848,7 +1002,7 @@ def call_global(state: *State, nargs: uint32, global_name: Str) {
 }
 
 def call_global(state: *State, nargs: uint32, function: &compiler::Function) {
-    //print("Calling function `", function.name, "` with ", nargs, " arguments\n")
+    print("Calling function `", function.name, "` with ", nargs, " arguments\n")
     if function.imported {
         let ret_tpe = function.ret.resolve()
         let ffi_function = preload::symbols(function.name)

@@ -15,6 +15,7 @@ import util
 import debug
 import errors
 import serialize
+import codegen
 
 export let const_module = toolchain::make_module(
     filename = null,
@@ -32,7 +33,8 @@ const_module.scope.module = const_module
 const_module.state = typechecking::make_state(const_module)
 const_module.compiler_state = compiler_state
 
-import eval
+import bytecode
+import evalbc
 
 export def make_value(value: compiler::Value) -> &scope::Value {
     let svalue = [
@@ -81,13 +83,18 @@ export def expr(node: &parser::Node, state: &typechecking::State) -> compiler::V
     let function = set_current_function()
     typechecking::walk(node.parent, node, state)
     walk(node.parent, node, state)
+
     var result = compiler::walk_expression(node, compiler_state)
-    vector::insert(function.block.insn, 0, function.allocas)
-    let estate = compile_and_eval()
+    compile_queued_functions()
+    serialize::define_deserialized_types()
+
+    if result.kind == compiler::ValueKind::LOCAL or result.kind == compiler::ValueKind::GLOBAL {
+        vector::insert(function.block.insn, 0, function.allocas)
+        let program = eval(result)
+        result = program.get(result, compiler_state.module)
+    }
 
     function_queue = prev_queue
-
-    result = eval::get_value(result, estate)
     compiler_state.function_stack.pop()
     compiler_state.current_block = previous_block
     return result
@@ -104,14 +111,20 @@ export def boolean_expr(node: &parser::Node, state: &typechecking::State) -> com
     let function = set_current_function()
     typechecking::walk(node.parent, node, state)
     walk(node.parent, node, state)
+    
     var result = compiler::walk_expression(node, compiler_state)
     result = compiler::convert_to(node, result, builtins::bool_, compiler_state)
-    vector::insert(function.block.insn, 0, function.allocas)
-    let estate = compile_and_eval()
+    
+    compile_queued_functions()
+    serialize::define_deserialized_types()
+
+    if result.kind == compiler::ValueKind::LOCAL or result.kind == compiler::ValueKind::GLOBAL {
+        vector::insert(function.block.insn, 0, function.allocas)
+        let program = eval(result)
+        result = program.get(result, compiler_state.module)
+    }
 
     function_queue = prev_queue
-
-    result = eval::get_value(result, estate)
     compiler_state.function_stack.pop()
     compiler_state.current_block = previous_block
     return result
@@ -238,15 +251,23 @@ export def evaluate_parameter(
 
         let gvalue = compiler::make_global_value(tpe, context_fun.fdef.name + "::default_param." + name, null, compiler_state, is_function_scoped = false)
 
-        let estate = compile_and_eval()
+        let program = compile_and_eval(result)
         function_queue = prev_queue
 
-        result = eval::get_value(result, estate)
-        
+        result = program.get(result, compiler_state.module)
         if result.kind != compiler::ValueKind::NULL {
-            eval::set_value(gvalue, result, estate)
+            //eval::set_value(gvalue, result, estate)
 
-            let global = eval::serialize_value(gvalue.name, state.module, compiler_state)
+            if not typechecking::is_assignable(tpe, result.tpe, state.scope) {
+                errors::errorn(param.value.param.value, debug::type_to_str(result.tpe), " is not assignable to ", debug::type_to_str(tpe))
+            } else {
+                evalbc::set(compiler_state.module, gvalue, result)
+            }
+
+            value = result
+
+            // FIXME What does this do apart from error checking?
+            /*let global = eval::serialize_value(gvalue.name, state.module, compiler_state)
             if global.value {
                 value = global.value
 
@@ -260,7 +281,7 @@ export def evaluate_parameter(
                 if not typechecking::is_assignable(tpe, global.tpe, state.scope) {
                     errors::errorn(param.value.param.value, debug::type_to_str(global.tpe), " is not assignable to ", debug::type_to_str(tpe))
                 }
-            }
+            }*/
         } else {
             if typechecking::is_pointer(tpe) {
                 value = [ kind = compiler::ValueKind::NULL, tpe = tpe ] !&compiler::Value
@@ -747,7 +768,7 @@ export def walk_top_VarDecl(node: &parser::Node, state: &typechecking::State) {
         let assign = compiler::walk_top_VarDecl(node, compiler_state, true)
         compiler::walk_expression(assign, compiler_state)
         vector::insert(function.block.insn, 0, function.allocas)
-        compile_and_eval()
+        let program = compile_and_eval()
 
         state.current_variable = prev_var
 
@@ -760,12 +781,11 @@ export def walk_top_VarDecl(node: &parser::Node, state: &typechecking::State) {
                 break
             }
             let ident = n.value.id_decl.value
-            let global = eval::serialize_value(ident.svalue.assembly_name(compiler_state), state.module, compiler_state)
-            if global {
-                ident.svalue.value = global.value
-                if global.value {
-                    ident.svalue.ident._contents_hash = hash(@global.value)
-                }
+            let g = [ kind = compiler::ValueKind::GLOBAL, name = ident.svalue.assembly_name(compiler_state), tpe = ident.tpe ] !compiler::Value
+            let global = program.get(g, compiler_state.module)
+            if global.kind != compiler::ValueKind::NULL {
+                ident.svalue.value = global
+                ident.svalue.ident._contents_hash = hash(global)
                 // Apply the cached dependencies to the actual value
                 ident.svalue.dependencies = tmpvar.dependencies.copy()
             }
@@ -838,20 +858,30 @@ def walk_VarDecl(node: &parser::Node, state: &typechecking::State) {
 
         compiler::walk_VarDecl(node, compiler_state, true)
         vector::insert(function.block.insn, 0, function.allocas)
-        let estate = compile_and_eval()
 
-        function_queue = previous_queue
-
-        let locals = eval::get_stack_frame(estate).locals
-
+        let captures = vector::make(compiler::Value)
         for var i in 0..vector::length(left) {
             let n = left(i)
             let name = n.value.id_decl.value
             let value = scope::get(state.scope, name)
+            let capture = [ kind = compiler::ValueKind::LOCAL, name = value.assembly_name(compiler_state), tpe = value.get_type() ] !compiler::Value
+
+            print("Adding catpure ", capture.name, "\n")
+            captures.push(capture)
+        }
+
+        let program = compile_and_eval(@captures.to_array())
+
+        function_queue = previous_queue
+
+        for var i in 0..vector::length(left) {
+            let n = left(i)
+            let capture = captures(i)
+            let name = n.value.id_decl.value
+            let value = scope::get(state.scope, name)
             // TODO We need to serialize these ones as well, move them out of the function
-            let mem = locals(value.assembly_name(compiler_state))
-            let ptr = eval::get(mem, typechecking::pointer(value.get_type()))
-            let constant = eval::get(ptr.i !*, value.get_type())
+            let constant = program.get(capture, compiler_state.module)
+
             value.value = constant
             value.ident._contents_hash = hash(constant)
         }
@@ -1000,11 +1030,18 @@ export def compile_queued_functions {
     recursion_guard = false
 }
 
-def compile_and_eval -> &eval::State {
+def compile_and_eval(captures: compiler::Value...) -> &compiler::Program {
     //compiler::load_fun_load_types_function()
     compile_queued_functions()
     serialize::define_deserialized_types()
-    return eval::eval(compiler_state)
+    return eval(captures)
+}
+
+def eval(captures: compiler::Value...) -> &compiler::Program {
+    let block = compiler_state.current_function.block
+    let program = bytecode::to_bytecode(block, captures)
+    evalbc::eval(program, compiler_state.module)
+    return program
 }
 
 export def compile_function_no_queue(value: &scope::Value, context: &scope::Scope) -> &scope::Value {
@@ -1278,18 +1315,19 @@ def walk_Error(node: &parser::Node, state: &typechecking::State) {
 
     var result = compiler::walk_expression(expr, compiler_state)
     vector::insert(function.block.insn, 0, function.allocas)
-    let estate = compile_and_eval()
+    let program = compile_and_eval(result)
     function_queue = prev_queue
 
-    result = eval::get_value(result, estate)
+    result = program.get(result, compiler_state.module)
     if not typechecking::equals(result.tpe, builtins::string_) {
         errors::errorn(node, "Error pragma expects string, got ", debug::type_to_str(result.tpe))
     } else {
         var ptr: *char = null
         if result.kind == compiler::ValueKind::ADDRESS {
-            let mem = eval::get_address(@result.addr, estate)
-            let val = eval::get(eval::get(mem, typechecking::pointer(result.tpe)).i !*, result.tpe)
-            ptr = val.values(1).i !*char
+            assert
+            //let mem = eval::get_address(@result.addr, estate)
+            //let val = eval::get(eval::get(mem, typechecking::pointer(result.tpe)).i !*, result.tpe)
+            //ptr = val.values(1).i !*char
         } else {
             ptr = result.values(1).i !*char
         } 
