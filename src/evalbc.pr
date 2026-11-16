@@ -272,7 +272,7 @@ def prepare_state(program: &Program, module: &toolchain::Module) -> State {
     let state = [
         module = module,
         program = program,
-        code = program.code.get(0),
+        code = program.code.get(0) if program.code.length > 0 else null !*uint8,
         stack = allocate(program.max_stack_size * 8) !*uint8,
         locals = allocate(program.locals_size) !*int64,
         sp = 0,
@@ -308,6 +308,8 @@ export def eval_with_params(program: &Program, module: &toolchain::Module, param
         serialize(state.stack ++ param_offset, param.tpe.resolve(), param)
         param_offset += round_up(param.tpe.resolve().size, 8)
     }
+
+    state.sp = param_offset / 8
 
     eval(program, *state)
 
@@ -360,18 +362,20 @@ def dcmp(state: *State, cmp_fun: [double, double] -> bool) {
 }
 
 def print_stack(state: *State) {
-    print("stack: ")
+    bctrace("stack: ")
     for var i in 0..state.sp {
-        print(@((state.stack ++ (i * 8)) !*int64), " ")
+        bctrace(@((state.stack ++ (i * 8)) !*int64), " ")
     }
-    print("\n")
+    bctrace("\n")
 }
 
 def eval(program: &Program, state: *State) {
-    print("Allocation sizes: stack = ", program.max_stack_size * 8, 
+    bctrace("Allocation sizes: stack = ", program.max_stack_size * 8, 
         " bytes, locals = ", program.locals_size, " bytes\n")
     
     print_stack(state)
+
+    if not state.code { return }
 
     loop {        
         assert state.sp <= state.program.max_stack_size, "Stack overflow!!!"
@@ -381,7 +385,9 @@ def eval(program: &Program, state: *State) {
             assert false, "Execution fell off a cliff" 
         }
         let op = @(state.code ++ state.ip) !bytecode::Opcode
-        print("OP:", op, " sp: ", state.sp, ", ip: ", state.ip, "\n")
+        if bytecode::trace {
+            print("OP:", op, " sp: ", state.sp, ", ip: ", state.ip, "\n")
+        }
 
         state.ip += 1
         switch op {
@@ -740,14 +746,18 @@ def eval(program: &Program, state: *State) {
 
             let global_name = state.program.globals(global_index)
             call_global(state, nargs, global_name)
-            print("<- ", program.name, "\n")
+            if bytecode::trace {
+                print("<- ", program.name, "\n")
+            }
         case Opcode::CALL
             let call_signature_index = @((state.code ++ state.ip) !*uint16)
             state.ip += 2
             let signature = state.program.call_signatures(call_signature_index)
             let fp = pop_stack(state) !*
             call_local(state, signature, fp)
-            print("<- ", program.name, "\n")
+            if bytecode::trace {
+                print("<- ", program.name, "\n")
+            }
         case Opcode::BR
             let label_if_false = @((state.code ++ state.ip) !*uint32)
             let label_if_true = @((state.code ++ (state.ip + 4)) !*uint32)
@@ -795,7 +805,9 @@ def eval(program: &Program, state: *State) {
             error(op, "\n")
             assert false, "Unknown opcode"
         }
-        print_stack(state)
+        if bytecode::trace {
+            print_stack(state)
+        }
     }
 }
 
@@ -858,7 +870,7 @@ def get_global_address(module: &toolchain::Module, global_name: Str) -> * {
     let cstate = module.compiler_state
     var mem = cstate.globals.get_or_default(global_name, null)
     if mem { 
-        print("Found global '", global_name, "' at ", mem, "\n")
+        bctrace("Found global '", global_name, "' at ", mem, "\n")
         return mem 
     }
 
@@ -879,9 +891,9 @@ def get_global_address(module: &toolchain::Module, global_name: Str) -> * {
     }
     let ltpe = global.tpe.resolve()
     mem = cstate.mem.allocate(ltpe.size)
-    print("Allocated global '", global_name, "' of size ", ltpe.size, " at ", mem, "\n")
+    bctrace("Allocated global '", global_name, "' of size ", ltpe.size, " at ", mem, "\n")
     if global.value {
-        print("Initializing global '", global_name, "' with value ", global.value, "\n")
+        bctrace("Initializing global '", global_name, "' with value ", global.value, "\n")
         serialize(mem, ltpe, @global.value)
     }
     cstate.globals(global_name) = mem
@@ -1002,7 +1014,7 @@ def call_global(state: *State, nargs: uint32, global_name: Str) {
 }
 
 def call_global(state: *State, nargs: uint32, function: &compiler::Function) {
-    print("Calling function `", function.name, "` with ", nargs, " arguments\n")
+    bctrace("Calling function `", function.name, "` with ", nargs, " arguments\n")
     if function.imported {
         let ret_tpe = function.ret.resolve()
         let ffi_function = preload::symbols(function.name)
@@ -1042,12 +1054,17 @@ def call_global(state: *State, nargs: uint32, function: &compiler::Function) {
         assert function.bytecode != null
         let ret_tpe = function.ret.resolve()
         let fun_state = prepare_state(function.bytecode, function.module)
+        if fun_state.code == null { return }
        
         for var j in 0..nargs {
             var i = nargs - 1 - j
             var tpe: typechecking::TypeId
-            if i >= function.args.length {
-                tpe = function.args(function.args.length - 1).tpe
+            if i >= function.args.length - 1 {
+                let arg = function.args(function.args.length - 1)
+                tpe = arg.tpe
+                if arg.varargs {
+                    tpe = typechecking::array(tpe)
+                }
             } else {
                 tpe = function.args(i).tpe
             }
