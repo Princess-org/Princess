@@ -70,7 +70,8 @@ export def serialize(mem: *, tpe: &typechecking::Type, value: compiler::Value) {
     assert mem
 
     if value.kind == compiler::ValueKind::ZEROINITIALIZER or 
-        value.kind == compiler::ValueKind::UNDEF {
+        value.kind == compiler::ValueKind::UNDEF or 
+        value.kind == compiler::ValueKind::NULL {
         cstd::memset(mem, 0, tpe.size)
         return
     }
@@ -663,7 +664,7 @@ def eval(program: &Program, state: *State) {
             let res = value !float
             push_stack(state, @(*res !*int32))
         case Opcode::FPTOUI
-            let value = pop_stack(state) & 0xFFFFF
+            let value = pop_stack(state) & 0xFFFFFFFF
             let res = @(*value !*float) !uint64
             push_stack(state, res)
         case Opcode::DFPTOUI
@@ -671,13 +672,21 @@ def eval(program: &Program, state: *State) {
             let res = @(*value !*double) !uint64
             push_stack(state, res)
         case Opcode::FPTOSI
-            let value = pop_stack(state) & 0xFFFFF
+            let value = pop_stack(state) & 0xFFFFFFFF
             let res = @(*value !*float) !int64
             push_stack(state, res)
         case Opcode::DFPTOSI
             let value = pop_stack(state)
             let res = @(*value !*double) !int64
             push_stack(state, res)
+        case Opcode::FPTRUNC
+            let value = pop_stack(state)
+            let res = @(*value !*double) !float
+            push_stack(state, @(*res !*int32))
+        case Opcode::FPEXT
+            let value = pop_stack(state) & 0xFFFFFFFF
+            let res = @(*value !*float) !double
+            push_stack(state, @(*res !*int64))
         case Opcode::SEXT8
             let value = pop_stack(state, int8)
             push_stack(state, value)
@@ -756,6 +765,23 @@ def eval(program: &Program, state: *State) {
 
             let global_name = state.program.globals(global_index)
             call_global(state, nargs, global_name)
+            if bytecode::trace {
+                print("<- ", program.name, "\n")
+            }
+        case Opcode::CALLVA
+            let global_index = @((state.code ++ state.ip) !*uint16)
+            let nargs = @((state.code ++ (state.ip + 2)) !*uint16)
+            state.ip += 4
+
+            let args = vector::make(typechecking::NamedParameter)
+            for var i in 0..nargs {
+                let tpeid = @((state.code ++ state.ip) !*uint64)
+                state.ip += 8
+                args.push([ tpe = tpeid ] !typechecking::NamedParameter)
+            }
+
+            let global_name = state.program.globals(global_index)
+            call_va_global(state, global_name, args)
             if bytecode::trace {
                 print("<- ", program.name, "\n")
             }
@@ -1026,10 +1052,19 @@ def call_global(state: *State, nargs: uint32, global_name: Str) {
         error("Function '", global_name, "' not found\n")
         assert
     }
-    call_global(state, nargs, function)
+    call_global(state, nargs, function, function.args)
 }
 
-def call_global(state: *State, nargs: uint32, function: &compiler::Function) {
+def call_va_global(state: *State, global_name: Str, args: &Vector(typechecking::NamedParameter)) {
+    let function = consteval::const_module.result.functions.get_or_default(global_name, null)
+    if function == null {
+        error("Function '", global_name, "' not found\n")
+        assert
+    }
+    call_global(state, args.length !uint32, function, args)
+}
+
+def call_global(state: *State, nargs: uint32, function: &compiler::Function, args: &Vector(typechecking::NamedParameter) = null) {
     bctrace("Calling function `", function.name, "` with ", nargs, " arguments\n")
     if function.imported {
         let ret_tpe = function.ret.resolve()
@@ -1042,7 +1077,7 @@ def call_global(state: *State, nargs: uint32, function: &compiler::Function) {
         call_site.ffi_ret_tpe = ffi_function.ret
 
         if function.varargs or not ffi_function.initialized {
-            let status = ffi_prep_cif(function.varargs, function.args, ret_tpe, nargs, *call_site)
+            let status = ffi_prep_cif(function.varargs, args, ret_tpe, nargs, *call_site)
             if status != ffi::e_ffi_status::FFI_OK {
                 error("Failed to prepare ffi for function `", ffi_function.name, "`. Status: ", status, "\n")
                 assert
@@ -1057,7 +1092,7 @@ def call_global(state: *State, nargs: uint32, function: &compiler::Function) {
             }
         }
 
-        ffi_call(state, *call_site.ffi_cif, ffi_function_ptr, function.varargs, function.args, ret_tpe, nargs)
+        ffi_call(state, *call_site.ffi_cif, ffi_function_ptr, function.varargs, args, ret_tpe, nargs)
 
         if function.varargs {
             cleanup(*call_site)

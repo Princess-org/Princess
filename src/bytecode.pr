@@ -82,6 +82,9 @@ export type Opcode = enum: uint8 {
     // a regular STORE. Normal code doesn't use this but consteval needs it.
     STORECAPTURE 
 
+    // This opcode contains the type arguments of the call inside of the value field
+    CALLVA
+
     // arg1 is size, arg2 is number of cases
     // value is the default label followed by the case labels
     // value is 64 bits and case label is 32 bits
@@ -1074,12 +1077,36 @@ def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Bl
                 ] !typechecking::Signature)
                 block.push_insn([ op = Opcode::CALL, arg1 = offset, stack_change = stack_change ] !Instruction)
             } else if insn.value.call.name.kind == compiler::ValueKind::GLOBAL {
-                block.push_insn([ 
-                    op = Opcode::CALLG, 
-                    arg1 = add_global(cfg, insn.value.call.name.name),
-                    arg2 = insn.value.call.args.size,
-                    stack_change = stack_change
-                ] !Instruction)
+                var is_varargs = false
+                if insn.value.call.proto and insn.value.call.proto.size >= 1 {
+                    let last = insn.value.call.proto(insn.value.call.proto.size - 1)
+                    if last.varargs { is_varargs = true }
+                }
+
+                if is_varargs {
+                    let params = allocate_ref(uint8, insn.value.call.args.size * (size_of typechecking::TypeId))
+
+                    var index = params.value !*typechecking::TypeId
+                    for var i in 0..insn.value.call.args.size {
+                        @(index ++ i) = insn.value.call.args(i).tpe
+                    }
+
+                    block.push_insn([ 
+                        op = Opcode::CALLVA, 
+                        arg1 = add_global(cfg, insn.value.call.name.name),
+                        arg2 = insn.value.call.args.size,
+                        value = params,
+                        stack_change = stack_change
+                    ] !Instruction)
+                } else {
+                    block.push_insn([ 
+                        op = Opcode::CALLG, 
+                        arg1 = add_global(cfg, insn.value.call.name.name),
+                        arg2 = insn.value.call.args.size,
+                        stack_change = stack_change
+                    ] !Instruction)
+                }
+                
             }
 
             let insn_before = block.insn.copy()
@@ -1245,7 +1272,14 @@ def to_bytecode(cfg: *Cfg, block: &Block, queue: &Set(&Block), visited: &Set(&Bl
             // these actually do nothing
             push_stack_value(cfg, block, insn.value.convert.ret)
             expect_value(cfg, block, insn.value.convert.value)
-
+        case compiler::InsnKind::FPTRUNC
+            push_stack_value(cfg, block, insn.value.convert.ret)
+            block.push_insn([ op = Opcode::FPTRUNC ] !Instruction)
+            expect_value(cfg, block, insn.value.convert.value)
+        case compiler::InsnKind::FPEXT
+            push_stack_value(cfg, block, insn.value.convert.ret)
+            block.push_insn([ op = Opcode::FPEXT ] !Instruction)
+            expect_value(cfg, block, insn.value.convert.value)
         case compiler::InsnKind::FPTOUI, compiler::InsnKind::FPTOSI
             let sz = insn.value.convert.value.tpe.resolve().size
             push_stack_value(cfg, block, insn.value.convert.ret)
@@ -1624,7 +1658,7 @@ export def to_bytecode(block: &compiler::Block, args: &Vector(typechecking::Name
                 new_stack_size -= 1
             case Opcode::BR, Opcode::GOTO, Opcode::SWITCH
                 // no change
-            case Opcode::CALL, Opcode::CALLG
+            case Opcode::CALL, Opcode::CALLG, Opcode::CALLVA
                 new_stack_size += insn.stack_change
             }
             if new_stack_size > stack_size {
@@ -1653,12 +1687,16 @@ export def to_bytecode(block: &compiler::Block, args: &Vector(typechecking::Name
                 assert insn.arg1 <= 0xFFFF
                 code.resize(code.length + 2)
                 @(code.get(code.length - 2) !*uint16) = insn.arg1 !uint16
-            case Opcode::CALLG
+            case Opcode::CALLG, Opcode::CALLVA
                 assert insn.arg1 <= 0xFFFF
                 assert insn.arg2 <= 0xFFFF
                 code.resize(code.length + 4)
                 @(code.get(code.length - 4) !*uint16) = insn.arg1 !uint16
                 @(code.get(code.length - 2) !*uint16) = insn.arg2 !uint16
+                if insn.op == Opcode::CALLVA {
+                    code.resize(code.length + insn.value.size)
+                    memcopy(insn.value.value, code.get(code.length - insn.value.size), insn.value.size)
+                }
             case Opcode::PUSH8, Opcode::STOREI8
                 code.push(insn.value(0) !uint8)
             case Opcode::PUSH16, Opcode::STOREI16
