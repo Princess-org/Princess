@@ -422,6 +422,21 @@ def print_stack(stack: &Vector(StackValue)) {
     }
 }
 
+def stack_equal(a: &Vector(StackValue), b: &Vector(StackValue)) -> bool {
+    if not a or not b {
+        return not a and not b
+    }
+    if a.length != b.length {
+        return false
+    }
+    for var i in 0..a.length {
+        if a(i) != b(i) {
+            return false
+        }
+    }
+    return true
+}
+
 // TODO This function might return an absurd amount of instructions in
 // case you have big arrays (or structs) on the stack, these should be optimized to
 // using memmove instead of moving each element one by one.
@@ -1419,6 +1434,67 @@ export def to_bytecode(block: &compiler::Block, args: &Vector(typechecking::Name
 
     var queue = set::make(type &Block)
     var visited = set::make(type &Block)
+
+    for var end in cfg.ends {
+        queue.add(end)
+    }
+
+    // Stack requirements contain loops, so CFG traversal alone is not enough
+    // a backedge can add requirements to a block after that block was first
+    // processed. Compute a fixed point of the stack states before emitting
+    // instructions or adding temporary edge blocks
+    var fixed_point_iterations = 0
+    while queue.size > 0 {
+        fixed_point_iterations += 1
+        assert fixed_point_iterations < 10000, "Stack fixed-point calculation did not converge"
+
+        for var block in @queue.keys() {
+            queue.remove(block)
+
+            var stack = vector::make(StackValue)
+            var existing = set::make(StackValue)
+            for var succ in block.succ {
+                if succ.pred_stack {
+                    for var i in 0..succ.pred_stack.length {
+                        let v = succ.pred_stack(i)
+                        if not existing.contains(v) {
+                            existing.add(v)
+                            stack.push(v)
+                        }
+                    }
+                }
+            }
+
+            let old_pred_stack = block.pred_stack
+            let old_succ_stack = block.succ_stack
+            let succ_stack_changed = not stack_equal(old_succ_stack, stack)
+
+            block.stack = stack.copy()
+            block.succ_stack = stack.copy()
+
+            block.insn = vector::make(Instruction)
+            var analysis_queue = set::make(type &Block)
+            var analysis_visited = set::make(type &Block)
+            to_bytecode(*cfg, block, analysis_queue, analysis_visited)
+            block.pred_stack = block.stack.copy()
+
+            let pred_changed = not stack_equal(old_pred_stack, block.pred_stack)
+            if pred_changed or succ_stack_changed {
+                for var pred in block.pred {
+                    queue.add(pred)
+                }
+                for var succ in block.succ {
+                    queue.add(succ)
+                }
+            }
+        }
+    }
+
+    for var block in cfg.blocks_by_index {
+        block.insn = vector::make(Instruction)
+    }
+    queue.clear()
+    visited.clear()
 
     for var end in cfg.ends {
         queue.add(end)
