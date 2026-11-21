@@ -87,6 +87,9 @@ import std
     
     const SYS_pidfd_open = 434
     const POLLIN: short = 1
+    const POLLERR: short = 8
+    const POLLHUP: short = 16
+    const POLLNVAL: short = 32
     const SIGTERM = 15
 
     export type Process = struct {
@@ -135,7 +138,12 @@ import std
             // so we have to use something other than poll 
             let fd = 0
         } else {
-            let fd = linux::syscall(SYS_pidfd_open, pid, 2048 /* PIDFD_NONBLOCK */)
+            var fd = linux::syscall(SYS_pidfd_open, pid, 2048 /* PIDFD_NONBLOCK */)
+            if fd < 0 {
+                // pidfd_open may be unavailable on older kernels or emulators.
+                // Falling back to waitpid keeps Process usable.
+                fd = -1
+            }
         }
 
         return [
@@ -201,21 +209,51 @@ import std
 
             cstd::signal(cstd::SIGALRM, old_handler)
         } else {
-            var pfd = [fd = process.fd !int, events = POLLIN, revents = 0] !linux::s_pollfd;
-            if linux::poll(*pfd, 1, timeout !int) == 0 {
-                return 
+            var stat_val: int
+
+            if process.fd < 0 {
+                // waitpid fallback for kernels or runtimes without pidfd_open.
+                var status: int
+                if timeout == (-1 !ulong) {
+                    status = linux::waitpid(process.pid, *stat_val, 0)
+                } else {
+                    status = linux::waitpid(process.pid, *stat_val, 1 /* WNOHANG */)
+                    if status == 0 and timeout > 0 {
+                        linux::usleep((timeout * 1000) !uint)
+                        status = linux::waitpid(process.pid, *stat_val, 1 /* WNOHANG */)
+                    }
+                }
+
+                if status == -1 {
+                    abort("Waitpid error\n")
+                } else if status == 0 {
+                    return
+                }
+            } else {
+                var pfd = [fd = process.fd !int, events = POLLIN, revents = 0] !linux::s_pollfd;
+                let poll_result = linux::poll(*pfd, 1, timeout !int)
+                if poll_result < 0 {
+                    abort("Process poll error\n")
+                } else if poll_result == 0 {
+                    return
+                } else if (pfd.revents & (POLLNVAL | POLLERR)) != 0 {
+                    abort("Invalid process descriptor\n")
+                }
+
+                let status = linux::waitpid(process.pid, *stat_val, 1 /* WNOHANG */)
+                if status == -1 {
+                    abort("Waitpid error\n")
+                } else if status == 0 {
+                    return
+                }
             }
 
-            var stat_val: int
-            if linux::waitpid(process.pid, *stat_val, 1 /* WNOHANG */) == -1 {
-                abort("Waitpid error\n")
-            }
             if WIFSIGNALED(stat_val) {
                 process.exit_code = 128 + WTERMSIG(stat_val)
             } else if WIFEXITED(stat_val) {
                 process.exit_code = WEXITSTATUS(stat_val)
             } else {
-                abort("Invalid signal\n")
+                abort("Invalid process status\n")
             }
 
             process.running = false
@@ -231,6 +269,11 @@ import std
     }
 
     export def dispose(process: *Process) {
-        // Nothing here
+        #if not defined MACOS {
+            if process.fd >= 0 {
+                linux::close(process.fd !int)
+                process.fd = -1
+            }
+        }
     }
 }
