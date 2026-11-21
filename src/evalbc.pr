@@ -1,0 +1,1342 @@
+import map
+import vector
+import set as _set
+
+import compiler
+import bytecode
+import toolchain
+import ffi
+import preload
+import typechecking
+import consteval
+import builtins
+import debug
+
+type FFICallSite = struct {
+    ffi_cif: ffi::s_ffi_cif
+    nargs: uint32
+    ffi_args: **ffi::s__ffi_type
+    ffi_ret_tpe: *ffi::s__ffi_type
+}
+
+type FunctionStore = struct {
+    mem_to_fun: &Map(size_t, &compiler::Function)
+    fun_to_mem: &Map(&compiler::Function, size_t)
+    ffi_cifs: &Map(size_t, FFICallSite)
+}
+
+def cleanup(site: *FFICallSite) {
+    for var i in 0..site.nargs {
+        free(@(site.ffi_args ++ i))
+    }
+    free(site.ffi_args)
+    free(site.ffi_ret_tpe)
+}
+
+// This keeps memory for the function pointers around
+let function_store = [] !FunctionStore
+function_store.mem_to_fun = map::make(size_t, type &compiler::Function)
+function_store.ffi_cifs = map::make(size_t, FFICallSite)
+function_store.fun_to_mem = map::make(type &compiler::Function, size_t)
+
+export def destruct(store: *FunctionStore) {
+    for var key in @keys(function_store.mem_to_fun) {
+        free(key !*)
+    }
+    function_store.mem_to_fun.clear()
+    function_store.fun_to_mem.clear()
+    
+    for var e in function_store.ffi_cifs {
+        cleanup(*e.value)
+    }
+    function_store.ffi_cifs.clear()
+}
+
+export def hash(fun: &compiler::Function) -> size_t {
+    return fun !* !size_t
+}
+
+def to_function_ptr(function: &compiler::Function) -> * {
+    var mem = function_store.fun_to_mem.get_or_default(function, 0) !*
+    if mem { return mem }
+
+    mem = allocate(1) !*
+    function_store.mem_to_fun(mem !size_t) = function
+    function_store.fun_to_mem(function) = mem !size_t
+    return mem
+}
+
+export def serialize(mem: *, tpe: &typechecking::Type, value: compiler::Value) {
+    assert mem
+
+    if value.kind == compiler::ValueKind::ZEROINITIALIZER or 
+        value.kind == compiler::ValueKind::UNDEF or 
+        value.kind == compiler::ValueKind::NULL {
+        cstd::memset(mem, 0, tpe.size)
+        return
+    }
+    switch tpe.kind !int {
+        case typechecking::TypeKind::WORD, typechecking::TypeKind::CHAR
+            var v = value.i
+            let size = tpe.size
+            for var i in 0..size {
+                @(mem !*uint8 ++ i) = (v >> (i * 8)) !uint8
+            }
+        case typechecking::TypeKind::FLOAT
+            if tpe.size == (size_of float) {
+                @(mem !*float) = value.f !float
+            } else if tpe.size == (size_of double) {
+                @(mem !*double) = value.f
+            } else {
+                assert
+            }
+        case typechecking::TypeKind::POINTER, typechecking::TypeKind::BYREF
+            if is_function(tpe.tpe) and value.kind == compiler::ValueKind::GLOBAL {
+                var function = consteval::const_module.result.functions.get_or_default(value.name, null)
+                (@(mem !*int64)) = to_function_ptr(function) !int64
+            } else {
+                (@(mem !*int64)) = value.i
+            }
+        case typechecking::TypeKind::REFERENCE, typechecking::TypeKind::WEAK_REF
+            @(mem !*int64) = value.values(0).i
+            @((mem ++ (size_of type *)) !*int64) = value.values(1).i
+            @((mem ++ (size_of type *) * 2) !*int64) = value.values(2).i
+        case typechecking::TypeKind::BOOL
+            (@(mem !*int8)) = value.i !int8
+        case typechecking::TypeKind::STRUCT, typechecking::TypeKind::CLOSURE
+            for var i in 0..vector::length(tpe.field_types) {
+                let type_member = tpe.field_types(i)
+                serialize(mem ++ type_member.offset, type_member.tpe, value.values(i))
+            }
+        case typechecking::TypeKind::UNION
+            serialize(mem, typechecking::static_array(builtins::int8_, tpe.size), value)
+        case typechecking::TypeKind::TUNION
+            serialize(mem, pointer(builtins::type_t()), value.values(0))
+            serialize(mem ++ (size_of *), tpe.tpe, value.values(1))
+        case typechecking::TypeKind::STATIC_ARRAY
+            if typechecking::equals(tpe.tpe, builtins::char_) and value.kind == compiler::ValueKind::STRING {
+                memcopy(value.s.value, mem, tpe.length)
+            } else {
+                for var i in 0..value.values.size {
+                    let value = value.values(i)
+                    serialize(mem, tpe.tpe, value)
+                    mem = mem ++ tpe.tpe.resolve().size
+                }
+            }
+        case typechecking::TypeKind::ARRAY
+            // TODO Implementation specific
+            @(mem !*size_t) = value.values(0).i !size_t
+            @((mem ++ (size_of size_t)) !*int64) = value.values(1).i
+        case typechecking::TypeKind::ENUM
+            serialize(mem, tpe.tpe, value)
+        case
+            error(tpe.kind, "\n") 
+            assert
+    }
+}
+
+export def deserialize(mem: *, tpe: &typechecking::Type) -> compiler::Value {
+    if not mem { return NO_VALUE }
+    switch tpe.kind !int {
+        case typechecking::TypeKind::WORD, typechecking::TypeKind::CHAR
+            let size = tpe.size
+            var result: int64 = 0
+            for var i in 0..size {
+                result |= (@((mem !*uint8) ++ i) !uint64 << (i * 8))
+            }
+            if not tpe.unsig {
+                let sign = (result >> ((size - 1) * 8)) & 0x80
+                if sign {
+                    for var i in size..(size_of int64) {
+                        result |= 0xFF !int64 << (i * 8)
+                    }
+                }
+            }
+            return [ kind = compiler::ValueKind::INT, tpe = tpe.id, i = result ] !compiler::Value
+        case typechecking::TypeKind::FLOAT
+            var result: double
+            if tpe.size == (size_of float) {
+                result = @(mem !*float) !double
+            } else if tpe.size == (size_of double) {
+                result = @(mem !*double)
+            } else {
+                assert(false)
+            }
+            return [ kind = compiler::ValueKind::FLOAT, tpe = tpe.id, f = result ] !compiler::Value
+        case typechecking::TypeKind::BOOL
+            return [ kind = compiler::ValueKind::BOOL, tpe = tpe.id, i = (@(mem !*bool)) !int64 ] !compiler::Value
+        case typechecking::TypeKind::POINTER, typechecking::TypeKind::BYREF
+            return [ kind = compiler::ValueKind::POINTER, tpe = tpe.id, i = @(mem !*int64) ] !compiler::Value
+        case typechecking::TypeKind::REFERENCE, typechecking::TypeKind::WEAK_REF
+            let values = allocate_ref(compiler::Value, 3)
+            values(0) = [ kind = compiler::ValueKind::POINTER, tpe = typechecking::pointer(compiler::ref_meta()), i = @(mem !*int64) ] !compiler::Value
+            values(1) = [ kind = compiler::ValueKind::POINTER, tpe = typechecking::pointer(tpe.tpe), i = @((mem ++ (size_of type *)) !*int64) ] !compiler::Value
+            values(2) = [ kind = compiler::ValueKind::POINTER, tpe = typechecking::pointer(builtins::type_t()), i = @((mem ++ (size_of type *) * 2) !*int64) ] !compiler::Value
+            return [ kind = compiler::ValueKind::STRUCT, tpe = tpe.id, values = values ] !compiler::Value
+        case typechecking::TypeKind::UNION
+            return deserialize(mem, typechecking::static_array(builtins::int8_, tpe.size))
+        case typechecking::TypeKind::STRUCT, typechecking::TypeKind::CLOSURE
+            let len = vector::length(tpe.field_types)
+            let values = allocate_ref(compiler::Value, len)
+            for var i in 0..len {
+                let type_member = tpe.field_types(i)
+                values(i) = deserialize(mem ++ type_member.offset, type_member.tpe)
+            }
+            return [ kind = compiler::ValueKind::STRUCT, tpe = tpe.id, values = values ] !compiler::Value
+        case typechecking::TypeKind::TUNION
+            let values = allocate_ref(compiler::Value, 2)
+            values(0) = deserialize(mem, pointer(builtins::type_t()))
+            values(1) = deserialize(mem, tpe.tpe)
+            return [ kind = compiler::ValueKind::STRUCT, tpe = tpe.id, values = values ] !compiler::Value
+        case typechecking::TypeKind::STATIC_ARRAY
+            if typechecking::equals(tpe.tpe, builtins::char_) {
+                let str = allocate_ref(char, tpe.size)
+                memcopy(mem, str.value, tpe.size)
+                return [ kind = compiler::ValueKind::STRING, tpe = tpe.id, s = str ] !compiler::Value
+            } else {
+                let values = allocate_ref(compiler::Value, tpe.size / tpe.tpe.resolve().size)
+                for var i in 0..values.size {
+                    values(i) = deserialize(mem, tpe.tpe)
+                    mem = mem ++ tpe.tpe.resolve().size
+                }
+                return [ kind = compiler::ValueKind::ARRAY, tpe = tpe.id, values = values ] !compiler::Value
+            }
+        case typechecking::TypeKind::ARRAY
+            let values = allocate_ref(compiler::Value, 2)
+            values(0) = [ kind = compiler::ValueKind::INT, tpe = builtins::size_t_, i = @(mem !*int64) ] !compiler::Value
+            values(1) = [ kind = compiler::ValueKind::POINTER, tpe = typechecking::pointer(tpe.tpe), i = @((mem ++ (size_of size_t)) !*int64) ] !compiler::Value
+            return [ kind = compiler::ValueKind::STRUCT, tpe = tpe.id, values = values ] !compiler::Value
+        /*case typechecking::TypeKind::FUNCTION
+            if function_store.store.contains(mem !size_t) {
+                return [ kind = compiler::ValueKind::FUNCTION, tpe = tpe.id, function = function_store.store(mem !size_t) ] !compiler::Value
+            } else {
+                let fp = [ is_fp = true ] !FunctionPtr
+                fp.fp = mem !(def ->)
+                return [ kind = compiler::ValueKind::FUNCTION, tpe = tpe.id, function = fp ] !compiler::Value 
+            }*/
+        case typechecking::TypeKind::ENUM
+            let value = deserialize(mem, tpe.tpe)
+            value.tpe = tpe.id
+            return value
+        case; assert(false)
+    }
+}
+
+export def set(module: &toolchain::Module, global: compiler::Value, value: compiler::Value) {
+    assert global.kind == compiler::ValueKind::GLOBAL
+    let mem = get_global_address(module, global.name)
+    serialize(mem, global.tpe, value)
+}
+
+export def get(program: &Program, value: compiler::Value, module: &toolchain::Module) -> compiler::Value {
+    if value.kind == compiler::ValueKind::LOCAL {
+        if program.captures.contains(value.name) {
+            let mem = program.captures(value.name)
+            return deserialize(mem, value.tpe.resolve())
+        }
+    } else if value.kind == compiler::ValueKind::GLOBAL {
+        let mem = get_global_address(module, value.name)
+        return deserialize(mem, value.tpe.resolve())
+    } else {
+        return value
+    }
+}
+
+type State = struct {
+    module: &toolchain::Module
+    program: &Program
+    code: *uint8
+    stack: *uint8
+    locals: *uint8
+    sp: int
+    ip: uint64
+    retval: *uint8
+    globals: &Vector(type *)
+}
+
+// TODO This should be a local function but it doesn't seem to work right now
+def push_stack(state: *State, value: int64) {
+    @((state.stack ++ (state.sp * 8)) !*uint64) = value
+    state.sp += 1
+    assert state.sp <= state.program.max_stack_size, "Stack overflow!!!"
+}
+def push_stack32(state: *State, value: int32) {
+    @((state.stack ++ (state.sp * 8)) !*uint32) = value
+    state.sp += 1
+    assert state.sp <= state.program.max_stack_size, "Stack overflow!!!"
+}
+
+def pop_stack(state: *State) -> int64 {
+    return pop_stack(state, int64)
+}
+
+def pop_stack(state: *State, size: uint64) -> int64 {
+    var v = pop_stack(state)
+    let mask = (((1 !uint64) << (size * 8)) - 1) if size < 8 else (0 !uint64 - 1)
+    v &= mask
+    return v
+}
+
+def pop_stack(state: *State, type T) -> T {
+    assert state.sp > 0, "Stack underflow!!!"
+    state.sp -= 1
+    return @((state.stack ++ (state.sp * 8)) !*T)
+}
+
+def prepare_state(program: &Program, module: &toolchain::Module) -> State {
+    let globals = vector::make(type *)
+    globals.resize(program.globals.length)
+
+    let state = [
+        module = module,
+        program = program,
+        code = program.code.get(0) if program.code.length > 0 else null !*uint8,
+        stack = allocate(program.max_stack_size * 8) !*uint8,
+        locals = allocate(program.locals_size) !*int64,
+        sp = 0,
+        ip = program.start_offset,
+        globals = globals
+    ] !State
+
+    if program.retvalue_size > 0 {
+        state.retval = allocate(program.retvalue_size) !*uint8
+    }
+
+    return state
+}
+
+def cleanup_state(state: *State) {
+    free(state.stack)
+    free(state.locals)
+    free(state.retval)
+}
+
+export def eval(program: &Program, module: &toolchain::Module) {
+    let state = prepare_state(program, module)
+    eval(program, *state)
+    cleanup_state(*state)
+}
+
+// If retval is provided, it needs to be defined with the correct type
+export def eval_with_params(program: &Program, module: &toolchain::Module, params: &Vector(compiler::Value), retval: compiler::Value) -> compiler::Value {
+    let state = prepare_state(program, module)
+
+    var param_offset = 0
+    for var i in 0..params.length {
+        let param = params(params.length - 1 - i)
+        serialize(state.stack ++ param_offset, param.tpe.resolve(), param)
+        param_offset += round_up(param.tpe.resolve().size, 8)
+    }
+
+    state.sp = param_offset / 8
+
+    eval(program, *state)
+
+    if state.retval and retval.kind != compiler::ValueKind::NULL {
+        retval = deserialize(state.retval, retval.tpe)
+    }
+
+    cleanup_state(*state)
+    return retval
+}
+
+def icmp(state: *State, cmp_fun: [int64, int64] -> bool) {
+    let sz = @((state.code ++ state.ip) !*uint16)
+    state.ip += 2
+
+    if sz == 8 {
+        let value1 = pop_stack(state)
+        let value2 = pop_stack(state)
+        push_stack(state, (1 if cmp_fun(value1, value2) else 0))
+    } else if sz == 4 {
+        let value1 = pop_stack(state, int32)
+        let value2 = pop_stack(state, int32)
+        push_stack(state, (1 if cmp_fun(value1, value2) else 0))
+    } else if sz == 2 {
+        let value1 = pop_stack(state, int16)
+        let value2 = pop_stack(state, int16)
+        push_stack(state, (1 if cmp_fun(value1, value2) else 0))
+    } else if sz == 1 {
+        let value1 = pop_stack(state, int8)
+        let value2 = pop_stack(state, int8)
+        push_stack(state, (1 if cmp_fun(value1, value2) else 0))
+    } else {
+        error(sz, "\n")
+        assert
+    }
+}
+
+def fcmp(state: *State, cmp_fun: [float, float] -> bool) {
+    let value1 = pop_stack(state)
+    let value2 = pop_stack(state)
+
+    push_stack(state, (1 if cmp_fun(@(*value1 !*float), @(*value2 !*float)) else 0))
+}
+
+def dcmp(state: *State, cmp_fun: [double, double] -> bool) {
+    let value1 = pop_stack(state)
+    let value2 = pop_stack(state)
+
+    push_stack(state, (1 if cmp_fun(@(*value1 !*double), @(*value2 !*double)) else 0))
+}
+
+def print_stack(state: *State) {
+    if not bytecode::trace { return }
+    print("stack: ")
+    for var i in 0..state.sp {
+        print(@((state.stack ++ (i * 8)) !*int64), " ")
+    }
+    print("\n")
+}
+
+def eval(program: &Program, state: *State) {
+    bctrace("Allocation sizes: stack = ", program.max_stack_size * 8, 
+        " bytes, locals = ", program.locals_size, " bytes\n")
+    
+    print_stack(state)
+
+    if not state.code { return }
+
+    loop {        
+        assert state.sp <= state.program.max_stack_size, "Stack overflow!!!"
+        assert state.sp >= 0, "Stack underflow!!!"
+
+        if state.ip >= program.code.length { 
+            assert false, "Execution fell off a cliff" 
+        }
+        let op = @(state.code ++ state.ip) !bytecode::Opcode
+        if bytecode::trace {
+            print("OP:", op, " sp: ", state.sp, ", ip: ", state.ip, "\n")
+        }
+
+        state.ip += 1
+        switch op {
+        case Opcode::NOP // nothing
+        case Opcode::PICK
+            let index = @((state.code ++ state.ip) !*uint16)
+            let value = @((state.stack ++ ((state.sp - 1 - index) * 8)) !*int64)
+            push_stack(state, value)
+            state.ip += 2
+        case Opcode::SWAP
+            let index1 = @((state.code ++ state.ip) !*uint16)
+            let index2 = @((state.code ++ (state.ip + 2)) !*uint16)
+            let value1 = @((state.stack ++ ((state.sp - 1 - index1) * 8)) !*int64)
+            let value2 = @((state.stack ++ ((state.sp - 1 - index2) * 8)) !*int64)
+            @((state.stack ++ ((state.sp - 1 - index1) * 8)) !*int64) = value2
+            @((state.stack ++ ((state.sp - 1 - index2) * 8)) !*int64) = value1
+            state.ip += 4
+        case Opcode::ROLL
+            let index = @((state.code ++ state.ip) !*uint16)
+            let value = @((state.stack ++ ((state.sp - 1 - index) * 8)) !*int64)
+            cstd::memmove(
+                (state.stack ++ ((state.sp - 1 - index) * 8)),
+                (state.stack ++ ((state.sp - index) * 8)), 
+                index * 8
+            )
+            @((state.stack ++ ((state.sp - 1) * 8)) !*int64) = value
+            state.ip += 2
+        case Opcode::POP
+            let count = @((state.code ++ state.ip) !*uint16)
+            state.sp -= count
+            state.ip += 2
+        case Opcode::POP64
+            state.sp -= 1
+        case Opcode::STORE
+            let addr = pop_stack(state) !*
+            let size = @((state.code ++ state.ip) !*uint16)
+            let rsize = round_up(size, 8)
+            cstd::memmove(addr, (state.stack ++ (state.sp * 8 - rsize)), size)
+            state.sp -= rsize / 8
+            state.ip += 2
+        case Opcode::STORECAPTURE
+            let size = @((state.code ++ state.ip) !*uint16)
+            let rsize = round_up(size, 8)
+            let capture_index = @((state.code ++ (state.ip + 2)) !*uint32)
+            state.ip += 6
+            let name = program.capture_names(capture_index)
+            var mem: *
+            if program.captures.contains(name) {
+                mem = program.captures(name)
+            } else {
+                mem = allocate(size) !*
+                program.captures(name) = mem
+            }
+            cstd::memmove(mem, (state.stack ++ (state.sp * 8 - rsize)), size)
+        case Opcode::STORE8
+            let addr = pop_stack(state) !*int8
+            let value = pop_stack(state, int8)
+            @addr = value
+        case Opcode::STORE16
+            let addr = pop_stack(state) !*int16
+            let value = pop_stack(state, int16)
+            @addr = value
+        case Opcode::STORE32
+            let addr = pop_stack(state) !*int32
+            let value = pop_stack(state, int32)
+            @addr = value
+        case Opcode::STORE64
+            let addr = pop_stack(state) !*int64
+            let value = pop_stack(state)
+            @addr = value
+        case Opcode::PUSH8
+            let value = @((state.code ++ state.ip) !*int8)
+            push_stack(state, value)
+            state.ip += 1
+        case Opcode::PUSH16
+            let value = @((state.code ++ state.ip) !*int16)
+            push_stack(state, value)
+            state.ip += 2
+        case Opcode::PUSH32
+            let value = @((state.code ++ state.ip) !*int32)
+            push_stack(state, value)
+            state.ip += 4
+        case Opcode::PUSH64
+            let value = @((state.code ++ state.ip) !*int64)
+            push_stack(state, value)
+            state.ip += 8
+        case Opcode::PUSH
+            let size = @((state.code ++ state.ip) !*uint16)
+            let roundup_size = round_up(size, 8)
+            cstd::memset((state.stack ++ (state.sp * 8)), 0, roundup_size)
+            cstd::memcpy((state.stack ++ (state.sp * 8)), (state.code ++ (state.ip + 2)), size)
+            state.sp += roundup_size / 8
+            state.ip += 2 + size
+        case Opcode::PUSHZ
+            let size = round_up(@((state.code ++ state.ip) !*uint16), 8)
+            cstd::memset((state.stack ++ (state.sp * 8)), 0, size)
+            state.sp += size / 8
+            state.ip += 2
+        case Opcode::STOREI
+            let size = @((state.code ++ state.ip) !*uint16)
+            let addr = pop_stack(state) !*uint8
+            cstd::memcpy(addr, state.code ++ (state.ip + 2), size)
+            state.ip += 2 + size
+        case Opcode::STOREIZ
+            let size = @((state.code ++ state.ip) !*uint16)
+            let addr = pop_stack(state) !*uint8
+            cstd::memset(addr, 0, size)
+            state.ip += 2
+        case Opcode::STOREI8
+            let value = @((state.code ++ state.ip) !*int8)
+            let addr = pop_stack(state) !*int8
+            @addr = value
+            state.ip += 1
+        case Opcode::STOREI16
+            let value = @((state.code ++ state.ip) !*int16)
+            let addr = pop_stack(state) !*int16
+            @addr = value
+            state.ip += 2
+        case Opcode::STOREI32
+            let value = @((state.code ++ state.ip) !*int32)
+            let addr = pop_stack(state) !*int32
+            @addr = value
+            state.ip += 4
+        case Opcode::STOREI64
+            let value = @((state.code ++ state.ip) !*int64)
+            let addr = pop_stack(state) !*int64
+            @addr = value
+            state.ip += 8
+        case Opcode::LOAD
+            let addr = pop_stack(state) !*
+            let size = round_up(@((state.code ++ state.ip) !*uint16), 8)
+            cstd::memcpy((state.stack ++ (state.sp * 8)), addr, size)
+            state.sp += size / 8
+            state.ip += 2
+        case Opcode::LOAD8
+            let addr = pop_stack(state) !*int8
+            let value = @addr
+            push_stack(state, value)
+        case Opcode::LOAD16
+            let addr = pop_stack(state) !*int16
+            let value = @addr
+            push_stack(state, value)
+        case Opcode::LOAD32
+            let addr = pop_stack(state) !*int32
+            let value = @addr
+            push_stack(state, value)
+        case Opcode::LOAD64
+            let addr = pop_stack(state) !*int64
+            let value = @addr
+            push_stack(state, value)
+        case Opcode::ADDROFLOCAL
+            let index = @((state.code ++ state.ip) !*uint32)
+            push_stack(state, (state.locals ++ index) !int64)
+            state.ip += 4
+        case Opcode::ADDROFSTACK
+            let index = @((state.code ++ state.ip) !*uint16)
+            push_stack(state, (state.stack ++ ((state.sp - 1 - index) * 8)) !int64)
+            state.ip += 2
+        case Opcode::ADDROFGLOBAL
+            let global_index = @((state.code ++ state.ip) !*uint16)
+            var global_addr = state.globals(global_index)
+            if not global_addr {
+                let global_name = state.program.globals(global_index)
+                global_addr = get_global_address(state, global_name)
+                state.globals(global_index) = global_addr
+            }
+            push_stack(state, global_addr !int64)
+            state.ip += 2
+        case Opcode::FNEG
+            var value = pop_stack(state, float)
+            value = -value
+            push_stack32(state, @(*value !*int32))
+        case Opcode::DFNEG
+            var value = pop_stack(state, double)
+            value = -value
+            push_stack(state, @(*value !*int64))
+        case Opcode::FADD, Opcode::FSUB, Opcode::FMUL, Opcode::FDIV, Opcode::FREM
+            let value1 = pop_stack(state, float)
+            let value2 = pop_stack(state, float)
+            var res: float
+            switch op {
+                case Opcode::FADD; res = value1 + value2
+                case Opcode::FSUB; res = value1 - value2
+                case Opcode::FMUL; res = value1 * value2
+                case Opcode::FDIV; res = value1 / value2
+                case Opcode::FREM; res = value1 % value2
+            }
+            push_stack32(state, @(*res !*int32))
+        case Opcode::DADD, Opcode::DSUB, Opcode::DMUL, Opcode::DDIV, Opcode::DREM
+            let value1 = pop_stack(state, double)
+            let value2 = pop_stack(state, double)
+            var res: double
+            switch op {
+                case Opcode::DADD; res = value1 + value2
+                case Opcode::DSUB; res = value1 - value2
+                case Opcode::DMUL; res = value1 * value2
+                case Opcode::DDIV; res = value1 / value2
+                case Opcode::DREM; res = value1 % value2
+            }
+            push_stack(state, @(*res !*int64))
+        case Opcode::AND64, Opcode::OR64, Opcode::XOR64, Opcode::ADD64, Opcode::SUB64, 
+            Opcode::MUL64, Opcode::SDIV64, Opcode::ASHR64, Opcode::SHL64
+
+            let value1 = pop_stack(state)
+            let value2 = pop_stack(state)
+            var res: int64
+            switch op {
+                case Opcode::AND64;  res = value1 & value2
+                case Opcode::OR64;   res = value1 | value2
+                case Opcode::XOR64;  res = value1 ^ value2
+                case Opcode::ADD64;  res = value1 + value2
+                case Opcode::SUB64;  res = value1 - value2
+                case Opcode::MUL64;  res = value1 * value2
+                case Opcode::SDIV64; res = value1 / value2
+                case Opcode::ASHR64; res = value1 >> value2
+                case Opcode::SHL64;  res = value1 << value2
+            }
+            push_stack(state, res)
+        case Opcode::SHL, Opcode::ASHR
+            let size = @((state.code ++ state.ip) !*uint16)
+            state.ip += 2
+
+            let value1 = pop_stack(state, size)
+            let value2 = pop_stack(state, size)
+            var res: int64
+            switch op {
+                case Opcode::SHL;  res = value1 << value2
+                case Opcode::ASHR; res = value1 >> value2
+            }
+            push_stack(state, res)
+        case Opcode::LSHR64
+            let value1 = pop_stack(state) !uint64
+            let value2 = pop_stack(state) !uint64
+            push_stack(state, (value1 >> value2) !int64)
+        case Opcode::SDIV
+            let size = @((state.code ++ state.ip) !*uint16)
+            assert size <= 8, "SDIV only supports sizes up to 8 bytes"
+
+            let mask = ((1 !uint64) << (size * 8)) - 1
+            let sign_bit = (1 !uint64) << (size * 8 - 1)
+
+            var value1 = pop_stack(state)
+            let sign1 = (value1 & sign_bit) != 0
+            value1 = value1 & mask
+            if sign1 { value1 = ~mask | value1 }
+            var value2 = pop_stack(state)
+            let sign2 = (value2 & sign_bit) != 0
+            if sign2 { value2 = ~mask | value2 }
+
+            push_stack(state, value1 / value2)
+            state.ip += 2
+        case Opcode::UDIV64
+            let value1 = pop_stack(state)
+            let value2 = pop_stack(state)
+            push_stack(state, (value1 !uint64) / (value2 !uint64))
+        case Opcode::UREM64
+            let value1 = pop_stack(state)
+            let value2 = pop_stack(state)
+            push_stack(state, (value1 !uint64) % (value2 !uint64))
+        case Opcode::UDIV, Opcode::UREM
+            let size = @((state.code ++ state.ip) !*uint16)
+            assert size <= 8, "UDIV/UREM only supports sizes up to 8 bytes"
+
+            var value1 = pop_stack(state, size)
+            var value2 = pop_stack(state, size)
+
+            switch op {
+            case Opcode::UDIV;  
+                push_stack(state, (value1 !uint64) / (value2 !uint64))
+            case Opcode::UREM;  
+                push_stack(state, (value1 !uint64) % (value2 !uint64))
+            }
+            state.ip += 2
+        case Opcode::UITODFP
+            let value = pop_stack(state) !uint64
+            let res = value !double
+            push_stack(state, @(*res !*int64))
+        case Opcode::UITOFP
+            let value = pop_stack(state) !uint64
+            let res = value !float
+            push_stack32(state, @(*res !*int32))
+        case Opcode::SITODFP
+            let value = pop_stack(state)
+            let res = value !double
+            push_stack(state, @(*res !*int64))
+        case Opcode::SITOFP
+            let value = pop_stack(state)
+            let res = value !float
+            push_stack32(state, @(*res !*int32))
+        case Opcode::FPTOUI
+            let value = pop_stack(state) & 0xFFFFFFFF
+            let res = @(*value !*float) !uint64
+            push_stack(state, res)
+        case Opcode::DFPTOUI
+            let value = pop_stack(state)
+            let res = @(*value !*double) !uint64
+            push_stack(state, res)
+        case Opcode::FPTOSI
+            let value = pop_stack(state) & 0xFFFFFFFF
+            let res = @(*value !*float) !int64
+            push_stack(state, res)
+        case Opcode::DFPTOSI
+            let value = pop_stack(state)
+            let res = @(*value !*double) !int64
+            push_stack(state, res)
+        case Opcode::FPTRUNC
+            let value = pop_stack(state)
+            let res = @(*value !*double) !float
+            push_stack32(state, @(*res !*int32))
+        case Opcode::FPEXT
+            let value = pop_stack(state) & 0xFFFFFFFF
+            let res = @(*value !*float) !double
+            push_stack(state, @(*res !*int64))
+        case Opcode::SEXT8
+            let value = pop_stack(state, int8)
+            push_stack(state, value)
+        case Opcode::SEXT16
+            let value = pop_stack(state, int16)
+            push_stack(state, value)
+        case Opcode::SEXT32
+            let value = pop_stack(state, int32)
+            push_stack(state, value)
+        case Opcode::ZEXT8
+            let value = pop_stack(state, uint8)
+            push_stack(state, value)
+        case Opcode::ZEXT16
+            let value = pop_stack(state, uint16)
+            push_stack(state, value)
+        case Opcode::ZEXT32
+            let value = pop_stack(state, uint32)
+            push_stack(state, value)
+        case Opcode::TRUNC8
+            let value = pop_stack(state)
+            push_stack(state, value & 0xFF)
+        case Opcode::TRUNC16
+            let value = pop_stack(state)
+            push_stack(state, value & 0xFFFF)
+        case Opcode::TRUNC32
+            let value = pop_stack(state)
+            push_stack(state, value & 0xFFFFFFFF)
+        case Opcode::ICMP_EQ
+            icmp(state, { v1, v2 -> v1 == v2 })
+        case Opcode::ICMP_NE
+            icmp(state, { v1, v2 -> v1 != v2 })
+        case Opcode::ICMP_SLE
+            icmp(state, { v1, v2 -> v1 <= v2 })
+        case Opcode::ICMP_SLT
+            icmp(state, { v1, v2 -> v1 < v2 })
+        case Opcode::ICMP_SGE
+            icmp(state, { v1, v2 -> v1 >= v2 })
+        case Opcode::ICMP_SGT
+            icmp(state, { v1, v2 -> v1 > v2 })
+        case Opcode::ICMP_ULE
+            icmp(state, { v1, v2 -> v1 !uint64 <= v2 !uint64 })
+        case Opcode::ICMP_ULT
+            icmp(state, { v1, v2 -> v1 !uint64 < v2 !uint64 })
+        case Opcode::ICMP_UGE
+            icmp(state, { v1, v2 -> v1 !uint64 >= v2 !uint64 })
+        case Opcode::ICMP_UGT
+            icmp(state, { v1, v2 -> v1 !uint64 > v2 !uint64 })
+        case Opcode::FCMP_UEQ
+            fcmp(state, { v1, v2 -> v1 == v2 })
+        case Opcode::FCMP_UGT
+            fcmp(state, { v1, v2 -> v1 > v2 })
+        case Opcode::FCMP_UGE
+            fcmp(state, { v1, v2 -> v1 >= v2 })
+        case Opcode::FCMP_ULT
+            fcmp(state, { v1, v2 -> v1 < v2 })
+        case Opcode::FCMP_ULE
+            fcmp(state, { v1, v2 -> v1 <= v2 })
+        case Opcode::FCMP_UNE
+            fcmp(state, { v1, v2 -> v1 != v2 })
+        case Opcode::DCMP_UEQ
+            dcmp(state, { v1, v2 -> v1 == v2 })
+        case Opcode::DCMP_UGT
+            dcmp(state, { v1, v2 -> v1 > v2 })
+        case Opcode::DCMP_UGE
+            dcmp(state, { v1, v2 -> v1 >= v2 })
+        case Opcode::DCMP_ULT
+            dcmp(state, { v1, v2 -> v1 < v2 })
+        case Opcode::DCMP_ULE
+            dcmp(state, { v1, v2 -> v1 <= v2 })
+        case Opcode::DCMP_UNE
+            dcmp(state, { v1, v2 -> v1 != v2 })
+        case Opcode::CALLG
+            let global_index = @((state.code ++ state.ip) !*uint16)
+            let nargs = @((state.code ++ (state.ip + 2)) !*uint16)
+            state.ip += 4
+
+            let global_name = state.program.globals(global_index)
+            call_global(state, nargs, global_name)
+            if bytecode::trace {
+                print("<- ", program.name, "\n")
+            }
+        case Opcode::CALLVA
+            let global_index = @((state.code ++ state.ip) !*uint16)
+            let nargs = @((state.code ++ (state.ip + 2)) !*uint16)
+            state.ip += 4
+
+            let args = vector::make(typechecking::NamedParameter)
+            for var i in 0..nargs {
+                let tpeid = @((state.code ++ state.ip) !*uint64)
+                state.ip += 8
+                args.push([ tpe = tpeid ] !typechecking::NamedParameter)
+            }
+
+            let global_name = state.program.globals(global_index)
+            call_va_global(state, global_name, args)
+            if bytecode::trace {
+                print("<- ", program.name, "\n")
+            }
+        case Opcode::CALL
+            let call_signature_index = @((state.code ++ state.ip) !*uint16)
+            state.ip += 2
+            let signature = state.program.call_signatures(call_signature_index)
+            let fp = pop_stack(state) !*
+            call_local(state, signature, fp)
+            if bytecode::trace {
+                print("<- ", program.name, "\n")
+            }
+        case Opcode::BR
+            let label_if_false = @((state.code ++ state.ip) !*uint32)
+            let label_if_true = @((state.code ++ (state.ip + 4)) !*uint32)
+
+            if pop_stack(state) == 0 {
+                state.ip = label_if_true
+            } else {
+                state.ip = label_if_false
+            }
+        case Opcode::GOTO
+            let label_ = @((state.code ++ state.ip) !*uint32)
+            state.ip = label_
+        case Opcode::SWITCH
+            let sz = @((state.code ++ state.ip) !*uint16)
+            let mask = (((1 !uint64) << (sz * 8)) - 1) if sz < 8 else (0 !uint64 - 1)
+            let num_cases = @((state.code ++ (state.ip + 2)) !*uint32)
+            let value = pop_stack(state, uint64) & mask
+
+            var found_case = false
+            for var i in 0..num_cases {
+                let offset = state.ip + 6 + 4 + i * 4 + i * 8
+                let case_value = @((state.code ++ offset ++ 4) !*uint64)
+                if value == case_value {
+                    let label_ = @((state.code ++ offset) !*uint32)
+                    state.ip = label_
+                    found_case = true
+                    break
+                }
+            }
+
+            if not found_case {
+                let default_offset = state.ip + 6
+                let default_label_ = @((state.code ++ default_offset) !*uint32)
+                state.ip = default_label_
+            }
+        case Opcode::RET
+            let size = program.retvalue_size
+            cstd::memcpy(state.retval, (state.stack ++ (state.sp * 8 - size)), size)
+            return
+        case Opcode::RETVOID
+            return
+        case Opcode::UNREACHABLE
+            assert false, "Reached unreachable code"
+        case
+            error(op, "\n")
+            assert false, "Unknown opcode"
+        }
+        if bytecode::trace {
+            print_stack(state)
+        }
+    }
+}
+
+def promote(tpe: &typechecking::Type) -> typechecking::TypeId {
+    if typechecking::equals(tpe, builtins::float_) { return builtins::double_ }
+    if (tpe.kind == typechecking::TypeKind::WORD or tpe.kind == typechecking::TypeKind::CHAR) and tpe.size < builtins::int_.resolve().size {
+        if tpe.unsig { return builtins::uint_ }
+        return builtins::int_
+    }
+    return tpe.id
+}
+
+def type_to_ffi(tpe: &typechecking::Type, varargs: bool = false) -> ffi::s__ffi_type {
+    if not tpe {
+        return ffi::ffi_type_void
+    } else if typechecking::is_enum(tpe) {
+        return type_to_ffi(tpe.tpe)
+    } else if typechecking::is_pointer(tpe) {
+        return ffi::ffi_type_pointer
+    } else if typechecking::equals(tpe, builtins::char_) {
+        return ffi::ffi_type_uint8
+    } else if typechecking::equals(tpe, builtins::int8_) {
+        return ffi::ffi_type_sint8
+    } else if typechecking::equals(tpe, builtins::uint8_) {
+        return ffi::ffi_type_uint8
+    } else if typechecking::equals(tpe, builtins::int16_) {
+        return ffi::ffi_type_sint16
+    } else if typechecking::equals(tpe, builtins::uint16_) {
+        return ffi::ffi_type_uint16
+    } else if typechecking::equals(tpe, builtins::int32_) {
+        return ffi::ffi_type_sint32
+    } else if typechecking::equals(tpe, builtins::uint32_) {
+        return ffi::ffi_type_uint32
+    } else if typechecking::equals(tpe, builtins::int64_) {
+        return ffi::ffi_type_sint64
+    } else if typechecking::equals(tpe, builtins::uint64_) {
+        return ffi::ffi_type_uint64
+    } else if typechecking::equals(tpe, builtins::float_) {
+        return ffi::ffi_type_float
+    } else if typechecking::equals(tpe, builtins::double_) {
+        return ffi::ffi_type_double
+    } else if typechecking::equals(tpe, builtins::bool_) {
+        return ffi::ffi_type_sint8
+    } else {
+        error(debug::type_to_str(tpe), "\n")
+        assert
+    }   
+}
+
+def get_global_address(state: *State, global_name: Str) -> * {
+    return get_global_address(state.module, global_name)
+}
+
+def get_global(module: &toolchain::Module, global_name: Str) -> &compiler::Global {
+    var global = toolchain::types.result.globals.get_or_default(global_name, null)
+    if not global {
+        global = module.result.globals.get_or_default(global_name, null)
+    }
+    if not global {
+        global = consteval::const_module.result.globals.get_or_default(global_name, null)
+    }
+    return global
+}
+
+def get_global_address(module: &toolchain::Module, global_name: Str) -> * {
+    let cstate = module.compiler_state
+    var mem = consteval::compiler_state.globals.get_or_default(global_name, null)
+    if mem { 
+        bctrace("Found global '", global_name, "' at ", mem, "\n")
+        return mem 
+    }
+
+    var function = consteval::const_module.result.functions.get_or_default(global_name, null)
+    if function { return to_function_ptr(function) }
+    function = module.result.functions.get_or_default(global_name, null)
+    if function { return to_function_ptr(function) }
+
+    let ffi_global = preload::symbols.get_or_default(global_name, null)
+    if ffi_global { return ffi_global.variable }
+
+    let global = get_global(module, global_name)
+    
+    if not global {
+        error("Global '", global_name, "' not found\n")
+        assert
+    }
+    let ltpe = global.tpe.resolve()
+    mem = consteval::compiler_state.mem.allocate(ltpe.size)
+    bctrace("Allocated global '", global_name, "' of size ", ltpe.size, " at ", mem, "\n")
+    if global.value {
+        bctrace("Initializing global '", global_name, "' with value ", global.value, "\n")
+        serialize(mem, ltpe, @global.value)
+    }
+    consteval::compiler_state.globals(global_name) = mem
+    return mem
+}
+
+def ffi_call(state: *State, 
+    ffi_cif: *ffi::s_ffi_cif, ffi_function_ptr: (def ->), varargs: bool,
+    args: &Vector(typechecking::NamedParameter), ret_tpe: &typechecking::Type, nargs: uint32) {
+
+    let avalues = allocate((size_of type *) * nargs) !**
+    for var j in 0..nargs {
+        var i = nargs - 1 - j
+        var tpe: typechecking::TypeId
+        if i >= args.length {
+            tpe = args(args.length - 1).tpe
+        } else {
+            tpe = args(i).tpe
+        }
+        let convert_float = varargs and typechecking::equals(tpe, builtins::float_)
+        if varargs { tpe = promote(tpe) }
+
+        state.sp -= bytecode::round_up(tpe.resolve().size, 8) / 8
+        let mem = (state.stack ++ (state.sp * 8)) !*
+
+        // float needs to be promoted to double for ffi
+        // C I fucking hate you
+        if convert_float {
+            let fvalue = @(mem !*float)
+            let dvalue = fvalue !double
+            @(mem !*double) = dvalue
+        }
+
+        @(avalues ++ i) = mem
+    }
+
+    var rvalue: * = null
+    if ret_tpe {
+        // TODO Define the register size somewhere
+        // Can we even return structs like this?
+        var size = 8 !size_t
+        if ret_tpe.size > size {
+            size = ret_tpe.size
+        }
+        rvalue = allocate(size) !*
+    }
+
+    ffi::ffi_call(ffi_cif, ffi_function_ptr, rvalue, avalues)
+
+    // add the return value to the stack
+    if rvalue != null {
+        if ret_tpe.size <= 8 {
+            push_stack(state, @(rvalue !*int64))
+        } else {
+            let size = round_up(ret_tpe.size, 8)
+            std::memcpy(state.stack ++ (state.sp * 8), rvalue, ret_tpe.size)
+            state.sp += size / 8
+        }    
+    }
+
+    free(avalues)
+    free(rvalue)
+}
+
+def ffi_prep_cif(varargs: bool, args: &Vector(typechecking::NamedParameter), ret_tpe: &typechecking::Type, nargs: uint32, call_site: *FFICallSite) -> ffi::e_ffi_status {
+    call_site.ffi_args = allocate((size_of type *ffi::s__ffi_type) * nargs) !**ffi::s__ffi_type
+    
+    for var i in 0..nargs {
+        var tpe: typechecking::TypeId
+        if i >= args.length {
+            tpe = args(args.length - 1).tpe
+        } else {
+            tpe = args(i).tpe
+        }
+
+        if varargs { tpe = promote(tpe) }
+        let ffi_tpe = allocate(ffi::s__ffi_type)
+        @ffi_tpe = type_to_ffi(tpe)
+        @(call_site.ffi_args ++ i) = ffi_tpe
+    }
+
+    let ffi_ret_tpe = allocate(ffi::s__ffi_type)
+    @ffi_ret_tpe = type_to_ffi(ret_tpe)
+    call_site.ffi_ret_tpe = ffi_ret_tpe
+
+    var status: ffi::e_ffi_status = ffi::e_ffi_status::FFI_OK
+    if varargs {
+        status = ffi::ffi_prep_cif_var(*call_site.ffi_cif, ffi::e_ffi_abi::FFI_DEFAULT_ABI, (args.length - 1) !uint, nargs, call_site.ffi_ret_tpe, call_site.ffi_args)
+    } else {
+        status = ffi::ffi_prep_cif(*call_site.ffi_cif, ffi::e_ffi_abi::FFI_DEFAULT_ABI, nargs, call_site.ffi_ret_tpe, call_site.ffi_args)
+    }
+    return status
+}
+
+def call_local(state: *State, signature: typechecking::Signature, fp: *) {
+    let function = function_store.mem_to_fun.get_or_default(fp !size_t, null)
+    if function {
+        call_global(state, signature.parameter_t.length !uint32, function)
+        return
+    }
+
+    var ret_tpe: &typechecking::Type
+    if signature.return_t.length > 0 {
+        ret_tpe = signature.return_t(0)
+    }
+
+    var call_site: FFICallSite
+    if function_store.ffi_cifs.contains(fp !size_t) {
+        call_site = function_store.ffi_cifs(fp !size_t)
+    } else {
+        let status = ffi_prep_cif(false, signature.parameter_t, ret_tpe, signature.parameter_t.length !uint32, *call_site)
+        if status != ffi::e_ffi_status::FFI_OK {
+            error("Failed to prepare ffi for function pointer `", fp, "` Status: ", status, "\n")
+            assert
+        }
+        function_store.ffi_cifs(fp !size_t) = call_site
+    }
+    ffi_call(state, *call_site.ffi_cif, fp !(def ->), false, signature.parameter_t, ret_tpe, signature.parameter_t.length !uint32)
+}
+
+def call_global(state: *State, nargs: uint32, global_name: Str) {
+    let function = consteval::const_module.result.functions.get_or_default(global_name, null)
+    if function == null {
+        error("Function '", global_name, "' not found\n")
+        assert
+    }
+    call_global(state, nargs, function, function.args)
+}
+
+def call_va_global(state: *State, global_name: Str, args: &Vector(typechecking::NamedParameter)) {
+    let function = consteval::const_module.result.functions.get_or_default(global_name, null)
+    if function == null {
+        error("Function '", global_name, "' not found\n")
+        assert
+    }
+    call_global(state, args.length !uint32, function, args)
+}
+
+def call_global(state: *State, nargs: uint32, function: &compiler::Function, args: &Vector(typechecking::NamedParameter) = null) {
+    bctrace("Calling function `", function.name, "` with ", nargs, " arguments\n")
+    if function.imported {
+        let ret_tpe = function.ret.resolve()
+        let ffi_function = preload::symbols(function.name)
+        let ffi_function_ptr = preload::get_function(ffi_function)
+
+        var call_site: FFICallSite
+        call_site.ffi_cif = ffi_function.ffi_cif
+        call_site.ffi_args = ffi_function.args
+        call_site.ffi_ret_tpe = ffi_function.ret
+
+        if function.varargs or not ffi_function.initialized {
+            let status = ffi_prep_cif(function.varargs, args, ret_tpe, nargs, *call_site)
+            if status != ffi::e_ffi_status::FFI_OK {
+                error("Failed to prepare ffi for function `", ffi_function.name, "`. Status: ", status, "\n")
+                assert
+            }
+            ffi_function.ffi_cif = call_site.ffi_cif
+            ffi_function.args = call_site.ffi_args
+            ffi_function.ret = call_site.ffi_ret_tpe
+            ffi_function.arglen = function.args.length
+            
+            if not function.varargs {
+                ffi_function.initialized = true
+            }
+        }
+
+        ffi_call(state, *call_site.ffi_cif, ffi_function_ptr, function.varargs, args, ret_tpe, nargs)
+
+        if function.varargs {
+            cleanup(*call_site)
+        }
+    } else {
+        if not function.bytecode {
+            function.bytecode = bytecode::to_bytecode(function)
+        }
+
+        assert function.bytecode != null
+        let ret_tpe = function.ret.resolve()
+        let fun_state = prepare_state(function.bytecode, function.module)
+        if fun_state.code == null { return }
+       
+        for var j in 0..nargs {
+            var i = nargs - 1 - j
+            var tpe: typechecking::TypeId
+            if i >= function.args.length - 1 {
+                let arg = function.args(function.args.length - 1)
+                tpe = arg.tpe
+                if arg.varargs {
+                    tpe = typechecking::array(tpe)
+                }
+            } else {
+                tpe = function.args(i).tpe
+            }
+
+            let sz = bytecode::round_up(tpe.resolve().size, 8) / 8
+            state.sp -= sz
+            let mem = state.stack ++ (state.sp * 8)
+            cstd::memcpy(fun_state.stack ++ (fun_state.sp * 8), mem, sz * 8)
+            fun_state.sp += sz
+        }
+
+        eval(function.bytecode, *fun_state)
+
+        if ret_tpe {
+            let size = round_up(ret_tpe.size, 8)
+            std::memcpy(state.stack ++ (state.sp * 8), fun_state.retval, ret_tpe.size)
+            state.sp += size / 8
+        }
+
+        cleanup_state(*fun_state)
+    }
+}
+
+// Turn pointers into their own constants
+// the first parameter is an out value, you need to pass true and it gets set to false if any of the 
+// sub expressions of value is not a constant (pointers and arrays)
+def serialize(is_constant: *bool, value: compiler::Value, global: &compiler::Global, index: &Vector(compiler::Value), module: &toolchain::Module, cstate: &compiler::State) -> compiler::Value {
+    if value.kind == compiler::ValueKind::POINTER {
+        @is_constant = false
+
+        var loc: compiler::Value
+        if vector::length(index) > 0 {
+            loc = compiler::make_local_value(typechecking::pointer(value.tpe), null, cstate)
+
+            let gep = compiler::make_insn(compiler::InsnKind::GETELEMENTPTR)
+            let index_array = allocate_ref(compiler::Value, vector::length(index) + 1)
+            index_array(0) = compiler::make_int_value(0)
+            for var i in 0..vector::length(index) {
+                index_array(i + 1) = index(i)
+            }
+            gep.value.gep = [
+                ret = loc,
+                tpe = global.tpe,
+                value = [ kind = compiler::ValueKind::GLOBAL, name = global.name, tpe = typechecking::pointer(global.tpe) ] !compiler::Value,
+                index = index_array
+            ] !compiler::InsnGetElementPtr
+            compiler::push_insn(gep, cstate)
+        } else {
+            loc = [ kind = compiler::ValueKind::GLOBAL, name = global.name, tpe = global.tpe ] !compiler::Value
+        }
+
+        let new_global = [
+            private = true,
+            name = compiler::make_global_name("const", cstate),
+            tpe = value.tpe.tpe,
+            line = -1
+        ] !&compiler::Global
+        module.result.add_global(new_global.name, new_global)
+        
+        new_global.value = serialize(is_constant, deserialize(value.i !*, value.tpe.tpe), new_global, vector::make(compiler::Value), module, cstate)
+        
+        let store = compiler::make_insn(compiler::InsnKind::STORE)
+        store.value.store = [
+            value = [ kind = compiler::ValueKind::GLOBAL, tpe = value.tpe, name = new_global.name ] !compiler::Value,
+            loc = loc
+        ] !compiler::InsnStore
+        compiler::push_insn(store, cstate)
+
+        return [ kind = compiler::ValueKind::UNDEF, tpe = value.tpe ] !compiler::Value
+    } else if value.kind == compiler::ValueKind::STRUCT and value.tpe.kind == typechecking::TypeKind::ARRAY {
+        @is_constant = false
+
+        let length = value.values(0).i
+        let ptr = value.values(1).i !*
+        let values = allocate_ref(compiler::Value, length)
+        let array_value = [ kind = compiler::ValueKind::ARRAY, tpe = value.tpe, values = values ] !compiler::Value
+        
+        let size = value.tpe.tpe.resolve().size
+        let tpe = typechecking::static_array(builtins::char_, length * size)
+        let new_global = [
+            private = true,
+            name = compiler::make_global_name("const", cstate),
+            tpe = tpe,
+            line = -1
+        ] !&compiler::Global
+        module.result.add_global(new_global.name, new_global)
+
+        for var i in 0..length {
+            let new_index = vector::make(compiler::Value)
+            new_index.push(compiler::make_int_value(i))
+            values(i) = serialize(is_constant, deserialize(ptr ++ size * i, value.tpe.tpe), new_global, new_index, module, cstate)
+        }
+
+        let loc = compiler::make_local_value(typechecking::pointer(typechecking::pointer(value.tpe.tpe)), null, cstate)
+        let gep = compiler::make_insn(compiler::InsnKind::GETELEMENTPTR)
+        let index_array = allocate_ref(compiler::Value, vector::length(index) + 2)
+        index_array(0) = compiler::make_int_value(0)
+        for var i in 0..vector::length(index) {
+            index_array(i + 1) = index(i)
+        }
+        index_array(vector::length(index) + 1) = compiler::make_int_value(1)
+        gep.value.gep = [
+            ret = loc,
+            tpe = global.tpe,
+            value = [ kind = compiler::ValueKind::GLOBAL, name = global.name, tpe = typechecking::pointer(global.tpe) ] !compiler::Value,
+            index = index_array
+        ] !compiler::InsnGetElementPtr
+        compiler::push_insn(gep, cstate)
+
+        let gep2_ret = compiler::make_local_value(typechecking::pointer(value.tpe.tpe), null, cstate)
+        let gep2 = compiler::make_insn(compiler::InsnKind::GETELEMENTPTR)
+        let index_array2 = allocate_ref(compiler::Value, 2)
+        index_array2(0) = compiler::make_int_value(0)
+        index_array2(1) = compiler::make_int_value(0)
+        gep2.value.gep = [
+            ret = gep2_ret,
+            tpe = tpe,
+            value = [ kind = compiler::ValueKind::GLOBAL, tpe = typechecking::pointer(tpe), name = new_global.name ] !compiler::Value,
+            index = index_array2
+        ] !compiler::InsnGetElementPtr
+        compiler::push_insn(gep2, cstate)
+        
+        let store = compiler::make_insn(compiler::InsnKind::STORE)
+        store.value.store = [
+            value = gep2_ret,
+            loc = loc
+        ] !compiler::InsnStore
+        compiler::push_insn(store, cstate)
+
+        new_global.value = array_value
+
+        value.values(1).kind = compiler::ValueKind::UNDEF
+        return value
+        
+    } else if value.kind == compiler::ValueKind::ARRAY or value.kind == compiler::ValueKind::STRUCT {
+        @is_constant = false
+        for var i in 0..value.values.size {
+            let new_index = vector::copy(index)
+            new_index.push(compiler::make_int_value(i))
+            value.values(i) = serialize(is_constant, value.values(i), global, new_index, module, cstate)
+        }
+        return value
+    } else {
+        return value
+    }
+}
+
+export def serialize_value(key: Str, value: compiler::Value, module: &toolchain::Module, cstate: &compiler::State) -> &compiler::Global {
+    let prev_block = cstate.current_block
+    cstate.current_block = module.code
+
+    let global = get_global(module, key)
+
+    var is_constant = true
+    let res = serialize(
+        *is_constant, 
+        value, 
+        global, 
+        vector::make(compiler::Value), 
+        module, 
+        cstate
+    )
+
+    if is_constant {
+        global.value = res
+    }
+
+    // We need to create a new global, or else the constant is getting inlined
+    let new_global = [
+        private = false,
+        name = global.name,
+        tpe = global.tpe,
+        value = value,
+        line = -1
+    ] !&compiler::Global
+    module.result.add_global(new_global.name, new_global)
+    module.imported.add(new_global.name)
+
+    cstate.current_block = prev_block
+    return global 
+}

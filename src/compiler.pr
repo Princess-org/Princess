@@ -10,13 +10,81 @@ import builtins
 import typechecking
 import consteval
 import errors
-import eval
 import md5
 import optional
 import arena
 import constants
 import io
 import strings
+
+// TODO This belongs in bytecode
+export type Variable = struct {
+    name: Str
+    tpe: typechecking::TypeId
+    size: uint64 // Size in bytes, multiple of 8
+    stack_index: uint64
+    // True when the variable isn't the result of an alloca
+    // means we need to load and store
+    is_value: bool
+}
+
+export type Program = struct {
+    name: Str
+    start_offset: uint64
+    globals: &Vector(Str)
+    call_signatures: &Vector(typechecking::Signature)
+    max_stack_size: uint64
+    locals_size: uint64
+    code: &Vector(uint8)
+    retvalue_size: uint64
+    capture_names: &Map(uint64, Str)
+    captures: &SMap(type *)
+}
+
+export type State = struct {
+    module: weak &toolchain::Module
+    global_counter: int
+    meta_counter: int
+    local_counter: int
+    function_stack: &Vector(&Function)
+    current_block: &Block
+    // Vector of LoopState 
+    loops: &Vector(LoopState)
+    difile: &Value
+    diunit: &Value
+    // Vector of Value
+    discope: &Vector(&Value)
+    // Used by evalx
+    globals: &SMap(*)
+    mem: &arena::Arena
+    scope: weak &scope::Scope
+    // Destructor function
+    finalizer: &Function
+    consteval: bool
+    current_variable: &scope::Value
+    // This is set by the language server to not store instructions
+    no_instructions: bool
+    // Set in consteval::compiler_state
+    file_name_value: Value
+    // inline_offset gets incremented when a new function gets inlined
+    inline_offset: size_t
+    // prefix gets added in front of every variable
+    prefix: Str
+    return_address: Value // This is used as the return address in inline functions
+    return_br: &Insn // This is used to jump back to the end of the function
+    inline_start_block: &Block // This represents the first block of the current function
+    context_ptr: int // Counts up the current free_context
+}
+
+import evalbc
+import bytecode
+
+export def destruct(program: *Program) {
+    for var v in program.captures {
+        free(v.value)
+    }
+    program.captures.clear()
+}
 
 export type Label = struct {
     name: Str
@@ -63,7 +131,7 @@ export type Value = struct {
     addr: &Value
     volatile: bool
     tpe: typechecking::TypeId
-    function: &eval::FunctionPtr
+    //function: &eval::FunctionPtr
 }
 
 export def hash(value: Value) -> uint64 {
@@ -527,6 +595,7 @@ export type Function = struct {
     inner_scope: weak &scope::Scope
     captures: &Vector(weak &scope::Value)
 
+    // TODO this should probably be an enum
     is_queued: bool
     is_ctfe: bool
     is_compiled: bool
@@ -538,6 +607,8 @@ export type Function = struct {
     constants: &SMap(&Global)
     ditypes: &Set(typechecking::TypeId)
     companion_functions: &Vector(&Function)
+
+    bytecode: &Program
 }
 
 def add_local(state: &State, function: &Function, value: &scope::Value, tpe: typechecking::TypeId) {
@@ -597,41 +668,6 @@ type LoopState = struct {
     break_insn: &Insn
     continue_insn: &Insn
     scope: &scope::Scope
-}
-
-export type State = struct {
-    module: weak &toolchain::Module
-    global_counter: int
-    meta_counter: int
-    local_counter: int
-    function_stack: &Vector(&Function)
-    current_block: &Block
-    // Vector of LoopState 
-    loops: &Vector(LoopState)
-    difile: &Value
-    diunit: &Value
-    // Vector of Value
-    discope: &Vector(&Value)
-    // Used by evalx
-    globals: &SMap(*)
-    mem: &arena::Arena
-    scope: weak &scope::Scope
-    // Destructor function
-    finalizer: &Function
-    consteval: bool
-    current_variable: &scope::Value
-    // This is set by the language server to not store instructions
-    no_instructions: bool
-    // Set in consteval::compiler_state
-    file_name_value: Value
-    // inline_offset gets incremented when a new function gets inlined
-    inline_offset: size_t
-    // prefix gets added in front of every variable
-    prefix: Str
-    return_address: Value // This is used as the return address in inline functions
-    return_br: &Insn // This is used to jump back to the end of the function
-    inline_start_block: &Block // This represents the first block of the current function
-    context_ptr: int // Counts up the current free_context
 }
 
 export def destruct(state: *State) {
@@ -1278,6 +1314,8 @@ export def import_structures(tpe: &typechecking::Type, module: &toolchain::Modul
 
 def import_cstd_function(name: Str, state: &State) {
     let cstd_module = toolchain::find_module("cstd")
+    if not cstd_module { return }
+
     var func = scope::get(cstd_module.scope, parser::make_identifier(name))
     if not func { return }
     predeclare_function(func.fdef, state.module, true)
@@ -1749,7 +1787,12 @@ def convert_value_to_ref(tpe: typechecking::TypeId, value: Value, loc: &Value, s
     ] !InsnInsertValue
     push_insn(insert1, state)
 
+    let ret_insert1_loc = state.alloca(tpe, loc, no_yield_capture = true)
+    state.store(ret_insert1_loc, ret_insert1, loc)
+
     var heapval: Value
+    let heapval_loc = state.alloca(pointer(value.tpe), loc, no_yield_capture = true)
+
     if not is_null {
         let args2 = allocate_ref(Value, 1)
         args2(0) = [ kind = ValueKind::INT, tpe = builtins::int64_, i = value.tpe.resolve().size ] !Value
@@ -1763,11 +1806,15 @@ def convert_value_to_ref(tpe: typechecking::TypeId, value: Value, loc: &Value, s
         push_insn(call2, state)
         
         heapval = state.bitcast(typechecking::pointer(value.tpe), call2_ret, loc)
+        state.store(heapval_loc, heapval, loc)
         
+        let value_loc = state.alloca(value.tpe, loc, no_yield_capture = true)
+
         if has_copy_constructor(value.tpe) {
             let ret = state.alloca(value.tpe, loc, no_yield_capture = true)
             insert_copy_constructor(ret, value, loc, state)
             value = state.load(value.tpe, ret, loc)
+            state.store(value_loc, value, loc)
         } else if is_array(value.tpe) {
             import_cstd_function("memcpy", state)
 
@@ -1786,6 +1833,7 @@ def convert_value_to_ref(tpe: typechecking::TypeId, value: Value, loc: &Value, s
                 value = [ kind = ValueKind::UNDEF, tpe = value.tpe ] !Value
                 value = state.insert_value(value.tpe, value, size, [0], loc)
                 value = state.insert_value(value.tpe, value, new_ptr, [1], loc)
+                state.store(value_loc, value, loc)
             } else {
                 data = @value.addr
                 size = [ kind = ValueKind::INT, tpe = builtins::int64_, i = value.tpe.resolve().length ] !Value
@@ -1794,6 +1842,7 @@ def convert_value_to_ref(tpe: typechecking::TypeId, value: Value, loc: &Value, s
                 state.call("memcpy", pointer(builtins::int8_), [call2_ret, ptr_i8, size_in_bytes], loc)
                 new_ptr = state.bitcast(pointer(value.tpe), call2_ret, loc)
                 value = state.load(value.tpe, new_ptr, loc)
+                state.store(value_loc, value, loc)
             }
 
             if is_ref(value.tpe.tpe) or has_copy_constructor(value.tpe.tpe) {
@@ -1801,6 +1850,14 @@ def convert_value_to_ref(tpe: typechecking::TypeId, value: Value, loc: &Value, s
                 let counter_ptr = state.alloca(builtins::size_t_)
                 state.store(counter_ptr, [ kind = ValueKind::INT, tpe = builtins::size_t_, i = 0 ] !Value)
                 
+                // Create temporary variable for size because it is coming in from before the loop and consteval can't deal with that
+                let size_loc = state.alloca(builtins::size_t_, no_yield_capture = true)
+                state.store(size_loc, size, loc)
+                let data_loc = state.alloca(pointer(value.tpe.tpe), no_yield_capture = true)
+                state.store(data_loc, data, loc)
+                let new_ptr_loc = state.alloca(pointer(value.tpe.tpe), no_yield_capture = true)
+                state.store(new_ptr_loc, new_ptr, loc)
+
                 let br_to_start = make_insn_dbg(InsnKind::BR_UNC, loc)
                 push_insn(br_to_start, state)
 
@@ -1808,8 +1865,9 @@ def convert_value_to_ref(tpe: typechecking::TypeId, value: Value, loc: &Value, s
                 push_label(loop_start, state)
                 br_to_start.value.br_unc.label_ = loop_start
                 
-                let counter_value = state.load(builtins::size_t_, counter_ptr)
-                let cond = state.icmp(CompareInt::eq, counter_value, size)
+                let counter_value_1 = state.load(builtins::size_t_, counter_ptr, loc)
+                let size_value = state.load(builtins::size_t_, size_loc, loc)
+                let cond = state.icmp(CompareInt::eq, counter_value_1, size_value, loc)
                 let br = make_insn_dbg(InsnKind::BR, loc)
                 br.value.br = [ cond = cond ] !InsnBr
                 push_insn(br, state)
@@ -1818,19 +1876,23 @@ def convert_value_to_ref(tpe: typechecking::TypeId, value: Value, loc: &Value, s
                 push_label(loop_inner, state)
                 br.value.br.if_false = loop_inner
 
+                let counter_value = state.load(builtins::size_t_, counter_ptr, loc)
+
                 let ptpe = pointer(value.tpe.tpe)
                 var array_val = NO_VALUE
+                let data_value = state.load(pointer(value.tpe.tpe), data_loc, loc)
                 if value.tpe.kind == typechecking::TypeKind::ARRAY {
-                    array_val = state.gep(ptpe, value.tpe.tpe, data, [counter_value], loc)
+                    array_val = state.gep(ptpe, value.tpe.tpe, data_value, [counter_value], loc)
                 } else {
-                    array_val = state.gep(ptpe, value.tpe, data, [make_int_value(0), counter_value], loc)
+                    array_val = state.gep(ptpe, value.tpe, data_value, [make_int_value(0), counter_value], loc)
                 }
 
                 if is_ref_or_weak(value.tpe.tpe) {
                     increase_ref_count(array_val, loc, state)
                 } else if has_copy_constructor(value.tpe.tpe) {
                     let val = state.load(value.tpe.tpe, array_val, loc)
-                    let addr = state.gep(ptpe, value.tpe.tpe, new_ptr, [counter_value], loc)
+                    let new_ptr_value = state.load(pointer(value.tpe.tpe), new_ptr_loc, loc)
+                    let addr = state.gep(ptpe, value.tpe.tpe, new_ptr_value, [counter_value], loc)
                     insert_copy_constructor(addr, val, loc, state)
                 }
 
@@ -1843,21 +1905,30 @@ def convert_value_to_ref(tpe: typechecking::TypeId, value: Value, loc: &Value, s
                 push_label(loop_end, state)
                 br.value.br.if_true = loop_end
             }
+        } else {
+            state.store(value_loc, value, loc)
         }
 
+        let value2 = state.load(value.tpe, value_loc, loc)
         let store2 = make_insn_dbg(InsnKind::STORE, loc)
+        let heapval2 = state.load(pointer(value.tpe), heapval_loc, loc)
         store2.value.store = [
-            loc = heapval,
-            value = value
+            loc = heapval2,
+            value = value2
         ] !InsnStore
         push_insn(store2, state)
 
         if not typechecking::equals(tpe.tpe, value.tpe) {
             heapval = state.bitcast(pointer(tpe.tpe), heapval, loc)
+            state.store(heapval_loc, heapval, loc)
         }
     } else {
         heapval = [ kind = ValueKind::NULL, tpe = typechecking::pointer(value.tpe) ] !Value
+        state.store(heapval_loc, heapval, loc)
     }
+
+    let heapval2 = state.load(pointer(value.tpe), heapval_loc, loc)
+    let ret_insert4 = state.load(tpe, ret_insert1_loc, loc)
     
     let index2 = allocate_ref(int, 1)
     index2(0) = 1
@@ -1865,8 +1936,8 @@ def convert_value_to_ref(tpe: typechecking::TypeId, value: Value, loc: &Value, s
     let insert2 = make_insn_dbg(InsnKind::INSERTVALUE, loc)
     insert2.value.insert_value = [
         ret = ret_insert2,
-        value = ret_insert1,
-        element = heapval,
+        value = ret_insert4,
+        element = heapval2,
         index = index2
     ] !InsnInsertValue
     push_insn(insert2, state)
@@ -2841,7 +2912,7 @@ def walk_USub(node: &parser::Node, state: &State) -> Value {
     let loc = make_location(node, state)
     let tpe = node.tpe
     if not tpe { return NO_VALUE }
-    let expr = walk_and_load_expression(node.value.expr, state)
+    var expr = walk_and_load_expression(node.value.expr, state)
 
     let ret = make_local_value(tpe, null, state)
     if tpe.kind == typechecking::TypeKind::FLOAT {
@@ -2853,6 +2924,9 @@ def walk_USub(node: &parser::Node, state: &State) -> Value {
         push_insn(fneg, state)
     } else {
         let sub = make_insn_dbg(InsnKind::SUB, loc)
+        // This fixes an issue with the bytecode generator where 
+        // SUB isn't allowed to have conflicting types for left and right
+        expr.tpe = tpe
         (@sub).value.arith = [
             ret = ret,
             left = [ kind = ValueKind::INT, i = 0, tpe = tpe ] !Value,
@@ -3804,10 +3878,12 @@ def insert_destructor(value: Value, loc: &Value, state: &State) {
         push_label(loop_inner, state)
         br.value.br.if_false = loop_inner
 
-        let element = state.gep(pointer(arr_tpe.tpe), value_tpe.tpe, value, [make_int_value(0), counter_value])
+        let counter_value2 = state.load(builtins::size_t_, counter_ptr, loc)
+
+        let element = state.gep(pointer(arr_tpe.tpe), value_tpe.tpe, value, [make_int_value(0), counter_value2])
         insert_destructor(element, loc, state)
 
-        let counter_inc = state.add(builtins::size_t_, counter_value, [ kind = ValueKind::INT, tpe = builtins::size_t_, i = 1 ] !Value, loc)
+        let counter_inc = state.add(builtins::size_t_, counter_value2, [ kind = ValueKind::INT, tpe = builtins::size_t_, i = 1 ] !Value, loc)
         state.store(counter_ptr, counter_inc)
 
         push_insn(br_to_start, state)
@@ -4932,14 +5008,7 @@ def walk_IfExpr(node: &parser::Node, state: &State) -> Value {
     let if_true = node.value.if_expr.if_true
     let if_false = node.value.if_expr.if_false
 
-    let ret_alloca = make_named_local(node.tpe, null, state)
-    let alloca1 = make_insn_dbg(InsnKind::ALLOCA, loc)
-    alloca1.value.alloca = [
-        ret = ret_alloca
-    ] !InsnAlloca
-    push_insn(alloca1, state)
-    ret_alloca.tpe = typechecking::pointer(ret_alloca.tpe)
-
+    let ret_alloca = state.alloca(node.tpe, loc)
     let entry_label = make_label(state)
     let br = make_insn_dbg(InsnKind::BR, loc)
     br.value.br = [
@@ -5469,17 +5538,47 @@ def walk_Return(node: &parser::Node, state: &State) {
 
     var value: &Value = NO_VALUE
     if current_function.multiple_returns {
-        let ret_args = allocate_ref(Value, vector::length(node.value.body))
+        let ret_args = vector::make(Value)
         let cur_fun_ret = current_function.ret.resolve()
-        for var i in 0..ret_args.size {
-            let n = node.value.body(i)
-            let tpe = cur_fun_ret.fields(i).tpe
-            var expr = convert_to(n, walk_expression(n, state), tpe, state)
-            ret_args(i) = return_post(expr, loc, state)
+
+        var i = 0
+        var j = 0
+        while j < node.value.body.length and i < cur_fun_ret.fields.length {
+            let n = node.value.body(j)
+            var tpe = cur_fun_ret.fields(i).tpe
+            var expr = walk_expression(n, state)
+
+            // Unpack tuple if the return type is a tuple but the return value is not a tuple
+            if n.tpe and tpe and 
+                n.tpe.kind == typechecking::TypeKind::TUPLE and
+                tpe.kind != typechecking::TypeKind::TUPLE {
+                
+                let tuple_type = n.tpe.resolve()
+                for var k in 0..tuple_type.return_t.length {
+                    if i >= cur_fun_ret.fields.length { break }
+                    tpe = cur_fun_ret.fields(i).tpe
+
+                    let elem_type = tuple_type.return_t(k)
+                    var elem = state.extract_value(elem_type, expr, [k], loc)
+                    elem = convert_to(loc, elem, tpe, state)
+                    elem = return_post(elem, loc, state)
+
+                    ret_args.push(elem)
+                    i += 1
+                }
+            } else {
+                expr = convert_to(n, expr, tpe, state)
+                expr = return_post(expr, loc, state)
+
+                ret_args.push(expr)
+                i += 1
+            }
+            j += 1
         }
+
         value = [
             kind = ValueKind::STRUCT,
-            values = ret_args,
+            values = ret_args.to_array(),
             tpe = current_function.ret
         ] !&Value
 
@@ -6172,7 +6271,13 @@ def walk_Lambda(node: &parser::Node, state: &State) -> Value {
     let context_ptr = create_closure_context(function, ret, loc, state, insert_temporary = true)
 
     predeclare_function(function, state.scope)
+    
+    // https://github.com/llvm/llvm-project/issues/236920
+    // We need to scope the function to the file scope because nesting
+    // inside of other scopes doesn't work with llvm right now.
+    if toolchain::debug_sym { state.discope.push(state.difile) }
     create_function(node, function.fdef, node.value.lambda.body, node.inner_scope, null, state, is_closure = true, params = node.value.lambda.parameters)
+    if toolchain::debug_sym { state.discope.pop() }
     state.module.imported.add(function.fdef.name)
 
     let context = create_closure_context_captures(function, loc, state)
@@ -6344,12 +6449,12 @@ def walk_Defer(node: &parser::Node, state: &State) {
         )
         alloca_ret = state.bitcast(pointer(current_function.defers), call_ret)
     } else {
-        alloca_ret = make_local_value(current_function.defers, null, state)
+        alloca_ret = make_named_local(current_function.defers, null, state)
         let alloca = make_insn(InsnKind::ALLOCA)
         alloca.value.alloca = [
             ret = alloca_ret
         ] !InsnAlloca
-        push_insn(alloca, state)
+        push_alloca(alloca, state)
         alloca_ret.tpe = typechecking::pointer(alloca_ret.tpe)
     }
 
@@ -7099,7 +7204,7 @@ def generate_defer_types_pre(state: &State) {
         alloca.value.alloca = [
             ret = [ kind = ValueKind::LOCAL, tpe = typechecking::pointer(defers), name = "__defers" ] !Value
         ] !InsnAlloca
-        push_insn(alloca, state)
+        push_alloca(alloca, state)
     } else {
         let global = [
             private = true,
@@ -8783,6 +8888,9 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
     var ref_count: Value
     var null_br: &Insn, br: &Insn
     var br1: &Insn
+
+    let ref_loc = state.alloca(tpe.tpe)
+    let ref_count_loc = state.alloca(pointer(builtins::int64_))
     
     let content_type = tpe.tpe.tpe
     if typechecking::is_weak_ref(tpe.tpe) {
@@ -8790,7 +8898,9 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
     } else if typechecking::is_ref(tpe.tpe) and content_type and not is_interface(content_type) {
         // Decrease ref count
         _ref = state.load(tpe.tpe, value)
+        state.store(ref_loc, _ref)
         ref_count = state.extract_value(pointer(ref_meta()), _ref, [0])
+        state.store(ref_count_loc, ref_count)
         let ref_count_value1 = state.ptr_to_int(ref_count)
 
         let isnull = state.icmp(CompareInt::eq, ref_count_value1, 
@@ -8845,7 +8955,13 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
                 data = state.extract_value(pointer(structure_type.id), _ref, [1])
             }
 
-            let counter_ptr = state.alloca(builtins::size_t_)
+            // Create temporary variable because it is coming in from before the loop and consteval can't deal with that
+            let size_loc = state.alloca(builtins::size_t_, no_yield_capture = true)
+            state.store(size_loc, size)
+            let data_loc = state.alloca(pointer(structure_type.tpe), no_yield_capture = true)
+            state.store(data_loc, data)
+
+            let counter_ptr = state.alloca(builtins::size_t_, no_yield_capture = true)
             state.store(counter_ptr, [ kind = ValueKind::INT, tpe = builtins::size_t_, i = 0 ] !Value)
             
             let br_to_start = make_insn(InsnKind::BR_UNC)
@@ -8856,7 +8972,8 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
             br_to_start.value.br_unc.label_ = loop_start
             
             let counter_value = state.load(builtins::size_t_, counter_ptr)
-            let cond = state.icmp(CompareInt::eq, counter_value, size)
+            let size_value = state.load(builtins::size_t_, size_loc)
+            let cond = state.icmp(CompareInt::eq, counter_value, size_value)
             let br = make_insn(InsnKind::BR)
             br.value.br = [ cond = cond ] !InsnBr
             push_insn(br, state)
@@ -8865,12 +8982,14 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
             push_label(loop_inner, state)
             br.value.br.if_false = loop_inner
 
+            let data_value = state.load(pointer(structure_type.tpe), data_loc)
+
             let ptpe = pointer(structure_type.tpe)
             var array_val = NO_VALUE
             if structure_type.kind == typechecking::TypeKind::ARRAY {
-                array_val = state.gep(ptpe, structure_type.tpe, data, [counter_value])
+                array_val = state.gep(ptpe, structure_type.tpe, data_value, [counter_value])
             } else {
-                array_val = state.gep(ptpe, structure_type.id, data, [make_int_value(0), counter_value])
+                array_val = state.gep(ptpe, structure_type.id, data_value, [make_int_value(0), counter_value])
             }
 
             if is_weak_ref(structure_type.tpe) {
@@ -9023,6 +9142,7 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
             state.call(fdef.name, 0, [convert_ref_to_ref(builtins::ref_t(), _ref, null, state)])
         }
 
+        let ref_count = state.load(pointer(builtins::int64_), ref_count_loc)
         let ref_count_value1 = state.ptr_to_int(ref_count)
 
         let isnull = state.icmp(CompareInt::eq, ref_count_value1, 
@@ -9035,14 +9155,16 @@ def create_destructor(tpe: &typechecking::Type, value: Value, state: &State) {
         push_label(nonnull, state)
         br2.value.br.if_false = nonnull
 
-        let cnt = get_weak_count_ptr(_ref, null, state)
+        let ref2 = state.load(tpe.tpe, ref_loc)
+
+        let cnt = get_weak_count_ptr(ref2, null, state)
         var cnt_value = state.load(builtins::int64_, cnt)
         cnt_value = state.sub(builtins::int64_, cnt_value, [ kind = ValueKind::INT, tpe = builtins::int64_, i = 1 ] !Value)
         state.store(cnt, cnt_value)
 
         check_clear_ref_meta(ref_count, null, state)
 
-        value = state.extract_value(pointer(ref_tpe.id), _ref, [1])
+        value = state.extract_value(pointer(ref_tpe.id), ref2, [1])
 
         if ref_tpe.kind == typechecking::TypeKind::ARRAY {
             let array = state.load(ref_tpe.id, value)
@@ -9502,17 +9624,17 @@ export def generate_reflection_data_queued -> &io::ByteStream, &UniquedStrings, 
         block.insn.push(call)
 
         // load globals
-        state.globals("__reflection_data") = *data.data().value
+        state.globals("__reflection_data") = data.data().value
 
         let sz = strings.strings.data().size
         let strings_data = state.mem.allocate(sz)
         std::memcopy(strings.strings.data().value, strings_data, sz)
 
-        let strings_ptr = state.mem.allocate(size_of *) !**
-        @strings_ptr = strings_data
-        state.globals(strings_ident) = strings_ptr // This is a copy so we can keep it here
+        //let strings_ptr = state.mem.allocate(size_of *) !**
+        //@strings_ptr = strings_data
+        state.globals(strings_ident) = strings_data // This is a copy so we can keep it here
 
-        eval::eval(state, block)
+        evalbc::eval(bytecode::to_bytecode(block), state.module)
 
         // remove this so that it doesn't get cleaned up later, we're just borrowing it inside this function
         state.globals.remove("__reflection_data")
@@ -9767,6 +9889,7 @@ export def generate_vtable_function(function: &Function, fdef: typechecking::Fun
 
     debug::trace("Generating vtable function for ", fdef.name)
 
+    function.bytecode = null
     function.block = make_block()
     function.forward_declare = false
     let previous_block = state.current_block
@@ -9819,13 +9942,13 @@ export def generate_vtable_function(function: &Function, fdef: typechecking::Fun
                 let fdef2 = *f.fdef
                 if function.unmangled != fdef2.unmangled { continue }
                 //print_fdef(fdef)
-                let score = typechecking::overload_score(fdef2, parameter_t, state.scope, true)
-                //print_fdef(fdef2)
+                let new_score = typechecking::overload_score(fdef2, parameter_t, state.scope, true)
+                //print_fdef(@fdef2)
                 //print("score: ", score, "\n")
-                if score == 0 {
+                if new_score >= 0 and new_score < score {
                     fun = fdef2
                     module = f.module
-                    break
+                    score = new_score
                 }
             }
 
@@ -10237,7 +10360,12 @@ export def compile(state: &State, is_main: bool, no_cleanup: bool = false) {
     // Forward declare functions from other files
     // TODO This doesn't work for functions that return multiple parameters
     predeclare_functions(state.module)
-    create_dyn_dispatch(state.module.dyn_dispatch, state)
+
+    var dyn_dispatch = state.module.dyn_dispatch
+    // copy to avoid clearing out the list in the repl, since it might have to regenerate them
+    if toolchain::is_in_repl { dyn_dispatch = dyn_dispatch.copy() }
+    create_dyn_dispatch(dyn_dispatch, state)
+
     create_dyn_casts(state)
 
     for var i in 0..vector::length(node.body) {
